@@ -119,6 +119,10 @@ impl Query {
     ///
     /// Callers must not start two writers for the same session concurrently.
     pub async fn start(self) -> Result<Run> {
+        self.start_session().await
+    }
+
+    async fn start_session(self) -> Result<Run> {
         let kuku_home = kuku_home()?;
         let workspace = current_workspace()?;
         let session_id = match self.session_id {
@@ -171,10 +175,10 @@ impl Query {
 
     pub async fn run(self) -> Result<RunOutput> {
         use crate::context::{assemble_context, rebuild_history, ContextInput};
-        use crate::provider::config::ResolveConfigInput;
+        use crate::provider::config::{resolve_config, ResolveConfigInput};
         use crate::provider::types::{ProviderKind, ProviderRequest};
 
-        let run = self.clone().start().await?;
+        let run = self.clone().start_session().await?;
         let kuku_home = kuku_home()?;
         let workspace = current_workspace()?;
         let events_path = session_events_path(&kuku_home, &workspace, run.session_id())?;
@@ -182,7 +186,7 @@ impl Query {
         let turn = current_turn(&existing_events)?;
         let request_id = format!("req_{}", existing_events.len() + 1);
 
-        let resolved = match provider::resolve_config(ResolveConfigInput {
+        let resolved = match resolve_config(ResolveConfigInput {
             provider: self.provider,
             model: self.model.clone(),
             base_url: self.base_url.clone(),
@@ -340,7 +344,6 @@ fn current_turn(events: &[StoredEvent]) -> Result<u64> {
 
 fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'static str {
     match kind {
-        provider::types::ProviderFailureKind::MissingConfig => "missing_config",
         provider::types::ProviderFailureKind::Authentication => "authentication",
         provider::types::ProviderFailureKind::RateLimited => "rate_limited",
         provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",

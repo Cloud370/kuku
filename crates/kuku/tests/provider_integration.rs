@@ -142,7 +142,9 @@ async fn http_error_writes_model_error_and_turn_end() {
 
     server.mock(|when, then| {
         when.method(POST).path("/v1/messages");
-        then.status(401).body("unauthorized");
+        then.status(401)
+            .header("request-id", "req_http_error")
+            .body("unauthorized");
     });
 
     let err = query("test")

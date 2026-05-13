@@ -69,10 +69,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
 }
 
 fn env_opt(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    std::env::var(key).ok().filter(|value| !value.is_empty())
 }
 
 fn parse_provider(value: &str) -> Result<ProviderKind> {

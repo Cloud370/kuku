@@ -25,6 +25,7 @@ impl From<Provider> for ProviderKind {
 }
 
 /// Wrapper that redacts the value in Debug/Display.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SecretString(String);
 
 impl SecretString {
@@ -48,20 +49,6 @@ impl fmt::Display for SecretString {
         f.write_str("<redacted>")
     }
 }
-
-impl Clone for SecretString {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl PartialEq for SecretString {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for SecretString {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedProvider {
@@ -95,7 +82,6 @@ pub(crate) struct ProviderResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderFailureKind {
-    MissingConfig,
     Authentication,
     RateLimited,
     ContextTooLarge,

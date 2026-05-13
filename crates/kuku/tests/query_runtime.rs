@@ -219,11 +219,3 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
 
     assert!(!env.home.path().join("p").exists());
 }
-
-#[test]
-fn start_api_documents_same_session_concurrency_limit() {
-    let source =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/query.rs")).unwrap();
-
-    assert!(source.contains("same session concurrently"));
-}

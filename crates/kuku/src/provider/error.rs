@@ -34,20 +34,7 @@ pub(crate) fn transport_error(error: &reqwest::Error) -> ProviderFailure {
 pub(crate) fn parse_error(body: &str) -> ProviderFailure {
     ProviderFailure {
         kind: ProviderFailureKind::Parse,
-        message: format!(
-            "failed to parse provider response: {}",
-            truncate_and_sanitize(body, 200)
-        ),
-        status: None,
-        provider_request_id: None,
-        retryable: false,
-    }
-}
-
-pub(crate) fn missing_config_error(detail: impl Into<String>) -> ProviderFailure {
-    ProviderFailure {
-        kind: ProviderFailureKind::MissingConfig,
-        message: detail.into(),
+        message: format!("failed to parse provider response: {}", truncate(body, 200)),
         status: None,
         provider_request_id: None,
         retryable: false,
@@ -55,7 +42,7 @@ pub(crate) fn missing_config_error(detail: impl Into<String>) -> ProviderFailure
 }
 
 fn sanitize_http_message(status: u16, body: &str) -> String {
-    format!("HTTP {status}: {}", truncate_and_sanitize(body, 200))
+    format!("HTTP {status}: {}", truncate(body, 200))
 }
 
 fn sanitize_transport_message(error: &reqwest::Error) -> String {
@@ -64,27 +51,18 @@ fn sanitize_transport_message(error: &reqwest::Error) -> String {
     } else if error.is_connect() {
         "could not connect to provider".to_string()
     } else {
-        format!("transport error: {error}")
+        "transport error".to_string()
     }
 }
 
-fn truncate_and_sanitize(input: &str, max_len: usize) -> String {
-    let sanitized = input
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
-        .collect::<String>()
-        .replace(['\n', '\r', '\t'], " ");
-
-    if sanitized.is_empty() {
+fn truncate(input: &str, max_len: usize) -> String {
+    if input.is_empty() {
         return "<empty body>".to_string();
     }
 
-    let mut truncated = String::new();
-    for ch in sanitized.chars().take(max_len) {
-        truncated.push(ch);
+    let mut output = input.chars().take(max_len).collect::<String>();
+    if input.chars().count() > max_len {
+        output.push('…');
     }
-    if sanitized.chars().count() > max_len {
-        truncated.push('…');
-    }
-    truncated
+    output
 }
