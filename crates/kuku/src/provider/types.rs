@@ -73,11 +73,20 @@ pub(crate) struct ProviderUsage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProviderToolCall {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) args: serde_json::Value,
+    pub(crate) index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProviderResponse {
     pub(crate) assistant_text: String,
     pub(crate) stop_reason: Option<String>,
     pub(crate) provider_request_id: Option<String>,
     pub(crate) usage: Option<ProviderUsage>,
+    pub(crate) tool_calls: Vec<ProviderToolCall>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 mod context {
     pub use kuku::context::{
         CanonicalMessage, ContextAssembly, ContextSource, InstructionSource, MemorySource,
-        MessageBlock, Role,
+        MessageBlock, Role, ToolResult, ToolSchema, ToolUse,
     };
 }
 
@@ -41,7 +41,7 @@ mod provider {
 
 use context::{
     CanonicalMessage, ContextAssembly, ContextSource, InstructionSource, MemorySource,
-    MessageBlock, Role,
+    MessageBlock, Role, ToolResult, ToolSchema, ToolUse,
 };
 use httpmock::prelude::*;
 use provider::anthropic::{
@@ -81,6 +81,51 @@ fn sample_assembly() -> ContextAssembly {
     }
 }
 
+fn sample_tool_schema() -> ToolSchema {
+    ToolSchema {
+        name: "find_files".to_string(),
+        description: "Find files".to_string(),
+        input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+    }
+}
+
+fn assembly_with_tool_schema() -> ContextAssembly {
+    let mut assembly = sample_assembly();
+    assembly
+        .sources
+        .push(ContextSource::Tools(vec![sample_tool_schema()]));
+    assembly
+}
+
+fn assembly_with_tool_history() -> ContextAssembly {
+    ContextAssembly {
+        sources: vec![ContextSource::History(vec![
+            CanonicalMessage {
+                role: Role::Assistant,
+                blocks: vec![
+                    MessageBlock::Text("Let me inspect.".to_string()),
+                    MessageBlock::ToolUse(ToolUse {
+                        id: "toolu_01".to_string(),
+                        name: "find_files".to_string(),
+                        args: json!({"path": "."}),
+                    }),
+                ],
+            },
+            CanonicalMessage {
+                role: Role::User,
+                blocks: vec![MessageBlock::ToolResult(ToolResult {
+                    tool_call_id: "toolu_01".to_string(),
+                    status: "ok".to_string(),
+                    summary: "found 1 files".to_string(),
+                    model_content: "README.md".to_string(),
+                    structured: None,
+                    truncated: false,
+                })],
+            },
+        ])],
+    }
+}
+
 #[test]
 fn anthropic_messages_url_normalizes_v1_suffix() {
     assert_eq!(
@@ -111,6 +156,77 @@ fn anthropic_render_body_uses_messages_api_shape() {
         .as_str()
         .unwrap()
         .contains("follow project instructions"));
+}
+
+#[test]
+fn anthropic_render_body_includes_tools_and_native_tool_results() {
+    let tool_body = render_anthropic_body(&ProviderRequest {
+        assembly: assembly_with_tool_schema(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    });
+
+    assert_eq!(tool_body["tools"][0]["name"], "find_files");
+    assert_eq!(tool_body["tools"][0]["input_schema"]["type"], "object");
+
+    let history_body = render_anthropic_body(&ProviderRequest {
+        assembly: assembly_with_tool_history(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    });
+
+    assert_eq!(history_body["messages"][0]["content"][1]["type"], "tool_use");
+    assert_eq!(history_body["messages"][1]["content"][0]["type"], "tool_result");
+    assert_eq!(
+        history_body["messages"][1]["content"][0]["tool_use_id"],
+        "toolu_01"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_call_extracts_tool_use_blocks() {
+    let server = MockServer::start();
+    let request = ProviderRequest {
+        assembly: assembly_with_tool_schema(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    };
+    let provider = ResolvedProvider {
+        kind: ProviderKind::Anthropic,
+        model: request.model.clone(),
+        base_url: server.base_url(),
+        api_key: SecretString::new("anthropic-test-key"),
+    };
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "msg_req_tool")
+            .json_body(json!({
+                "type": "message",
+                "content": [
+                    {"type": "text", "text": "Let me inspect."},
+                    {"type": "tool_use", "id": "toolu_01", "name": "find_files", "input": {"path": "docs"}},
+                    {"type": "tool_use", "id": "toolu_02", "name": "read_file", "input": {"path": "README.md"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 20, "output_tokens": 30}
+            }));
+    });
+
+    let response = call_anthropic(&provider, &request).await.unwrap();
+
+    mock.assert();
+    assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+    assert_eq!(response.tool_calls.len(), 2);
+    assert_eq!(response.tool_calls[0].id, "toolu_01");
+    assert_eq!(response.tool_calls[0].name, "find_files");
+    assert_eq!(response.tool_calls[0].args, json!({"path": "docs"}));
+    assert_eq!(response.tool_calls[0].index, 0);
+    assert_eq!(response.tool_calls[1].index, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -221,6 +337,78 @@ fn openai_render_body_uses_chat_completions_shape() {
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][2]["role"], "user");
     assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[test]
+fn openai_render_body_includes_tools_and_role_tool_messages() {
+    let tool_body = render_openai_body(&ProviderRequest {
+        assembly: assembly_with_tool_schema(),
+        model: "gpt-5.4-mini".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    });
+
+    assert_eq!(tool_body["tools"][0]["type"], "function");
+    assert_eq!(tool_body["tools"][0]["function"]["name"], "find_files");
+    assert_eq!(tool_body["tools"][0]["function"]["parameters"]["type"], "object");
+
+    let history_body = render_openai_body(&ProviderRequest {
+        assembly: assembly_with_tool_history(),
+        model: "gpt-5.4-mini".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    });
+
+    assert_eq!(history_body["messages"][0]["tool_calls"][0]["id"], "toolu_01");
+    assert_eq!(history_body["messages"][1]["role"], "tool");
+    assert_eq!(history_body["messages"][1]["tool_call_id"], "toolu_01");
+    assert_eq!(history_body["messages"][1]["content"], "README.md");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_call_extracts_tool_calls() {
+    let server = MockServer::start();
+    let request = ProviderRequest {
+        assembly: assembly_with_tool_schema(),
+        model: "gpt-5.4-mini".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+    };
+    let provider = ResolvedProvider {
+        kind: ProviderKind::OpenAiCompatible,
+        model: request.model.clone(),
+        base_url: format!("{}/v1", server.base_url()),
+        api_key: SecretString::new("openai-test-key"),
+    };
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).header("x-request-id", "chat_req_456").json_body(json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me inspect.",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "find_files", "arguments": "{\"path\":\"docs\"}"}},
+                        {"type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 10}
+        }));
+    });
+
+    let response = call_openai_compat(&provider, &request).await.unwrap();
+
+    mock.assert();
+    assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(response.tool_calls.len(), 2);
+    assert_eq!(response.tool_calls[0].id, "call_1");
+    assert_eq!(response.tool_calls[0].name, "find_files");
+    assert_eq!(response.tool_calls[0].args, json!({"path": "docs"}));
+    assert_eq!(response.tool_calls[0].index, 0);
+    assert_eq!(response.tool_calls[1].id, "tc_chat_req_456_1");
+    assert_eq!(response.tool_calls[1].index, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]

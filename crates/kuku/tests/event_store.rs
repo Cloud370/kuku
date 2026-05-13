@@ -187,6 +187,9 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             message_count: Some(3),
             history_range_first: Some(1),
             history_range_last: Some(9),
+            tool_registry_hash: Some("sha256:tools".to_string()),
+            tool_count: Some(6),
+            ordered_tool_names: Some(vec!["find_files".to_string()]),
         })
         .unwrap();
     store
@@ -212,12 +215,18 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             message_count,
             history_range_first,
             history_range_last,
+            tool_registry_hash,
+            tool_count,
+            ordered_tool_names,
             ..
         } => {
             assert_eq!(base_url.as_deref(), Some("https://api.anthropic.com"));
             assert_eq!(*message_count, Some(3));
             assert_eq!(*history_range_first, Some(1));
             assert_eq!(*history_range_last, Some(9));
+            assert_eq!(tool_registry_hash.as_deref(), Some("sha256:tools"));
+            assert_eq!(*tool_count, Some(6));
+            assert_eq!(ordered_tool_names.as_ref().unwrap()[0], "find_files");
         }
         other => panic!("expected model.request, got {other:?}"),
     }

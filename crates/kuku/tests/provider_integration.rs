@@ -105,6 +105,98 @@ async fn anthropic_success_returns_text_and_writes_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(env.workspace.path().join("README.md"), "# Project").unwrap();
+    std::fs::create_dir_all(env.workspace.path().join("src")).unwrap();
+    std::fs::write(env.workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains(r#""messages":[{"content":[{"text":"find files","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will inspect files."},
+                    {"type": "tool_use", "id": "toolu_01", "name": "find_files", "input": {"path": "."}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains("README.md")
+            .body_contains("src/main.rs");
+        then.status(200)
+            .header("request-id", "req_final")
+            .json_body(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let output = query("find files")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    tool_request.assert();
+    final_request.assert();
+    assert_eq!(output.text, "I found README.md and src/main.rs.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelRequest {
+            tool_count: Some(6),
+            ref ordered_tool_names,
+            ref tool_registry_hash,
+            ..
+        } if ordered_tool_names.as_ref().is_some_and(|names| names[0] == "find_files")
+            && tool_registry_hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:"))
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelResponse { tool_call_count: Some(1), .. }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolCall { ref tool, ref tool_call_id, .. }
+            if tool == "find_files" && tool_call_id == "toolu_01"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref status, ref model_content, .. }
+            if status == "ok" && model_content.contains("README.md") && model_content.contains("src/main.rs")
+    )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelRequest { .. }))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_success_returns_text_and_writes_events() {
     let env = TestEnv::new();
     let server = MockServer::start();

@@ -177,14 +177,14 @@ impl Query {
         use crate::context::{assemble_context, rebuild_history, ContextInput};
         use crate::provider::config::{resolve_config, ResolveConfigInput};
         use crate::provider::types::{ProviderKind, ProviderRequest};
+        use crate::tool;
 
         let run = self.clone().start_session().await?;
         let kuku_home = kuku_home()?;
         let workspace = current_workspace()?;
         let events_path = session_events_path(&kuku_home, &workspace, run.session_id())?;
-        let existing_events = EventStore::replay(&events_path)?;
-        let turn = current_turn(&existing_events)?;
-        let request_id = format!("req_{}", existing_events.len() + 1);
+        let initial_events = EventStore::replay(&events_path)?;
+        let turn = current_turn(&initial_events)?;
 
         let resolved = match resolve_config(ResolveConfigInput {
             provider: self.provider,
@@ -198,7 +198,7 @@ impl Query {
                 store.append(EventPayload::ModelError {
                     turn,
                     ts: now_timestamp()?,
-                    request_id: request_id.clone(),
+                    request_id: format!("req_{}", initial_events.len() + 1),
                     kind: "missing_config".to_string(),
                     message: error.to_string(),
                     status: None,
@@ -214,83 +214,188 @@ impl Query {
             }
         };
 
-        let history = rebuild_history(&existing_events);
-        let assembly = assemble_context(ContextInput {
-            project_instructions: Vec::new(),
-            global_memory: None,
-            project_memory: None,
-            history,
-            tools: Vec::new(),
-        });
+        let registry = tool::builtin_registry();
+        let tool_schemas = tool::to_tool_schemas(&registry);
+        let registry_hash = tool::registry_hash(&registry);
+        let ordered_tool_names = tool::ordered_tool_names(&registry);
+        let tool_count = registry.len();
         let provider_name = match resolved.kind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAiCompatible => "openai-compatible",
         };
-        let params = serde_json::json!({
-            "max_output_tokens": self.max_output_tokens,
-            "temperature": self.temperature,
-        });
+        let mut request_num = 0_u64;
 
-        let mut store = EventStore::open(&events_path)?;
-        store.append(EventPayload::ModelRequest {
-            turn,
-            ts: now_timestamp()?,
-            request_id: request_id.clone(),
-            role: "default".to_string(),
-            alias: provider_name.to_string(),
-            resolved_provider: provider_name.to_string(),
-            resolved_model: resolved.model.clone(),
-            params,
-            base_url: Some(resolved.base_url.clone()),
-            message_count: Some(assembly.sources.len()),
-            history_range_first: existing_events.first().map(|event| event.id),
-            history_range_last: existing_events.last().map(|event| event.id),
-        })?;
-
-        let request = ProviderRequest {
-            assembly,
-            model: resolved.model.clone(),
-            max_output_tokens: self.max_output_tokens,
-            temperature: self.temperature,
-        };
-
-        match provider::call_provider(&resolved, &request).await {
-            Ok(response) => {
-                store.append(EventPayload::ModelResponse {
-                    turn,
-                    ts: now_timestamp()?,
-                    request_id: request_id.clone(),
-                    text: response.assistant_text.clone(),
-                    stop_reason: response.stop_reason.unwrap_or_default(),
-                    tool_call_count: None,
-                    usage: serde_json::to_value(&response.usage).unwrap_or_default(),
-                })?;
-                store.append(EventPayload::TurnEnd {
-                    turn,
-                    ts: now_timestamp()?,
-                })?;
-                Ok(RunOutput {
-                    session_id: run.session_id,
-                    text: response.assistant_text,
-                })
-            }
-            Err(failure) => {
+        loop {
+            request_num += 1;
+            let request_id = format!("req_{request_num}");
+            if request_num > 20 {
+                let mut store = EventStore::open(&events_path)?;
                 store.append(EventPayload::ModelError {
                     turn,
                     ts: now_timestamp()?,
-                    request_id: request_id.clone(),
-                    kind: provider_failure_kind(&failure.kind).to_string(),
-                    message: failure.message.clone(),
-                    status: failure.status,
-                    retryable: Some(failure.retryable),
+                    request_id,
+                    kind: "loop_limit".to_string(),
+                    message: "tool loop exceeded maximum provider requests".to_string(),
+                    status: None,
+                    retryable: Some(false),
                     resolved_provider: Some(provider_name.to_string()),
-                    resolved_model: Some(resolved.model),
+                    resolved_model: Some(resolved.model.clone()),
                 })?;
                 store.append(EventPayload::TurnEnd {
                     turn,
                     ts: now_timestamp()?,
                 })?;
-                Err(Error::Provider(failure.message))
+                return Err(Error::Provider(
+                    "tool loop exceeded maximum provider requests".to_string(),
+                ));
+            }
+
+            let existing_events = EventStore::replay(&events_path)?;
+            let history = rebuild_history(&existing_events);
+            let assembly = assemble_context(ContextInput {
+                project_instructions: Vec::new(),
+                global_memory: None,
+                project_memory: None,
+                history,
+                tools: tool_schemas.clone(),
+            });
+            let params = serde_json::json!({
+                "max_output_tokens": self.max_output_tokens,
+                "temperature": self.temperature,
+            });
+
+            {
+                let mut store = EventStore::open(&events_path)?;
+                store.append(EventPayload::ModelRequest {
+                    turn,
+                    ts: now_timestamp()?,
+                    request_id: request_id.clone(),
+                    role: "default".to_string(),
+                    alias: provider_name.to_string(),
+                    resolved_provider: provider_name.to_string(),
+                    resolved_model: resolved.model.clone(),
+                    params,
+                    base_url: Some(resolved.base_url.clone()),
+                    message_count: Some(assembly.sources.len()),
+                    history_range_first: existing_events.first().map(|event| event.id),
+                    history_range_last: existing_events.last().map(|event| event.id),
+                    tool_registry_hash: Some(registry_hash.clone()),
+                    tool_count: Some(tool_count),
+                    ordered_tool_names: Some(ordered_tool_names.clone()),
+                })?;
+            }
+
+            let request = ProviderRequest {
+                assembly,
+                model: resolved.model.clone(),
+                max_output_tokens: self.max_output_tokens,
+                temperature: self.temperature,
+            };
+
+            match provider::call_provider(&resolved, &request).await {
+                Ok(response) => {
+                    let has_tool_calls = !response.tool_calls.is_empty();
+                    let mut store = EventStore::open(&events_path)?;
+                    store.append(EventPayload::ModelResponse {
+                        turn,
+                        ts: now_timestamp()?,
+                        request_id: request_id.clone(),
+                        text: response.assistant_text.clone(),
+                        stop_reason: if has_tool_calls {
+                            "tool_use".to_string()
+                        } else {
+                            "end_turn".to_string()
+                        },
+                        tool_call_count: has_tool_calls.then_some(response.tool_calls.len() as u64),
+                        usage: serde_json::to_value(&response.usage).unwrap_or_default(),
+                    })?;
+
+                    if !has_tool_calls {
+                        store.append(EventPayload::TurnEnd {
+                            turn,
+                            ts: now_timestamp()?,
+                        })?;
+                        return Ok(RunOutput {
+                            session_id: run.session_id,
+                            text: response.assistant_text,
+                        });
+                    }
+
+                    for tool_call in &response.tool_calls {
+                        store.append(EventPayload::ToolCall {
+                            turn,
+                            ts: now_timestamp()?,
+                            tool_call_id: tool_call.id.clone(),
+                            request_id: request_id.clone(),
+                            index: tool_call.index,
+                            tool: tool_call.name.clone(),
+                            args: tool_call.args.clone(),
+                        })?;
+                    }
+
+                    for tool_call in &response.tool_calls {
+                        if let Some(definition) = registry.iter().find(|tool| tool.name == tool_call.name)
+                        {
+                            if definition.risk == "edit" || definition.risk == "command" {
+                                store.append(EventPayload::PermissionRequest {
+                                    turn,
+                                    ts: now_timestamp()?,
+                                    tool_call_id: tool_call.id.clone(),
+                                    tool: tool_call.name.clone(),
+                                    risk: definition.risk.clone(),
+                                    summary: format!(
+                                        "{} {}",
+                                        tool_call.name,
+                                        serde_json::to_string(&tool_call.args)
+                                            .unwrap_or_else(|_| "{}".to_string())
+                                    ),
+                                })?;
+                                store.append(EventPayload::PermissionDecision {
+                                    turn,
+                                    ts: now_timestamp()?,
+                                    tool_call_id: tool_call.id.clone(),
+                                    decision: "deny".to_string(),
+                                    scope: "once".to_string(),
+                                    source: "runtime".to_string(),
+                                    rule: "permission_gate_unavailable".to_string(),
+                                })?;
+                            }
+                        }
+                    }
+
+                    for tool_call in &response.tool_calls {
+                        let result = tool::dispatch(&tool_call.name, &tool_call.args, &workspace);
+                        store.append(EventPayload::ToolResult {
+                            turn,
+                            ts: now_timestamp()?,
+                            tool_call_id: tool_call.id.clone(),
+                            status: result.status,
+                            summary: result.summary,
+                            model_content: result.model_content,
+                            truncated: result.truncated,
+                            structured: result.structured,
+                        })?;
+                    }
+                }
+                Err(failure) => {
+                    let mut store = EventStore::open(&events_path)?;
+                    store.append(EventPayload::ModelError {
+                        turn,
+                        ts: now_timestamp()?,
+                        request_id: request_id.clone(),
+                        kind: provider_failure_kind(&failure.kind).to_string(),
+                        message: failure.message.clone(),
+                        status: failure.status,
+                        retryable: Some(failure.retryable),
+                        resolved_provider: Some(provider_name.to_string()),
+                        resolved_model: Some(resolved.model.clone()),
+                    })?;
+                    store.append(EventPayload::TurnEnd {
+                        turn,
+                        ts: now_timestamp()?,
+                    })?;
+                    return Err(Error::Provider(failure.message));
+                }
             }
         }
     }

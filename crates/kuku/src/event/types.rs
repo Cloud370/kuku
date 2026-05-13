@@ -44,6 +44,12 @@ pub enum EventPayload {
         history_range_first: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         history_range_last: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_registry_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_count: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ordered_tool_names: Option<Vec<String>>,
     },
 
     #[serde(rename = "model.response")]

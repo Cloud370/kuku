@@ -5,7 +5,8 @@ use crate::context::{CanonicalMessage, ContextSource, MessageBlock, Role};
 
 use super::error::{classify_http_error, parse_error, transport_error};
 use super::types::{
-    ProviderFailure, ProviderRequest, ProviderResponse, ProviderUsage, ResolvedProvider,
+    ProviderFailure, ProviderRequest, ProviderResponse, ProviderToolCall, ProviderUsage,
+    ResolvedProvider,
 };
 
 pub(crate) async fn call(
@@ -62,6 +63,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         "messages": build_messages(&request.assembly.sources),
         "stream": false,
     });
+    let tools = build_tools(&request.assembly.sources);
 
     if let Some(max_tokens) = request.max_output_tokens {
         body["max_tokens"] = json!(max_tokens);
@@ -69,8 +71,35 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
 
     body
+}
+
+fn build_tools(sources: &[ContextSource]) -> Vec<Value> {
+    sources
+        .iter()
+        .find_map(|source| match source {
+            ContextSource::Tools(schemas) => Some(
+                schemas
+                    .iter()
+                    .map(|schema| {
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": schema.name,
+                                "description": schema.description,
+                                "parameters": schema.input_schema,
+                            }
+                        })
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn build_messages(sources: &[ContextSource]) -> Vec<Value> {
@@ -89,7 +118,12 @@ fn build_messages(sources: &[ContextSource]) -> Vec<Value> {
                 messages.push(json!({"role": "system", "content": memory.content}));
             }
             ContextSource::History(history) => {
-                messages.extend(history.iter().map(convert_canonical_message));
+                for message in history {
+                    match message.role {
+                        Role::User => messages.extend(convert_user_message(message)),
+                        Role::Assistant => messages.push(convert_assistant_message(message)),
+                    }
+                }
             }
             ContextSource::Tools(_) => {}
         }
@@ -98,59 +132,68 @@ fn build_messages(sources: &[ContextSource]) -> Vec<Value> {
     messages
 }
 
-fn convert_canonical_message(message: &CanonicalMessage) -> Value {
-    match message.role {
-        Role::User => json!({
-            "role": "user",
-            "content": user_blocks_to_text(&message.blocks),
-        }),
-        Role::Assistant => {
-            let text = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    MessageBlock::Text(text) => Some(text.as_str()),
-                    MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
+fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
+    let mut messages = Vec::new();
+    let mut text_parts = Vec::new();
 
-            let tool_calls = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    MessageBlock::ToolUse(tool_use) => Some(json!({
-                        "id": tool_use.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_use.name,
-                            "arguments": serde_json::to_string(&tool_use.args)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        }
-                    })),
-                    MessageBlock::Text(_) | MessageBlock::ToolResult(_) => None,
-                })
-                .collect::<Vec<_>>();
-
-            if tool_calls.is_empty() {
-                json!({"role": "assistant", "content": text})
-            } else {
-                json!({"role": "assistant", "content": text, "tool_calls": tool_calls})
-            }
-        }
-    }
-}
-
-fn user_blocks_to_text(blocks: &[MessageBlock]) -> String {
-    let mut parts = Vec::new();
-    for block in blocks {
+    for block in &message.blocks {
         match block {
-            MessageBlock::Text(text) => parts.push(text.clone()),
-            MessageBlock::ToolResult(result) => parts.push(result.model_content.clone()),
+            MessageBlock::Text(text) => text_parts.push(text.clone()),
+            MessageBlock::ToolResult(result) => {
+                if !text_parts.is_empty() {
+                    messages.push(json!({"role": "user", "content": text_parts.join("\n")}));
+                    text_parts.clear();
+                }
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": result.tool_call_id,
+                    "content": result.model_content,
+                }));
+            }
             MessageBlock::ToolUse(_) => {}
         }
     }
-    parts.join("\n")
+
+    if !text_parts.is_empty() {
+        messages.push(json!({"role": "user", "content": text_parts.join("\n")}));
+    }
+
+    messages
+}
+
+fn convert_assistant_message(message: &CanonicalMessage) -> Value {
+    let text = message
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            MessageBlock::Text(text) => Some(text.as_str()),
+            MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let tool_calls = message
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            MessageBlock::ToolUse(tool_use) => Some(json!({
+                "id": tool_use.id,
+                "type": "function",
+                "function": {
+                    "name": tool_use.name,
+                    "arguments": serde_json::to_string(&tool_use.args)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                }
+            })),
+            MessageBlock::Text(_) | MessageBlock::ToolResult(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    if tool_calls.is_empty() {
+        json!({"role": "assistant", "content": text})
+    } else {
+        json!({"role": "assistant", "content": text, "tool_calls": tool_calls})
+    }
 }
 
 fn parse_response(
@@ -158,6 +201,46 @@ fn parse_response(
     request_id: Option<String>,
 ) -> Result<ProviderResponse, ProviderFailure> {
     let parsed: Value = serde_json::from_str(body).map_err(|_| parse_error(body))?;
+
+    let choice = parsed
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first());
+    let message = choice.and_then(|choice| choice.get("message"));
+    let tool_call_request_id = request_id.as_deref().unwrap_or("unknown");
+
+    let tool_calls = message
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(Value::as_array)
+        .map(|calls| {
+            calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    let function = call.get("function");
+                    let args = function
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                        .and_then(|args| serde_json::from_str(args).ok())
+                        .unwrap_or_else(|| json!({}));
+                    ProviderToolCall {
+                        id: call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| format!("tc_{tool_call_request_id}_{index}")),
+                        name: function
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        args,
+                        index: index as u64,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let usage = parsed
         .get("usage")
@@ -169,23 +252,17 @@ fn parse_response(
         .filter(|usage| usage.input_tokens.is_some() || usage.output_tokens.is_some());
 
     Ok(ProviderResponse {
-        assistant_text: parsed
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
+        assistant_text: message
             .and_then(|message| message.get("content"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        stop_reason: parsed
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
+        stop_reason: choice
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
         provider_request_id: request_id,
         usage,
+        tool_calls,
     })
 }
