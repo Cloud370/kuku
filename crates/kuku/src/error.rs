@@ -23,6 +23,44 @@ pub enum Error {
 
     #[error("invalid workspace path: {0}")]
     InvalidWorkspacePath(String),
+
+    #[error("provider error: {0}")]
+    Provider(String),
+
+    #[error("missing provider configuration: {0}")]
+    MissingProviderConfig(String),
+
+    #[error("ambiguous provider configuration: {0}")]
+    AmbiguousProviderConfig(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn provider_error_variant_formats_message() {
+        assert_eq!(
+            Error::Provider("gateway timeout".to_string()).to_string(),
+            "provider error: gateway timeout"
+        );
+    }
+
+    #[test]
+    fn missing_provider_config_variant_formats_message() {
+        assert_eq!(
+            Error::MissingProviderConfig("set KUKU_PROVIDER".to_string()).to_string(),
+            "missing provider configuration: set KUKU_PROVIDER"
+        );
+    }
+
+    #[test]
+    fn ambiguous_provider_config_variant_formats_message() {
+        assert_eq!(
+            Error::AmbiguousProviderConfig("select a provider explicitly".to_string()).to_string(),
+            "ambiguous provider configuration: select a provider explicitly"
+        );
+    }
+}

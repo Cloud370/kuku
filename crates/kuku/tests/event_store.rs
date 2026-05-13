@@ -168,6 +168,78 @@ fn append_writes_newline_terminated_jsonl() {
 }
 
 #[test]
+fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+
+    store
+        .append(EventPayload::ModelRequest {
+            turn: 1,
+            ts: "2026-05-13T00:00:00Z".to_string(),
+            request_id: "req_1".to_string(),
+            role: "default".to_string(),
+            alias: "anthropic".to_string(),
+            resolved_provider: "anthropic".to_string(),
+            resolved_model: "claude-sonnet-4-6".to_string(),
+            params: serde_json::json!({"temperature": 0.2}),
+            base_url: Some("https://api.anthropic.com".to_string()),
+            message_count: Some(3),
+            history_range_first: Some(1),
+            history_range_last: Some(9),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ModelError {
+            turn: 1,
+            ts: "2026-05-13T00:00:01Z".to_string(),
+            request_id: "req_1".to_string(),
+            kind: "RateLimited".to_string(),
+            message: "HTTP 429: rate limited".to_string(),
+            status: Some(429),
+            retryable: Some(true),
+            resolved_provider: Some("anthropic".to_string()),
+            resolved_model: Some("claude-sonnet-4-6".to_string()),
+        })
+        .unwrap();
+
+    let replayed = EventStore::replay(&path).unwrap();
+    assert_eq!(replayed.len(), 2);
+
+    match &replayed[0].payload {
+        EventPayload::ModelRequest {
+            base_url,
+            message_count,
+            history_range_first,
+            history_range_last,
+            ..
+        } => {
+            assert_eq!(base_url.as_deref(), Some("https://api.anthropic.com"));
+            assert_eq!(*message_count, Some(3));
+            assert_eq!(*history_range_first, Some(1));
+            assert_eq!(*history_range_last, Some(9));
+        }
+        other => panic!("expected model.request, got {other:?}"),
+    }
+
+    match &replayed[1].payload {
+        EventPayload::ModelError {
+            status,
+            retryable,
+            resolved_provider,
+            resolved_model,
+            ..
+        } => {
+            assert_eq!(*status, Some(429));
+            assert_eq!(*retryable, Some(true));
+            assert_eq!(resolved_provider.as_deref(), Some("anthropic"));
+            assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-6"));
+        }
+        other => panic!("expected model.error, got {other:?}"),
+    }
+}
+
+#[test]
 fn open_returns_io_error_for_missing_parent_file_path() {
     let temp = tempfile::tempdir().unwrap();
     let parent_file = temp.path().join("not_a_directory");

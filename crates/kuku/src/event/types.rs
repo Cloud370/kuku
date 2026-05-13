@@ -36,6 +36,14 @@ pub enum EventPayload {
         resolved_provider: String,
         resolved_model: String,
         params: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_count: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history_range_first: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history_range_last: Option<u64>,
     },
 
     #[serde(rename = "model.response")]
@@ -57,6 +65,14 @@ pub enum EventPayload {
         request_id: String,
         kind: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retryable: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_model: Option<String>,
     },
 
     #[serde(rename = "tool.call")]

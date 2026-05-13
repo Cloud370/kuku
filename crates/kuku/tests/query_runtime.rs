@@ -117,19 +117,18 @@ async fn start_creates_session_events_under_kuku_home() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_uses_same_session_path_and_returns_output() {
+async fn run_without_provider_config_writes_error_and_closes_turn() {
     let env = TestEnv::new();
 
-    let output = query("summarize")
+    let error = query("summarize")
         .session("s_run_fixed")
         .run()
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(output.session_id, "s_run_fixed");
-    assert_eq!(output.text, "");
+    assert!(matches!(error, Error::MissingProviderConfig(_)));
     let events = EventStore::replay(env.events_path("s_run_fixed")).unwrap();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 5);
     assert!(matches!(
         events[0].payload,
         EventPayload::SessionMeta { .. }
@@ -142,14 +141,19 @@ async fn run_uses_same_session_path_and_returns_output() {
         events[2].payload,
         EventPayload::UserInput { turn: 1, .. }
     ));
+    assert!(matches!(events[3].payload, EventPayload::ModelError { .. }));
+    assert!(matches!(
+        events[4].payload,
+        EventPayload::TurnEnd { turn: 1, .. }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn explicit_session_appends_turn_without_duplicate_meta() {
+async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     let env = TestEnv::new();
 
-    query("first").session("s_continue").run().await.unwrap();
-    query("second").session("s_continue").run().await.unwrap();
+    query("first").session("s_continue").start().await.unwrap();
+    query("second").session("s_continue").start().await.unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
     assert_eq!(events.len(), 5);
@@ -186,7 +190,7 @@ async fn explicit_session_appends_turn_without_duplicate_meta() {
 async fn workspace_is_not_polluted() {
     let env = TestEnv::new();
 
-    query("no pollution").run().await.unwrap();
+    let _ = query("no pollution").run().await.unwrap_err();
 
     assert_eq!(std::fs::read_dir(env.workspace_path()).unwrap().count(), 0);
     assert!(!env.workspace_path().join(".kuku").exists());

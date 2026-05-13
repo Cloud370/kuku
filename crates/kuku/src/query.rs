@@ -3,14 +3,21 @@ use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore, StoredEvent};
+use crate::provider::{self, Provider};
 use crate::session::{
     current_workspace, kuku_home, new_session_id, session_events_path, validate_session_id,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Query {
     prompt: String,
     session_id: Option<String>,
+    provider: Option<Provider>,
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    max_output_tokens: Option<u32>,
+    temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,11 +63,47 @@ impl Query {
         Self {
             prompt: prompt.into(),
             session_id: None,
+            provider: None,
+            model: None,
+            base_url: None,
+            api_key: None,
+            max_output_tokens: None,
+            temperature: None,
         }
     }
 
     pub fn session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn provider(mut self, provider: Provider) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    pub fn max_output_tokens(mut self, max_output_tokens: u32) -> Self {
+        self.max_output_tokens = Some(max_output_tokens);
+        self
+    }
+
+    pub fn temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
         self
     }
 
@@ -127,19 +170,125 @@ impl Query {
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start().await?;
-        let mut output = RunOutput {
-            session_id: run.session_id().to_string(),
-            text: String::new(),
+        use crate::context::{assemble_context, rebuild_history, ContextInput};
+        use crate::provider::config::ResolveConfigInput;
+        use crate::provider::types::{ProviderKind, ProviderRequest};
+
+        let run = self.clone().start().await?;
+        let kuku_home = kuku_home()?;
+        let workspace = current_workspace()?;
+        let events_path = session_events_path(&kuku_home, &workspace, run.session_id())?;
+        let existing_events = EventStore::replay(&events_path)?;
+        let turn = current_turn(&existing_events)?;
+        let request_id = format!("req_{}", existing_events.len() + 1);
+
+        let resolved = match provider::resolve_config(ResolveConfigInput {
+            provider: self.provider,
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+        }) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let mut store = EventStore::open(&events_path)?;
+                store.append(EventPayload::ModelError {
+                    turn,
+                    ts: now_timestamp()?,
+                    request_id: request_id.clone(),
+                    kind: "missing_config".to_string(),
+                    message: error.to_string(),
+                    status: None,
+                    retryable: Some(false),
+                    resolved_provider: None,
+                    resolved_model: None,
+                })?;
+                store.append(EventPayload::TurnEnd {
+                    turn,
+                    ts: now_timestamp()?,
+                })?;
+                return Err(error);
+            }
         };
 
-        while let Some(event) = run.next().await? {
-            match event {
-                UiEvent::Done { output: done } => output = done,
+        let history = rebuild_history(&existing_events);
+        let assembly = assemble_context(ContextInput {
+            project_instructions: Vec::new(),
+            global_memory: None,
+            project_memory: None,
+            history,
+            tools: Vec::new(),
+        });
+        let provider_name = match resolved.kind {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAiCompatible => "openai-compatible",
+        };
+        let params = serde_json::json!({
+            "max_output_tokens": self.max_output_tokens,
+            "temperature": self.temperature,
+        });
+
+        let mut store = EventStore::open(&events_path)?;
+        store.append(EventPayload::ModelRequest {
+            turn,
+            ts: now_timestamp()?,
+            request_id: request_id.clone(),
+            role: "default".to_string(),
+            alias: provider_name.to_string(),
+            resolved_provider: provider_name.to_string(),
+            resolved_model: resolved.model.clone(),
+            params,
+            base_url: Some(resolved.base_url.clone()),
+            message_count: Some(assembly.sources.len()),
+            history_range_first: existing_events.first().map(|event| event.id),
+            history_range_last: existing_events.last().map(|event| event.id),
+        })?;
+
+        let request = ProviderRequest {
+            assembly,
+            model: resolved.model.clone(),
+            max_output_tokens: self.max_output_tokens,
+            temperature: self.temperature,
+        };
+
+        match provider::call_provider(&resolved, &request).await {
+            Ok(response) => {
+                store.append(EventPayload::ModelResponse {
+                    turn,
+                    ts: now_timestamp()?,
+                    request_id: request_id.clone(),
+                    text: response.assistant_text.clone(),
+                    stop_reason: response.stop_reason.unwrap_or_default(),
+                    tool_call_count: None,
+                    usage: serde_json::to_value(&response.usage).unwrap_or_default(),
+                })?;
+                store.append(EventPayload::TurnEnd {
+                    turn,
+                    ts: now_timestamp()?,
+                })?;
+                Ok(RunOutput {
+                    session_id: run.session_id,
+                    text: response.assistant_text,
+                })
+            }
+            Err(failure) => {
+                store.append(EventPayload::ModelError {
+                    turn,
+                    ts: now_timestamp()?,
+                    request_id: request_id.clone(),
+                    kind: provider_failure_kind(&failure.kind).to_string(),
+                    message: failure.message.clone(),
+                    status: failure.status,
+                    retryable: Some(failure.retryable),
+                    resolved_provider: Some(provider_name.to_string()),
+                    resolved_model: Some(resolved.model),
+                })?;
+                store.append(EventPayload::TurnEnd {
+                    turn,
+                    ts: now_timestamp()?,
+                })?;
+                Err(Error::Provider(failure.message))
             }
         }
-
-        Ok(output)
     }
 }
 
@@ -176,6 +325,31 @@ fn next_turn(events: &[StoredEvent]) -> u64 {
         .max()
         .unwrap_or(0)
         + 1
+}
+
+fn current_turn(events: &[StoredEvent]) -> Result<u64> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::TurnStart { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .ok_or_else(|| Error::InvalidEventStream("missing turn.start".to_string()))
+}
+
+fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'static str {
+    match kind {
+        provider::types::ProviderFailureKind::MissingConfig => "missing_config",
+        provider::types::ProviderFailureKind::Authentication => "authentication",
+        provider::types::ProviderFailureKind::RateLimited => "rate_limited",
+        provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
+        provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
+        provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
+        provider::types::ProviderFailureKind::Transport => "transport",
+        provider::types::ProviderFailureKind::Parse => "parse",
+        provider::types::ProviderFailureKind::Unknown => "unknown",
+    }
 }
 
 fn now_timestamp() -> Result<String> {
