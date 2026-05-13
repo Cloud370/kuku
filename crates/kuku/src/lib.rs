@@ -1,3 +1,6 @@
+#[doc(hidden)]
+pub mod context;
+
 pub mod error;
 pub mod event;
 pub mod query;

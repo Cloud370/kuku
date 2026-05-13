@@ -72,7 +72,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kuku_home_preserves_non_utf8_kuku_home() {
-        let raw = OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0x80, b'h', b'o', b'm', b'e']);
+        let raw = OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0x80, b'h', b'o', b'm', b'e',
+        ]);
         let mut env = MockEnv::default();
         env.vars.insert("KUKU_HOME", raw.clone());
         env.home_dir = Some(PathBuf::from("/should/not/use"));
@@ -96,13 +98,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kuku_home_uses_non_utf8_platform_home_losslessly() {
-        let raw = OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0x80, b'u', b's', b'e', b'r']);
+        let raw = OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0x80, b'u', b's', b'e', b'r',
+        ]);
         let env = MockEnv {
             home_dir: Some(PathBuf::from(raw.clone())),
             vars: HashMap::new(),
         };
 
-        assert_eq!(kuku_home_with_env(&env).unwrap(), PathBuf::from(raw).join(".kuku"));
+        assert_eq!(
+            kuku_home_with_env(&env).unwrap(),
+            PathBuf::from(raw).join(".kuku")
+        );
     }
 
     #[test]

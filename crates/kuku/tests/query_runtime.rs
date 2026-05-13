@@ -120,15 +120,28 @@ async fn start_creates_session_events_under_kuku_home() {
 async fn run_uses_same_session_path_and_returns_output() {
     let env = TestEnv::new();
 
-    let output = query("summarize").session("s_run_fixed").run().await.unwrap();
+    let output = query("summarize")
+        .session("s_run_fixed")
+        .run()
+        .await
+        .unwrap();
 
     assert_eq!(output.session_id, "s_run_fixed");
     assert_eq!(output.text, "");
     let events = EventStore::replay(env.events_path("s_run_fixed")).unwrap();
     assert_eq!(events.len(), 3);
-    assert!(matches!(events[0].payload, EventPayload::SessionMeta { .. }));
-    assert!(matches!(events[1].payload, EventPayload::TurnStart { turn: 1, .. }));
-    assert!(matches!(events[2].payload, EventPayload::UserInput { turn: 1, .. }));
+    assert!(matches!(
+        events[0].payload,
+        EventPayload::SessionMeta { .. }
+    ));
+    assert!(matches!(
+        events[1].payload,
+        EventPayload::TurnStart { turn: 1, .. }
+    ));
+    assert!(matches!(
+        events[2].payload,
+        EventPayload::UserInput { turn: 1, .. }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -140,11 +153,26 @@ async fn explicit_session_appends_turn_without_duplicate_meta() {
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
     assert_eq!(events.len(), 5);
-    assert_eq!(events.iter().filter(|event| matches!(event.payload, EventPayload::SessionMeta { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::SessionMeta { .. }))
+            .count(),
+        1
+    );
 
-    assert!(matches!(events[1].payload, EventPayload::TurnStart { turn: 1, .. }));
-    assert!(matches!(events[2].payload, EventPayload::UserInput { turn: 1, .. }));
-    assert!(matches!(events[3].payload, EventPayload::TurnStart { turn: 2, .. }));
+    assert!(matches!(
+        events[1].payload,
+        EventPayload::TurnStart { turn: 1, .. }
+    ));
+    assert!(matches!(
+        events[2].payload,
+        EventPayload::UserInput { turn: 1, .. }
+    ));
+    assert!(matches!(
+        events[3].payload,
+        EventPayload::TurnStart { turn: 2, .. }
+    ));
     match &events[4].payload {
         EventPayload::UserInput { turn, text, .. } => {
             assert_eq!(*turn, 2);
@@ -190,7 +218,8 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
 
 #[test]
 fn start_api_documents_same_session_concurrency_limit() {
-    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/query.rs")).unwrap();
+    let source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/query.rs")).unwrap();
 
     assert!(source.contains("same session concurrently"));
 }
