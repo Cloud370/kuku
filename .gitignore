@@ -1,0 +1,7 @@
+/target/
+.worktrees/
+**/*.rs.bk
+.DS_Store
+.env
+.env.*
+!.env.example
