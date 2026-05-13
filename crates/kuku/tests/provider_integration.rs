@@ -224,6 +224,10 @@ async fn openai_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert_eq!(events.len(), 6);
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelResponse { ref stop_reason, .. } if stop_reason == "end_turn"
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]

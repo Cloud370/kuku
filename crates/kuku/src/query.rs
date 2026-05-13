@@ -301,11 +301,13 @@ impl Query {
                         ts: now_timestamp()?,
                         request_id: request_id.clone(),
                         text: response.assistant_text.clone(),
-                        stop_reason: if has_tool_calls {
-                            "tool_use".to_string()
-                        } else {
-                            "end_turn".to_string()
-                        },
+                        stop_reason: response.stop_reason.clone().unwrap_or_else(|| {
+                            if has_tool_calls {
+                                "tool_use".to_string()
+                            } else {
+                                "end_turn".to_string()
+                            }
+                        }),
                         tool_call_count: has_tool_calls.then_some(response.tool_calls.len() as u64),
                         usage: serde_json::to_value(&response.usage).unwrap_or_default(),
                     })?;

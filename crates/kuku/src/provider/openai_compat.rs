@@ -196,6 +196,14 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
     }
 }
 
+fn normalize_stop_reason(reason: &str) -> String {
+    match reason {
+        "tool_calls" => "tool_use".to_string(),
+        "stop" => "end_turn".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn parse_response(
     body: &str,
     request_id: Option<String>,
@@ -260,7 +268,7 @@ fn parse_response(
         stop_reason: choice
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+            .map(normalize_stop_reason),
         provider_request_id: request_id,
         usage,
         tool_calls,

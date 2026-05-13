@@ -401,7 +401,7 @@ async fn openai_call_extracts_tool_calls() {
     let response = call_openai_compat(&provider, &request).await.unwrap();
 
     mock.assert();
-    assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
     assert_eq!(response.tool_calls.len(), 2);
     assert_eq!(response.tool_calls[0].id, "call_1");
     assert_eq!(response.tool_calls[0].name, "find_files");
@@ -455,7 +455,7 @@ async fn openai_call_sends_bearer_auth_and_parses_success() {
 
     mock.assert();
     assert_eq!(response.assistant_text, "Hello from OpenAI");
-    assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+    assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
     assert_eq!(
         response.provider_request_id.as_deref(),
         Some("chat_req_456")
