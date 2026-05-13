@@ -14,12 +14,8 @@ This repository is being initialized from the public implementation contract. Th
 kuku/
 ├── crates/
 │   └── kuku/          # Core SDK/runtime crate
-├── apps/
-│   └── cli/           # First host app after the SDK loop works
+├── apps/              # Host apps, added when needed
 ├── packages/          # Official packages and examples, later
-├── docs/
-│   ├── spec/          # Public implementation specs
-│   └── plans/         # Execution plans for implementation milestones
 └── README.md
 ```
 
