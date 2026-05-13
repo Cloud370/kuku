@@ -4,4 +4,4 @@ pub mod query;
 pub mod session;
 
 pub use error::{Error, Result};
-pub use query::{query, Query, RunOutput};
+pub use query::{query, Query, Run, RunOutput, UiEvent};
