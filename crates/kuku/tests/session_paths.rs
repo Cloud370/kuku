@@ -7,7 +7,10 @@ fn maps_workspace_path_under_kuku_home_without_encoding() {
 
     let path = project_home(kuku_home, workspace).unwrap();
 
-    assert_eq!(path, std::path::Path::new("/tmp/kuku-home/p/code/kuku/example"));
+    assert_eq!(
+        path,
+        std::path::Path::new("/tmp/kuku-home/p/code/kuku/example")
+    );
 }
 
 #[test]

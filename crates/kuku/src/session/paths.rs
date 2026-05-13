@@ -12,9 +12,7 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
             Component::Normal(part) => path.push(part),
             Component::CurDir => {}
             Component::ParentDir => {
-                return Err(Error::InvalidWorkspacePath(
-                    workspace.display().to_string(),
-                ));
+                return Err(Error::InvalidWorkspacePath(workspace.display().to_string()));
             }
         }
     }
@@ -22,7 +20,11 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn session_events_path(kuku_home: &Path, workspace: &Path, session_id: &str) -> Result<PathBuf> {
+pub fn session_events_path(
+    kuku_home: &Path,
+    workspace: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
     let mut path = project_home(kuku_home, workspace)?;
     path.push("sessions");
     path.push(session_id);
