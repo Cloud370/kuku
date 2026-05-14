@@ -2,6 +2,11 @@ use std::path::Path;
 
 use serde_json::Value;
 
+#[cfg(test)]
+use sha2::{Digest, Sha256};
+
+#[cfg(test)]
+use crate::event::EventPayload;
 use crate::event::StoredEvent;
 use crate::tool::{builtin, ToolResultEnvelope};
 
@@ -11,12 +16,23 @@ pub(crate) fn dispatch(
     workspace: &Path,
     prior_events: &[StoredEvent],
     result_event_id: u64,
+    tool_call_id: Option<&str>,
 ) -> ToolResultEnvelope {
     match name {
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
-        "edit_file" | "write_file" | "run_command" => ToolResultEnvelope::blocked(
+        "edit_file" | "write_file" if has_denied_permission(prior_events, tool_call_id) => {
+            ToolResultEnvelope::blocked(
+                format!("blocked by permission: {name} requires a permission gate"),
+                format!(
+                    "{name} was not executed because the permission gate denied this tool call"
+                ),
+            )
+        }
+        "edit_file" => builtin::edit_file(args, workspace, prior_events),
+        "write_file" => builtin::write_file(args, workspace, prior_events),
+        "run_command" => ToolResultEnvelope::blocked(
             format!("blocked by permission: {name} requires a permission gate"),
             format!("{name} was not executed because the permission gate is not available yet"),
         ),
@@ -27,20 +43,96 @@ pub(crate) fn dispatch(
     }
 }
 
+fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {
+    let Some(tool_call_id) = tool_call_id else {
+        return false;
+    };
+    events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            crate::event::EventPayload::PermissionDecision { tool_call_id: id, decision, .. }
+                if id == tool_call_id && decision == "deny"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_event(id: u64, dir: &std::path::Path, path: &str, content: &[u8]) -> StoredEvent {
+        let canonical = dir.join(path).canonicalize().unwrap();
+        let digest = Sha256::digest(content);
+        StoredEvent {
+            id,
+            payload: EventPayload::ToolResult {
+                turn: 1,
+                ts: "2026-05-14T00:00:00Z".to_string(),
+                tool_call_id: format!("read_{id}"),
+                status: "ok".to_string(),
+                summary: "read".to_string(),
+                model_content: String::from_utf8_lossy(content)
+                    .lines()
+                    .enumerate()
+                    .map(|(index, line)| format!("{}\t{}", index + 1, line))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                truncated: false,
+                structured: Some(serde_json::json!({
+                    "kind": "file_content",
+                    "path": path,
+                    "canonical_path": canonical.to_string_lossy(),
+                    "content_hash": format!("sha256:{digest:x}"),
+                    "read_event_id": id,
+                    "start_line": 1,
+                    "line_count": String::from_utf8_lossy(content).lines().count(),
+                    "total_lines": String::from_utf8_lossy(content).lines().count(),
+                    "is_full_file_snapshot": true,
+                    "cached": false,
+                })),
+            },
+        }
+    }
+
+    fn denied_event(tool_call_id: &str) -> StoredEvent {
+        StoredEvent {
+            id: 99,
+            payload: EventPayload::PermissionDecision {
+                turn: 1,
+                ts: "2026-05-14T00:00:00Z".to_string(),
+                tool_call_id: tool_call_id.to_string(),
+                decision: "deny".to_string(),
+                scope: "once".to_string(),
+                source: "runtime".to_string(),
+                rule: "permission_gate_unavailable".to_string(),
+            },
+        }
+    }
 
     #[test]
     fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
 
-        let found = dispatch("find_files", &serde_json::json!({"path": "."}), dir.path(), &[], 1);
+        let found = dispatch(
+            "find_files",
+            &serde_json::json!({"path": "."}),
+            dir.path(),
+            &[],
+            1,
+            None,
+        );
         assert_eq!(found.status, "ok");
         assert_eq!(found.model_content, "a.txt");
 
-        let read = dispatch("read_file", &serde_json::json!({"path": "a.txt"}), dir.path(), &[], 2);
+        let read = dispatch(
+            "read_file",
+            &serde_json::json!({"path": "a.txt"}),
+            dir.path(),
+            &[],
+            2,
+            None,
+        );
         assert_eq!(read.status, "ok");
         assert!(read.model_content.contains("1\tneedle"));
         assert_eq!(read.structured.as_ref().unwrap()["read_event_id"], 2);
@@ -51,6 +143,7 @@ mod tests {
             dir.path(),
             &[],
             3,
+            None,
         );
         assert_eq!(searched.status, "ok");
         assert_eq!(searched.model_content, "a.txt:1: needle");
@@ -61,12 +154,81 @@ mod tests {
             dir.path(),
             &[],
             4,
+            None,
         );
         assert_eq!(gated.status, "blocked");
         assert!(gated.model_content.contains("permission gate"));
 
-        let unknown = dispatch("missing_tool", &serde_json::json!({}), dir.path(), &[], 5);
+        let unknown = dispatch(
+            "missing_tool",
+            &serde_json::json!({}),
+            dir.path(),
+            &[],
+            5,
+            None,
+        );
         assert_eq!(unknown.status, "error");
         assert!(unknown.model_content.contains("unknown tool"));
+    }
+
+    #[test]
+    fn dispatch_executes_edit_and_write_when_not_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = b"hello\nworld\n";
+        std::fs::write(dir.path().join("a.txt"), original).unwrap();
+        let read = read_event(17, dir.path(), "a.txt", original);
+
+        let edited = dispatch(
+            "edit_file",
+            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
+            dir.path(),
+            std::slice::from_ref(&read),
+            18,
+            None,
+        );
+        assert_eq!(edited.status, "ok");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "hello\nkuku\n"
+        );
+
+        let after_edit = b"hello\nkuku\n";
+        let read_after_edit = read_event(19, dir.path(), "a.txt", after_edit);
+        let written = dispatch(
+            "write_file",
+            &serde_json::json!({"path": "a.txt", "content": "done\n"}),
+            dir.path(),
+            &[read_after_edit],
+            20,
+            None,
+        );
+        assert_eq!(written.status, "ok");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "done\n"
+        );
+    }
+
+    #[test]
+    fn dispatch_blocks_edit_write_when_runtime_permission_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = b"hello\nworld\n";
+        std::fs::write(dir.path().join("a.txt"), original).unwrap();
+        let read = read_event(17, dir.path(), "a.txt", original);
+        let denied = denied_event("tool_edit");
+
+        let result = dispatch(
+            "edit_file",
+            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
+            dir.path(),
+            &[read, denied],
+            18,
+            Some("tool_edit"),
+        );
+        assert_eq!(result.status, "blocked");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "hello\nworld\n"
+        );
     }
 }

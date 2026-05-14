@@ -10,7 +10,11 @@ pub(crate) struct ToolResultEnvelope {
 }
 
 impl ToolResultEnvelope {
-    pub(crate) fn ok(summary: impl Into<String>, model_content: impl Into<String>, structured: Value) -> Self {
+    pub(crate) fn ok(
+        summary: impl Into<String>,
+        model_content: impl Into<String>,
+        structured: Value,
+    ) -> Self {
         Self {
             status: "ok".to_string(),
             summary: summary.into(),
@@ -20,7 +24,11 @@ impl ToolResultEnvelope {
         }
     }
 
-    pub(crate) fn ok_truncated(summary: impl Into<String>, model_content: impl Into<String>, structured: Value) -> Self {
+    pub(crate) fn ok_truncated(
+        summary: impl Into<String>,
+        model_content: impl Into<String>,
+        structured: Value,
+    ) -> Self {
         Self {
             status: "ok".to_string(),
             summary: summary.into(),

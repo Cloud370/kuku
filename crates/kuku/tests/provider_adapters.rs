@@ -177,8 +177,14 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         temperature: None,
     });
 
-    assert_eq!(history_body["messages"][0]["content"][1]["type"], "tool_use");
-    assert_eq!(history_body["messages"][1]["content"][0]["type"], "tool_result");
+    assert_eq!(
+        history_body["messages"][0]["content"][1]["type"],
+        "tool_use"
+    );
+    assert_eq!(
+        history_body["messages"][1]["content"][0]["type"],
+        "tool_result"
+    );
     assert_eq!(
         history_body["messages"][1]["content"][0]["tool_use_id"],
         "toolu_01"
@@ -350,7 +356,10 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
 
     assert_eq!(tool_body["tools"][0]["type"], "function");
     assert_eq!(tool_body["tools"][0]["function"]["name"], "find_files");
-    assert_eq!(tool_body["tools"][0]["function"]["parameters"]["type"], "object");
+    assert_eq!(
+        tool_body["tools"][0]["function"]["parameters"]["type"],
+        "object"
+    );
 
     let history_body = render_openai_body(&ProviderRequest {
         assembly: assembly_with_tool_history(),
@@ -359,7 +368,10 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         temperature: None,
     });
 
-    assert_eq!(history_body["messages"][0]["tool_calls"][0]["id"], "toolu_01");
+    assert_eq!(
+        history_body["messages"][0]["tool_calls"][0]["id"],
+        "toolu_01"
+    );
     assert_eq!(history_body["messages"][1]["role"], "tool");
     assert_eq!(history_body["messages"][1]["tool_call_id"], "toolu_01");
     assert_eq!(history_body["messages"][1]["content"], "README.md");

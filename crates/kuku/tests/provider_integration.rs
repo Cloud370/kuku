@@ -175,7 +175,10 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelResponse { tool_call_count: Some(1), .. }
+        EventPayload::ModelResponse {
+            tool_call_count: Some(1),
+            ..
+        }
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,

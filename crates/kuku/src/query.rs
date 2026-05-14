@@ -336,7 +336,8 @@ impl Query {
                     }
 
                     for tool_call in &response.tool_calls {
-                        if let Some(definition) = registry.iter().find(|tool| tool.name == tool_call.name)
+                        if let Some(definition) =
+                            registry.iter().find(|tool| tool.name == tool_call.name)
                         {
                             if definition.risk == "edit" || definition.risk == "command" {
                                 store.append(EventPayload::PermissionRequest {
@@ -374,6 +375,7 @@ impl Query {
                             &workspace,
                             &prior_events,
                             result_event_id,
+                            Some(&tool_call.id),
                         );
                         store.append(EventPayload::ToolResult {
                             turn,

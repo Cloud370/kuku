@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
 use serde_json::Value;
@@ -35,6 +35,23 @@ struct ReadSnapshot {
     start_line: usize,
     line_count: usize,
     is_full_file_snapshot: bool,
+}
+
+struct EditRequest {
+    path: String,
+    old_text: String,
+    new_text: String,
+    replace_all: bool,
+}
+
+struct WriteRequest {
+    path: String,
+    content: String,
+}
+
+struct WriteSnapshot {
+    event_id: u64,
+    content_hash: String,
 }
 
 struct SearchMatch {
@@ -187,9 +204,9 @@ pub(crate) fn read_file(
     }
 
     let start_index = request.offset.saturating_sub(1).min(total_lines);
-    let end_index = request
-        .limit
-        .map_or(total_lines, |limit| start_index.saturating_add(limit).min(total_lines));
+    let end_index = request.limit.map_or(total_lines, |limit| {
+        start_index.saturating_add(limit).min(total_lines)
+    });
     let mut rendered = Vec::new();
     for (index, line) in lines[start_index..end_index].iter().enumerate() {
         let line_number = start_index + index + 1;
@@ -237,9 +254,213 @@ pub(crate) fn read_file(
     }
 }
 
+pub(crate) fn edit_file(
+    args: &Value,
+    workspace: &Path,
+    prior_events: &[StoredEvent],
+) -> ToolResultEnvelope {
+    let request = match edit_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let resolved = match resolve_path(workspace, &request.path) {
+        Ok(resolved) => resolved,
+        Err(result) => return result,
+    };
+    if !resolved.path.is_file() {
+        return ToolResultEnvelope::error(
+            format!("failed: not a file: {}", request.path),
+            format!("path is not a file: {}", request.path),
+        );
+    }
+
+    let bytes = match fs::read(&resolved.path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: {error}"),
+                format!("error reading file: {}", request.path),
+            )
+        }
+    };
+    let content = match String::from_utf8(bytes.clone()) {
+        Ok(content) => content,
+        Err(_) => {
+            return ToolResultEnvelope::error(
+                format!("failed: file is not valid UTF-8: {}", resolved.relative),
+                format!("file is not valid UTF-8: {}", resolved.relative),
+            )
+        }
+    };
+    let current_hash = content_hash(&bytes);
+    let Some(snapshot) =
+        find_write_snapshot(prior_events, &resolved.path, false, Some(&request.old_text))
+    else {
+        return ToolResultEnvelope::error(
+            format!("failed: read {} before editing", resolved.relative),
+            format!(
+                "edit_file requires a prior successful read_file snapshot for {}",
+                resolved.relative
+            ),
+        );
+    };
+    if snapshot.content_hash != current_hash {
+        return ToolResultEnvelope::error(
+            format!(
+                "failed: {} changed since event {}",
+                resolved.relative, snapshot.event_id
+            ),
+            format!(
+                "file changed since it was read; read {} again before editing",
+                resolved.relative
+            ),
+        );
+    }
+
+    let replacement_count = content.matches(&request.old_text).count();
+    if replacement_count == 0 {
+        return ToolResultEnvelope::error(
+            format!("failed: old_text not found in {}", resolved.relative),
+            "old_text was not found".to_string(),
+        );
+    }
+    if replacement_count > 1 && !request.replace_all {
+        return ToolResultEnvelope::error(
+            format!(
+                "failed: old_text matched {replacement_count} times in {}",
+                resolved.relative
+            ),
+            "old_text is not unique; provide more context or set replace_all=true".to_string(),
+        );
+    }
+
+    let edited = if request.replace_all {
+        content.replace(&request.old_text, &request.new_text)
+    } else {
+        content.replacen(&request.old_text, &request.new_text, 1)
+    };
+    if let Err(error) = write_atomically(&resolved.path, edited.as_bytes()) {
+        return ToolResultEnvelope::error(
+            format!("failed: {error}"),
+            format!("error writing file: {}", resolved.relative),
+        );
+    }
+
+    let summary = format!(
+        "edited {}, {replacement_count} replacement{}",
+        resolved.relative,
+        plural(replacement_count)
+    );
+    ToolResultEnvelope::ok(
+        summary.clone(),
+        summary,
+        serde_json::json!({
+            "kind": "file_edit",
+            "path": resolved.relative,
+            "replacement_count": replacement_count,
+            "bytes_written": edited.len(),
+            "content_hash": content_hash(edited.as_bytes()),
+        }),
+    )
+}
+
+pub(crate) fn write_file(
+    args: &Value,
+    workspace: &Path,
+    prior_events: &[StoredEvent],
+) -> ToolResultEnvelope {
+    let request = match write_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let resolved = match resolve_write_path(workspace, &request.path) {
+        Ok(resolved) => resolved,
+        Err(result) => return result,
+    };
+
+    let created = !resolved.path.exists();
+    if !created {
+        if !resolved.path.is_file() {
+            return ToolResultEnvelope::error(
+                format!("failed: not a file: {}", request.path),
+                format!("path is not a file: {}", request.path),
+            );
+        }
+        let bytes = match fs::read(&resolved.path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: {error}"),
+                    format!("error reading file: {}", request.path),
+                )
+            }
+        };
+        if String::from_utf8(bytes.clone()).is_err() {
+            return ToolResultEnvelope::error(
+                format!("failed: file is not valid UTF-8: {}", resolved.relative),
+                format!("file is not valid UTF-8: {}", resolved.relative),
+            );
+        }
+        let current_hash = content_hash(&bytes);
+        let Some(snapshot) = find_write_snapshot(prior_events, &resolved.path, true, None) else {
+            return ToolResultEnvelope::error(
+                format!(
+                    "failed: fully read {} before overwriting",
+                    resolved.relative
+                ),
+                format!(
+                    "write_file requires a prior full read_file snapshot before overwriting {}",
+                    resolved.relative
+                ),
+            );
+        };
+        if snapshot.content_hash != current_hash {
+            return ToolResultEnvelope::error(
+                format!(
+                    "failed: {} changed since event {}",
+                    resolved.relative, snapshot.event_id
+                ),
+                format!(
+                    "file changed since it was read; read {} again before overwriting",
+                    resolved.relative
+                ),
+            );
+        }
+    }
+
+    if let Err(error) = write_atomically(&resolved.path, request.content.as_bytes()) {
+        return ToolResultEnvelope::error(
+            format!("failed: {error}"),
+            format!("error writing file: {}", resolved.relative),
+        );
+    }
+
+    let line_count = request.content.lines().count();
+    let summary = format!(
+        "wrote {}, {line_count} line{}",
+        resolved.relative,
+        plural(line_count)
+    );
+    ToolResultEnvelope::ok(
+        summary.clone(),
+        summary,
+        serde_json::json!({
+            "kind": "file_write",
+            "path": resolved.relative,
+            "line_count": line_count,
+            "bytes_written": request.content.len(),
+            "content_hash": content_hash(request.content.as_bytes()),
+            "created": created,
+        }),
+    )
+}
+
 pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
     let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
-        return ToolResultEnvelope::error("failed: missing pattern", "search_text requires pattern");
+        return ToolResultEnvelope::error(
+            "failed: missing pattern",
+            "search_text requires pattern",
+        );
     };
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let include = args.get("include").and_then(Value::as_str);
@@ -317,10 +538,17 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     let summary = if truncated {
         format!(
             "{} matches in {} files, view={}, results truncated",
-            matches.len(), file_count, view
+            matches.len(),
+            file_count,
+            view
         )
     } else {
-        format!("{} matches in {} files, view={}", matches.len(), file_count, view)
+        format!(
+            "{} matches in {} files, view={}",
+            matches.len(),
+            file_count,
+            view
+        )
     };
     let structured = serde_json::json!({
         "kind": "search_results",
@@ -405,7 +633,10 @@ fn glob_match(pattern: &str, path: &str) -> bool {
             .is_some_and(|rest| !rest.contains('/'));
     }
     if let Some(suffix) = pattern.strip_prefix('*') {
-        return path.rsplit('/').next().is_some_and(|name| name.ends_with(suffix));
+        return path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.ends_with(suffix));
     }
     path == pattern
 }
@@ -421,6 +652,61 @@ fn read_request(args: &Value) -> Result<ReadRequest, ToolResultEnvelope> {
         path: path.to_string(),
         offset: optional_positive_usize(args, "offset")?.unwrap_or(1),
         limit: optional_positive_usize(args, "limit")?,
+    })
+}
+
+fn edit_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
+    let Some(path) = args.get("path").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing path",
+            "edit_file requires path",
+        ));
+    };
+    let Some(old_text) = args.get("old_text").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing old_text",
+            "edit_file requires old_text",
+        ));
+    };
+    let Some(new_text) = args.get("new_text").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing new_text",
+            "edit_file requires new_text",
+        ));
+    };
+    if old_text.is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: old_text is empty",
+            "old_text must not be empty",
+        ));
+    }
+    Ok(EditRequest {
+        path: path.to_string(),
+        old_text: old_text.to_string(),
+        new_text: new_text.to_string(),
+        replace_all: args
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
+    let Some(path) = args.get("path").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing path",
+            "write_file requires path",
+        ));
+    };
+    let Some(content) = args.get("content").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing content",
+            "write_file requires content",
+        ));
+    };
+    Ok(WriteRequest {
+        path: path.to_string(),
+        content: content.to_string(),
     })
 }
 
@@ -450,7 +736,10 @@ fn optional_positive_usize(args: &Value, field: &str) -> Result<Option<usize>, T
 
 fn resolve_path(workspace: &Path, path: &str) -> Result<ResolvedPath, ToolResultEnvelope> {
     let workspace = workspace.canonicalize().map_err(|_| {
-        ToolResultEnvelope::error("failed: workspace not found", "workspace path does not exist")
+        ToolResultEnvelope::error(
+            "failed: workspace not found",
+            "workspace path does not exist",
+        )
     })?;
     let candidate = Path::new(path);
     let joined = if candidate.is_absolute() {
@@ -485,6 +774,78 @@ fn resolve_path(workspace: &Path, path: &str) -> Result<ResolvedPath, ToolResult
         path: resolved,
         relative,
     })
+}
+
+fn resolve_write_path(workspace: &Path, path: &str) -> Result<ResolvedPath, ToolResultEnvelope> {
+    match resolve_path(workspace, path) {
+        Ok(existing) => return Ok(existing),
+        Err(result) if result.status == "blocked" => return Err(result),
+        Err(_) => {}
+    }
+
+    let workspace = workspace.canonicalize().map_err(|_| {
+        ToolResultEnvelope::error(
+            "failed: workspace not found",
+            "workspace path does not exist",
+        )
+    })?;
+    let candidate = Path::new(path);
+    let joined = normalize_existing_components(if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace.join(candidate)
+    });
+    let Some(parent) = joined.parent() else {
+        return Err(ToolResultEnvelope::error(
+            format!("failed: missing parent for {path}"),
+            format!("path has no parent directory: {path}"),
+        ));
+    };
+    let parent = parent.canonicalize().map_err(|_| {
+        ToolResultEnvelope::error(
+            format!("failed: parent path not found: {path}"),
+            format!("parent directory does not exist: {path}"),
+        )
+    })?;
+    if !parent.starts_with(&workspace) {
+        return Err(ToolResultEnvelope::blocked(
+            format!("blocked: path outside workspace: {path}"),
+            format!("path is outside the workspace: {path}"),
+        ));
+    }
+    let file_name = joined.file_name().ok_or_else(|| {
+        ToolResultEnvelope::error(
+            format!("failed: missing file name: {path}"),
+            format!("path has no file name: {path}"),
+        )
+    })?;
+    let resolved = parent.join(file_name);
+    let relative = relative_path(&resolved, &workspace);
+    if is_blocked_relative_path(&relative) {
+        return Err(ToolResultEnvelope::blocked(
+            format!("blocked: path is not writable: {relative}"),
+            format!("path is blocked by write guard: {relative}"),
+        ));
+    }
+    Ok(ResolvedPath {
+        workspace,
+        path: resolved,
+        relative,
+    })
+}
+
+fn normalize_existing_components(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn relative_path(path: &Path, workspace: &Path) -> String {
@@ -579,7 +940,9 @@ fn find_covering_read(
             event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
             start_line: structured["start_line"].as_u64()? as usize,
             line_count: structured["line_count"].as_u64()? as usize,
-            is_full_file_snapshot: structured["is_full_file_snapshot"].as_bool().unwrap_or(false),
+            is_full_file_snapshot: structured["is_full_file_snapshot"]
+                .as_bool()
+                .unwrap_or(false),
         };
         if snapshot.covers(start_line, line_count) {
             Some(snapshot)
@@ -593,6 +956,65 @@ impl ReadSnapshot {
     fn covers(&self, start_line: usize, line_count: usize) -> bool {
         self.is_full_file_snapshot
             || (self.start_line == start_line && self.line_count == line_count)
+    }
+}
+
+fn find_write_snapshot(
+    events: &[StoredEvent],
+    canonical_path: &Path,
+    require_full_file: bool,
+    required_text: Option<&str>,
+) -> Option<WriteSnapshot> {
+    let canonical_path = canonical_path.to_string_lossy();
+    events.iter().rev().find_map(|event| {
+        let EventPayload::ToolResult {
+            status,
+            model_content,
+            structured: Some(structured),
+            ..
+        } = &event.payload
+        else {
+            return None;
+        };
+        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
+            return None;
+        }
+        if structured["canonical_path"].as_str()? != canonical_path {
+            return None;
+        }
+        let is_full_file_snapshot = structured["is_full_file_snapshot"]
+            .as_bool()
+            .unwrap_or(false);
+        if require_full_file && !is_full_file_snapshot {
+            return None;
+        }
+        if !is_full_file_snapshot && required_text.is_some_and(|text| !model_content.contains(text))
+        {
+            return None;
+        }
+        Some(WriteSnapshot {
+            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
+            content_hash: structured["content_hash"].as_str()?.to_string(),
+        })
+    })
+}
+
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("kuku")
+    ));
+    fs::write(&temp_path, bytes)?;
+    fs::rename(temp_path, path)
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
     }
 }
 
@@ -663,8 +1085,7 @@ fn render_search_lines(view: &str, matches: &[SearchMatch]) -> Vec<String> {
         "count" => {
             let mut counts = Vec::<(String, usize)>::new();
             for match_ in matches {
-                if let Some((_, count)) = counts.iter_mut().find(|(path, _)| path == &match_.path)
-                {
+                if let Some((_, count)) = counts.iter_mut().find(|(path, _)| path == &match_.path) {
                     *count += 1;
                 } else {
                     counts.push((match_.path.clone(), 1));
@@ -708,7 +1129,11 @@ fn unique_match_file_count(matches: &[SearchMatch]) -> usize {
     paths.len()
 }
 
-fn join_bounded_strings(lines: &[String], max_chars: usize, truncation_message: &str) -> (String, bool) {
+fn join_bounded_strings(
+    lines: &[String],
+    max_chars: usize,
+    truncation_message: &str,
+) -> (String, bool) {
     let mut model_content = String::new();
     let mut truncated = false;
     for line in lines {
@@ -780,13 +1205,19 @@ mod tests {
     #[test]
     fn find_files_filters_include_globs_and_blocks_outside_workspace() {
         let dir = workspace();
-        let md = find_files(&serde_json::json!({"path": ".", "include": "*.md"}), dir.path());
+        let md = find_files(
+            &serde_json::json!({"path": ".", "include": "*.md"}),
+            dir.path(),
+        );
         assert_eq!(
             md.model_content.lines().collect::<Vec<_>>(),
             vec!["README.md", "docs/tools.md"]
         );
 
-        let docs = find_files(&serde_json::json!({"path": ".", "include": "docs/*"}), dir.path());
+        let docs = find_files(
+            &serde_json::json!({"path": ".", "include": "docs/*"}),
+            dir.path(),
+        );
         assert_eq!(docs.model_content, "docs/tools.md");
 
         let recursive_docs = find_files(
@@ -817,8 +1248,14 @@ mod tests {
         let structured = result.structured.unwrap();
         assert_eq!(structured["kind"], "file_content");
         assert_eq!(structured["path"], "README.md");
-        assert!(structured["canonical_path"].as_str().unwrap().ends_with("README.md"));
-        assert!(structured["content_hash"].as_str().unwrap().starts_with("sha256:"));
+        assert!(structured["canonical_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("README.md"));
+        assert!(structured["content_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
         assert_eq!(structured["read_event_id"], 17);
         assert_eq!(structured["start_line"], 2);
         assert_eq!(structured["line_count"], 2);
@@ -909,7 +1346,12 @@ mod tests {
         let dir = workspace();
         std::fs::write(dir.path().join("empty.txt"), "").unwrap();
 
-        let empty = read_file(&serde_json::json!({"path": "empty.txt"}), dir.path(), &[], 1);
+        let empty = read_file(
+            &serde_json::json!({"path": "empty.txt"}),
+            dir.path(),
+            &[],
+            1,
+        );
         assert_eq!(empty.summary, "read empty.txt, 0 lines of 0");
         assert_eq!(empty.model_content, "");
 
@@ -940,11 +1382,245 @@ mod tests {
         assert_eq!(eof.structured.unwrap()["cached"], false);
     }
 
+    fn read_snapshot_event(
+        id: u64,
+        dir: &Path,
+        path: &str,
+        content: &[u8],
+        full: bool,
+        model_content: &str,
+    ) -> StoredEvent {
+        let canonical = dir.join(path).canonicalize().unwrap();
+        StoredEvent {
+            id,
+            payload: EventPayload::ToolResult {
+                turn: 1,
+                ts: "2026-05-14T00:00:00Z".to_string(),
+                tool_call_id: format!("tool_{id}"),
+                status: "ok".to_string(),
+                summary: "read".to_string(),
+                model_content: model_content.to_string(),
+                truncated: false,
+                structured: Some(serde_json::json!({
+                    "kind": "file_content",
+                    "path": path,
+                    "canonical_path": canonical.to_string_lossy(),
+                    "content_hash": content_hash(content),
+                    "read_event_id": id,
+                    "start_line": 1,
+                    "line_count": if full { String::from_utf8_lossy(content).lines().count() } else { 1 },
+                    "total_lines": String::from_utf8_lossy(content).lines().count(),
+                    "is_full_file_snapshot": full,
+                    "cached": false,
+                })),
+            },
+        }
+    }
+
+    #[test]
+    fn edit_file_requires_prior_read_and_rejects_stale_snapshot() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("README.md"), "alpha\nbeta\n").unwrap();
+
+        let missing = edit_file(
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega"}),
+            dir.path(),
+            &[],
+        );
+        assert_eq!(missing.status, "error");
+        assert!(missing
+            .model_content
+            .contains("prior successful read_file snapshot"));
+
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            b"alpha\nbeta\n",
+            true,
+            "1\talpha\n2\tbeta",
+        );
+        std::fs::write(dir.path().join("README.md"), "changed\nbeta\n").unwrap();
+        let stale = edit_file(
+            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma"}),
+            dir.path(),
+            &[snapshot],
+        );
+        assert_eq!(stale.status, "error");
+        assert!(stale.model_content.contains("read README.md again"));
+    }
+
+    #[test]
+    fn edit_file_replaces_unique_text_or_all_matches() {
+        let dir = workspace();
+        let content = b"alpha\nbeta\nalpha\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            true,
+            "1\talpha\n2\tbeta\n3\talpha",
+        );
+
+        let ambiguous = edit_file(
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega"}),
+            dir.path(),
+            std::slice::from_ref(&snapshot),
+        );
+        assert_eq!(ambiguous.status, "error");
+        assert!(ambiguous.model_content.contains("not unique"));
+
+        let unique = edit_file(
+            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma"}),
+            dir.path(),
+            std::slice::from_ref(&snapshot),
+        );
+        assert_eq!(unique.status, "ok");
+        assert_eq!(unique.structured.as_ref().unwrap()["replacement_count"], 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "alpha\ngamma\nalpha\n"
+        );
+
+        let changed = b"alpha\ngamma\nalpha\n";
+        let second_snapshot = read_snapshot_event(
+            18,
+            dir.path(),
+            "README.md",
+            changed,
+            true,
+            "1\talpha\n2\tgamma\n3\talpha",
+        );
+        let all = edit_file(
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega", "replace_all": true}),
+            dir.path(),
+            &[second_snapshot],
+        );
+        assert_eq!(all.status, "ok");
+        assert_eq!(all.structured.as_ref().unwrap()["replacement_count"], 2);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "omega\ngamma\nomega\n"
+        );
+    }
+
+    #[test]
+    fn write_file_creates_new_file_without_prior_read() {
+        let dir = workspace();
+        let result = write_file(
+            &serde_json::json!({"path": "docs/new.md", "content": "hello\nworld\n"}),
+            dir.path(),
+            &[],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.structured.as_ref().unwrap()["created"], true);
+        assert_eq!(result.structured.as_ref().unwrap()["line_count"], 2);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("docs/new.md")).unwrap(),
+            "hello\nworld\n"
+        );
+    }
+
+    #[test]
+    fn write_file_normalizes_new_file_paths_before_parent_check() {
+        let dir = workspace();
+        let result = write_file(
+            &serde_json::json!({"path": "missing/../docs/normalized.md", "content": "normalized\n"}),
+            dir.path(),
+            &[],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            result.structured.as_ref().unwrap()["path"],
+            "docs/normalized.md"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("docs/normalized.md")).unwrap(),
+            "normalized\n"
+        );
+    }
+
+    #[test]
+    fn write_file_requires_full_snapshot_for_overwrite_and_rejects_stale_snapshot() {
+        let dir = workspace();
+        let original = b"alpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let partial = read_snapshot_event(17, dir.path(), "README.md", original, false, "1\talpha");
+
+        let partial_result = write_file(
+            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            dir.path(),
+            &[partial],
+        );
+        assert_eq!(partial_result.status, "error");
+        assert!(partial_result
+            .model_content
+            .contains("prior full read_file snapshot"));
+
+        let full = read_snapshot_event(
+            18,
+            dir.path(),
+            "README.md",
+            original,
+            true,
+            "1\talpha\n2\tbeta",
+        );
+        std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
+        let stale = write_file(
+            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            dir.path(),
+            std::slice::from_ref(&full),
+        );
+        assert_eq!(stale.status, "error");
+        assert!(stale.model_content.contains("read README.md again"));
+
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let ok = write_file(
+            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            dir.path(),
+            &[full],
+        );
+        assert_eq!(ok.status, "ok");
+        assert_eq!(ok.structured.as_ref().unwrap()["created"], false);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "replacement\n"
+        );
+    }
+
+    #[test]
+    fn write_tools_block_guarded_paths() {
+        let dir = workspace();
+        std::fs::write(dir.path().join(".env"), "TOKEN=secret").unwrap();
+
+        let edit = edit_file(
+            &serde_json::json!({"path": ".env", "old_text": "TOKEN", "new_text": "KEY"}),
+            dir.path(),
+            &[],
+        );
+        assert_eq!(edit.status, "blocked");
+
+        let write = write_file(
+            &serde_json::json!({"path": ".env.local", "content": "TOKEN=secret"}),
+            dir.path(),
+            &[],
+        );
+        assert_eq!(write.status, "blocked");
+    }
+
     #[test]
     fn search_text_supports_files_lines_and_count_views() {
         let dir = workspace();
         std::fs::write(dir.path().join("README.md"), "TODO root\nDONE\n").unwrap();
-        std::fs::write(dir.path().join("docs/tools.md"), "alpha\nTODO docs\nTODO again\n").unwrap();
+        std::fs::write(
+            dir.path().join("docs/tools.md"),
+            "alpha\nTODO docs\nTODO again\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
         let files = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
@@ -989,11 +1665,17 @@ mod tests {
         assert_eq!(filtered.status, "ok");
         assert_eq!(filtered.model_content, "docs/tools.md");
 
-        let blocked = search_text(&serde_json::json!({"pattern": "TODO", "path": ".env"}), dir.path());
+        let blocked = search_text(
+            &serde_json::json!({"pattern": "TODO", "path": ".env"}),
+            dir.path(),
+        );
         assert_eq!(blocked.status, "blocked");
 
         let unfiltered = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
-        assert_eq!(unfiltered.structured.as_ref().unwrap()["blocked_file_count"], 3);
+        assert_eq!(
+            unfiltered.structured.as_ref().unwrap()["blocked_file_count"],
+            3
+        );
         assert!(!unfiltered.model_content.contains("secret"));
 
         let invalid_regex = search_text(&serde_json::json!({"pattern": "["}), dir.path());

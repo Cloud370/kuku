@@ -207,10 +207,7 @@ fn parse_response(
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    args: block
-                        .get("input")
-                        .cloned()
-                        .unwrap_or_else(|| json!({})),
+                    args: block.get("input").cloned().unwrap_or_else(|| json!({})),
                     index: index as u64,
                 })
                 .collect()
