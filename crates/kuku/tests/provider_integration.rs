@@ -23,7 +23,9 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
-        let guard = env_lock().lock().unwrap();
+        let guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_kuku_home = std::env::var_os("KUKU_HOME");
         let previous_cwd = std::env::current_dir().unwrap();
         let home = tempfile::tempdir().unwrap();
@@ -197,6 +199,20 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
             .count(),
         2
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::PermissionRequest { .. }))
+            .count(),
+        0
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::PermissionDecision { .. }))
+            .count(),
+        0
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -288,6 +304,211 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
                 && model_content.contains("README.md:2: TODO root")
                 && structured.as_ref().is_some_and(|value| value["kind"] == "search_results")
     )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::PermissionRequest { .. }))
+            .count(),
+        0
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::PermissionDecision { .. }))
+            .count(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools""#)
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run a command."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test --version", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("cargo test");
+        then.status(200)
+            .header("request-id", "req_final")
+            .json_body(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let mut run = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    let request = match run.next().await.unwrap().unwrap() {
+        kuku::UiEvent::PermissionRequested { request } => request,
+        other => panic!("expected PermissionRequested, got {other:?}"),
+    };
+
+    run.decide(&request.id, kuku::query::PermissionChoice::Once)
+        .await
+        .unwrap();
+
+    let done = run.next().await.unwrap().unwrap();
+    match done {
+        kuku::UiEvent::Done { output } => assert_eq!(output.text, "Command completed."),
+        other => panic!("expected Done, got {other:?}"),
+    }
+
+    let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "once")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools""#)
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run a command."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200)
+            .header("request-id", "req_final_1")
+            .json_body(serde_json::json!({
+                "id": "msg_final_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "First command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let mut run = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    let request = match run.next().await.unwrap().unwrap() {
+        kuku::UiEvent::PermissionRequested { request } => request,
+        other => panic!("expected PermissionRequested, got {other:?}"),
+    };
+    run.decide(&request.id, kuku::query::PermissionChoice::Project)
+        .await
+        .unwrap();
+    let first_done = run.next().await.unwrap().unwrap();
+    match first_done {
+        kuku::UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
+        other => panic!("expected Done, got {other:?}"),
+    }
+
+    let policy_path = kuku::session::project_policy_path(
+        env.home.path(),
+        &std::fs::canonicalize(env.workspace.path()).unwrap(),
+    )
+    .unwrap();
+    let policy_text = std::fs::read_to_string(&policy_path).unwrap();
+    assert!(policy_text.contains("run_command(cargo test)"));
+
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools""#)
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool_2")
+            .json_body(serde_json::json!({
+                "id": "msg_tool_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run a command again."},
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200)
+            .header("request-id", "req_final_2")
+            .json_body(serde_json::json!({
+                "id": "msg_final_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Second command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let output = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(output.text, "Second command completed.");
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "project")));
 }
 
 #[tokio::test(flavor = "current_thread")]
