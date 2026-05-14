@@ -10,7 +10,7 @@ use crate::event::EventPayload;
 use crate::event::StoredEvent;
 use crate::tool::{builtin, ToolResultEnvelope};
 
-pub(crate) fn dispatch(
+pub(crate) async fn dispatch(
     name: &str,
     args: &Value,
     workspace: &Path,
@@ -22,7 +22,9 @@ pub(crate) fn dispatch(
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
-        "edit_file" | "write_file" if has_denied_permission(prior_events, tool_call_id) => {
+        "edit_file" | "write_file" | "run_command"
+            if has_denied_permission(prior_events, tool_call_id) =>
+        {
             ToolResultEnvelope::blocked(
                 format!("blocked by permission: {name} requires a permission gate"),
                 format!(
@@ -32,10 +34,7 @@ pub(crate) fn dispatch(
         }
         "edit_file" => builtin::edit_file(args, workspace, prior_events),
         "write_file" => builtin::write_file(args, workspace, prior_events),
-        "run_command" => ToolResultEnvelope::blocked(
-            format!("blocked by permission: {name} requires a permission gate"),
-            format!("{name} was not executed because the permission gate is not available yet"),
-        ),
+        "run_command" => builtin::run_command(args, workspace).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -109,8 +108,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
 
@@ -121,7 +120,8 @@ mod tests {
             &[],
             1,
             None,
-        );
+        )
+        .await;
         assert_eq!(found.status, "ok");
         assert_eq!(found.model_content, "a.txt");
 
@@ -132,7 +132,8 @@ mod tests {
             &[],
             2,
             None,
-        );
+        )
+        .await;
         assert_eq!(read.status, "ok");
         assert!(read.model_content.contains("1\tneedle"));
         assert_eq!(read.structured.as_ref().unwrap()["read_event_id"], 2);
@@ -144,20 +145,23 @@ mod tests {
             &[],
             3,
             None,
-        );
+        )
+        .await;
         assert_eq!(searched.status, "ok");
         assert_eq!(searched.model_content, "a.txt:1: needle");
 
+        let denied = denied_event("tool_command");
         let gated = dispatch(
             "run_command",
-            &serde_json::json!({"command": "ls", "timeout": 1}),
+            &serde_json::json!({"command": "cargo test", "timeout": 1}),
             dir.path(),
-            &[],
+            &[denied],
             4,
-            None,
-        );
+            Some("tool_command"),
+        )
+        .await;
         assert_eq!(gated.status, "blocked");
-        assert!(gated.model_content.contains("permission gate"));
+        assert!(gated.model_content.contains("permission gate denied"));
 
         let unknown = dispatch(
             "missing_tool",
@@ -166,13 +170,14 @@ mod tests {
             &[],
             5,
             None,
-        );
+        )
+        .await;
         assert_eq!(unknown.status, "error");
         assert!(unknown.model_content.contains("unknown tool"));
     }
 
-    #[test]
-    fn dispatch_executes_edit_and_write_when_not_denied() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_executes_edit_and_write_when_not_denied() {
         let dir = tempfile::tempdir().unwrap();
         let original = b"hello\nworld\n";
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
@@ -185,7 +190,8 @@ mod tests {
             std::slice::from_ref(&read),
             18,
             None,
-        );
+        )
+        .await;
         assert_eq!(edited.status, "ok");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -201,7 +207,8 @@ mod tests {
             &[read_after_edit],
             20,
             None,
-        );
+        )
+        .await;
         assert_eq!(written.status, "ok");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -209,8 +216,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dispatch_blocks_edit_write_when_runtime_permission_denied() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_blocks_edit_write_when_runtime_permission_denied() {
         let dir = tempfile::tempdir().unwrap();
         let original = b"hello\nworld\n";
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
@@ -224,7 +231,8 @@ mod tests {
             &[read, denied],
             18,
             Some("tool_edit"),
-        );
+        )
+        .await;
         assert_eq!(result.status, "blocked");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),

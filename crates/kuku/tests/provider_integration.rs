@@ -291,6 +291,86 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run a command."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains(
+                "run_command was not executed because the permission gate denied this tool call",
+            );
+        then.status(200)
+            .header("request-id", "req_final")
+            .json_body(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command was blocked."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let output = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    tool_request.assert();
+    final_request.assert();
+    assert_eq!(output.text, "Command was blocked.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolCall { ref tool, ref tool_call_id, .. }
+            if tool == "run_command" && tool_call_id == "toolu_cmd"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionRequest { ref tool, ref risk, .. }
+            if tool == "run_command" && risk == "command"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionDecision { ref tool_call_id, ref decision, .. }
+            if tool_call_id == "toolu_cmd" && decision == "deny"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref status, ref model_content, .. }
+            if status == "blocked"
+                && model_content.contains("run_command was not executed because the permission gate denied this tool call")
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_success_returns_text_and_writes_events() {
     let env = TestEnv::new();
     let server = MockServer::start();

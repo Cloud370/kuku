@@ -376,7 +376,8 @@ impl Query {
                             &prior_events,
                             result_event_id,
                             Some(&tool_call.id),
-                        );
+                        )
+                        .await;
                         store.append(EventPayload::ToolResult {
                             turn,
                             ts: now_timestamp()?,
