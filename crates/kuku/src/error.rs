@@ -32,6 +32,12 @@ pub enum Error {
 
     #[error("ambiguous provider configuration: {0}")]
     AmbiguousProviderConfig(String),
+
+    #[error("permission request not pending: {0}")]
+    PermissionRequestNotPending(String),
+
+    #[error("invalid policy file: {0}")]
+    InvalidPolicy(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,6 +67,22 @@ mod tests {
         assert_eq!(
             Error::AmbiguousProviderConfig("select a provider explicitly".to_string()).to_string(),
             "ambiguous provider configuration: select a provider explicitly"
+        );
+    }
+
+    #[test]
+    fn permission_request_not_pending_variant_formats_message() {
+        assert_eq!(
+            Error::PermissionRequestNotPending("req_1".to_string()).to_string(),
+            "permission request not pending: req_1"
+        );
+    }
+
+    #[test]
+    fn invalid_policy_variant_formats_message() {
+        assert_eq!(
+            Error::InvalidPolicy("malformed allow rule".to_string()).to_string(),
+            "invalid policy file: malformed allow rule"
         );
     }
 }

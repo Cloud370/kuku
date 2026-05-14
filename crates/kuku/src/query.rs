@@ -1,12 +1,27 @@
+use std::collections::VecDeque;
+use std::path::PathBuf;
+
+use sha2::Digest;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::context::{assemble_context, rebuild_history, ContextInput};
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore, StoredEvent};
+use crate::permission::{
+    append_project_allow_rule, decide_tool_call, load_project_policy, recover_session_grants,
+    GateDecisionKind, GateSource,
+};
+use crate::provider::config::{resolve_config, ResolveConfigInput};
+use crate::provider::types::{
+    ProviderKind, ProviderRequest, ProviderResponse, ProviderToolCall, ResolvedProvider,
+};
 use crate::provider::{self, Provider};
 use crate::session::{
-    current_workspace, kuku_home, new_session_id, session_events_path, validate_session_id,
+    current_workspace, kuku_home, new_session_id, project_policy_path, session_events_path,
+    validate_session_id,
 };
+use crate::tool::{self, ToolDefinition};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
@@ -26,32 +41,85 @@ pub struct RunOutput {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRequest {
+    pub id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub risk: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionChoice {
+    Once,
+    Session,
+    Project,
+    Deny,
+}
+
 /// Host-facing runtime event stream.
 ///
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
+    PermissionRequested { request: PermissionRequest },
     Done { output: RunOutput },
 }
 
-/// Host-facing session run handle.
-///
-/// `Run` intentionally does not implement `Clone` or equality traits, so hosts
-/// cannot duplicate or compare the event stream handle.
-///
-/// ```compile_fail
-/// # async fn assert_run_is_not_clone_or_eq() -> kuku::Result<()> {
-/// let run = kuku::query("hello").start().await?;
-/// let _duplicate = run.clone();
-/// let _same = &run == &run;
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Debug)]
 pub struct Run {
     session_id: String,
-    done: Option<RunOutput>,
+    state: RunState,
+}
+
+#[derive(Debug)]
+enum RunState {
+    Pending(Box<PendingRun>),
+    WaitingForPermission(Box<PendingPermission>),
+    Done(Option<RunOutput>),
+}
+
+#[derive(Debug)]
+struct PendingRun {
+    session_id: String,
+    query: Query,
+    events_path: PathBuf,
+    workspace: PathBuf,
+    policy_path: PathBuf,
+    turn: u64,
+    request_num: u64,
+    resolved: Option<ResolvedRuntime>,
+    queued_tool_calls: VecDeque<QueuedToolCall>,
+}
+
+#[derive(Debug)]
+struct ResolvedRuntime {
+    config: ResolvedProvider,
+    registry: Vec<ToolDefinition>,
+    registry_hash: String,
+    ordered_tool_names: Vec<String>,
+    tool_count: usize,
+    provider_name: String,
+}
+
+#[derive(Debug)]
+struct QueuedToolCall {
+    tool_call: ProviderToolCall,
+}
+
+#[derive(Debug)]
+struct PendingPermission {
+    pending: PendingRun,
+    queued_tool_call: QueuedToolCall,
+    request: PermissionRequest,
+}
+
+enum PendingStep {
+    Pending(Box<PendingRun>),
+    NeedPermission(Box<PendingPermission>),
+    Done(RunOutput),
 }
 
 pub fn query(prompt: impl Into<String>) -> Query {
@@ -115,9 +183,6 @@ impl Query {
         self.session_id.as_deref()
     }
 
-    /// Starts a session writer for this query.
-    ///
-    /// Callers must not start two writers for the same session concurrently.
     pub async fn start(self) -> Result<Run> {
         self.start_session().await
     }
@@ -125,16 +190,17 @@ impl Query {
     async fn start_session(self) -> Result<Run> {
         let kuku_home = kuku_home()?;
         let workspace = current_workspace()?;
-        let session_id = match self.session_id {
+        let session_id = match self.session_id.as_deref() {
             Some(session_id) => {
-                validate_session_id(&session_id)?;
-                session_id
+                validate_session_id(session_id)?;
+                session_id.to_string()
             }
             None => new_session_id(),
         };
         validate_session_id(&session_id)?;
 
         let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
+        let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = EventStore::replay(&events_path)?;
         validate_existing_session(&existing_events)?;
         let turn = next_turn(&existing_events);
@@ -159,255 +225,35 @@ impl Query {
         store.append(EventPayload::UserInput {
             turn,
             ts: now_timestamp()?,
-            text: self.prompt,
+            text: self.prompt.clone(),
         })?;
 
-        let output = RunOutput {
-            session_id: session_id.clone(),
-            text: String::new(),
-        };
-
         Ok(Run {
-            session_id,
-            done: Some(output),
+            session_id: session_id.clone(),
+            state: RunState::Pending(Box::new(PendingRun {
+                session_id,
+                query: self,
+                events_path,
+                workspace,
+                policy_path,
+                turn,
+                request_num: 0,
+                resolved: None,
+                queued_tool_calls: VecDeque::new(),
+            })),
         })
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        use crate::context::{assemble_context, rebuild_history, ContextInput};
-        use crate::provider::config::{resolve_config, ResolveConfigInput};
-        use crate::provider::types::{ProviderKind, ProviderRequest};
-        use crate::tool;
-
-        let run = self.clone().start_session().await?;
-        let kuku_home = kuku_home()?;
-        let workspace = current_workspace()?;
-        let events_path = session_events_path(&kuku_home, &workspace, run.session_id())?;
-        let initial_events = EventStore::replay(&events_path)?;
-        let turn = current_turn(&initial_events)?;
-
-        let resolved = match resolve_config(ResolveConfigInput {
-            provider: self.provider,
-            model: self.model.clone(),
-            base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
-        }) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                let mut store = EventStore::open(&events_path)?;
-                store.append(EventPayload::ModelError {
-                    turn,
-                    ts: now_timestamp()?,
-                    request_id: format!("req_{}", initial_events.len() + 1),
-                    kind: "missing_config".to_string(),
-                    message: error.to_string(),
-                    status: None,
-                    retryable: Some(false),
-                    resolved_provider: None,
-                    resolved_model: None,
-                })?;
-                store.append(EventPayload::TurnEnd {
-                    turn,
-                    ts: now_timestamp()?,
-                })?;
-                return Err(error);
-            }
-        };
-
-        let registry = tool::builtin_registry();
-        let tool_schemas = tool::to_tool_schemas(&registry);
-        let registry_hash = tool::registry_hash(&registry);
-        let ordered_tool_names = tool::ordered_tool_names(&registry);
-        let tool_count = registry.len();
-        let provider_name = match resolved.kind {
-            ProviderKind::Anthropic => "anthropic",
-            ProviderKind::OpenAiCompatible => "openai-compatible",
-        };
-        let mut request_num = 0_u64;
-
+        let mut run = self.start_session().await?;
         loop {
-            request_num += 1;
-            let request_id = format!("req_{request_num}");
-            if request_num > 20 {
-                let mut store = EventStore::open(&events_path)?;
-                store.append(EventPayload::ModelError {
-                    turn,
-                    ts: now_timestamp()?,
-                    request_id,
-                    kind: "loop_limit".to_string(),
-                    message: "tool loop exceeded maximum provider requests".to_string(),
-                    status: None,
-                    retryable: Some(false),
-                    resolved_provider: Some(provider_name.to_string()),
-                    resolved_model: Some(resolved.model.clone()),
-                })?;
-                store.append(EventPayload::TurnEnd {
-                    turn,
-                    ts: now_timestamp()?,
-                })?;
-                return Err(Error::Provider(
-                    "tool loop exceeded maximum provider requests".to_string(),
-                ));
-            }
-
-            let existing_events = EventStore::replay(&events_path)?;
-            let history = rebuild_history(&existing_events);
-            let assembly = assemble_context(ContextInput {
-                project_instructions: Vec::new(),
-                global_memory: None,
-                project_memory: None,
-                history,
-                tools: tool_schemas.clone(),
-            });
-            let params = serde_json::json!({
-                "max_output_tokens": self.max_output_tokens,
-                "temperature": self.temperature,
-            });
-
-            {
-                let mut store = EventStore::open(&events_path)?;
-                store.append(EventPayload::ModelRequest {
-                    turn,
-                    ts: now_timestamp()?,
-                    request_id: request_id.clone(),
-                    role: "default".to_string(),
-                    alias: provider_name.to_string(),
-                    resolved_provider: provider_name.to_string(),
-                    resolved_model: resolved.model.clone(),
-                    params,
-                    base_url: Some(resolved.base_url.clone()),
-                    message_count: Some(assembly.sources.len()),
-                    history_range_first: existing_events.first().map(|event| event.id),
-                    history_range_last: existing_events.last().map(|event| event.id),
-                    tool_registry_hash: Some(registry_hash.clone()),
-                    tool_count: Some(tool_count),
-                    ordered_tool_names: Some(ordered_tool_names.clone()),
-                })?;
-            }
-
-            let request = ProviderRequest {
-                assembly,
-                model: resolved.model.clone(),
-                max_output_tokens: self.max_output_tokens,
-                temperature: self.temperature,
-            };
-
-            match provider::call_provider(&resolved, &request).await {
-                Ok(response) => {
-                    let has_tool_calls = !response.tool_calls.is_empty();
-                    let mut store = EventStore::open(&events_path)?;
-                    store.append(EventPayload::ModelResponse {
-                        turn,
-                        ts: now_timestamp()?,
-                        request_id: request_id.clone(),
-                        text: response.assistant_text.clone(),
-                        stop_reason: response.stop_reason.clone().unwrap_or_else(|| {
-                            if has_tool_calls {
-                                "tool_use".to_string()
-                            } else {
-                                "end_turn".to_string()
-                            }
-                        }),
-                        tool_call_count: has_tool_calls.then_some(response.tool_calls.len() as u64),
-                        usage: serde_json::to_value(&response.usage).unwrap_or_default(),
-                    })?;
-
-                    if !has_tool_calls {
-                        store.append(EventPayload::TurnEnd {
-                            turn,
-                            ts: now_timestamp()?,
-                        })?;
-                        return Ok(RunOutput {
-                            session_id: run.session_id,
-                            text: response.assistant_text,
-                        });
-                    }
-
-                    for tool_call in &response.tool_calls {
-                        store.append(EventPayload::ToolCall {
-                            turn,
-                            ts: now_timestamp()?,
-                            tool_call_id: tool_call.id.clone(),
-                            request_id: request_id.clone(),
-                            index: tool_call.index,
-                            tool: tool_call.name.clone(),
-                            args: tool_call.args.clone(),
-                        })?;
-                    }
-
-                    for tool_call in &response.tool_calls {
-                        if let Some(definition) =
-                            registry.iter().find(|tool| tool.name == tool_call.name)
-                        {
-                            if definition.risk == "edit" || definition.risk == "command" {
-                                store.append(EventPayload::PermissionRequest {
-                                    turn,
-                                    ts: now_timestamp()?,
-                                    tool_call_id: tool_call.id.clone(),
-                                    tool: tool_call.name.clone(),
-                                    risk: definition.risk.clone(),
-                                    summary: format!(
-                                        "{} {}",
-                                        tool_call.name,
-                                        serde_json::to_string(&tool_call.args)
-                                            .unwrap_or_else(|_| "{}".to_string())
-                                    ),
-                                })?;
-                                store.append(EventPayload::PermissionDecision {
-                                    turn,
-                                    ts: now_timestamp()?,
-                                    tool_call_id: tool_call.id.clone(),
-                                    decision: "deny".to_string(),
-                                    scope: "once".to_string(),
-                                    source: "runtime".to_string(),
-                                    rule: "permission_gate_unavailable".to_string(),
-                                })?;
-                            }
-                        }
-                    }
-
-                    for tool_call in &response.tool_calls {
-                        let prior_events = EventStore::replay(&events_path)?;
-                        let result_event_id = store.next_id();
-                        let result = tool::dispatch(
-                            &tool_call.name,
-                            &tool_call.args,
-                            &workspace,
-                            &prior_events,
-                            result_event_id,
-                            Some(&tool_call.id),
-                        )
-                        .await;
-                        store.append(EventPayload::ToolResult {
-                            turn,
-                            ts: now_timestamp()?,
-                            tool_call_id: tool_call.id.clone(),
-                            status: result.status,
-                            summary: result.summary,
-                            model_content: result.model_content,
-                            truncated: result.truncated,
-                            structured: result.structured,
-                        })?;
-                    }
-                }
-                Err(failure) => {
-                    let mut store = EventStore::open(&events_path)?;
-                    store.append(EventPayload::ModelError {
-                        turn,
-                        ts: now_timestamp()?,
-                        request_id: request_id.clone(),
-                        kind: provider_failure_kind(&failure.kind).to_string(),
-                        message: failure.message.clone(),
-                        status: failure.status,
-                        retryable: Some(failure.retryable),
-                        resolved_provider: Some(provider_name.to_string()),
-                        resolved_model: Some(resolved.model.clone()),
-                    })?;
-                    store.append(EventPayload::TurnEnd {
-                        turn,
-                        ts: now_timestamp()?,
-                    })?;
-                    return Err(Error::Provider(failure.message));
+            match run.next().await? {
+                Some(UiEvent::PermissionRequested { .. }) => run.deny_pending().await?,
+                Some(UiEvent::Done { output }) => return Ok(output),
+                None => {
+                    return Err(Error::InvalidEventStream(
+                        "run ended without producing Done".to_string(),
+                    ))
                 }
             }
         }
@@ -420,7 +266,573 @@ impl Run {
     }
 
     pub async fn next(&mut self) -> Result<Option<UiEvent>> {
-        Ok(self.done.take().map(|output| UiEvent::Done { output }))
+        loop {
+            match std::mem::replace(&mut self.state, RunState::Done(None)) {
+                RunState::Pending(pending) => match advance_pending(*pending).await? {
+                    PendingStep::Pending(next_pending) => {
+                        self.state = RunState::Pending(next_pending);
+                    }
+                    PendingStep::NeedPermission(waiting) => {
+                        let request = waiting.request.clone();
+                        self.state = RunState::WaitingForPermission(waiting);
+                        return Ok(Some(UiEvent::PermissionRequested { request }));
+                    }
+                    PendingStep::Done(output) => {
+                        self.state = RunState::Done(None);
+                        return Ok(Some(UiEvent::Done { output }));
+                    }
+                },
+                RunState::WaitingForPermission(waiting) => {
+                    let request = waiting.request.clone();
+                    self.state = RunState::WaitingForPermission(waiting);
+                    return Ok(Some(UiEvent::PermissionRequested { request }));
+                }
+                RunState::Done(Some(output)) => {
+                    self.state = RunState::Done(None);
+                    return Ok(Some(UiEvent::Done { output }));
+                }
+                RunState::Done(None) => {
+                    self.state = RunState::Done(None);
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    pub async fn decide(
+        &mut self,
+        request_id: impl AsRef<str>,
+        choice: PermissionChoice,
+    ) -> Result<()> {
+        self.apply_choice(request_id.as_ref(), choice, "host").await
+    }
+
+    async fn deny_pending(&mut self) -> Result<()> {
+        let request_id = match &self.state {
+            RunState::WaitingForPermission(waiting) => waiting.request.id.clone(),
+            _ => {
+                return Err(Error::PermissionRequestNotPending(
+                    "no permission request is pending".to_string(),
+                ))
+            }
+        };
+        self.apply_choice(&request_id, PermissionChoice::Deny, "runtime")
+            .await
+    }
+
+    async fn apply_choice(
+        &mut self,
+        request_id: &str,
+        choice: PermissionChoice,
+        source: &str,
+    ) -> Result<()> {
+        let state = std::mem::replace(&mut self.state, RunState::Done(None));
+        let waiting = match state {
+            RunState::WaitingForPermission(waiting) if waiting.request.id == request_id => *waiting,
+            other => {
+                self.state = other;
+                return Err(Error::PermissionRequestNotPending(request_id.to_string()));
+            }
+        };
+
+        let mut pending = waiting.pending;
+        let rule = permission_rule(
+            &waiting.queued_tool_call.tool_call.name,
+            &waiting.queued_tool_call.tool_call.args,
+        );
+        if matches!(choice, PermissionChoice::Project) {
+            append_project_allow_rule(
+                &pending.policy_path,
+                &waiting.queued_tool_call.tool_call.name,
+                &permission_candidate(
+                    &waiting.queued_tool_call.tool_call.name,
+                    &waiting.queued_tool_call.tool_call.args,
+                ),
+            )?;
+        }
+        append_permission_decision(
+            &pending.events_path,
+            pending.turn,
+            &waiting.queued_tool_call.tool_call.id,
+            choice,
+            source,
+            &rule,
+        )?;
+        execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
+        self.state = RunState::Pending(Box::new(pending));
+        Ok(())
+    }
+}
+
+async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
+    loop {
+        if let Some(queued_tool_call) = pending.queued_tool_calls.pop_front() {
+            if let Some(definition) =
+                find_tool_definition(&pending, &queued_tool_call.tool_call.name)
+            {
+                let candidate = permission_candidate(
+                    &queued_tool_call.tool_call.name,
+                    &queued_tool_call.tool_call.args,
+                );
+                let policy = load_project_policy(&pending.policy_path)?;
+                let prior_events = EventStore::replay(&pending.events_path)?;
+                let session_grants = recover_session_grants(&prior_events);
+                let decision = decide_tool_call(
+                    &queued_tool_call.tool_call.name,
+                    &definition.risk,
+                    &candidate,
+                    &policy,
+                    &session_grants,
+                );
+                match decision.kind {
+                    GateDecisionKind::Ask => {
+                        let request = PermissionRequest {
+                            id: queued_tool_call.tool_call.id.clone(),
+                            tool_call_id: queued_tool_call.tool_call.id.clone(),
+                            tool: queued_tool_call.tool_call.name.clone(),
+                            risk: definition.risk.clone(),
+                            summary: permission_summary(
+                                &queued_tool_call.tool_call.name,
+                                &queued_tool_call.tool_call.args,
+                            ),
+                        };
+                        append_permission_request(&pending.events_path, pending.turn, &request)?;
+                        return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
+                            pending,
+                            queued_tool_call,
+                            request,
+                        })));
+                    }
+                    GateDecisionKind::Allow => {
+                        if !matches!(decision.source, GateSource::TrustPosture) {
+                            let choice = if matches!(decision.source, GateSource::ProjectPolicy) {
+                                PermissionChoice::Project
+                            } else if matches!(decision.source, GateSource::SessionGrant) {
+                                PermissionChoice::Session
+                            } else {
+                                PermissionChoice::Once
+                            };
+                            append_permission_decision(
+                                &pending.events_path,
+                                pending.turn,
+                                &queued_tool_call.tool_call.id,
+                                choice,
+                                gate_source_name(decision.source),
+                                &permission_rule(
+                                    &queued_tool_call.tool_call.name,
+                                    &queued_tool_call.tool_call.args,
+                                ),
+                            )?;
+                        }
+                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+                        continue;
+                    }
+                    GateDecisionKind::Deny => {
+                        append_permission_request(
+                            &pending.events_path,
+                            pending.turn,
+                            &PermissionRequest {
+                                id: queued_tool_call.tool_call.id.clone(),
+                                tool_call_id: queued_tool_call.tool_call.id.clone(),
+                                tool: queued_tool_call.tool_call.name.clone(),
+                                risk: definition.risk.clone(),
+                                summary: permission_summary(
+                                    &queued_tool_call.tool_call.name,
+                                    &queued_tool_call.tool_call.args,
+                                ),
+                            },
+                        )?;
+                        append_permission_decision(
+                            &pending.events_path,
+                            pending.turn,
+                            &queued_tool_call.tool_call.id,
+                            PermissionChoice::Deny,
+                            gate_source_name(decision.source),
+                            &permission_rule(
+                                &queued_tool_call.tool_call.name,
+                                &queued_tool_call.tool_call.args,
+                            ),
+                        )?;
+                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+                        continue;
+                    }
+                }
+            }
+
+            execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+            continue;
+        }
+
+        return call_provider_step(pending).await;
+    }
+}
+
+async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
+    ensure_resolved(&mut pending)?;
+    pending.request_num += 1;
+
+    if pending.request_num > 20 {
+        let provider_name = pending
+            .resolved
+            .as_ref()
+            .map(|resolved| resolved.provider_name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let model = pending
+            .resolved
+            .as_ref()
+            .map(|resolved| resolved.config.model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        append_model_error(
+            &pending.events_path,
+            pending.turn,
+            format!("req_{}", pending.request_num),
+            "loop_limit",
+            "tool loop exceeded maximum provider requests",
+            Some(provider_name),
+            Some(model),
+        )?;
+        append_turn_end(&pending.events_path, pending.turn)?;
+        return Err(Error::Provider(
+            "tool loop exceeded maximum provider requests".to_string(),
+        ));
+    }
+
+    let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
+    let existing_events = EventStore::replay(&pending.events_path)?;
+    let history = rebuild_history(&existing_events);
+    let assembly = assemble_context(ContextInput {
+        project_instructions: Vec::new(),
+        global_memory: None,
+        project_memory: None,
+        history,
+        tools: tool::to_tool_schemas(&resolved.registry),
+    });
+    let request_id = format!("req_{}", pending.request_num);
+    let params = serde_json::json!({
+        "max_output_tokens": pending.query.max_output_tokens,
+        "temperature": pending.query.temperature,
+    });
+
+    {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ModelRequest {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            request_id: request_id.clone(),
+            role: "default".to_string(),
+            alias: resolved.provider_name.clone(),
+            resolved_provider: resolved.provider_name.clone(),
+            resolved_model: resolved.config.model.clone(),
+            params,
+            base_url: Some(resolved.config.base_url.clone()),
+            message_count: Some(assembly.sources.len()),
+            history_range_first: existing_events.first().map(|event| event.id),
+            history_range_last: existing_events.last().map(|event| event.id),
+            tool_registry_hash: Some(resolved.registry_hash.clone()),
+            tool_count: Some(resolved.tool_count),
+            ordered_tool_names: Some(resolved.ordered_tool_names.clone()),
+        })?;
+    }
+
+    let request = ProviderRequest {
+        assembly,
+        model: resolved.config.model.clone(),
+        max_output_tokens: pending.query.max_output_tokens,
+        temperature: pending.query.temperature,
+    };
+
+    match provider::call_provider(&resolved.config, &request).await {
+        Ok(response) => handle_provider_response(pending, request_id, response).await,
+        Err(failure) => {
+            append_model_error(
+                &pending.events_path,
+                pending.turn,
+                request_id,
+                provider_failure_kind(&failure.kind),
+                &failure.message,
+                Some(resolved.provider_name.clone()),
+                Some(resolved.config.model.clone()),
+            )?;
+            append_turn_end(&pending.events_path, pending.turn)?;
+            Err(Error::Provider(failure.message))
+        }
+    }
+}
+
+async fn handle_provider_response(
+    mut pending: PendingRun,
+    request_id: String,
+    response: ProviderResponse,
+) -> Result<PendingStep> {
+    let has_tool_calls = !response.tool_calls.is_empty();
+    {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ModelResponse {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            request_id: request_id.clone(),
+            text: response.assistant_text.clone(),
+            stop_reason: response.stop_reason.clone().unwrap_or_else(|| {
+                if has_tool_calls {
+                    "tool_use".to_string()
+                } else {
+                    "end_turn".to_string()
+                }
+            }),
+            tool_call_count: has_tool_calls.then_some(response.tool_calls.len() as u64),
+            usage: serde_json::to_value(&response.usage).unwrap_or_default(),
+        })?;
+
+        if !has_tool_calls {
+            store.append(EventPayload::TurnEnd {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+            })?;
+            return Ok(PendingStep::Done(RunOutput {
+                session_id: pending.session_id.clone(),
+                text: response.assistant_text,
+            }));
+        }
+
+        for tool_call in &response.tool_calls {
+            store.append(EventPayload::ToolCall {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+                tool_call_id: tool_call.id.clone(),
+                request_id: request_id.clone(),
+                index: tool_call.index,
+                tool: tool_call.name.clone(),
+                args: tool_call.args.clone(),
+            })?;
+        }
+    }
+
+    for tool_call in response.tool_calls {
+        pending
+            .queued_tool_calls
+            .push_back(QueuedToolCall { tool_call });
+    }
+
+    Ok(PendingStep::Pending(Box::new(pending)))
+}
+
+fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
+    if pending.resolved.is_some() {
+        return Ok(());
+    }
+
+    let config = match resolve_config(ResolveConfigInput {
+        provider: pending.query.provider,
+        model: pending.query.model.clone(),
+        base_url: pending.query.base_url.clone(),
+        api_key: pending.query.api_key.clone(),
+    }) {
+        Ok(config) => config,
+        Err(error) => {
+            let request_id = format!(
+                "req_{}",
+                EventStore::replay(&pending.events_path)?.len() + 1
+            );
+            append_model_error(
+                &pending.events_path,
+                pending.turn,
+                request_id,
+                "missing_config",
+                &error.to_string(),
+                None,
+                None,
+            )?;
+            append_turn_end(&pending.events_path, pending.turn)?;
+            return Err(error);
+        }
+    };
+
+    let registry = tool::builtin_registry();
+    let registry_hash = tool::registry_hash(&registry);
+    let ordered_tool_names = tool::ordered_tool_names(&registry);
+    let tool_count = registry.len();
+    if let Ok(policy_text) = std::fs::read_to_string(&pending.policy_path) {
+        let policy_hash = sha2::Sha256::digest(policy_text.as_bytes());
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::PolicyLoaded {
+            ts: now_timestamp()?,
+            policy_hash: format!("sha256:{:x}", policy_hash),
+            mode: "default".to_string(),
+        })?;
+    }
+    let provider_name = match config.kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAiCompatible => "openai-compatible",
+    }
+    .to_string();
+
+    pending.resolved = Some(ResolvedRuntime {
+        config,
+        registry,
+        registry_hash,
+        ordered_tool_names,
+        tool_count,
+        provider_name,
+    });
+    Ok(())
+}
+
+fn find_tool_definition<'a>(pending: &'a PendingRun, name: &str) -> Option<&'a ToolDefinition> {
+    pending
+        .resolved
+        .as_ref()
+        .and_then(|resolved| resolved.registry.iter().find(|tool| tool.name == name))
+}
+
+async fn execute_tool_call(pending: &mut PendingRun, tool_call: &ProviderToolCall) -> Result<()> {
+    let prior_events = EventStore::replay(&pending.events_path)?;
+    let result_event_id = EventStore::open(&pending.events_path)?.next_id();
+    let result = tool::dispatch(
+        &tool_call.name,
+        &tool_call.args,
+        &pending.workspace,
+        &prior_events,
+        result_event_id,
+        Some(&tool_call.id),
+    )
+    .await;
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call.id.clone(),
+        status: result.status,
+        summary: result.summary,
+        model_content: result.model_content,
+        truncated: result.truncated,
+        structured: result.structured,
+    })?;
+    Ok(())
+}
+
+fn append_permission_request(
+    events_path: &PathBuf,
+    turn: u64,
+    request: &PermissionRequest,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::PermissionRequest {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: request.tool_call_id.clone(),
+        tool: request.tool.clone(),
+        risk: request.risk.clone(),
+        summary: request.summary.clone(),
+    })?;
+    Ok(())
+}
+
+fn append_permission_decision(
+    events_path: &PathBuf,
+    turn: u64,
+    tool_call_id: &str,
+    choice: PermissionChoice,
+    source: &str,
+    rule: &str,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::PermissionDecision {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call_id.to_string(),
+        decision: permission_decision(choice).to_string(),
+        scope: permission_scope(choice).to_string(),
+        source: source.to_string(),
+        rule: rule.to_string(),
+    })?;
+    Ok(())
+}
+
+fn append_model_error(
+    events_path: &PathBuf,
+    turn: u64,
+    request_id: String,
+    kind: &str,
+    message: &str,
+    resolved_provider: Option<String>,
+    resolved_model: Option<String>,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::ModelError {
+        turn,
+        ts: now_timestamp()?,
+        request_id,
+        kind: kind.to_string(),
+        message: message.to_string(),
+        status: None,
+        retryable: Some(false),
+        resolved_provider,
+        resolved_model,
+    })?;
+    Ok(())
+}
+
+fn append_turn_end(events_path: &PathBuf, turn: u64) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::TurnEnd {
+        turn,
+        ts: now_timestamp()?,
+    })?;
+    Ok(())
+}
+
+fn permission_summary(name: &str, args: &serde_json::Value) -> String {
+    format!(
+        "{} {}",
+        name,
+        serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+    )
+}
+
+fn permission_rule(name: &str, args: &serde_json::Value) -> String {
+    format!("{}({})", name, permission_candidate(name, args))
+}
+
+fn permission_candidate(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "run_command" => args
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        _ => args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    }
+}
+
+fn permission_decision(choice: PermissionChoice) -> &'static str {
+    match choice {
+        PermissionChoice::Deny => "deny",
+        PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => "allow",
+    }
+}
+
+fn permission_scope(choice: PermissionChoice) -> &'static str {
+    match choice {
+        PermissionChoice::Once | PermissionChoice::Deny => "once",
+        PermissionChoice::Session => "session",
+        PermissionChoice::Project => "project",
+    }
+}
+
+fn gate_source_name(source: GateSource) -> &'static str {
+    match source {
+        GateSource::HardGuard => "hard_guard",
+        GateSource::ProjectPolicy => "project_policy",
+        GateSource::SessionGrant => "session_grant",
+        GateSource::TrustPosture => "trust_posture",
+        GateSource::Host => "host",
+        GateSource::DefaultAsk => "default_ask",
     }
 }
 
@@ -447,17 +859,6 @@ fn next_turn(events: &[StoredEvent]) -> u64 {
         .max()
         .unwrap_or(0)
         + 1
-}
-
-fn current_turn(events: &[StoredEvent]) -> Result<u64> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::TurnStart { turn, .. } => Some(*turn),
-            _ => None,
-        })
-        .ok_or_else(|| Error::InvalidEventStream("missing turn.start".to_string()))
 }
 
 fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'static str {

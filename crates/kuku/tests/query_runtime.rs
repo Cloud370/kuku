@@ -2,9 +2,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::session_events_path;
-use kuku::{query, Error, UiEvent};
+use kuku::{query, Error, Provider, UiEvent};
 use tempfile::TempDir;
 
 fn env_lock() -> &'static Mutex<()> {
@@ -22,7 +23,9 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
-        let guard = env_lock().lock().unwrap();
+        let guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_kuku_home = std::env::var_os("KUKU_HOME");
         let previous_cwd = std::env::current_dir().unwrap();
         let home = tempfile::tempdir().unwrap();
@@ -64,16 +67,8 @@ impl Drop for TestEnv {
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
 
-    let mut run = query("inspect this project").start().await.unwrap();
+    let run = query("inspect this project").start().await.unwrap();
     let session_id = run.session_id().to_string();
-    let done = run.next().await.unwrap();
-
-    match done {
-        Some(UiEvent::Done { .. }) => {}
-        Some(other) => panic!("expected Done event, got {other:?}"),
-        None => panic!("expected Done event"),
-    }
-    assert!(run.next().await.unwrap().is_none());
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
     assert_eq!(events.len(), 3);
@@ -218,4 +213,217 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
     }
 
     assert!(!env.home.path().join("p").exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_emits_permission_requested_for_gated_tool() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Need approval."},
+                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let mut run = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    let event = run.next().await.unwrap().expect("permission event");
+    match event {
+        UiEvent::PermissionRequested { request } => {
+            assert_eq!(request.tool_call_id, "toolu_cmd");
+            assert_eq!(request.tool, "run_command");
+        }
+        other => panic!("expected PermissionRequested, got {other:?}"),
+    }
+
+    let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::PermissionRequest { .. })));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::PermissionDecision { .. })));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Need approval."},
+                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "First command completed."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    let session_id = "s_session_grant";
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    let request = match run.next().await.unwrap().unwrap() {
+        UiEvent::PermissionRequested { request } => request,
+        other => panic!("expected PermissionRequested, got {other:?}"),
+    };
+    run.decide(&request.id, kuku::query::PermissionChoice::Session)
+        .await
+        .unwrap();
+    let first_done = run.next().await.unwrap().unwrap();
+    match first_done {
+        UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
+        other => panic!("expected Done, got {other:?}"),
+    }
+
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_tool_2",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Need approval again."},
+                {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final_2",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Second command completed."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    let done = run.next().await.unwrap().unwrap();
+    match done {
+        UiEvent::Done { output } => assert_eq!(output.text, "Second command completed."),
+        other => panic!("expected Done, got {other:?}"),
+    }
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "session")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Need approval."},
+                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("permission gate denied this tool call");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Command was blocked."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    let output = query("run tests")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(output.text, "Command was blocked.");
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "deny" && scope == "once")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
 }

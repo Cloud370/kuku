@@ -31,3 +31,9 @@ pub fn session_events_path(
     path.push("events.jsonl");
     Ok(path)
 }
+
+pub fn project_policy_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
+    let mut path = project_home(kuku_home, workspace)?;
+    path.push("policy.md");
+    Ok(path)
+}
