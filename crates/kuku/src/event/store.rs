@@ -37,6 +37,10 @@ impl EventStore {
         Ok(Self { path, next_id })
     }
 
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
     pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
         let event = StoredEvent {
             id: self.next_id,

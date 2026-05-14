@@ -197,6 +197,97 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn anthropic_tool_loop_executes_read_file_and_search_text() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(
+        env.workspace.path().join("README.md"),
+        "# Project\nTODO root\nDone\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
+    std::fs::write(env.workspace.path().join("docs/tools.md"), "TODO docs\n").unwrap();
+
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains(r#""messages":[{"content":[{"text":"read and search","type":"text"}],"role":"user"}]"#);
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read and search."},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md", "limit": 2}},
+                    {"type": "tool_use", "id": "toolu_search", "name": "search_text", "input": {"pattern": "TODO", "view": "lines"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            }));
+    });
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains("1\\t# Project")
+            .body_contains("README.md:2: TODO root")
+            .body_contains("docs/tools.md:1: TODO docs");
+        then.status(200)
+            .header("request-id", "req_final")
+            .json_body(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Read and search complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let output = query("read and search")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    tool_request.assert();
+    final_request.assert();
+    assert_eq!(output.text, "Read and search complete.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolCall { ref tool, ref tool_call_id, .. }
+            if tool == "read_file" && tool_call_id == "toolu_read"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolCall { ref tool, ref tool_call_id, .. }
+            if tool == "search_text" && tool_call_id == "toolu_search"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref status, ref model_content, ref structured, .. }
+            if status == "ok"
+                && model_content.contains("1\t# Project")
+                && structured.as_ref().is_some_and(|value| value["kind"] == "file_content" && value["read_event_id"].as_u64().is_some())
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref status, ref model_content, ref structured, .. }
+            if status == "ok"
+                && model_content.contains("README.md:2: TODO root")
+                && structured.as_ref().is_some_and(|value| value["kind"] == "search_results")
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_success_returns_text_and_writes_events() {
     let env = TestEnv::new();
     let server = MockServer::start();

@@ -366,7 +366,15 @@ impl Query {
                     }
 
                     for tool_call in &response.tool_calls {
-                        let result = tool::dispatch(&tool_call.name, &tool_call.args, &workspace);
+                        let prior_events = EventStore::replay(&events_path)?;
+                        let result_event_id = store.next_id();
+                        let result = tool::dispatch(
+                            &tool_call.name,
+                            &tool_call.args,
+                            &workspace,
+                            &prior_events,
+                            result_event_id,
+                        );
                         store.append(EventPayload::ToolResult {
                             turn,
                             ts: now_timestamp()?,
