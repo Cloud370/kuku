@@ -113,7 +113,6 @@ struct ResolvedRuntime {
 struct TrackedFileSnapshot {
     path: String,
     hash: String,
-    raw_text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1076,29 +1075,40 @@ fn build_context_drift_notice(workspace: &Path, events: &[StoredEvent]) -> Resul
     let mut changed = Vec::new();
     for snapshot in tracked.values() {
         let path = PathBuf::from(&snapshot.path);
-        let Ok(current_bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let current_hash = content_hash_bytes(&current_bytes);
-        if current_hash == snapshot.hash {
-            continue;
+        match std::fs::read(&path) {
+            Ok(current_bytes) => {
+                let current_hash = content_hash_bytes(&current_bytes);
+                if current_hash == snapshot.hash {
+                    continue;
+                }
+                changed.push(render_drift_notice_line(workspace, &path, "updated"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                changed.push(render_drift_notice_line(workspace, &path, "deleted"));
+            }
+            Err(_) => continue,
         }
-        let current_text = String::from_utf8(current_bytes).ok();
-        changed.push(render_drift_notice_line(
-            workspace,
-            &path,
-            &snapshot.hash,
-            &current_hash,
-            snapshot.raw_text.as_deref(),
-            current_text.as_deref(),
-        ));
     }
 
     if changed.is_empty() {
         return Ok(None);
     }
 
-    let mut lines = vec!["<kuku_system_notice>".to_string()];
+    let mut lines = vec![
+        "<kuku_system_notice>".to_string(),
+        "Previously loaded file-backed context has changed since the last acknowledged snapshot.".to_string(),
+        "".to_string(),
+        "Only unacknowledged drift is reported here.".to_string(),
+        "Changes already acknowledged through successful full-file reads or writes are not included.".to_string(),
+        "".to_string(),
+        "This notice does not include the changed file contents.".to_string(),
+        "Do not assume you know what changed from this notice alone.".to_string(),
+        "".to_string(),
+        "Use the context loaded in this turn as the current source of truth.".to_string(),
+        "If the task depends on the details of a changed file that is not fully included in the current prompt, read that file again before relying on it.".to_string(),
+        "".to_string(),
+        "Changed tracked files:".to_string(),
+    ];
     lines.extend(changed);
     lines.push("</kuku_system_notice>".to_string());
     Ok(Some(lines.join("\n")))
@@ -1149,13 +1159,11 @@ fn tracked_files_from_latest_model_request(
             source.get("path").and_then(serde_json::Value::as_str),
             source.get("hash").and_then(serde_json::Value::as_str),
         ) {
-            let raw_text = std::fs::read_to_string(path).ok();
             tracked.insert(
                 path.to_string(),
                 TrackedFileSnapshot {
                     path: path.to_string(),
                     hash: hash.to_string(),
-                    raw_text,
                 },
             );
         }
@@ -1170,13 +1178,11 @@ fn tracked_files_from_latest_model_request(
             source.get("path").and_then(serde_json::Value::as_str),
             source.get("hash").and_then(serde_json::Value::as_str),
         ) {
-            let raw_text = std::fs::read_to_string(path).ok();
             tracked.insert(
                 path.to_string(),
                 TrackedFileSnapshot {
                     path: path.to_string(),
                     hash: hash.to_string(),
-                    raw_text,
                 },
             );
         }
@@ -1213,16 +1219,11 @@ fn update_tracked_snapshot_from_tool_result(
             else {
                 return;
             };
-            let raw_text = structured
-                .get("raw_text")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned);
             tracked.insert(
                 path.to_string(),
                 TrackedFileSnapshot {
                     path: path.to_string(),
                     hash: hash.to_string(),
-                    raw_text,
                 },
             );
         }
@@ -1244,64 +1245,18 @@ fn update_tracked_snapshot_from_tool_result(
                 return;
             };
             existing.hash = hash.to_string();
-            existing.raw_text = structured
-                .get("raw_text_after")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| existing.raw_text.clone());
         }
         _ => {}
     }
 }
 
-fn render_drift_notice_line(
-    workspace: &Path,
-    path: &Path,
-    old_hash: &str,
-    new_hash: &str,
-    old_text: Option<&str>,
-    current_text: Option<&str>,
-) -> String {
+fn render_drift_notice_line(workspace: &Path, path: &Path, status: &str) -> String {
     let label = path
         .strip_prefix(workspace)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
-    if let (Some(old_text), Some(current_text)) = (old_text, current_text) {
-        if let Some((before, after)) = first_changed_lines(old_text, current_text) {
-            return format!(
-                "- Context drift: {label} changed ({old_hash} -> {new_hash}); line {before} became line {after}."
-            );
-        }
-    }
-    if let Some(current_text) = current_text {
-        if let Some(preview) = first_non_empty_preview(current_text) {
-            return format!(
-                "- Context drift: {label} changed ({old_hash} -> {new_hash}); current preview: {preview}"
-            );
-        }
-    }
-    format!("- Context drift: {label} changed ({old_hash} -> {new_hash}).")
-}
-
-fn first_changed_lines(old_text: &str, new_text: &str) -> Option<(usize, usize)> {
-    let old_lines = old_text.lines().collect::<Vec<_>>();
-    let new_lines = new_text.lines().collect::<Vec<_>>();
-    let max_len = old_lines.len().max(new_lines.len());
-    for index in 0..max_len {
-        let old_line = old_lines.get(index).copied().unwrap_or("");
-        let new_line = new_lines.get(index).copied().unwrap_or("");
-        if old_line != new_line {
-            return Some((index + 1, index + 1));
-        }
-    }
-    None
-}
-
-fn first_non_empty_preview(text: &str) -> Option<String> {
-    text.lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().chars().take(120).collect())
+    format!("- {label} ({status})")
 }
 
 fn content_hash_bytes(bytes: &[u8]) -> String {

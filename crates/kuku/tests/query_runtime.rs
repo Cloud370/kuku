@@ -522,8 +522,10 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains("<kuku_system_notice>")
-            .body_contains("Context drift:")
-            .body_contains("AGENTS.md")
+            .body_contains("Only unacknowledged drift is reported here.")
+            .body_contains("This notice does not include the changed file contents.")
+            .body_contains("Changed tracked files:")
+            .body_contains("- AGENTS.md (updated)")
             .body_contains("second turn");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_second",
@@ -537,6 +539,91 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
 
     let second = query("second turn")
         .session("s_drift_notice")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(second_server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(second.text, "second ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_notice() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
+    std::fs::write(env.workspace.path().join("notes.md"), "hello\n").unwrap();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("1\\thello");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_done",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "first ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("first turn")
+            .body_contains(r#""tools""#)
+            .body_contains("version one");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_first",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will read the file."},
+                {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "notes.md"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let first = query("first turn")
+        .session("s_drift_deleted_notice")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "first ok");
+
+    std::fs::remove_file(env.workspace.path().join("notes.md")).unwrap();
+
+    let second_server = MockServer::start();
+    second_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_system_notice>")
+            .body_contains("Changed tracked files:")
+            .body_contains("- notes.md (deleted)")
+            .body_contains("second turn");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_second",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "second ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let second = query("second turn")
+        .session("s_drift_deleted_notice")
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())

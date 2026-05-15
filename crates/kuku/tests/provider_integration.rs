@@ -259,15 +259,12 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
     std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
 
     let second_server = MockServer::start();
-    second_server.mock(|when, then| {
+    let second_request = second_server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_system_notice>")
-            .body_contains("Context drift:")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("follow project instructions")
-            .body_contains("next turn");
+            .body_matches(Regex::new(r#"(?s).*<kuku_execution_context>.*<kuku_system_notice>.*<kuku_tool_guidance>.*"#).unwrap())
+            .body_contains("Only unacknowledged drift is reported here.")
+            .body_contains("- AGENTS.md (updated)");
         then.status(200)
             .header("request-id", "req_second")
             .json_body(serde_json::json!({
@@ -290,6 +287,8 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
         .await
         .unwrap();
     assert_eq!(second.text, "drift ok");
+
+    second_request.assert_hits(1);
 }
 
 #[tokio::test(flavor = "current_thread")]
