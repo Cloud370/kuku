@@ -173,11 +173,13 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelRequest {
-            tool_count: Some(6),
+            tool_count: Some(8),
             ref ordered_tool_names,
             ref tool_registry_hash,
             ..
         } if ordered_tool_names.as_ref().is_some_and(|names| names[0] == "find_files")
+            && ordered_tool_names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string()))
+            && ordered_tool_names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string()))
             && tool_registry_hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:"))
     )));
     assert!(events.iter().any(|event| matches!(
@@ -218,6 +220,76 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
             .count(),
         0
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn second_turn_request_places_drift_notice_between_context_and_tool_guidance() {
+    let env = TestEnv::new();
+    let first_server = MockServer::start();
+    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
+
+    first_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("version one")
+            .body_contains("bootstrap turn");
+        then.status(200)
+            .header("request-id", "req_first")
+            .json_body(serde_json::json!({
+                "id": "msg_first",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "bootstrap ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let first = query("bootstrap turn")
+        .session("s_provider_drift")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(first_server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "bootstrap ok");
+
+    std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
+
+    let second_server = MockServer::start();
+    second_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_system_notice>")
+            .body_contains("Context drift:")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("follow project instructions")
+            .body_contains("next turn");
+        then.status(200)
+            .header("request-id", "req_second")
+            .json_body(serde_json::json!({
+                "id": "msg_second",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "drift ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+
+    let second = query("next turn")
+        .session("s_provider_drift")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(second_server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(second.text, "drift ok");
 }
 
 #[tokio::test(flavor = "current_thread")]

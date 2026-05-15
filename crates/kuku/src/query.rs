@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
 
 use sha2::Digest;
 use time::format_description::well_known::Rfc3339;
@@ -90,6 +90,7 @@ struct PendingRun {
     session_id: String,
     query: Query,
     events_path: PathBuf,
+    kuku_home: PathBuf,
     workspace: PathBuf,
     policy_path: PathBuf,
     turn: u64,
@@ -106,6 +107,13 @@ struct ResolvedRuntime {
     ordered_tool_names: Vec<String>,
     tool_count: usize,
     provider_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackedFileSnapshot {
+    path: String,
+    hash: String,
+    raw_text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -238,6 +246,7 @@ impl Query {
                 session_id,
                 query: self,
                 events_path,
+                kuku_home,
                 workspace,
                 policy_path,
                 turn,
@@ -341,6 +350,8 @@ impl Run {
 
         let mut pending = waiting.pending;
         let rule = permission_rule(
+            &pending.kuku_home,
+            &pending.workspace,
             &waiting.queued_tool_call.tool_call.name,
             &waiting.queued_tool_call.tool_call.args,
         );
@@ -349,6 +360,8 @@ impl Run {
                 &pending.policy_path,
                 &waiting.queued_tool_call.tool_call.name,
                 &permission_candidate(
+                    &pending.kuku_home,
+                    &pending.workspace,
                     &waiting.queued_tool_call.tool_call.name,
                     &waiting.queued_tool_call.tool_call.args,
                 ),
@@ -375,6 +388,8 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                 find_tool_definition(&pending, &queued_tool_call.tool_call.name)
             {
                 let candidate = permission_candidate(
+                    &pending.kuku_home,
+                    &pending.workspace,
                     &queued_tool_call.tool_call.name,
                     &queued_tool_call.tool_call.args,
                 );
@@ -423,6 +438,8 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                                 choice,
                                 gate_source_name(decision.source),
                                 &permission_rule(
+                                    &pending.kuku_home,
+                                    &pending.workspace,
                                     &queued_tool_call.tool_call.name,
                                     &queued_tool_call.tool_call.args,
                                 ),
@@ -453,6 +470,8 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                             PermissionChoice::Deny,
                             gate_source_name(decision.source),
                             &permission_rule(
+                                &pending.kuku_home,
+                                &pending.workspace,
                                 &queued_tool_call.tool_call.name,
                                 &queued_tool_call.tool_call.args,
                             ),
@@ -504,12 +523,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let existing_events = EventStore::replay(&pending.events_path)?;
     let history = rebuild_history(&existing_events);
-    let kuku_home = kuku_home()?;
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
-    let (global_memory, project_memory) = load_memory_sources(&kuku_home, &pending.workspace)?;
+    let (global_memory, project_memory) =
+        load_memory_sources(&pending.kuku_home, &pending.workspace)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let assembly = match assemble_context(ContextInput {
+    let mut assembly = match assemble_context(ContextInput {
         environment: EnvironmentSource {
             workspace_path: pending.workspace.display().to_string(),
             platform: platform.clone(),
@@ -537,6 +556,15 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
+    if pending.turn > 1 {
+        if let Some(drift_notice) =
+            build_context_drift_notice(&pending.workspace, &existing_events)?
+        {
+            assembly
+                .prelude_messages
+                .insert(1, crate::context::CanonicalMessage::user_text(drift_notice));
+        }
+    }
     let request_id = format!("req_{}", pending.request_num);
     let params = serde_json::json!({
         "max_output_tokens": pending.query.max_output_tokens,
@@ -761,6 +789,7 @@ async fn execute_tool_call(pending: &mut PendingRun, tool_call: &ProviderToolCal
         &tool_call.name,
         &tool_call.args,
         &pending.workspace,
+        &pending.kuku_home,
         &prior_events,
         result_event_id,
         Some(&tool_call.id),
@@ -859,11 +888,25 @@ fn permission_summary(name: &str, args: &serde_json::Value) -> String {
     )
 }
 
-fn permission_rule(name: &str, args: &serde_json::Value) -> String {
-    format!("{}({})", name, permission_candidate(name, args))
+fn permission_rule(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
+    format!(
+        "{}({})",
+        name,
+        permission_candidate(kuku_home, workspace, name, args)
+    )
 }
 
-fn permission_candidate(name: &str, args: &serde_json::Value) -> String {
+fn permission_candidate(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
     match name {
         "run_command" => args
             .get("command")
@@ -871,6 +914,17 @@ fn permission_candidate(name: &str, args: &serde_json::Value) -> String {
             .unwrap_or("")
             .trim()
             .to_string(),
+        "memory.remember" | "memory.forget" => match args
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+        {
+            Some("global") => global_memory_path(kuku_home).display().to_string(),
+            Some("project") => project_memory_path(kuku_home, workspace)
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        },
         _ => args
             .get("path")
             .and_then(serde_json::Value::as_str)
@@ -1011,4 +1065,307 @@ fn load_memory_sources(
 
 fn now_timestamp() -> Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
+}
+
+fn build_context_drift_notice(workspace: &Path, events: &[StoredEvent]) -> Result<Option<String>> {
+    let tracked = rebuild_tracked_file_snapshots(events);
+    if tracked.is_empty() {
+        return Ok(None);
+    }
+
+    let mut changed = Vec::new();
+    for snapshot in tracked.values() {
+        let path = PathBuf::from(&snapshot.path);
+        let Ok(current_bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let current_hash = content_hash_bytes(&current_bytes);
+        if current_hash == snapshot.hash {
+            continue;
+        }
+        let current_text = String::from_utf8(current_bytes).ok();
+        changed.push(render_drift_notice_line(
+            workspace,
+            &path,
+            &snapshot.hash,
+            &current_hash,
+            snapshot.raw_text.as_deref(),
+            current_text.as_deref(),
+        ));
+    }
+
+    if changed.is_empty() {
+        return Ok(None);
+    }
+
+    let mut lines = vec!["<kuku_system_notice>".to_string()];
+    lines.extend(changed);
+    lines.push("</kuku_system_notice>".to_string());
+    Ok(Some(lines.join("\n")))
+}
+
+fn rebuild_tracked_file_snapshots(events: &[StoredEvent]) -> BTreeMap<String, TrackedFileSnapshot> {
+    let mut tracked = tracked_files_from_latest_model_request(events);
+
+    for event in events {
+        let EventPayload::ToolResult {
+            status,
+            structured: Some(structured),
+            ..
+        } = &event.payload
+        else {
+            continue;
+        };
+        if status != "ok" {
+            continue;
+        }
+        update_tracked_snapshot_from_tool_result(&mut tracked, structured);
+    }
+
+    tracked
+}
+
+fn tracked_files_from_latest_model_request(
+    events: &[StoredEvent],
+) -> BTreeMap<String, TrackedFileSnapshot> {
+    let mut tracked = BTreeMap::new();
+    let Some(provenance) = events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ModelRequest {
+            provenance: Some(provenance),
+            ..
+        } => Some(provenance),
+        _ => None,
+    }) else {
+        return tracked;
+    };
+
+    for source in provenance
+        .get("project_instruction_sources")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(path), Some(hash)) = (
+            source.get("path").and_then(serde_json::Value::as_str),
+            source.get("hash").and_then(serde_json::Value::as_str),
+        ) {
+            let raw_text = std::fs::read_to_string(path).ok();
+            tracked.insert(
+                path.to_string(),
+                TrackedFileSnapshot {
+                    path: path.to_string(),
+                    hash: hash.to_string(),
+                    raw_text,
+                },
+            );
+        }
+    }
+    for source in provenance
+        .get("memory_sources")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(path), Some(hash)) = (
+            source.get("path").and_then(serde_json::Value::as_str),
+            source.get("hash").and_then(serde_json::Value::as_str),
+        ) {
+            let raw_text = std::fs::read_to_string(path).ok();
+            tracked.insert(
+                path.to_string(),
+                TrackedFileSnapshot {
+                    path: path.to_string(),
+                    hash: hash.to_string(),
+                    raw_text,
+                },
+            );
+        }
+    }
+
+    tracked
+}
+
+fn update_tracked_snapshot_from_tool_result(
+    tracked: &mut BTreeMap<String, TrackedFileSnapshot>,
+    structured: &serde_json::Value,
+) {
+    let Some(kind) = structured.get("kind").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    match kind {
+        "file_content" => {
+            let is_full = structured
+                .get("is_full_file_snapshot")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if !is_full {
+                return;
+            }
+            let Some(path) = structured
+                .get("canonical_path")
+                .and_then(serde_json::Value::as_str)
+            else {
+                return;
+            };
+            let Some(hash) = structured
+                .get("content_hash")
+                .and_then(serde_json::Value::as_str)
+            else {
+                return;
+            };
+            let raw_text = structured
+                .get("raw_text")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned);
+            tracked.insert(
+                path.to_string(),
+                TrackedFileSnapshot {
+                    path: path.to_string(),
+                    hash: hash.to_string(),
+                    raw_text,
+                },
+            );
+        }
+        "file_edit" | "file_write" | "memory_write" | "memory_forget" => {
+            let Some(path) = structured
+                .get("canonical_path")
+                .and_then(serde_json::Value::as_str)
+            else {
+                return;
+            };
+            let Some(existing) = tracked.get_mut(path) else {
+                return;
+            };
+            let Some(hash) = structured
+                .get("content_hash_after")
+                .or_else(|| structured.get("content_hash"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                return;
+            };
+            existing.hash = hash.to_string();
+            existing.raw_text = structured
+                .get("raw_text_after")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| existing.raw_text.clone());
+        }
+        _ => {}
+    }
+}
+
+fn render_drift_notice_line(
+    workspace: &Path,
+    path: &Path,
+    old_hash: &str,
+    new_hash: &str,
+    old_text: Option<&str>,
+    current_text: Option<&str>,
+) -> String {
+    let label = path
+        .strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if let (Some(old_text), Some(current_text)) = (old_text, current_text) {
+        if let Some((before, after)) = first_changed_lines(old_text, current_text) {
+            return format!(
+                "- Context drift: {label} changed ({old_hash} -> {new_hash}); line {before} became line {after}."
+            );
+        }
+    }
+    if let Some(current_text) = current_text {
+        if let Some(preview) = first_non_empty_preview(current_text) {
+            return format!(
+                "- Context drift: {label} changed ({old_hash} -> {new_hash}); current preview: {preview}"
+            );
+        }
+    }
+    format!("- Context drift: {label} changed ({old_hash} -> {new_hash}).")
+}
+
+fn first_changed_lines(old_text: &str, new_text: &str) -> Option<(usize, usize)> {
+    let old_lines = old_text.lines().collect::<Vec<_>>();
+    let new_lines = new_text.lines().collect::<Vec<_>>();
+    let max_len = old_lines.len().max(new_lines.len());
+    for index in 0..max_len {
+        let old_line = old_lines.get(index).copied().unwrap_or("");
+        let new_line = new_lines.get(index).copied().unwrap_or("");
+        if old_line != new_line {
+            return Some((index + 1, index + 1));
+        }
+    }
+    None
+}
+
+fn first_non_empty_preview(text: &str) -> Option<String> {
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().chars().take(120).collect())
+}
+
+fn content_hash_bytes(bytes: &[u8]) -> String {
+    let digest = sha2::Sha256::digest(bytes);
+    format!("sha256:{digest:x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tool::dispatch;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn dispatch_uses_the_captured_home_for_memory_tools() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session_home = tempfile::tempdir().unwrap();
+        let runtime_home = tempfile::tempdir().unwrap();
+        let workspace = Path::new(dir.path());
+        let args = serde_json::json!({"scope": "project", "kind": "how_to_work", "text": "Keep answers concise"});
+        let expected_path = crate::session::project_memory_path(
+            session_home.path(),
+            &std::fs::canonicalize(workspace).unwrap(),
+        )
+        .unwrap();
+        let unexpected_path = crate::session::project_memory_path(
+            runtime_home.path(),
+            &std::fs::canonicalize(workspace).unwrap(),
+        )
+        .unwrap();
+
+        let previous = std::env::var_os("KUKU_HOME");
+        std::env::set_var("KUKU_HOME", runtime_home.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            dispatch(
+                "memory.remember",
+                &args,
+                workspace,
+                session_home.path(),
+                &[],
+                1,
+                None,
+            )
+            .await
+        });
+        match previous {
+            Some(value) => std::env::set_var("KUKU_HOME", value),
+            None => std::env::remove_var("KUKU_HOME"),
+        }
+
+        assert_eq!(result.status, "ok");
+        assert!(std::fs::read_to_string(&expected_path)
+            .unwrap()
+            .contains("Keep answers concise"));
+        assert!(!unexpected_path.exists());
+    }
 }

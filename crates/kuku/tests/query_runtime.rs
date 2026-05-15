@@ -144,6 +144,48 @@ async fn run_without_provider_config_writes_error_and_closes_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
+    let env = TestEnv::new();
+    std::fs::write(env.home.path().join("memory.md"), "captured-session-memory").unwrap();
+
+    let runtime_home = tempfile::tempdir().unwrap();
+    std::fs::write(runtime_home.path().join("memory.md"), "runtime-memory").unwrap();
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("captured-session-memory");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final_memory",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Captured home memory."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 7, "output_tokens": 4}
+        }));
+    });
+
+    let mut run = query("summarize memory")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .start()
+        .await
+        .unwrap();
+
+    std::env::set_var("KUKU_HOME", runtime_home.path());
+
+    match run.next().await.unwrap().expect("done event") {
+        UiEvent::Done { output } => assert_eq!(output.text, "Captured home memory."),
+        other => panic!("expected Done, got {other:?}"),
+    }
+
+    mock.assert();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     let env = TestEnv::new();
 
@@ -438,6 +480,71 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "deny" && scope == "once")));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked_files() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("version one")
+            .body_contains("first turn");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_first",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "first ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let first = query("first turn")
+        .session("s_drift_notice")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "first ok");
+
+    std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
+
+    let second_server = MockServer::start();
+    second_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_system_notice>")
+            .body_contains("Context drift:")
+            .body_contains("AGENTS.md")
+            .body_contains("second turn");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_second",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "second ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let second = query("second turn")
+        .session("s_drift_notice")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(second_server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(second.text, "second ok");
 }
 
 #[tokio::test(flavor = "current_thread")]

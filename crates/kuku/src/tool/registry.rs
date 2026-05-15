@@ -102,6 +102,39 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
             "edit",
         ),
         tool(
+            "memory.remember",
+            "Append one natural-language bullet to global or project memory under a supported section.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "enum": ["global", "project"], "description": "Which memory file to update."},
+                    "kind": {"type": "string", "enum": ["how_to_work", "what_is_true", "where_to_look"], "description": "Which memory section to append to."},
+                    "text": {"type": "string", "description": "Natural-language bullet text without the leading '- '."}
+                },
+                "required": ["scope", "kind", "text"]
+            }),
+            false,
+            false,
+            20_000,
+            "edit",
+        ),
+        tool(
+            "memory.forget",
+            "Remove exactly one matching bullet from global or project memory by exact text.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "enum": ["global", "project"], "description": "Which memory file to update."},
+                    "text": {"type": "string", "description": "Exact natural-language bullet text to remove, without the leading '- '."}
+                },
+                "required": ["scope", "text"]
+            }),
+            false,
+            false,
+            20_000,
+            "edit",
+        ),
+        tool(
             "run_command",
             "Run a local command with the workspace as cwd. timeout is required in seconds.",
             serde_json::json!({
@@ -177,6 +210,8 @@ mod tests {
                 "search_text",
                 "edit_file",
                 "write_file",
+                "memory.remember",
+                "memory.forget",
                 "run_command",
             ]
         );
@@ -185,5 +220,26 @@ mod tests {
         assert!(registry[0].concurrency_safe);
         assert_eq!(registry[0].max_result_chars, 20_000);
         assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry()));
+    }
+
+    #[test]
+    fn builtin_registry_marks_memory_tools_as_editing_operations() {
+        let registry = builtin_registry();
+
+        let remember = registry
+            .iter()
+            .find(|tool| tool.name == "memory.remember")
+            .expect("memory.remember registered");
+        assert!(!remember.read_only);
+        assert!(!remember.concurrency_safe);
+        assert_eq!(remember.risk, "edit");
+
+        let forget = registry
+            .iter()
+            .find(|tool| tool.name == "memory.forget")
+            .expect("memory.forget registered");
+        assert!(!forget.read_only);
+        assert!(!forget.concurrency_safe);
+        assert_eq!(forget.risk, "edit");
     }
 }

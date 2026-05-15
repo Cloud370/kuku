@@ -14,6 +14,7 @@ pub(crate) async fn dispatch(
     name: &str,
     args: &Value,
     workspace: &Path,
+    kuku_home: &Path,
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
@@ -22,7 +23,7 @@ pub(crate) async fn dispatch(
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
-        "edit_file" | "write_file" | "run_command"
+        "edit_file" | "write_file" | "memory.remember" | "memory.forget" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
             ToolResultEnvelope::blocked(
@@ -34,6 +35,8 @@ pub(crate) async fn dispatch(
         }
         "edit_file" => builtin::edit_file(args, workspace, prior_events),
         "write_file" => builtin::write_file(args, workspace, prior_events),
+        "memory.remember" => builtin::memory_remember_with_home(kuku_home, args, workspace),
+        "memory.forget" => builtin::memory_forget_with_home(kuku_home, args, workspace),
         "run_command" => builtin::run_command(args, workspace).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
@@ -117,6 +120,7 @@ mod tests {
             "find_files",
             &serde_json::json!({"path": "."}),
             dir.path(),
+            dir.path(),
             &[],
             1,
             None,
@@ -128,6 +132,7 @@ mod tests {
         let read = dispatch(
             "read_file",
             &serde_json::json!({"path": "a.txt"}),
+            dir.path(),
             dir.path(),
             &[],
             2,
@@ -142,6 +147,7 @@ mod tests {
             "search_text",
             &serde_json::json!({"pattern": "needle", "view": "lines"}),
             dir.path(),
+            dir.path(),
             &[],
             3,
             None,
@@ -155,6 +161,7 @@ mod tests {
             "run_command",
             &serde_json::json!({"command": "cargo test", "timeout": 1}),
             dir.path(),
+            dir.path(),
             &[denied],
             4,
             Some("tool_command"),
@@ -166,6 +173,7 @@ mod tests {
         let unknown = dispatch(
             "missing_tool",
             &serde_json::json!({}),
+            dir.path(),
             dir.path(),
             &[],
             5,
@@ -187,6 +195,7 @@ mod tests {
             "edit_file",
             &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
             dir.path(),
+            dir.path(),
             std::slice::from_ref(&read),
             18,
             None,
@@ -203,6 +212,7 @@ mod tests {
         let written = dispatch(
             "write_file",
             &serde_json::json!({"path": "a.txt", "content": "done\n"}),
+            dir.path(),
             dir.path(),
             &[read_after_edit],
             20,
@@ -228,6 +238,7 @@ mod tests {
             "edit_file",
             &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
             dir.path(),
+            dir.path(),
             &[read, denied],
             18,
             Some("tool_edit"),
@@ -238,5 +249,37 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "hello\nworld\n"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_blocks_memory_tools_when_runtime_permission_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let denied = denied_event("tool_memory");
+
+        let remember = dispatch(
+            "memory.remember",
+            &serde_json::json!({"scope": "project", "kind": "how_to_work", "text": "Keep answers concise"}),
+            dir.path(),
+            dir.path(),
+            std::slice::from_ref(&denied),
+            18,
+            Some("tool_memory"),
+        )
+        .await;
+        assert_eq!(remember.status, "blocked");
+        assert!(remember.model_content.contains("permission gate denied"));
+
+        let forget = dispatch(
+            "memory.forget",
+            &serde_json::json!({"scope": "project", "text": "Keep answers concise"}),
+            dir.path(),
+            dir.path(),
+            &[denied],
+            19,
+            Some("tool_memory"),
+        )
+        .await;
+        assert_eq!(forget.status, "blocked");
+        assert!(forget.model_content.contains("permission gate denied"));
     }
 }

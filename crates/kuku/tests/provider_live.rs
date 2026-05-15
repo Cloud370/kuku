@@ -22,40 +22,63 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
     std::env::set_var("KUKU_HOME", home.path());
     std::env::set_current_dir(workspace.path()).unwrap();
 
+    std::fs::write(workspace.path().join("AGENTS.md"), "version one\n").unwrap();
     std::fs::write(
         workspace.path().join("README.md"),
         "# LIVE_PROMPT_CONTEXT_OK\n",
     )
     .unwrap();
 
-    let output = query("Read README.md with tools and reply with exactly: LIVE_PROMPT_CONTEXT_OK")
-        .provider(Provider::Anthropic)
-        .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
-        .base_url(
-            std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
-        )
-        .api_key(std::env::var("KUKU_ANTHROPIC_API_KEY").expect("KUKU_ANTHROPIC_API_KEY required"))
-        .max_output_tokens(256)
-        .temperature(0.0)
-        .run()
-        .await
-        .expect("live Anthropic call should succeed");
+    let session_id =
+        query("Read README.md with tools and reply with exactly: LIVE_PROMPT_CONTEXT_OK")
+            .provider(Provider::Anthropic)
+            .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
+            .base_url(
+                std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
+            )
+            .api_key(
+                std::env::var("KUKU_ANTHROPIC_API_KEY").expect("KUKU_ANTHROPIC_API_KEY required"),
+            )
+            .max_output_tokens(256)
+            .temperature(0.0)
+            .run()
+            .await
+            .expect("live Anthropic call should succeed")
+            .session_id;
+
+    std::fs::write(workspace.path().join("AGENTS.md"), "version two\n").unwrap();
+
+    let drift_output = query(
+        "If you receive a <kuku_system_notice> about changed context, reply with exactly: DRIFT_NOTICED. Otherwise reply with exactly: NO_NOTICE.",
+    )
+    .session(&session_id)
+    .provider(Provider::Anthropic)
+    .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
+    .base_url(
+        std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
+    )
+    .api_key(std::env::var("KUKU_ANTHROPIC_API_KEY").expect("KUKU_ANTHROPIC_API_KEY required"))
+    .max_output_tokens(256)
+    .temperature(0.0)
+    .run()
+    .await
+    .expect("live Anthropic drift turn should succeed");
 
     let events = EventStore::replay(
         session_events_path(
             home.path(),
             &std::fs::canonicalize(workspace.path()).unwrap(),
-            &output.session_id,
+            &session_id,
         )
         .unwrap(),
     )
     .unwrap();
 
-    assert!(output.text.contains("LIVE_PROMPT_CONTEXT_OK"));
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolCall { ref tool, .. } if tool == "read_file"
     )));
+    assert!(drift_output.text.contains("DRIFT_NOTICED"));
 
     std::env::set_current_dir(previous_cwd).unwrap();
     match previous_home {
