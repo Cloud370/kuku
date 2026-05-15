@@ -4,55 +4,8 @@ use serde_json::{json, Value};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
-use super::error::{classify_http_error, parse_error, transport_error};
-use super::types::{
-    ProviderFailure, ProviderRequest, ProviderResponse, ProviderToolCall, ProviderUsage,
-    ResolvedProvider,
-};
-
-pub(crate) async fn call(
-    config: &ResolvedProvider,
-    request: &ProviderRequest,
-) -> Result<ProviderResponse, ProviderFailure> {
-    let body = render_body(request);
-    let url = chat_completions_url(&config.base_url);
-    let client = Client::new();
-
-    let response = client
-        .post(url)
-        .header("content-type", "application/json")
-        .header(
-            "authorization",
-            format!("Bearer {}", config.api_key.expose()),
-        )
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| transport_error(&error))?;
-
-    let status = response.status();
-    let request_id = response
-        .headers()
-        .get("x-request-id")
-        .or_else(|| response.headers().get("request-id"))
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        let mut failure = classify_http_error(status.as_u16(), &body_text);
-        failure.provider_request_id = request_id;
-        return Err(failure);
-    }
-
-    let body_text = response.text().await.map_err(|error| {
-        let mut failure = transport_error(&error);
-        failure.provider_request_id = request_id.clone();
-        failure
-    })?;
-
-    parse_response(&body_text, request_id)
-}
+use super::error::{classify_http_error, transport_error};
+use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 pub(crate) fn chat_completions_url(base_url: &str) -> String {
     format!("{}/chat/completions", base_url.trim_end_matches('/'))
@@ -178,77 +131,6 @@ fn normalize_stop_reason(reason: &str) -> String {
         "stop" => "end_turn".to_string(),
         other => other.to_string(),
     }
-}
-
-fn parse_response(
-    body: &str,
-    request_id: Option<String>,
-) -> Result<ProviderResponse, ProviderFailure> {
-    let parsed: Value = serde_json::from_str(body).map_err(|_| parse_error(body))?;
-
-    let choice = parsed
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first());
-    let message = choice.and_then(|choice| choice.get("message"));
-    let tool_call_request_id = request_id.as_deref().unwrap_or("unknown");
-
-    let tool_calls = message
-        .and_then(|message| message.get("tool_calls"))
-        .and_then(Value::as_array)
-        .map(|calls| {
-            calls
-                .iter()
-                .enumerate()
-                .map(|(index, call)| {
-                    let function = call.get("function");
-                    let args = function
-                        .and_then(|function| function.get("arguments"))
-                        .and_then(Value::as_str)
-                        .and_then(|args| serde_json::from_str(args).ok())
-                        .unwrap_or_else(|| json!({}));
-                    ProviderToolCall {
-                        id: call
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned)
-                            .unwrap_or_else(|| format!("tc_{tool_call_request_id}_{index}")),
-                        name: function
-                            .and_then(|function| function.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        args,
-                        index: index as u64,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let usage = parsed
-        .get("usage")
-        .and_then(Value::as_object)
-        .map(|usage| ProviderUsage {
-            input_tokens: usage.get("prompt_tokens").and_then(Value::as_u64),
-            output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
-        })
-        .filter(|usage| usage.input_tokens.is_some() || usage.output_tokens.is_some());
-
-    Ok(ProviderResponse {
-        assistant_text: message
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        stop_reason: choice
-            .and_then(|choice| choice.get("finish_reason"))
-            .and_then(Value::as_str)
-            .map(normalize_stop_reason),
-        provider_request_id: request_id,
-        usage,
-        tool_calls,
-    })
 }
 
 pub(crate) async fn stream(

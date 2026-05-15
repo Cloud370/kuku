@@ -24,8 +24,7 @@ use crate::permission::{
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::provider::types::{
-    ProviderFailure, ProviderKind, ProviderRequest, ProviderResponse, ProviderToolCall,
-    ResolvedProvider,
+    ProviderFailure, ProviderKind, ProviderRequest, ProviderToolCall, ResolvedProvider,
 };
 use crate::provider::{self, Provider};
 use crate::session::{
@@ -657,21 +656,11 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                             summary: queued_tool_call.summary.clone(),
                         };
                         append_permission_request(&pending.events_path, pending.turn, &request)?;
-                        return Ok(PendingStep::ToolCallReady {
-                            pending: Box::new(PendingRun {
-                                queued_tool_calls: {
-                                    let mut q = VecDeque::new();
-                                    q.push_back(queued_tool_call);
-                                    q
-                                },
-                                ..pending
-                            }),
-                            ui_event: UiEvent::ToolCall {
-                                tool_call_id: request.tool_call_id.clone(),
-                                tool: request.tool.clone(),
-                                summary: request.summary.clone(),
-                            },
-                        });
+                        return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
+                            pending,
+                            queued_tool_call,
+                            request,
+                        })));
                     }
                     GateDecisionKind::Allow => {
                         if !matches!(decision.source, GateSource::TrustPosture) {
@@ -736,17 +725,14 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                                 &queued_tool_call.tool_call.args,
                             ),
                         )?;
-                        pending.saved_tool_call = Some(queued_tool_call);
-                        let saved = pending.saved_tool_call.as_ref().unwrap();
-                        let tc_id = saved.tool_call.id.clone();
-                        let tc_name = saved.tool_call.name.clone();
-                        let tc_summary = saved.summary.clone();
-                        return Ok(PendingStep::ToolCallReady {
+                        let tc_id = queued_tool_call.tool_call.id.clone();
+                        let summary = queued_tool_call.summary.clone();
+                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+                        return Ok(PendingStep::ToolResultReady {
                             pending: Box::new(pending),
-                            ui_event: UiEvent::ToolCall {
+                            ui_event: UiEvent::ToolResult {
                                 tool_call_id: tc_id,
-                                tool: tc_name,
-                                summary: tc_summary,
+                                summary,
                             },
                         });
                     }
@@ -962,64 +948,6 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             Err(Error::Provider(failure.message))
         }
     }
-}
-
-async fn handle_provider_response(
-    mut pending: PendingRun,
-    request_id: String,
-    response: ProviderResponse,
-) -> Result<PendingStep> {
-    let has_tool_calls = !response.tool_calls.is_empty();
-    {
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::ModelResponse {
-            turn: pending.turn,
-            ts: now_timestamp()?,
-            request_id: request_id.clone(),
-            text: response.assistant_text.clone(),
-            stop_reason: response.stop_reason.clone().unwrap_or_else(|| {
-                if has_tool_calls {
-                    "tool_use".to_string()
-                } else {
-                    "end_turn".to_string()
-                }
-            }),
-            tool_call_count: has_tool_calls.then_some(response.tool_calls.len() as u64),
-            usage: serde_json::to_value(&response.usage).unwrap_or_default(),
-        })?;
-
-        if !has_tool_calls {
-            store.append(EventPayload::TurnEnd {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
-            return Ok(PendingStep::Done(RunOutput {
-                session_id: pending.session_id.clone(),
-                text: response.assistant_text,
-            }));
-        }
-
-        for tool_call in &response.tool_calls {
-            store.append(EventPayload::ToolCall {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-                tool_call_id: tool_call.id.clone(),
-                request_id: request_id.clone(),
-                index: tool_call.index,
-                tool: tool_call.name.clone(),
-                args: tool_call.args.clone(),
-            })?;
-        }
-    }
-
-    for tool_call in response.tool_calls {
-        let summary = permission_summary(&tool_call.name, &tool_call.args);
-        pending
-            .queued_tool_calls
-            .push_back(QueuedToolCall { tool_call, summary });
-    }
-
-    Ok(PendingStep::Pending(Box::new(pending)))
 }
 
 fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
@@ -1301,7 +1229,6 @@ fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'stati
         provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
         provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
         provider::types::ProviderFailureKind::Transport => "transport",
-        provider::types::ProviderFailureKind::Parse => "parse",
         provider::types::ProviderFailureKind::Unknown => "unknown",
     }
 }

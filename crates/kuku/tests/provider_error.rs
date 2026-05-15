@@ -20,7 +20,7 @@ mod provider {
     }
 }
 
-use provider::error::{classify_http_error, parse_error};
+use provider::error::classify_http_error;
 use provider::types::ProviderFailureKind;
 
 #[test]
@@ -56,15 +56,4 @@ fn body_snippet_is_truncated_and_sanitized() {
 
     assert!(failure.message.starts_with("HTTP 500:"));
     assert!(failure.message.len() <= 220);
-}
-
-#[test]
-fn parse_errors_are_non_retryable() {
-    let failure = parse_error("{not-json");
-
-    assert_eq!(failure.kind, ProviderFailureKind::Parse);
-    assert!(!failure.retryable);
-    assert!(failure
-        .message
-        .contains("failed to parse provider response"));
 }

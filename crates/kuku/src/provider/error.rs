@@ -31,16 +31,6 @@ pub(crate) fn transport_error(error: &reqwest::Error) -> ProviderFailure {
     }
 }
 
-pub(crate) fn parse_error(body: &str) -> ProviderFailure {
-    ProviderFailure {
-        kind: ProviderFailureKind::Parse,
-        message: format!("failed to parse provider response: {}", truncate(body, 200)),
-        status: None,
-        provider_request_id: None,
-        retryable: false,
-    }
-}
-
 fn sanitize_http_message(status: u16, body: &str) -> String {
     format!("HTTP {status}: {}", truncate(body, 200))
 }

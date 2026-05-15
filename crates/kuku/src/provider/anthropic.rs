@@ -4,54 +4,10 @@ use serde_json::{json, Value};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
-use super::error::{classify_http_error, parse_error, transport_error};
-use super::types::{
-    ProviderFailure, ProviderRequest, ProviderResponse, ProviderToolCall, ProviderUsage,
-    ResolvedProvider,
-};
+use super::error::{classify_http_error, transport_error};
+use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-
-pub(crate) async fn call(
-    config: &ResolvedProvider,
-    request: &ProviderRequest,
-) -> Result<ProviderResponse, ProviderFailure> {
-    let body = render_body(request);
-    let url = messages_url(&config.base_url);
-    let client = Client::new();
-
-    let response = client
-        .post(url)
-        .header("content-type", "application/json")
-        .header("x-api-key", config.api_key.expose())
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| transport_error(&error))?;
-
-    let status = response.status();
-    let request_id = response
-        .headers()
-        .get("request-id")
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        let mut failure = classify_http_error(status.as_u16(), &body_text);
-        failure.provider_request_id = request_id;
-        return Err(failure);
-    }
-
-    let body_text = response.text().await.map_err(|error| {
-        let mut failure = transport_error(&error);
-        failure.provider_request_id = request_id.clone();
-        failure
-    })?;
-
-    parse_response(&body_text, request_id)
-}
 
 pub(crate) fn messages_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -144,82 +100,6 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
             json!({"role": "assistant", "content": content})
         }
     }
-}
-
-fn parse_response(
-    body: &str,
-    request_id: Option<String>,
-) -> Result<ProviderResponse, ProviderFailure> {
-    let parsed: Value = serde_json::from_str(body).map_err(|_| parse_error(body))?;
-
-    let assistant_text = parsed
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .map(|block| {
-                    block
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-
-    let tool_calls = parsed
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
-                .enumerate()
-                .map(|(index, block)| ProviderToolCall {
-                    id: block
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    name: block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    args: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                    index: index as u64,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let usage = parsed
-        .get("usage")
-        .and_then(Value::as_object)
-        .map(|usage| ProviderUsage {
-            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-        })
-        .filter(|usage| usage.input_tokens.is_some() || usage.output_tokens.is_some());
-
-    Ok(ProviderResponse {
-        assistant_text,
-        stop_reason: parsed
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        provider_request_id: request_id.or_else(|| {
-            parsed
-                .get("id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        }),
-        usage,
-        tool_calls,
-    })
 }
 
 pub(crate) async fn stream(

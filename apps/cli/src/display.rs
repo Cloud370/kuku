@@ -32,6 +32,7 @@ pub fn session_separator(session_id: &str) {
 }
 
 /// Print an event line (for show events).
+#[allow(dead_code)]
 pub fn event_line(event_brief: &str) {
     println!("{event_brief}");
 }

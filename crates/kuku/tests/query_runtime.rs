@@ -6,7 +6,93 @@ use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::session_events_path;
 use kuku::{query, Error, Provider, UiEvent};
+use serde_json::Value;
 use tempfile::TempDir;
+
+/// Wrap an Anthropic-style message JSON into SSE streaming frames.
+fn anthropic_sse_response(msg: Value) -> String {
+    let id = msg
+        .get("id")
+        .cloned()
+        .unwrap_or(Value::String("msg_1".into()));
+    let model = msg
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String("test-model".into()));
+    let stop_reason = msg
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn");
+    let usage = msg
+        .get("usage")
+        .cloned()
+        .unwrap_or(serde_json::json!({"input_tokens": 0, "output_tokens": 0}));
+    let content = msg
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut sse = String::new();
+
+    // message_start
+    sse.push_str(&format!(
+        "event: message_start\ndata: {}\n\n",
+        serde_json::json!({"type":"message_start","message":{"id":id,"model":model,"content":[],"usage":usage}})
+    ));
+
+    // content blocks
+    for (i, block) in content.iter().enumerate() {
+        let btype = block.get("type").and_then(Value::as_str).unwrap_or("text");
+        if btype == "text" {
+            let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+            sse.push_str(&format!(
+                "event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"text","text":""}})
+            ));
+            if !text.is_empty() {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"text_delta","text":text}})
+                ));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
+        } else if btype == "tool_use" {
+            let id = block.get("id").and_then(Value::as_str).unwrap_or("tc_1");
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+            sse.push_str(&format!(
+                "event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"tool_use","id":id,"name":name,"input":{}}})
+            ));
+            let args_str = serde_json::to_string(&input).unwrap_or_default();
+            if !args_str.is_empty() && args_str != "{}" {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"input_json_delta","partial_json":args_str}})
+                ));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
+        }
+    }
+
+    // message_delta
+    sse.push_str(&format!(
+        "event: message_delta\ndata: {}\n\n",
+        serde_json::json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage":{"output_tokens":usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0)}})
+    ));
+
+    // message_stop
+    sse.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+
+    sse
+}
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -156,14 +242,15 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains("captured-session-memory");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final_memory",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Captured home memory."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 7, "output_tokens": 4}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final_memory",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Captured home memory."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
     });
 
     let mut run = query("summarize memory")
@@ -177,9 +264,13 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
 
     std::env::set_var("KUKU_HOME", runtime_home.path());
 
-    match run.next().await.unwrap().expect("done event") {
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::Done { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
+    match event {
         UiEvent::Done { output } => assert_eq!(output.text, "Captured home memory."),
-        other => panic!("expected Done, got {other:?}"),
+        _ => unreachable!(),
     }
 
     mock.assert();
@@ -264,17 +355,18 @@ async fn run_emits_permission_requested_for_gated_tool() {
 
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_tool",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Need approval."},
-                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let mut run = query("run tests")
@@ -286,13 +378,16 @@ async fn run_emits_permission_requested_for_gated_tool() {
         .await
         .unwrap();
 
-    let event = run.next().await.unwrap().expect("permission event");
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::PermissionRequested { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
     match event {
         UiEvent::PermissionRequested { request } => {
             assert_eq!(request.tool_call_id, "toolu_cmd");
             assert_eq!(request.tool, "run_command");
         }
-        other => panic!("expected PermissionRequested, got {other:?}"),
+        _ => unreachable!(),
     }
 
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
@@ -313,14 +408,15 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains(r#""tool_result""#);
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final_1",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "First command completed."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "First command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
     });
 
     server.mock(|when, then| {
@@ -331,17 +427,18 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             .body_contains("<kuku_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_tool",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Need approval."},
-                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let session_id = "s_session_grant";
@@ -355,17 +452,24 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         .await
         .unwrap();
 
-    let request = match run.next().await.unwrap().unwrap() {
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::PermissionRequested { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
+    let request = match event {
         UiEvent::PermissionRequested { request } => request,
-        other => panic!("expected PermissionRequested, got {other:?}"),
+        _ => unreachable!(),
     };
     run.decide(&request.id, kuku::query::PermissionChoice::Session)
         .await
         .unwrap();
-    let first_done = run.next().await.unwrap().unwrap();
-    match first_done {
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::Done { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
+    match event {
         UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
-        other => panic!("expected Done, got {other:?}"),
+        _ => unreachable!(),
     }
 
     let server = MockServer::start();
@@ -374,14 +478,15 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains(r#""tool_result""#);
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final_2",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Second command completed."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Second command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
     });
 
     server.mock(|when, then| {
@@ -392,17 +497,18 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             .body_contains("<kuku_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_tool_2",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Need approval again."},
-                {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval again."},
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let mut run = query("run tests")
@@ -415,10 +521,13 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         .await
         .unwrap();
 
-    let done = run.next().await.unwrap().unwrap();
-    match done {
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::Done { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
+    match event {
         UiEvent::Done { output } => assert_eq!(output.text, "Second command completed."),
-        other => panic!("expected Done, got {other:?}"),
+        _ => unreachable!(),
     }
 
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
@@ -436,14 +545,15 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
             .path("/v1/messages")
             .body_contains(r#""tool_result""#)
             .body_contains("permission gate denied this tool call");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Command was blocked."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command was blocked."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
     });
 
     server.mock(|when, then| {
@@ -454,17 +564,18 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
             .body_contains("<kuku_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_tool",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Need approval."},
-                {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let output = query("run tests")
@@ -494,14 +605,15 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
             .path("/v1/messages")
             .body_contains("version one")
             .body_contains("first turn");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_first",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "first ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_first",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "first ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let first = query("first turn")
@@ -527,14 +639,15 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
             .body_contains("Changed tracked files:")
             .body_contains("- AGENTS.md (updated)")
             .body_contains("second turn");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_second",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "second ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_second",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "second ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let second = query("second turn")
@@ -562,14 +675,15 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
             .path("/v1/messages")
             .body_contains(r#""tool_result""#)
             .body_contains("1\\thello");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_done",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "first ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_done",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "first ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     server.mock(|when, then| {
@@ -578,17 +692,18 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
             .body_contains("first turn")
             .body_contains(r#""tools""#)
             .body_contains("version one");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_first",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "I will read the file."},
-                {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "notes.md"}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_first",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read the file."},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "notes.md"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let first = query("first turn")
@@ -612,14 +727,15 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
             .body_contains("Changed tracked files:")
             .body_contains("- notes.md (deleted)")
             .body_contains("second turn");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_second",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "second ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_second",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "second ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let second = query("second turn")

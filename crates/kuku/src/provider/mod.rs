@@ -9,20 +9,10 @@ pub use types::Provider;
 
 use futures_core::Stream;
 use std::pin::Pin;
-use types::{ProviderFailure, ProviderKind, ProviderRequest, ProviderResponse, ResolvedProvider};
+use types::{ProviderFailure, ProviderKind, ProviderRequest, ResolvedProvider};
 
 pub(crate) type ProviderChunkStream =
     Pin<Box<dyn Stream<Item = Result<chunk::ProviderChunk, ProviderFailure>> + Send>>;
-
-pub(crate) async fn call_provider(
-    config: &ResolvedProvider,
-    request: &ProviderRequest,
-) -> Result<ProviderResponse, ProviderFailure> {
-    match config.kind {
-        ProviderKind::Anthropic => anthropic::call(config, request).await,
-        ProviderKind::OpenAiCompatible => openai_compat::call(config, request).await,
-    }
-}
 
 pub(crate) async fn stream_provider(
     config: &ResolvedProvider,

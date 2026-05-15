@@ -82,15 +82,6 @@ pub(crate) struct ProviderToolCall {
     pub(crate) index: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ProviderResponse {
-    pub(crate) assistant_text: String,
-    pub(crate) stop_reason: Option<String>,
-    pub(crate) provider_request_id: Option<String>,
-    pub(crate) usage: Option<ProviderUsage>,
-    pub(crate) tool_calls: Vec<ProviderToolCall>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderFailureKind {
     Authentication,
@@ -99,7 +90,6 @@ pub(crate) enum ProviderFailureKind {
     InvalidRequest,
     ProviderUnavailable,
     Transport,
-    Parse,
     Unknown,
 }
 

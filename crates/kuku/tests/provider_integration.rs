@@ -145,7 +145,7 @@ fn openai_sse_response(completion: Value) -> String {
 
         // Finish reason
         if let Some(reason) = finish_reason {
-            let normalized = match reason {
+            let _normalized = match reason {
                 "tool_calls" => "tool_use",
                 "stop" => "end_turn",
                 r => r,
@@ -611,19 +611,26 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
         .await
         .unwrap();
 
-    let request = match run.next().await.unwrap().unwrap() {
+    let mut event = run.next().await.unwrap().unwrap();
+    while !matches!(event, kuku::UiEvent::PermissionRequested { .. }) {
+        event = run.next().await.unwrap().unwrap();
+    }
+    let request = match event {
         kuku::UiEvent::PermissionRequested { request } => request,
-        other => panic!("expected PermissionRequested, got {other:?}"),
+        _ => unreachable!(),
     };
 
     run.decide(&request.id, kuku::query::PermissionChoice::Once)
         .await
         .unwrap();
 
-    let done = run.next().await.unwrap().unwrap();
-    match done {
+    let mut event = run.next().await.unwrap().unwrap();
+    while !matches!(event, kuku::UiEvent::Done { .. }) {
+        event = run.next().await.unwrap().unwrap();
+    }
+    match event {
         kuku::UiEvent::Done { output } => assert_eq!(output.text, "Command completed."),
-        other => panic!("expected Done, got {other:?}"),
+        _ => unreachable!(),
     }
 
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
@@ -684,17 +691,24 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
         .await
         .unwrap();
 
-    let request = match run.next().await.unwrap().unwrap() {
+    let mut event = run.next().await.unwrap().unwrap();
+    while !matches!(event, kuku::UiEvent::PermissionRequested { .. }) {
+        event = run.next().await.unwrap().unwrap();
+    }
+    let request = match event {
         kuku::UiEvent::PermissionRequested { request } => request,
-        other => panic!("expected PermissionRequested, got {other:?}"),
+        _ => unreachable!(),
     };
     run.decide(&request.id, kuku::query::PermissionChoice::Project)
         .await
         .unwrap();
-    let first_done = run.next().await.unwrap().unwrap();
-    match first_done {
+    let mut event = run.next().await.unwrap().unwrap();
+    while !matches!(event, kuku::UiEvent::Done { .. }) {
+        event = run.next().await.unwrap().unwrap();
+    }
+    match event {
         kuku::UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
-        other => panic!("expected Done, got {other:?}"),
+        _ => unreachable!(),
     }
 
     let policy_path = kuku::session::project_policy_path(
