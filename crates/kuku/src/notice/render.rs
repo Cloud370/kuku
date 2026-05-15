@@ -1,26 +1,19 @@
 use super::types::{ContextDriftStatus, Notice, NoticeKind};
 
+const NOTICE_CONTEXT_DRIFT_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/prompts/notice-context-drift.md"
+));
+
 pub(crate) fn render_notice_block(notice: &Notice) -> String {
     match &notice.kind {
         NoticeKind::ContextDrift { entries } => {
-            let mut lines = vec![
-                "<kuku_system_notice>".to_string(),
-                "Previously loaded file-backed context has changed since the last acknowledged snapshot.".to_string(),
-                "".to_string(),
-                "Only unacknowledged drift is reported here.".to_string(),
-                "Changes already acknowledged through successful full-file reads or writes are not included.".to_string(),
-                "".to_string(),
-                "This notice does not include the changed file contents.".to_string(),
-                "Do not assume you know what changed from this notice alone.".to_string(),
-                "".to_string(),
-                "Use the context loaded in this turn as the current source of truth.".to_string(),
-                "If the task depends on the details of a changed file that is not fully included in the current prompt, read that file again before relying on it.".to_string(),
-                "".to_string(),
-                "Changed tracked files:".to_string(),
-            ];
-            lines.extend(entries.iter().map(render_context_drift_entry));
-            lines.push("</kuku_system_notice>".to_string());
-            lines.join("\n")
+            let rendered_entries: String = entries
+                .iter()
+                .map(render_context_drift_entry)
+                .collect::<Vec<_>>()
+                .join("\n");
+            NOTICE_CONTEXT_DRIFT_TEMPLATE.replace("{{entries}}", &rendered_entries)
         }
     }
 }

@@ -66,9 +66,12 @@ pub(crate) fn compute_context_headroom(
             .saturating_sub(reserved_margin_tokens)
             .saturating_sub(used)
     });
+    let budget = max_context_tokens
+        .saturating_sub(reserved_output_tokens)
+        .saturating_sub(reserved_margin_tokens);
     let tier = match remaining_input_tokens {
-        Some(remaining) if remaining < 8_000 => ContextBudgetTier::Tight,
-        Some(remaining) if remaining < 32_000 => ContextBudgetTier::Normal,
+        Some(remaining) if remaining < budget / 3 => ContextBudgetTier::Tight,
+        Some(remaining) if remaining < budget * 2 / 3 => ContextBudgetTier::Normal,
         Some(_) => ContextBudgetTier::Roomy,
         None => ContextBudgetTier::Normal,
     };

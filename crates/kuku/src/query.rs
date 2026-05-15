@@ -552,10 +552,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
+    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
     let context_headroom = compute_context_headroom(
         resolved.config.max_context_tokens,
         pending.query.max_output_tokens,
-        None,
+        estimated_input,
     );
     if pending.turn > 1 {
         let notices = build_runtime_notices(NoticeAssemblyInput {
@@ -1071,12 +1072,44 @@ fn load_memory_sources(
     Ok((global_memory, project_memory))
 }
 
+fn last_input_tokens(kind: &ProviderKind, events: &[StoredEvent]) -> Option<u32> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ModelResponse { usage, .. } => extract_input_tokens(kind, usage),
+        _ => None,
+    })
+}
+
+fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Value) -> Option<u32> {
+    let total = match kind {
+        ProviderKind::Anthropic => {
+            let input = usage
+                .get("input_tokens")
+                .and_then(serde_json::Value::as_u64)?;
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let cache_creation = usage
+                .get("cache_creation_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            input + cache_read + cache_creation
+        }
+        ProviderKind::OpenAiCompatible => usage
+            .get("prompt_tokens")
+            .and_then(serde_json::Value::as_u64)?,
+    };
+    u32::try_from(total).ok().filter(|&v| v > 0)
+}
+
 fn now_timestamp() -> Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::extract_input_tokens;
+    use crate::provider::types::ProviderKind;
     use crate::tool::dispatch;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -1084,6 +1117,39 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn extract_input_tokens_sums_anthropic_cache_fields() {
+        let usage = serde_json::json!({
+            "input_tokens": 845,
+            "output_tokens": 106,
+            "cache_read_input_tokens": 181888,
+            "cache_creation_input_tokens": 0,
+        });
+        let result = extract_input_tokens(&ProviderKind::Anthropic, &usage);
+        assert_eq!(result, Some(845 + 181888));
+    }
+
+    #[test]
+    fn extract_input_tokens_uses_openai_prompt_tokens() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "total_tokens": 600,
+        });
+        let result = extract_input_tokens(&ProviderKind::OpenAiCompatible, &usage);
+        assert_eq!(result, Some(500));
+    }
+
+    #[test]
+    fn extract_input_tokens_returns_none_for_empty_usage() {
+        let usage = serde_json::json!({});
+        assert_eq!(extract_input_tokens(&ProviderKind::Anthropic, &usage), None);
+        assert_eq!(
+            extract_input_tokens(&ProviderKind::OpenAiCompatible, &usage),
+            None
+        );
     }
 
     #[test]
