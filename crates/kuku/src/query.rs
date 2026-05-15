@@ -5,7 +5,11 @@ use sha2::Digest;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use crate::context::{assemble_context, rebuild_history, ContextInput};
+use crate::context::{
+    assemble_context, build_request_provenance, rebuild_history, ContextInput, EnvironmentSource,
+    FileSource, HistoryRange, InstructionSource, MemorySource, RequestProvenanceInput,
+    ToolRegistryProvenance,
+};
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::permission::{
@@ -18,8 +22,8 @@ use crate::provider::types::{
 };
 use crate::provider::{self, Provider};
 use crate::session::{
-    current_workspace, kuku_home, new_session_id, project_policy_path, session_events_path,
-    validate_session_id,
+    current_workspace, global_memory_path, kuku_home, new_session_id, project_memory_path,
+    project_policy_path, session_events_path, validate_session_id,
 };
 use crate::tool::{self, ToolDefinition};
 
@@ -500,17 +504,63 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let existing_events = EventStore::replay(&pending.events_path)?;
     let history = rebuild_history(&existing_events);
+    let kuku_home = kuku_home()?;
+    let project_instructions = load_project_instruction_sources(&pending.workspace)?;
+    let (global_memory, project_memory) = load_memory_sources(&kuku_home, &pending.workspace)?;
     let assembly = assemble_context(ContextInput {
-        project_instructions: Vec::new(),
-        global_memory: None,
-        project_memory: None,
+        environment: EnvironmentSource {
+            workspace_path: pending.workspace.display().to_string(),
+            platform: platform_label().to_string(),
+            current_date: current_date_string(),
+        },
+        current_task: pending.query.prompt.clone(),
+        project_instructions,
+        global_memory,
+        project_memory,
         history,
         tools: tool::to_tool_schemas(&resolved.registry),
-    });
+    })?;
     let request_id = format!("req_{}", pending.request_num);
     let params = serde_json::json!({
         "max_output_tokens": pending.query.max_output_tokens,
         "temperature": pending.query.temperature,
+    });
+    let provenance = build_request_provenance(RequestProvenanceInput {
+        request_id: request_id.clone(),
+        role: "default".to_string(),
+        workspace: pending.workspace.display().to_string(),
+        project_instruction_sources: assembly
+            .project_instruction_sources
+            .iter()
+            .map(|source| FileSource {
+                path: source.path.clone(),
+                hash: source.hash.clone(),
+            })
+            .collect(),
+        memory_sources: assembly
+            .memory_sources
+            .iter()
+            .map(|source| FileSource {
+                path: source.path.clone(),
+                hash: source.hash.clone(),
+            })
+            .collect(),
+        prompt_asset_sources: assembly.prompt_asset_sources.clone(),
+        history_range: HistoryRange {
+            first_event_id: existing_events.first().map(|event| event.id),
+            last_event_id: existing_events.last().map(|event| event.id),
+        },
+        tool_registry: ToolRegistryProvenance {
+            hash: resolved.registry_hash.clone(),
+            ordered_tool_names: resolved.ordered_tool_names.clone(),
+            tool_count: resolved.tool_count,
+        },
+        provider_alias: resolved.provider_name.clone(),
+        provider_format: provider_format_name(&resolved.config.kind).to_string(),
+        resolved_provider: resolved.provider_name.clone(),
+        resolved_model: resolved.config.model.clone(),
+        params: params.clone(),
+        token_estimate: None,
     });
 
     {
@@ -525,12 +575,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             resolved_model: resolved.config.model.clone(),
             params,
             base_url: Some(resolved.config.base_url.clone()),
-            message_count: Some(assembly.sources.len()),
+            message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
             history_range_first: existing_events.first().map(|event| event.id),
             history_range_last: existing_events.last().map(|event| event.id),
             tool_registry_hash: Some(resolved.registry_hash.clone()),
             tool_count: Some(resolved.tool_count),
             ordered_tool_names: Some(resolved.ordered_tool_names.clone()),
+            provenance: Some(serde_json::to_value(&provenance)?),
         })?;
     }
 
@@ -872,6 +923,71 @@ fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'stati
         provider::types::ProviderFailureKind::Parse => "parse",
         provider::types::ProviderFailureKind::Unknown => "unknown",
     }
+}
+
+fn platform_label() -> &'static str {
+    match std::env::consts::OS {
+        "linux" => "linux",
+        "windows" => "windows",
+        "macos" => "macos",
+        _ => "unknown",
+    }
+}
+
+fn current_date_string() -> String {
+    OffsetDateTime::now_utc().date().to_string()
+}
+
+fn provider_format_name(kind: &ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAiCompatible => "openai-compatible",
+    }
+}
+
+fn sha256_text(text: &str) -> String {
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    format!("sha256:{digest:x}")
+}
+
+fn load_project_instruction_sources(workspace: &std::path::Path) -> Result<Vec<InstructionSource>> {
+    let mut sources = Vec::new();
+    for (name, kind) in [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")] {
+        let path = workspace.join(name);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            sources.push(InstructionSource {
+                path: path.display().to_string(),
+                kind: kind.to_string(),
+                hash: sha256_text(&content),
+                content,
+            });
+        }
+    }
+    Ok(sources)
+}
+
+fn load_memory_sources(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+) -> Result<(Option<MemorySource>, Option<MemorySource>)> {
+    let global_memory = std::fs::read_to_string(global_memory_path(kuku_home))
+        .ok()
+        .map(|content| MemorySource {
+            path: global_memory_path(kuku_home).display().to_string(),
+            hash: sha256_text(&content),
+            content,
+        });
+
+    let project_path = project_memory_path(kuku_home, workspace)?;
+    let project_memory = std::fs::read_to_string(&project_path)
+        .ok()
+        .map(|content| MemorySource {
+            path: project_path.display().to_string(),
+            hash: sha256_text(&content),
+            content,
+        });
+
+    Ok((global_memory, project_memory))
 }
 
 fn now_timestamp() -> Result<String> {

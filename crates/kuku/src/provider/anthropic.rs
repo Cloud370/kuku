@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::context::{CanonicalMessage, ContextSource, MessageBlock, Role};
+use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::error::{classify_http_error, parse_error, transport_error};
 use super::types::{
@@ -62,66 +62,47 @@ pub(crate) fn messages_url(base_url: &str) -> String {
 }
 
 pub(crate) fn render_body(request: &ProviderRequest) -> Value {
-    let (messages, system, tools) = build_request_parts(&request.assembly.sources);
+    let mut messages = request
+        .assembly
+        .prelude_messages
+        .iter()
+        .map(convert_canonical_message)
+        .collect::<Vec<_>>();
+    messages.extend(
+        request
+            .assembly
+            .history
+            .iter()
+            .map(convert_canonical_message),
+    );
+
     let mut body = json!({
         "model": request.model,
         "messages": messages,
         "max_tokens": request.max_output_tokens.unwrap_or(4096),
         "stream": false,
+        "system": request.assembly.system_prompt,
     });
 
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if let Some(system_text) = system {
-        body["system"] = json!(system_text);
-    }
-    if !tools.is_empty() {
-        body["tools"] = json!(tools);
+    if !request.assembly.tools.is_empty() {
+        body["tools"] = json!(request
+            .assembly
+            .tools
+            .iter()
+            .map(|schema| {
+                json!({
+                    "name": schema.name,
+                    "description": schema.description,
+                    "input_schema": schema.input_schema,
+                })
+            })
+            .collect::<Vec<_>>());
     }
 
     body
-}
-
-fn build_request_parts(sources: &[ContextSource]) -> (Vec<Value>, Option<String>, Vec<Value>) {
-    let mut messages = Vec::new();
-    let mut system_parts = Vec::new();
-    let mut tools = Vec::new();
-
-    for source in sources {
-        match source {
-            ContextSource::ProjectInstructions(instructions) => {
-                system_parts.extend(
-                    instructions
-                        .iter()
-                        .map(|instruction| instruction.content.clone()),
-                );
-            }
-            ContextSource::GlobalMemory(memory) | ContextSource::ProjectMemory(memory) => {
-                system_parts.push(memory.content.clone());
-            }
-            ContextSource::History(history) => {
-                messages.extend(history.iter().map(convert_canonical_message));
-            }
-            ContextSource::Tools(tool_schemas) => {
-                tools.extend(tool_schemas.iter().map(|schema| {
-                    json!({
-                        "name": schema.name,
-                        "description": schema.description,
-                        "input_schema": schema.input_schema,
-                    })
-                }));
-            }
-        }
-    }
-
-    let system = if system_parts.is_empty() {
-        None
-    } else {
-        Some(system_parts.join("\n\n"))
-    };
-
-    (messages, system, tools)
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {

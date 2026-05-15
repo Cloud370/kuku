@@ -4,7 +4,7 @@ pub mod provenance;
 pub mod replay;
 
 pub use assembly::{
-    assemble_context, ContextAssembly, ContextInput, ContextSource, InstructionSource,
+    assemble_context, ContextAssembly, ContextInput, EnvironmentSource, InstructionSource,
     MemorySource, ToolSchema,
 };
 pub use message::{CanonicalMessage, MessageBlock, Role, ToolResult, ToolUse};

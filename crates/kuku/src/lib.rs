@@ -4,6 +4,7 @@ pub mod context;
 pub mod error;
 pub mod event;
 pub mod permission;
+pub(crate) mod prompt;
 pub(crate) mod provider;
 pub mod query;
 pub mod session;

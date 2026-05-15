@@ -50,6 +50,8 @@ pub enum EventPayload {
         tool_count: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ordered_tool_names: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<Value>,
     },
 
     #[serde(rename = "model.response")]
