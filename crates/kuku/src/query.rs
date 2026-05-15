@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use sha2::Digest;
 use time::format_description::well_known::Rfc3339;
@@ -12,6 +12,9 @@ use crate::context::{
 };
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore, StoredEvent};
+use crate::notice::{
+    build_runtime_notices, compute_context_headroom, render_notice_block, NoticeAssemblyInput,
+};
 use crate::permission::{
     append_project_allow_rule, decide_tool_call, load_project_policy, recover_session_grants,
     GateDecisionKind, GateSource,
@@ -24,10 +27,6 @@ use crate::provider::{self, Provider};
 use crate::session::{
     current_workspace, global_memory_path, kuku_home, new_session_id, project_memory_path,
     project_policy_path, session_events_path, validate_session_id,
-};
-use crate::notice::{
-    compute_context_headroom, render_notice_block, ContextDriftEntry, ContextDriftStatus, Notice,
-    NoticeKind, NoticeSeverity,
 };
 use crate::tool::{self, ToolDefinition};
 
@@ -111,12 +110,6 @@ struct ResolvedRuntime {
     ordered_tool_names: Vec<String>,
     tool_count: usize,
     provider_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TrackedFileSnapshot {
-    path: String,
-    hash: String,
 }
 
 #[derive(Debug)]
@@ -559,20 +552,24 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
-    if pending.turn > 1 {
-        if let Some(drift_notice) =
-            build_context_drift_notice(&pending.workspace, &existing_events)?
-        {
-            assembly
-                .prelude_messages
-                .insert(1, crate::context::CanonicalMessage::user_text(drift_notice));
-        }
-    }
     let context_headroom = compute_context_headroom(
         resolved.config.max_context_tokens,
         pending.query.max_output_tokens,
         None,
     );
+    if pending.turn > 1 {
+        let notices = build_runtime_notices(NoticeAssemblyInput {
+            workspace: &pending.workspace,
+            events: &existing_events,
+            context_budget_tier: context_headroom.tier,
+        });
+        for (offset, notice) in notices.into_iter().enumerate() {
+            assembly.prelude_messages.insert(
+                1 + offset,
+                crate::context::CanonicalMessage::user_text(render_notice_block(&notice)),
+            );
+        }
+    }
     let request_id = format!("req_{}", pending.request_num);
     let params = serde_json::json!({
         "max_output_tokens": pending.query.max_output_tokens,
@@ -1076,193 +1073,6 @@ fn load_memory_sources(
 
 fn now_timestamp() -> Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
-}
-
-fn build_context_drift_notice(workspace: &Path, events: &[StoredEvent]) -> Result<Option<String>> {
-    let tracked = rebuild_tracked_file_snapshots(events);
-    if tracked.is_empty() {
-        return Ok(None);
-    }
-
-    let mut entries = Vec::new();
-    for snapshot in tracked.values() {
-        let path = PathBuf::from(&snapshot.path);
-        let label = path
-            .strip_prefix(workspace)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        match std::fs::read(&path) {
-            Ok(current_bytes) => {
-                let current_hash = content_hash_bytes(&current_bytes);
-                if current_hash == snapshot.hash {
-                    continue;
-                }
-                entries.push(ContextDriftEntry {
-                    path: label,
-                    status: ContextDriftStatus::Updated,
-                });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                entries.push(ContextDriftEntry {
-                    path: label,
-                    status: ContextDriftStatus::Deleted,
-                });
-            }
-            Err(_) => continue,
-        }
-    }
-
-    if entries.is_empty() {
-        return Ok(None);
-    }
-
-    let notice = Notice {
-        kind: NoticeKind::ContextDrift { entries },
-        severity: NoticeSeverity::Info,
-    };
-    Ok(Some(render_notice_block(&notice)))
-}
-
-fn rebuild_tracked_file_snapshots(events: &[StoredEvent]) -> BTreeMap<String, TrackedFileSnapshot> {
-    let mut tracked = tracked_files_from_latest_model_request(events);
-
-    for event in events {
-        let EventPayload::ToolResult {
-            status,
-            structured: Some(structured),
-            ..
-        } = &event.payload
-        else {
-            continue;
-        };
-        if status != "ok" {
-            continue;
-        }
-        update_tracked_snapshot_from_tool_result(&mut tracked, structured);
-    }
-
-    tracked
-}
-
-fn tracked_files_from_latest_model_request(
-    events: &[StoredEvent],
-) -> BTreeMap<String, TrackedFileSnapshot> {
-    let mut tracked = BTreeMap::new();
-    let Some(provenance) = events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ModelRequest {
-            provenance: Some(provenance),
-            ..
-        } => Some(provenance),
-        _ => None,
-    }) else {
-        return tracked;
-    };
-
-    for source in provenance
-        .get("project_instruction_sources")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let (Some(path), Some(hash)) = (
-            source.get("path").and_then(serde_json::Value::as_str),
-            source.get("hash").and_then(serde_json::Value::as_str),
-        ) {
-            tracked.insert(
-                path.to_string(),
-                TrackedFileSnapshot {
-                    path: path.to_string(),
-                    hash: hash.to_string(),
-                },
-            );
-        }
-    }
-    for source in provenance
-        .get("memory_sources")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let (Some(path), Some(hash)) = (
-            source.get("path").and_then(serde_json::Value::as_str),
-            source.get("hash").and_then(serde_json::Value::as_str),
-        ) {
-            tracked.insert(
-                path.to_string(),
-                TrackedFileSnapshot {
-                    path: path.to_string(),
-                    hash: hash.to_string(),
-                },
-            );
-        }
-    }
-
-    tracked
-}
-
-fn update_tracked_snapshot_from_tool_result(
-    tracked: &mut BTreeMap<String, TrackedFileSnapshot>,
-    structured: &serde_json::Value,
-) {
-    let Some(kind) = structured.get("kind").and_then(serde_json::Value::as_str) else {
-        return;
-    };
-    match kind {
-        "file_content" => {
-            let is_full = structured
-                .get("is_full_file_snapshot")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if !is_full {
-                return;
-            }
-            let Some(path) = structured
-                .get("canonical_path")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            let Some(hash) = structured
-                .get("content_hash")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            tracked.insert(
-                path.to_string(),
-                TrackedFileSnapshot {
-                    path: path.to_string(),
-                    hash: hash.to_string(),
-                },
-            );
-        }
-        "file_edit" | "file_write" | "memory_write" | "memory_forget" => {
-            let Some(path) = structured
-                .get("canonical_path")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            let Some(existing) = tracked.get_mut(path) else {
-                return;
-            };
-            let Some(hash) = structured
-                .get("content_hash_after")
-                .or_else(|| structured.get("content_hash"))
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            existing.hash = hash.to_string();
-        }
-        _ => {}
-    }
-}
-
-fn content_hash_bytes(bytes: &[u8]) -> String {
-    let digest = sha2::Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
 }
 
 #[cfg(test)]
