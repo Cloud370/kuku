@@ -613,7 +613,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         resolved_model: resolved.config.model.clone(),
         params: params.clone(),
         token_estimate: None,
-        context_budget_tier: format!("{:?}", context_headroom.tier).to_lowercase(),
+        context_budget_tier: context_headroom.tier.as_str().to_string(),
         max_context_tokens: Some(context_headroom.max_context_tokens),
         remaining_input_tokens: context_headroom.remaining_input_tokens,
     });

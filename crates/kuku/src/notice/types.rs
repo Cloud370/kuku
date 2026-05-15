@@ -33,6 +33,16 @@ pub(crate) enum ContextBudgetTier {
     Roomy,
 }
 
+impl ContextBudgetTier {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ContextBudgetTier::Tight => "tight",
+            ContextBudgetTier::Normal => "normal",
+            ContextBudgetTier::Roomy => "roomy",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContextHeadroom {
     pub(crate) max_context_tokens: u32,
@@ -81,6 +91,13 @@ mod tests {
     fn context_budget_tier_orders_from_tight_to_roomy() {
         assert!(ContextBudgetTier::Tight < ContextBudgetTier::Normal);
         assert!(ContextBudgetTier::Normal < ContextBudgetTier::Roomy);
+    }
+
+    #[test]
+    fn context_budget_tier_as_str_produces_stable_wire_format() {
+        assert_eq!(ContextBudgetTier::Tight.as_str(), "tight");
+        assert_eq!(ContextBudgetTier::Normal.as_str(), "normal");
+        assert_eq!(ContextBudgetTier::Roomy.as_str(), "roomy");
     }
 
     #[test]
