@@ -121,6 +121,17 @@ fn assembly_with_tool_schema() -> ContextAssembly {
     assembly
 }
 
+fn assembly_with_drift_notice() -> ContextAssembly {
+    let mut assembly = sample_assembly();
+    assembly.prelude_messages.insert(
+        1,
+        CanonicalMessage::user_text(
+            "<kuku_system_notice>\n- Context drift: /workspace/AGENTS.md changed (sha256:old -> sha256:new)\n</kuku_system_notice>",
+        ),
+    );
+    assembly
+}
+
 fn assembly_with_tool_history() -> ContextAssembly {
     ContextAssembly {
         system_prompt:
@@ -188,6 +199,32 @@ fn anthropic_messages_url_normalizes_v1_suffix() {
         messages_url("https://gateway.example/v1/"),
         "https://gateway.example/v1/messages"
     );
+}
+
+#[test]
+fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
+    let body = render_anthropic_body(&ProviderRequest {
+        assembly: assembly_with_drift_notice(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: Some(1024),
+        temperature: Some(0.2),
+    });
+
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][2]["role"], "user");
+    assert!(body["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_execution_context>"));
+    assert!(body["messages"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_system_notice>"));
+    assert!(body["messages"][2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_tool_guidance>"));
 }
 
 #[test]
@@ -387,6 +424,33 @@ fn openai_chat_completions_url_appends_path() {
         chat_completions_url("https://gateway.example/v1/"),
         "https://gateway.example/v1/chat/completions"
     );
+}
+
+#[test]
+fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
+    let body = render_openai_body(&ProviderRequest {
+        assembly: assembly_with_drift_notice(),
+        model: "gpt-5.4-mini".to_string(),
+        max_output_tokens: Some(2048),
+        temperature: Some(0.7),
+    });
+
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][2]["role"], "user");
+    assert_eq!(body["messages"][3]["role"], "user");
+    assert!(body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_execution_context>"));
+    assert!(body["messages"][2]["content"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_system_notice>"));
+    assert!(body["messages"][3]["content"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_tool_guidance>"));
 }
 
 #[test]

@@ -210,6 +210,42 @@ fn assemble_context_keeps_stable_empty_placeholders() {
 }
 
 #[test]
+fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
+    let mut assembly = assemble_context(ContextInput {
+        environment: EnvironmentSource {
+            workspace_path: "/workspace".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-14".to_string(),
+        },
+        project_instructions: Vec::new(),
+        global_memory: None,
+        project_memory: None,
+        history: Vec::new(),
+        tools: Vec::new(),
+    })
+    .unwrap();
+
+    assembly
+        .prelude_messages
+        .insert(1, CanonicalMessage::user_text("<kuku_system_notice>\n- Context drift: /workspace/AGENTS.md changed (sha256:old -> sha256:new)\n</kuku_system_notice>"));
+
+    assert_eq!(assembly.prelude_messages.len(), 3);
+    match &assembly.prelude_messages[1].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_system_notice>"));
+            assert!(text.contains("Context drift:"));
+        }
+        other => panic!("expected one drift-notice text block, got {other:?}"),
+    }
+    match &assembly.prelude_messages[2].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_tool_guidance>"));
+        }
+        other => panic!("expected tool guidance after drift notice, got {other:?}"),
+    }
+}
+
+#[test]
 fn rebuilds_multi_group_tool_history_at_crate_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let events_path = temp.path().join("events.jsonl");
