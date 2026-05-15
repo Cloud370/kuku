@@ -467,7 +467,10 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("<kuku_memory>")
             .body_contains("global memory entry")
             .body_contains("project memory entry")
-            .body_contains("<kuku_tool_guidance>");
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("<kuku_memory_guidance>")
+            .body_contains("memory.remember")
+            .body_contains("memory.forget");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_final",
             "type": "message",
@@ -514,6 +517,19 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
         1
     );
     assert_eq!(model_request["memory_sources"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        model_request["platform"].as_str().unwrap(),
+        match std::env::consts::OS {
+            "linux" => "linux",
+            "windows" => "windows",
+            "macos" => "macos",
+            _ => "unknown",
+        }
+    );
+    assert_eq!(
+        model_request["current_date"].as_str().unwrap(),
+        time::OffsetDateTime::now_utc().date().to_string()
+    );
     assert!(model_request["tool_registry"]["hash"]
         .as_str()
         .unwrap()

@@ -507,19 +507,36 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let kuku_home = kuku_home()?;
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) = load_memory_sources(&kuku_home, &pending.workspace)?;
-    let assembly = assemble_context(ContextInput {
+    let platform = platform_label().to_string();
+    let current_date = current_date_string();
+    let assembly = match assemble_context(ContextInput {
         environment: EnvironmentSource {
             workspace_path: pending.workspace.display().to_string(),
-            platform: platform_label().to_string(),
-            current_date: current_date_string(),
+            platform: platform.clone(),
+            current_date: current_date.clone(),
         },
-        current_task: pending.query.prompt.clone(),
         project_instructions,
         global_memory,
         project_memory,
         history,
         tools: tool::to_tool_schemas(&resolved.registry),
-    })?;
+    }) {
+        Ok(assembly) => assembly,
+        Err(error) => {
+            let request_id = format!("req_{}", pending.request_num);
+            append_model_error(
+                &pending.events_path,
+                pending.turn,
+                request_id,
+                "prompt_render",
+                &error.to_string(),
+                Some(resolved.provider_name.clone()),
+                Some(resolved.config.model.clone()),
+            )?;
+            append_turn_end(&pending.events_path, pending.turn)?;
+            return Err(error);
+        }
+    };
     let request_id = format!("req_{}", pending.request_num);
     let params = serde_json::json!({
         "max_output_tokens": pending.query.max_output_tokens,
@@ -529,6 +546,8 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         request_id: request_id.clone(),
         role: "default".to_string(),
         workspace: pending.workspace.display().to_string(),
+        platform: platform.clone(),
+        current_date: current_date.clone(),
         project_instruction_sources: assembly
             .project_instruction_sources
             .iter()

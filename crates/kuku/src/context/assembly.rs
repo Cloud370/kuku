@@ -36,7 +36,6 @@ pub struct ToolSchema {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextInput {
     pub environment: EnvironmentSource,
-    pub current_task: String,
     pub project_instructions: Vec<InstructionSource>,
     pub global_memory: Option<MemorySource>,
     pub project_memory: Option<MemorySource>,
@@ -88,7 +87,6 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
             project_instructions_rendered: project_instructions_text,
             global_memory_rendered: global_memory_text,
             project_memory_rendered: project_memory_text,
-            current_task_rendered: input.current_task.clone(),
         },
     )?;
 
@@ -191,7 +189,6 @@ mod tests {
                 platform: "linux".to_string(),
                 current_date: "2026-05-14".to_string(),
             },
-            current_task: "hello".to_string(),
             project_instructions: project_instructions.clone(),
             global_memory: Some(global_memory.clone()),
             project_memory: Some(project_memory.clone()),
@@ -219,7 +216,6 @@ mod tests {
                 platform: "windows".to_string(),
                 current_date: "2026-05-14".to_string(),
             },
-            current_task: "No current task framing.".to_string(),
             project_instructions: Vec::new(),
             global_memory: None,
             project_memory: None,
@@ -233,6 +229,7 @@ mod tests {
                 assert!(text.contains("No project instructions found."));
                 assert!(text.contains("No global memory."));
                 assert!(text.contains("No project memory."));
+                assert!(!text.contains("<kuku_current_task>"));
             }
             other => panic!("expected one synthetic-user text block, got {other:?}"),
         }

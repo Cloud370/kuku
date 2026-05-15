@@ -8,15 +8,15 @@ pub(crate) struct SyntheticUserTemplateInput {
     pub(crate) project_instructions_rendered: String,
     pub(crate) global_memory_rendered: String,
     pub(crate) project_memory_rendered: String,
-    pub(crate) current_task_rendered: String,
 }
 
 pub(crate) fn render_synthetic_user(
     template: &str,
     input: &SyntheticUserTemplateInput,
 ) -> Result<String> {
-    let mut rendered = template.to_string();
-    for (name, value) in [
+    validate_template_placeholders(template)?;
+
+    let placeholders = [
         ("workspace_root", input.workspace_root.as_str()),
         ("platform", input.platform.as_str()),
         ("current_date", input.current_date.as_str()),
@@ -32,24 +32,41 @@ pub(crate) fn render_synthetic_user(
             "project_memory_rendered",
             input.project_memory_rendered.as_str(),
         ),
-        (
-            "current_task_rendered",
-            input.current_task_rendered.as_str(),
-        ),
-    ] {
+    ];
+
+    let mut rendered = template.to_string();
+    for (name, value) in placeholders {
         rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
     }
 
-    if let Some(start) = rendered.find("{{") {
-        if let Some(end) = rendered[start + 2..].find("}}") {
-            let name = &rendered[start + 2..start + 2 + end];
+    Ok(rendered)
+}
+
+fn validate_template_placeholders(template: &str) -> Result<()> {
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            break;
+        };
+        let name = &after_start[..end];
+        if !matches!(
+            name,
+            "workspace_root"
+                | "platform"
+                | "current_date"
+                | "project_instructions_rendered"
+                | "global_memory_rendered"
+                | "project_memory_rendered"
+        ) {
             return Err(Error::PromptRender(format!(
                 "missing template variable: {name}"
             )));
         }
+        rest = &after_start[end + 2..];
     }
 
-    Ok(rendered)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -65,7 +82,6 @@ mod tests {
             project_instructions_rendered: "No project instructions found.".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
-            current_task_rendered: "No current task framing.".to_string(),
         };
 
         let rendered = render_synthetic_user(
@@ -80,6 +96,27 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "prompt render error: missing template variable: missing_key"
+        );
+    }
+
+    #[test]
+    fn allows_handlebars_like_text_inside_injected_content() {
+        let input = SyntheticUserTemplateInput {
+            workspace_root: "/code/kuku/kuku".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-14".to_string(),
+            project_instructions_rendered: "literal {{value}} from instructions".to_string(),
+            global_memory_rendered: "No global memory.".to_string(),
+            project_memory_rendered: "No project memory.".to_string(),
+        };
+
+        let rendered =
+            render_synthetic_user("Instructions: {{project_instructions_rendered}}", &input)
+                .unwrap();
+
+        assert_eq!(
+            rendered,
+            "Instructions: literal {{value}} from instructions"
         );
     }
 }

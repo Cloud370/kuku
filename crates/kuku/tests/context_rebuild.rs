@@ -69,7 +69,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             platform: "linux".to_string(),
             current_date: "2026-05-14".to_string(),
         },
-        current_task: "inspect".to_string(),
         project_instructions: project_instructions.clone(),
         global_memory: Some(global_memory.clone()),
         project_memory: Some(project_memory.clone()),
@@ -80,6 +79,9 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
 
     assert!(assembly.system_prompt.contains("<kuku_identity>"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
+    assert!(assembly.system_prompt.contains("<kuku_memory_guidance>"));
+    assert!(assembly.system_prompt.contains("memory.remember"));
+    assert!(assembly.system_prompt.contains("memory.forget"));
     assert!(assembly.system_prompt.contains("<kuku_working_style>"));
     assert!(assembly
         .system_prompt
@@ -105,8 +107,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             assert!(text.contains("<kuku_memory>"));
             assert!(text.contains("global"));
             assert!(text.contains("project"));
-            assert!(text.contains("<kuku_current_task>"));
-            assert!(text.contains("inspect"));
+            assert!(!text.contains("<kuku_current_task>"));
         }
         other => panic!("expected one synthetic-user text block, got {other:?}"),
     }
@@ -130,6 +131,8 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         request_id: "req_2".to_string(),
         role: "default".to_string(),
         workspace: "/workspace".to_string(),
+        platform: "linux".to_string(),
+        current_date: "2026-05-14".to_string(),
         project_instruction_sources: vec![FileSource {
             path: "/workspace/AGENTS.md".to_string(),
             hash: "sha256-agents".to_string(),
@@ -170,6 +173,8 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     });
 
     assert_eq!(provenance.request_id, "req_2");
+    assert_eq!(provenance.platform, "linux");
+    assert_eq!(provenance.current_date, "2026-05-14");
     assert_eq!(provenance.history_range.first_event_id, Some(1));
     assert_eq!(provenance.history_range.last_event_id, Some(2));
     assert_eq!(provenance.prompt_asset_sources.len(), 3);
@@ -184,7 +189,6 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             platform: "windows".to_string(),
             current_date: "2026-05-14".to_string(),
         },
-        current_task: "No current task framing.".to_string(),
         project_instructions: Vec::new(),
         global_memory: None,
         project_memory: None,
@@ -199,8 +203,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             assert!(text.contains("No project instructions found."));
             assert!(text.contains("No global memory."));
             assert!(text.contains("No project memory."));
-            assert!(text.contains("<kuku_current_task>"));
-            assert!(text.contains("No current task framing."));
+            assert!(!text.contains("<kuku_current_task>"));
         }
         other => panic!("expected one synthetic-user text block, got {other:?}"),
     }

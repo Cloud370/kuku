@@ -17,6 +17,3 @@
 </kuku_project_memory>
 </kuku_memory>
 
-<kuku_current_task>
-{{current_task_rendered}}
-</kuku_current_task>
