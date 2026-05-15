@@ -6,7 +6,164 @@ use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::session_events_path;
 use kuku::{query, Error, Provider};
+use serde_json::Value;
 use tempfile::TempDir;
+
+/// Wrap an Anthropic-style message JSON into SSE streaming frames.
+fn anthropic_sse_response(msg: Value) -> String {
+    let id = msg
+        .get("id")
+        .cloned()
+        .unwrap_or(Value::String("msg_1".into()));
+    let model = msg
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String("test-model".into()));
+    let stop_reason = msg
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn");
+    let usage = msg
+        .get("usage")
+        .cloned()
+        .unwrap_or(serde_json::json!({"input_tokens": 0, "output_tokens": 0}));
+    let content = msg
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut sse = String::new();
+
+    // message_start
+    sse.push_str(&format!("event: message_start\ndata: {}\n\n",
+        serde_json::json!({"type":"message_start","message":{"id":id,"model":model,"content":[],"usage":usage}})));
+
+    // content blocks
+    for (i, block) in content.iter().enumerate() {
+        let btype = block.get("type").and_then(Value::as_str).unwrap_or("text");
+        if btype == "text" {
+            let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+            sse.push_str(&format!("event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"text","text":""}})));
+            if !text.is_empty() {
+                sse.push_str(&format!("event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"text_delta","text":text}})));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
+        } else if btype == "tool_use" {
+            let id = block.get("id").and_then(Value::as_str).unwrap_or("tc_1");
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+            let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+            sse.push_str(&format!("event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"tool_use","id":id,"name":name,"input":{}}})));
+            let args_str = serde_json::to_string(&input).unwrap_or_default();
+            if !args_str.is_empty() && args_str != "{}" {
+                sse.push_str(&format!("event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"input_json_delta","partial_json":args_str}})));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
+        }
+    }
+
+    // message_delta
+    sse.push_str(&format!("event: message_delta\ndata: {}\n\n",
+        serde_json::json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage":{"output_tokens":usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0)}})));
+
+    // message_stop
+    sse.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+
+    sse
+}
+
+/// Wrap an OpenAI-style chat completion JSON into SSE streaming frames.
+fn openai_sse_response(completion: Value) -> String {
+    let id = completion
+        .get("id")
+        .cloned()
+        .unwrap_or(Value::String("chatcmpl-1".into()));
+    let model = completion
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String("test-model".into()));
+    let usage = completion.get("usage").cloned();
+    let choices = completion
+        .get("choices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut sse = String::new();
+
+    if let Some(choice) = choices.first() {
+        let message = choice.get("message");
+        let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
+
+        // Text content
+        if let Some(text) = message
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_str)
+        {
+            if !text.is_empty() {
+                sse.push_str(&format!("data: {}\n\n",
+                    serde_json::json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})));
+            }
+        }
+
+        // Tool calls
+        if let Some(tool_calls) = message
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            for (i, tc) in tool_calls.iter().enumerate() {
+                let tc_id = tc.get("id").and_then(Value::as_str).unwrap_or("tc_1");
+                let function = tc.get("function");
+                let name = function
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let args = function
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                // Tool call start
+                sse.push_str(&format!("data: {}\n\n",
+                    serde_json::json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{"tool_calls":[{"index":i,"id":tc_id,"type":"function","function":{"name":name,"arguments":""}}]},"finish_reason":null}]})));
+                // Args
+                if args != "{}" && !args.is_empty() {
+                    sse.push_str(&format!("data: {}\n\n",
+                        serde_json::json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{"tool_calls":[{"index":i,"function":{"arguments":args}}]},"finish_reason":null}]})));
+                }
+            }
+        }
+
+        // Finish reason
+        if let Some(reason) = finish_reason {
+            let normalized = match reason {
+                "tool_calls" => "tool_use",
+                "stop" => "end_turn",
+                r => r,
+            };
+            sse.push_str(&format!("data: {}\n\n",
+                serde_json::json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[{"index":0,"delta":{},"finish_reason":reason}]})));
+        }
+    }
+
+    // Usage
+    if let Some(u) = usage {
+        sse.push_str(&format!("data: {}\n\n",
+            serde_json::json!({"id":id,"object":"chat.completion.chunk","model":model,"choices":[],"usage":u})));
+    }
+
+    sse.push_str("data: [DONE]\n\n");
+    sse
+}
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -71,14 +228,14 @@ async fn anthropic_success_returns_text_and_writes_events() {
             .header("anthropic-version", "2023-06-01");
         then.status(200)
             .header("request-id", "req_abc")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_1",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Hello from Claude!"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 5, "output_tokens": 10}
-            }));
+            })));
     });
 
     let output = query("say hello")
@@ -122,14 +279,14 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
             .body_contains("src/main.rs");
         then.status(200)
             .header("request-id", "req_final")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
@@ -143,7 +300,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
             .body_contains("find files");
         then.status(200)
             .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool",
                 "type": "message",
                 "role": "assistant",
@@ -153,7 +310,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let output = query("find files")
@@ -235,14 +392,14 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
             .body_contains("bootstrap turn");
         then.status(200)
             .header("request-id", "req_first")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_first",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "bootstrap ok"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
 
     let first = query("bootstrap turn")
@@ -267,14 +424,14 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
             .body_contains("- AGENTS.md (updated)");
         then.status(200)
             .header("request-id", "req_second")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_second",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "drift ok"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
 
     let second = query("next turn")
@@ -312,14 +469,14 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
             .body_contains("docs/tools.md:1: TODO docs");
         then.status(200)
             .header("request-id", "req_final")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Read and search complete."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
@@ -332,7 +489,7 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
             .body_contains("read and search");
         then.status(200)
             .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool",
                 "type": "message",
                 "role": "assistant",
@@ -343,7 +500,7 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let output = query("read and search")
@@ -412,14 +569,14 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
             .body_contains("cargo test");
         then.status(200)
             .header("request-id", "req_final")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Command completed."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     server.mock(|when, then| {
         when.method(POST)
@@ -432,7 +589,7 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
             .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool",
                 "type": "message",
                 "role": "assistant",
@@ -442,7 +599,7 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let mut run = query("run tests")
@@ -485,14 +642,14 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
             .body_contains(r#""tool_result""#);
         then.status(200)
             .header("request-id", "req_final_1")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final_1",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "First command completed."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     server.mock(|when, then| {
         when.method(POST)
@@ -505,7 +662,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
             .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool",
                 "type": "message",
                 "role": "assistant",
@@ -515,7 +672,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let mut run = query("run tests")
@@ -556,14 +713,14 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
             .body_contains(r#""tool_result""#);
         then.status(200)
             .header("request-id", "req_final_2")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final_2",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Second command completed."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     server.mock(|when, then| {
         when.method(POST)
@@ -576,7 +733,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
             .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool_2")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool_2",
                 "type": "message",
                 "role": "assistant",
@@ -586,7 +743,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let output = query("run tests")
@@ -617,14 +774,14 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
             );
         then.status(200)
             .header("request-id", "req_final")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Command was blocked."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
-            }));
+            })));
     });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
@@ -637,7 +794,7 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
             .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
+            .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_tool",
                 "type": "message",
                 "role": "assistant",
@@ -647,7 +804,7 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
+            })));
     });
 
     let output = query("run tests")
@@ -696,10 +853,11 @@ async fn openai_success_returns_text_and_writes_events() {
         when.method(POST)
             .path("/chat/completions")
             .header("authorization", "Bearer openai-key");
-        then.status(200).json_body(serde_json::json!({
-            "choices": [{"message": {"content": "Hi from GPT!"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 4}
-        }));
+        then.status(200)
+            .body(openai_sse_response(serde_json::json!({
+                "choices": [{"message": {"content": "Hi from GPT!"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4}
+            })));
     });
 
     let output = query("hi")
@@ -797,14 +955,15 @@ async fn api_key_is_not_written_to_events() {
 
     server.mock(|when, then| {
         when.method(POST).path("/v1/messages");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_2",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1}
-        }));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })));
     });
 
     query("test")

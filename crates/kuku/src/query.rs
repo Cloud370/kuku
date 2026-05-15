@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::pin::Pin;
 
+use futures_core::Stream;
 use sha2::Digest;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -19,9 +21,11 @@ use crate::permission::{
     append_project_allow_rule, decide_tool_call, load_project_policy, recover_session_grants,
     GateDecisionKind, GateSource,
 };
+use crate::provider::chunk::ProviderChunk;
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::provider::types::{
-    ProviderKind, ProviderRequest, ProviderResponse, ProviderToolCall, ResolvedProvider,
+    ProviderFailure, ProviderKind, ProviderRequest, ProviderResponse, ProviderToolCall,
+    ResolvedProvider,
 };
 use crate::provider::{self, Provider};
 use crate::session::{
@@ -71,8 +75,24 @@ pub enum PermissionChoice {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    PermissionRequested { request: PermissionRequest },
-    Done { output: RunOutput },
+    TextDelta {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        tool: String,
+        summary: String,
+    },
+    ToolResult {
+        tool_call_id: String,
+        summary: String,
+    },
+    PermissionRequested {
+        request: PermissionRequest,
+    },
+    Done {
+        output: RunOutput,
+    },
 }
 
 #[derive(Debug)]
@@ -84,6 +104,7 @@ pub struct Run {
 #[derive(Debug)]
 enum RunState {
     Pending(Box<PendingRun>),
+    Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
     Done(Option<RunOutput>),
 }
@@ -100,6 +121,7 @@ struct PendingRun {
     request_num: u64,
     resolved: Option<ResolvedRuntime>,
     queued_tool_calls: VecDeque<QueuedToolCall>,
+    saved_tool_call: Option<QueuedToolCall>,
 }
 
 #[derive(Debug)]
@@ -115,6 +137,7 @@ struct ResolvedRuntime {
 #[derive(Debug)]
 struct QueuedToolCall {
     tool_call: ProviderToolCall,
+    summary: String,
 }
 
 #[derive(Debug)]
@@ -127,7 +150,39 @@ struct PendingPermission {
 enum PendingStep {
     Pending(Box<PendingRun>),
     NeedPermission(Box<PendingPermission>),
+    Streaming(Box<StreamingChunkState>),
+    ToolCallReady {
+        pending: Box<PendingRun>,
+        ui_event: UiEvent,
+    },
+    ToolResultReady {
+        pending: Box<PendingRun>,
+        ui_event: UiEvent,
+    },
     Done(RunOutput),
+}
+
+struct StreamingChunkState {
+    pending: PendingRun,
+    request_id: String,
+    stream: Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
+    accumulated_text: String,
+    stop_reason: Option<String>,
+    tool_calls: Vec<ProviderToolCall>,
+    tool_arg_buffers: Vec<(u64, String)>, // (index, accumulated JSON args)
+    provider_request_id: Option<String>,
+    usage: Option<crate::provider::types::ProviderUsage>,
+}
+
+impl std::fmt::Debug for StreamingChunkState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingChunkState")
+            .field("request_id", &self.request_id)
+            .field("accumulated_text", &self.accumulated_text)
+            .field("stop_reason", &self.stop_reason)
+            .field("tool_calls", &self.tool_calls)
+            .finish_non_exhaustive()
+    }
 }
 
 pub fn query(prompt: impl Into<String>) -> Query {
@@ -249,6 +304,7 @@ impl Query {
                 request_num: 0,
                 resolved: None,
                 queued_tool_calls: VecDeque::new(),
+                saved_tool_call: None,
             })),
         })
     }
@@ -257,8 +313,11 @@ impl Query {
         let mut run = self.start_session().await?;
         loop {
             match run.next().await? {
-                Some(UiEvent::PermissionRequested { .. }) => run.deny_pending().await?,
+                Some(UiEvent::PermissionRequested { .. }) => {
+                    run.deny_pending().await?;
+                }
                 Some(UiEvent::Done { output }) => return Ok(output),
+                Some(_) => continue,
                 None => {
                     return Err(Error::InvalidEventStream(
                         "run ended without producing Done".to_string(),
@@ -286,11 +345,46 @@ impl Run {
                         self.state = RunState::WaitingForPermission(waiting);
                         return Ok(Some(UiEvent::PermissionRequested { request }));
                     }
+                    PendingStep::Streaming(streaming) => {
+                        self.state = RunState::Streaming(streaming);
+                    }
+                    PendingStep::ToolCallReady { pending, ui_event } => {
+                        self.state = RunState::Pending(pending);
+                        return Ok(Some(ui_event));
+                    }
+                    PendingStep::ToolResultReady { pending, ui_event } => {
+                        self.state = RunState::Pending(pending);
+                        return Ok(Some(ui_event));
+                    }
                     PendingStep::Done(output) => {
                         self.state = RunState::Done(None);
                         return Ok(Some(UiEvent::Done { output }));
                     }
                 },
+                RunState::Streaming(mut streaming) => {
+                    match self.poll_stream_chunk(&mut streaming).await? {
+                        Some(event) => {
+                            self.state = RunState::Streaming(streaming);
+                            return Ok(Some(event));
+                        }
+                        None => {
+                            // Stream finished — process collected response
+                            let step = finish_streaming(*streaming).await?;
+                            match step {
+                                PendingStep::Pending(next_pending) => {
+                                    self.state = RunState::Pending(next_pending);
+                                }
+                                PendingStep::Done(output) => {
+                                    self.state = RunState::Done(None);
+                                    return Ok(Some(UiEvent::Done { output }));
+                                }
+                                _ => {
+                                    self.state = RunState::Done(None);
+                                }
+                            }
+                        }
+                    }
+                }
                 RunState::WaitingForPermission(waiting) => {
                     let request = waiting.request.clone();
                     self.state = RunState::WaitingForPermission(waiting);
@@ -308,15 +402,87 @@ impl Run {
         }
     }
 
+    async fn poll_stream_chunk(
+        &self,
+        streaming: &mut StreamingChunkState,
+    ) -> Result<Option<UiEvent>> {
+        use tokio_stream::StreamExt;
+        loop {
+            let chunk = match streaming.stream.next().await {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(_failure)) => return Ok(None),
+                None => return Ok(None),
+            };
+
+            match chunk {
+                ProviderChunk::StreamStart {
+                    request_id: rid,
+                    model: _,
+                } => {
+                    streaming.provider_request_id = Some(rid);
+                }
+                ProviderChunk::TextDelta { text } => {
+                    streaming.accumulated_text.push_str(&text);
+                    return Ok(Some(UiEvent::TextDelta { text }));
+                }
+                ProviderChunk::ToolCallStart { index, id, name } => {
+                    streaming.tool_calls.push(ProviderToolCall {
+                        id,
+                        name,
+                        args: serde_json::json!({}),
+                        index,
+                    });
+                    streaming.tool_arg_buffers.push((index, String::new()));
+                }
+                ProviderChunk::ToolCallArgDelta { index, fragment } => {
+                    if let Some((_, buf)) = streaming
+                        .tool_arg_buffers
+                        .iter_mut()
+                        .find(|(i, _)| *i == index)
+                    {
+                        buf.push_str(&fragment);
+                    }
+                }
+                ProviderChunk::ContentBlockStop { index } => {
+                    if let Some((_, buf)) =
+                        streaming.tool_arg_buffers.iter().find(|(i, _)| *i == index)
+                    {
+                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(buf) {
+                            if let Some(tc) =
+                                streaming.tool_calls.iter_mut().find(|t| t.index == index)
+                            {
+                                tc.args = args;
+                            }
+                        }
+                    }
+                }
+                ProviderChunk::StopReason { reason } => {
+                    streaming.stop_reason = Some(reason);
+                }
+                ProviderChunk::StreamUsage {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } => {
+                    streaming.usage = Some(crate::provider::types::ProviderUsage {
+                        input_tokens: Some(input_tokens),
+                        output_tokens: Some(output_tokens),
+                    });
+                }
+                ProviderChunk::StreamEnd => {}
+            }
+        }
+    }
+
     pub async fn decide(
         &mut self,
         request_id: impl AsRef<str>,
         choice: PermissionChoice,
-    ) -> Result<()> {
+    ) -> Result<Option<UiEvent>> {
         self.apply_choice(request_id.as_ref(), choice, "host").await
     }
 
-    async fn deny_pending(&mut self) -> Result<()> {
+    async fn deny_pending(&mut self) -> Result<Option<UiEvent>> {
         let request_id = match &self.state {
             RunState::WaitingForPermission(waiting) => waiting.request.id.clone(),
             _ => {
@@ -334,7 +500,7 @@ impl Run {
         request_id: &str,
         choice: PermissionChoice,
         source: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<UiEvent>> {
         let state = std::mem::replace(&mut self.state, RunState::Done(None));
         let waiting = match state {
             RunState::WaitingForPermission(waiting) if waiting.request.id == request_id => *waiting,
@@ -372,12 +538,94 @@ impl Run {
             &rule,
         )?;
         execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
+        let tool_result_event = Some(UiEvent::ToolResult {
+            tool_call_id: waiting.queued_tool_call.tool_call.id.clone(),
+            summary: waiting.queued_tool_call.summary.clone(),
+        });
         self.state = RunState::Pending(Box::new(pending));
-        Ok(())
+        Ok(tool_result_event)
     }
 }
 
+async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
+    let StreamingChunkState {
+        mut pending,
+        request_id,
+        accumulated_text,
+        stop_reason,
+        tool_calls,
+        usage,
+        ..
+    } = state;
+
+    let has_tool_calls = !tool_calls.is_empty();
+    let final_stop_reason = stop_reason.unwrap_or_else(|| {
+        if has_tool_calls {
+            "tool_use".to_string()
+        } else {
+            "end_turn".to_string()
+        }
+    });
+
+    {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ModelResponse {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            request_id: request_id.clone(),
+            text: accumulated_text.clone(),
+            stop_reason: final_stop_reason.clone(),
+            tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
+            usage: serde_json::to_value(&usage).unwrap_or_default(),
+        })?;
+
+        if !has_tool_calls {
+            store.append(EventPayload::TurnEnd {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+            })?;
+            return Ok(PendingStep::Done(RunOutput {
+                session_id: pending.session_id.clone(),
+                text: accumulated_text,
+            }));
+        }
+
+        for tool_call in &tool_calls {
+            store.append(EventPayload::ToolCall {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+                tool_call_id: tool_call.id.clone(),
+                request_id: request_id.clone(),
+                index: tool_call.index,
+                tool: tool_call.name.clone(),
+                args: tool_call.args.clone(),
+            })?;
+        }
+    }
+
+    for tool_call in tool_calls {
+        let summary = permission_summary(&tool_call.name, &tool_call.args);
+        pending
+            .queued_tool_calls
+            .push_back(QueuedToolCall { tool_call, summary });
+    }
+
+    Ok(PendingStep::Pending(Box::new(pending)))
+}
+
 async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
+    // If a saved tool call exists, execute it and yield ToolResult.
+    if let Some(saved) = pending.saved_tool_call.take() {
+        execute_tool_call(&mut pending, &saved.tool_call).await?;
+        return Ok(PendingStep::ToolResultReady {
+            pending: Box::new(pending),
+            ui_event: UiEvent::ToolResult {
+                tool_call_id: saved.tool_call.id.clone(),
+                summary: saved.summary,
+            },
+        });
+    }
+
     loop {
         if let Some(queued_tool_call) = pending.queued_tool_calls.pop_front() {
             if let Some(definition) =
@@ -406,17 +654,24 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                             tool_call_id: queued_tool_call.tool_call.id.clone(),
                             tool: queued_tool_call.tool_call.name.clone(),
                             risk: definition.risk.clone(),
-                            summary: permission_summary(
-                                &queued_tool_call.tool_call.name,
-                                &queued_tool_call.tool_call.args,
-                            ),
+                            summary: queued_tool_call.summary.clone(),
                         };
                         append_permission_request(&pending.events_path, pending.turn, &request)?;
-                        return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
-                            pending,
-                            queued_tool_call,
-                            request,
-                        })));
+                        return Ok(PendingStep::ToolCallReady {
+                            pending: Box::new(PendingRun {
+                                queued_tool_calls: {
+                                    let mut q = VecDeque::new();
+                                    q.push_back(queued_tool_call);
+                                    q
+                                },
+                                ..pending
+                            }),
+                            ui_event: UiEvent::ToolCall {
+                                tool_call_id: request.tool_call_id.clone(),
+                                tool: request.tool.clone(),
+                                summary: request.summary.clone(),
+                            },
+                        });
                     }
                     GateDecisionKind::Allow => {
                         if !matches!(decision.source, GateSource::TrustPosture) {
@@ -441,8 +696,20 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                                 ),
                             )?;
                         }
-                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
-                        continue;
+                        // Save for next call, yield ToolCall first
+                        pending.saved_tool_call = Some(queued_tool_call);
+                        let saved = pending.saved_tool_call.as_ref().unwrap();
+                        let tc_id = saved.tool_call.id.clone();
+                        let tc_name = saved.tool_call.name.clone();
+                        let tc_summary = saved.summary.clone();
+                        return Ok(PendingStep::ToolCallReady {
+                            pending: Box::new(pending),
+                            ui_event: UiEvent::ToolCall {
+                                tool_call_id: tc_id,
+                                tool: tc_name,
+                                summary: tc_summary,
+                            },
+                        });
                     }
                     GateDecisionKind::Deny => {
                         append_permission_request(
@@ -453,10 +720,7 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                                 tool_call_id: queued_tool_call.tool_call.id.clone(),
                                 tool: queued_tool_call.tool_call.name.clone(),
                                 risk: definition.risk.clone(),
-                                summary: permission_summary(
-                                    &queued_tool_call.tool_call.name,
-                                    &queued_tool_call.tool_call.args,
-                                ),
+                                summary: queued_tool_call.summary.clone(),
                             },
                         )?;
                         append_permission_decision(
@@ -472,14 +736,37 @@ async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
                                 &queued_tool_call.tool_call.args,
                             ),
                         )?;
-                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
-                        continue;
+                        pending.saved_tool_call = Some(queued_tool_call);
+                        let saved = pending.saved_tool_call.as_ref().unwrap();
+                        let tc_id = saved.tool_call.id.clone();
+                        let tc_name = saved.tool_call.name.clone();
+                        let tc_summary = saved.summary.clone();
+                        return Ok(PendingStep::ToolCallReady {
+                            pending: Box::new(pending),
+                            ui_event: UiEvent::ToolCall {
+                                tool_call_id: tc_id,
+                                tool: tc_name,
+                                summary: tc_summary,
+                            },
+                        });
                     }
                 }
             }
 
-            execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
-            continue;
+            // No definition found — save and yield ToolCall, execute on next call
+            pending.saved_tool_call = Some(queued_tool_call);
+            let saved = pending.saved_tool_call.as_ref().unwrap();
+            let tc_id = saved.tool_call.id.clone();
+            let tc_name = saved.tool_call.name.clone();
+            let tc_summary = saved.summary.clone();
+            return Ok(PendingStep::ToolCallReady {
+                pending: Box::new(pending),
+                ui_event: UiEvent::ToolCall {
+                    tool_call_id: tc_id,
+                    tool: tc_name,
+                    summary: tc_summary,
+                },
+            });
         }
 
         return call_provider_step(pending).await;
@@ -646,10 +933,21 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         model: resolved.config.model.clone(),
         max_output_tokens: pending.query.max_output_tokens,
         temperature: pending.query.temperature,
+        stream: true,
     };
 
-    match provider::call_provider(&resolved.config, &request).await {
-        Ok(response) => handle_provider_response(pending, request_id, response).await,
+    match provider::stream_provider(&resolved.config, &request).await {
+        Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
+            pending,
+            request_id,
+            stream,
+            accumulated_text: String::new(),
+            stop_reason: None,
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+        }))),
         Err(failure) => {
             append_model_error(
                 &pending.events_path,
@@ -715,9 +1013,10 @@ async fn handle_provider_response(
     }
 
     for tool_call in response.tool_calls {
+        let summary = permission_summary(&tool_call.name, &tool_call.args);
         pending
             .queued_tool_calls
-            .push_back(QueuedToolCall { tool_call });
+            .push_back(QueuedToolCall { tool_call, summary });
     }
 
     Ok(PendingStep::Pending(Box::new(pending)))

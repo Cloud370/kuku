@@ -65,6 +65,7 @@ pub(crate) struct ProviderRequest {
     pub(crate) model: String,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
+    pub(crate) stream: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

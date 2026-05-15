@@ -15,12 +15,30 @@ mod provider {
     }
 
     #[allow(dead_code)]
+    pub mod chunk {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/chunk.rs"
+        ));
+    }
+
+    #[allow(dead_code)]
     pub mod error {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/provider/error.rs"
         ));
     }
+
+    use futures_core::Stream;
+    use std::pin::Pin;
+    #[allow(dead_code)]
+    pub type ProviderChunkStream = Pin<
+        Box<
+            dyn Stream<Item = std::result::Result<chunk::ProviderChunk, types::ProviderFailure>>
+                + Send,
+        >,
+    >;
 
     #[allow(dead_code)]
     pub mod anthropic {
@@ -204,6 +222,7 @@ fn anthropic_messages_url_normalizes_v1_suffix() {
 #[test]
 fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
     let body = render_anthropic_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_drift_notice(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
@@ -230,6 +249,7 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
 #[test]
 fn anthropic_render_body_preserves_layer_order() {
     let body = render_anthropic_body(&ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
@@ -259,6 +279,7 @@ fn anthropic_render_body_preserves_layer_order() {
 #[test]
 fn anthropic_render_body_includes_tools_and_native_tool_results() {
     let tool_body = render_anthropic_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_schema(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
@@ -269,6 +290,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
     assert_eq!(tool_body["tools"][0]["input_schema"]["type"], "object");
 
     let history_body = render_anthropic_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_history(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
@@ -293,6 +315,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
 async fn anthropic_call_extracts_tool_use_blocks() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_schema(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
@@ -338,6 +361,7 @@ async fn anthropic_call_extracts_tool_use_blocks() {
 async fn anthropic_call_sends_expected_headers_and_parses_success() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
@@ -388,6 +412,7 @@ async fn anthropic_call_sends_expected_headers_and_parses_success() {
 async fn anthropic_http_failure_is_normalized() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
@@ -432,6 +457,7 @@ fn openai_chat_completions_url_appends_path() {
 #[test]
 fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
     let body = render_openai_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_drift_notice(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
@@ -459,6 +485,7 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
 #[test]
 fn openai_render_body_preserves_layer_order() {
     let body = render_openai_body(&ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
@@ -481,6 +508,7 @@ fn openai_render_body_preserves_layer_order() {
 #[test]
 fn openai_render_body_includes_tools_and_role_tool_messages() {
     let tool_body = render_openai_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_schema(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
@@ -495,6 +523,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
     );
 
     let history_body = render_openai_body(&ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_history(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
@@ -514,6 +543,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
 async fn openai_call_extracts_tool_calls() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: assembly_with_tool_schema(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
@@ -561,6 +591,7 @@ async fn openai_call_extracts_tool_calls() {
 async fn openai_call_sends_bearer_auth_and_parses_success() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(512),
@@ -614,6 +645,7 @@ async fn openai_call_sends_bearer_auth_and_parses_success() {
 async fn openai_http_failure_is_normalized() {
     let server = MockServer::start();
     let request = ProviderRequest {
+        stream: false,
         assembly: sample_assembly(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
