@@ -10,6 +10,8 @@ pub(crate) enum ProviderChunk {
     },
     /// A text content fragment.
     TextDelta { text: String },
+    /// A thinking/reasoning content fragment.
+    ThinkingDelta { text: String },
     /// A tool call has begun (id and name are now known).
     ToolCallStart {
         index: u64,

@@ -38,6 +38,7 @@ impl CanonicalMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageBlock {
     Text(String),
+    Thinking(String),
     ToolUse(ToolUse),
     ToolResult(ToolResult),
 }

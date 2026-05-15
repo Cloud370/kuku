@@ -77,6 +77,9 @@ pub enum UiEvent {
     TextDelta {
         text: String,
     },
+    ThinkingDelta {
+        text: String,
+    },
     ToolCall {
         tool_call_id: String,
         tool: String,
@@ -166,6 +169,7 @@ struct StreamingChunkState {
     request_id: String,
     stream: Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     accumulated_text: String,
+    accumulated_thinking: String,
     stop_reason: Option<String>,
     tool_calls: Vec<ProviderToolCall>,
     tool_arg_buffers: Vec<(u64, String)>, // (index, accumulated JSON args)
@@ -424,6 +428,10 @@ impl Run {
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
+                ProviderChunk::ThinkingDelta { text } => {
+                    streaming.accumulated_thinking.push_str(&text);
+                    return Ok(Some(UiEvent::ThinkingDelta { text }));
+                }
                 ProviderChunk::ToolCallStart { index, id, name } => {
                     streaming.tool_calls.push(ProviderToolCall {
                         id,
@@ -551,6 +559,7 @@ async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
         mut pending,
         request_id,
         accumulated_text,
+        accumulated_thinking,
         stop_reason,
         tool_calls,
         usage,
@@ -573,6 +582,11 @@ async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
             ts: now_timestamp()?,
             request_id: request_id.clone(),
             text: accumulated_text.clone(),
+            thinking: if accumulated_thinking.is_empty() {
+                None
+            } else {
+                Some(accumulated_thinking.clone())
+            },
             stop_reason: final_stop_reason.clone(),
             tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
             usage: serde_json::to_value(&usage).unwrap_or_default(),
@@ -928,6 +942,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             request_id,
             stream,
             accumulated_text: String::new(),
+            accumulated_thinking: String::new(),
             stop_reason: None,
             tool_calls: Vec::new(),
             tool_arg_buffers: Vec::new(),

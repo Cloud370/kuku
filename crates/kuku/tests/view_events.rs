@@ -61,6 +61,7 @@ fn formats_model_response() {
             ts: "2026-01-01T00:00:00Z".into(),
             request_id: "req_1".into(),
             text: "Hello".into(),
+            thinking: None,
             stop_reason: "end_turn".into(),
             tool_call_count: None,
             usage: serde_json::json!({}),

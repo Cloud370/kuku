@@ -77,7 +77,7 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
                     "content": result.model_content,
                 }));
             }
-            MessageBlock::ToolUse(_) => {}
+            MessageBlock::ToolUse(_) | MessageBlock::Thinking(_) => {}
         }
     }
 
@@ -89,12 +89,24 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
 }
 
 fn convert_assistant_message(message: &CanonicalMessage) -> Value {
+    let thinking = message
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            MessageBlock::Thinking(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
     let text = message
         .blocks
         .iter()
         .filter_map(|block| match block {
             MessageBlock::Text(text) => Some(text.as_str()),
-            MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => None,
+            MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) => {
+                None
+            }
         })
         .collect::<Vec<_>>()
         .join("");
@@ -112,17 +124,23 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
                         .unwrap_or_else(|_| "{}".to_string()),
                 }
             })),
-            MessageBlock::Text(_) | MessageBlock::ToolResult(_) => None,
+            MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) => None,
         })
         .collect::<Vec<_>>();
 
-    if tool_calls.is_empty() {
-        json!({"role": "assistant", "content": text})
-    } else if text.is_empty() {
-        json!({"role": "assistant", "tool_calls": tool_calls})
-    } else {
-        json!({"role": "assistant", "content": text, "tool_calls": tool_calls})
+    let mut msg = json!({"role": "assistant"});
+    if !thinking.is_empty() {
+        msg["reasoning_content"] = json!(thinking);
     }
+    if tool_calls.is_empty() {
+        msg["content"] = json!(text);
+    } else {
+        if !text.is_empty() {
+            msg["content"] = json!(text);
+        }
+        msg["tool_calls"] = json!(tool_calls);
+    }
+    msg
 }
 
 fn normalize_stop_reason(reason: &str) -> String {
@@ -250,6 +268,18 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
         if let Some(text) = delta.and_then(|d| d.get("content")).and_then(Value::as_str) {
             if !text.is_empty() {
                 chunks.push(ProviderChunk::TextDelta {
+                    text: text.to_string(),
+                });
+            }
+        }
+
+        // Thinking/reasoning content
+        if let Some(text) = delta
+            .and_then(|d| d.get("reasoning_content"))
+            .and_then(Value::as_str)
+        {
+            if !text.is_empty() {
+                chunks.push(ProviderChunk::ThinkingDelta {
                     text: text.to_string(),
                 });
             }

@@ -60,6 +60,8 @@ pub enum EventPayload {
         ts: String,
         request_id: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
         stop_reason: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_call_count: Option<u64>,

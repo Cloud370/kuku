@@ -75,7 +75,7 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                         "tool_use_id": result.tool_call_id,
                         "content": result.model_content,
                     })),
-                    MessageBlock::ToolUse(_) => None,
+                    MessageBlock::ToolUse(_) | MessageBlock::Thinking(_) => None,
                 })
                 .collect::<Vec<_>>();
 
@@ -86,6 +86,13 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                 .blocks
                 .iter()
                 .filter_map(|block| match block {
+                    MessageBlock::Thinking(text) => {
+                        // NOTE: Anthropic API requires a `signature` field on replayed thinking
+                        // blocks for multi-turn sessions. Proxies that strip signatures will
+                        // accept blocks without it; direct Anthropic API access needs signature
+                        // capture from content_block_stop events (future work).
+                        Some(json!({"type": "thinking", "thinking": text}))
+                    }
                     MessageBlock::Text(text) => Some(json!({"type": "text", "text": text})),
                     MessageBlock::ToolUse(tool_use) => Some(json!({
                         "type": "tool_use",
@@ -201,6 +208,10 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 text_buffers.push(String::new());
                             }
                         }
+                        Some("thinking") => {
+                            // thinking content is emitted as ThinkingDelta chunks;
+                            // no buffer needed here
+                        }
                         Some("tool_use") => {
                             let id = block
                                 .get("id")
@@ -237,6 +248,14 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 buf.push_str(&text);
                             }
                             chunks.push(ProviderChunk::TextDelta { text });
+                        }
+                        Some("thinking_delta") => {
+                            let text = delta
+                                .get("thinking")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            chunks.push(ProviderChunk::ThinkingDelta { text });
                         }
                         Some("input_json_delta") => {
                             let fragment = delta

@@ -14,6 +14,7 @@ struct PendingToolCall {
 struct ResponseGroup {
     request_id: Option<String>,
     text: Option<String>,
+    thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
 }
@@ -29,7 +30,10 @@ pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
                 messages.push(CanonicalMessage::user_text(text.clone()));
             }
             EventPayload::ModelResponse {
-                request_id, text, ..
+                request_id,
+                text,
+                thinking,
+                ..
             } => {
                 if current_group
                     .request_id
@@ -40,6 +44,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
                 }
                 current_group.request_id = Some(request_id.clone());
                 current_group.text = Some(text.clone());
+                current_group.thinking = thinking.clone();
             }
             EventPayload::ToolCall {
                 request_id,
@@ -113,6 +118,9 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
     calls.sort_by_key(|(_, call)| call.index);
 
     let mut assistant_blocks = Vec::new();
+    if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
+        assistant_blocks.push(MessageBlock::Thinking(thinking));
+    }
     if let Some(text) = group.text.take().filter(|text| !text.is_empty()) {
         assistant_blocks.push(MessageBlock::Text(text));
     }
@@ -194,6 +202,7 @@ mod tests {
                 ts: "2026-05-13T00:00:01Z".to_string(),
                 request_id: request_id.to_string(),
                 text: text.to_string(),
+                thinking: None,
                 stop_reason: stop_reason.to_string(),
                 tool_call_count,
                 usage: json!({"input_tokens": 10}),
@@ -404,6 +413,102 @@ mod tests {
                         structured: None,
                         truncated: false,
                     }),
+                ]),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_thinking_in_response_group() {
+        let events = vec![
+            user_input(1, 1, "hi"),
+            event(
+                2,
+                EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:01Z".to_string(),
+                    request_id: "req_1".to_string(),
+                    text: "Hello!".to_string(),
+                    thinking: Some("The user said hi".to_string()),
+                    stop_reason: "end_turn".to_string(),
+                    tool_call_count: None,
+                    usage: json!({"input_tokens": 10}),
+                },
+            ),
+            turn_end(3, 1),
+        ];
+
+        assert_eq!(
+            rebuild_history(&events),
+            vec![
+                CanonicalMessage::user_text("hi"),
+                CanonicalMessage::assistant(vec![
+                    MessageBlock::Thinking("The user said hi".to_string()),
+                    MessageBlock::Text("Hello!".to_string()),
+                ]),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_thinking_with_tool_calls() {
+        let events = vec![
+            user_input(1, 1, "inspect"),
+            event(
+                2,
+                EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:01Z".to_string(),
+                    request_id: "req_1".to_string(),
+                    text: "I will inspect.".to_string(),
+                    thinking: Some("Need to read the file first".to_string()),
+                    stop_reason: "tool_use".to_string(),
+                    tool_call_count: Some(1),
+                    usage: json!({"input_tokens": 10}),
+                },
+            ),
+            tool_call(3, 1, "req_1", "tool_1", 0, "read"),
+            tool_result(4, 1, "tool_1", "read output"),
+            event(
+                5,
+                EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:05Z".to_string(),
+                    request_id: "req_2".to_string(),
+                    text: "Done.".to_string(),
+                    thinking: Some("File looks good".to_string()),
+                    stop_reason: "end_turn".to_string(),
+                    tool_call_count: None,
+                    usage: json!({"input_tokens": 12}),
+                },
+            ),
+            turn_end(6, 1),
+        ];
+
+        assert_eq!(
+            rebuild_history(&events),
+            vec![
+                CanonicalMessage::user_text("inspect"),
+                CanonicalMessage::assistant(vec![
+                    MessageBlock::Thinking("Need to read the file first".to_string()),
+                    MessageBlock::Text("I will inspect.".to_string()),
+                    MessageBlock::ToolUse(ToolUse {
+                        id: "tool_1".to_string(),
+                        name: "read".to_string(),
+                        args: json!({"name": "read"}),
+                    }),
+                ]),
+                CanonicalMessage::user(vec![MessageBlock::ToolResult(ToolResult {
+                    tool_call_id: "tool_1".to_string(),
+                    status: "ok".to_string(),
+                    summary: "tool_1 summary".to_string(),
+                    model_content: "read output".to_string(),
+                    structured: None,
+                    truncated: false,
+                })]),
+                CanonicalMessage::assistant(vec![
+                    MessageBlock::Thinking("File looks good".to_string()),
+                    MessageBlock::Text("Done.".to_string()),
                 ]),
             ]
         );
