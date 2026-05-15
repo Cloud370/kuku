@@ -37,3 +37,13 @@ pub fn project_policy_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf
     path.push("policy.md");
     Ok(path)
 }
+
+pub fn global_memory_path(kuku_home: &Path) -> PathBuf {
+    kuku_home.join("memory.md")
+}
+
+pub fn project_memory_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
+    let mut path = project_home(kuku_home, workspace)?;
+    path.push("memory.md");
+    Ok(path)
+}

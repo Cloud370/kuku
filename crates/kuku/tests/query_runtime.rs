@@ -270,7 +270,25 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains(r#""tool_result""#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "First command completed."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_tool",
             "type": "message",
@@ -281,20 +299,6 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             ],
             "stop_reason": "tool_use",
             "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final_1",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "First command completed."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
         }));
     });
 
@@ -327,7 +331,25 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains(r#""tool_result""#);
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final_2",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Second command completed."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_tool_2",
             "type": "message",
@@ -338,20 +360,6 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             ],
             "stop_reason": "tool_use",
             "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final_2",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Second command completed."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
         }));
     });
 
@@ -384,7 +392,26 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains(r#""tool_result""#)
+            .body_contains("permission gate denied this tool call");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Command was blocked."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_tool",
             "type": "message",
@@ -395,21 +422,6 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
             ],
             "stop_reason": "tool_use",
             "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#)
-            .body_contains("permission gate denied this tool call");
-        then.status(200).json_body(serde_json::json!({
-            "id": "msg_final",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Command was blocked."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5}
         }));
     });
 
@@ -426,4 +438,110 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "deny" && scope == "once")));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    std::fs::write(
+        env.workspace.path().join("AGENTS.md"),
+        "follow repo instructions",
+    )
+    .unwrap();
+    std::fs::write(env.home.path().join("memory.md"), "global memory entry").unwrap();
+
+    let workspace = std::fs::canonicalize(env.workspace.path()).unwrap();
+    let project_home = kuku::session::project_home(env.home.path(), &workspace).unwrap();
+    std::fs::create_dir_all(&project_home).unwrap();
+    std::fs::write(project_home.join("memory.md"), "project memory entry").unwrap();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_execution_context>")
+            .body_contains("Current date:")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("follow repo instructions")
+            .body_contains("<kuku_memory>")
+            .body_contains("global memory entry")
+            .body_contains("project memory entry")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("<kuku_memory_guidance>")
+            .body_contains("memory.remember")
+            .body_contains("memory.forget");
+        then.status(200).json_body(serde_json::json!({
+            "id": "msg_final",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }));
+    });
+
+    let output = query("say ok")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .run()
+        .await
+        .unwrap();
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    let model_request = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelRequest {
+                provenance: Some(provenance),
+                ..
+            } => Some(provenance.clone()),
+            _ => None,
+        })
+        .expect("model.request provenance");
+
+    assert_eq!(
+        model_request["prompt_asset_sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        model_request["project_instruction_sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(model_request["memory_sources"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        model_request["platform"].as_str().unwrap(),
+        match std::env::consts::OS {
+            "linux" => "linux",
+            "windows" => "windows",
+            "macos" => "macos",
+            _ => "unknown",
+        }
+    );
+    assert_eq!(
+        model_request["current_date"].as_str().unwrap(),
+        time::OffsetDateTime::now_utc().date().to_string()
+    );
+    assert!(model_request["tool_registry"]["hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    let prompt_assets = model_request["prompt_asset_sources"].as_array().unwrap();
+    assert!(prompt_assets
+        .iter()
+        .any(|entry| entry["path"] == "crates/kuku/prompts/system.md"));
+    assert!(prompt_assets
+        .iter()
+        .any(|entry| entry["path"] == "crates/kuku/prompts/synthetic-user.md"));
+    assert!(prompt_assets
+        .iter()
+        .any(|entry| entry["path"] == "crates/kuku/prompts/tool-guidance.md"));
 }

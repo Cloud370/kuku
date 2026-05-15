@@ -1,6 +1,6 @@
 use kuku::context::{
     assemble_context, build_request_provenance, rebuild_history, CanonicalMessage, ContextInput,
-    ContextSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
+    EnvironmentSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
     RequestProvenanceInput, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
 };
 use kuku::event::{EventPayload, EventStore};
@@ -44,14 +44,17 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     let project_instructions = vec![InstructionSource {
         path: "/workspace/AGENTS.md".to_string(),
         kind: "agents".to_string(),
+        hash: "sha256:agents".to_string(),
         content: "instructions".to_string(),
     }];
     let global_memory = MemorySource {
         path: "/home/user/.kuku/memory.md".to_string(),
+        hash: "sha256:global".to_string(),
         content: "global".to_string(),
     };
     let project_memory = MemorySource {
         path: "/home/user/.kuku/p/workspace/memory.md".to_string(),
+        hash: "sha256:project".to_string(),
         content: "project".to_string(),
     };
     let tools = vec![ToolSchema {
@@ -61,33 +64,75 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     }];
 
     let assembly = assemble_context(ContextInput {
+        environment: EnvironmentSource {
+            workspace_path: "/workspace".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-14".to_string(),
+        },
         project_instructions: project_instructions.clone(),
         global_memory: Some(global_memory.clone()),
         project_memory: Some(project_memory.clone()),
         history: history.clone(),
         tools: tools.clone(),
-    });
+    })
+    .unwrap();
 
-    assert_eq!(assembly.sources.len(), 5);
-    assert!(matches!(
-        assembly.sources[0],
-        ContextSource::ProjectInstructions(_)
-    ));
-    assert!(matches!(
-        assembly.sources[1],
-        ContextSource::GlobalMemory(_)
-    ));
-    assert!(matches!(
-        assembly.sources[2],
-        ContextSource::ProjectMemory(_)
-    ));
-    assert!(matches!(assembly.sources[3], ContextSource::History(_)));
-    assert!(matches!(assembly.sources[4], ContextSource::Tools(_)));
+    assert!(assembly.system_prompt.contains("<kuku_identity>"));
+    assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
+    assert!(assembly.system_prompt.contains("<kuku_memory_guidance>"));
+    assert!(assembly.system_prompt.contains("memory.remember"));
+    assert!(assembly.system_prompt.contains("memory.forget"));
+    assert!(assembly.system_prompt.contains("<kuku_working_style>"));
+    assert!(assembly
+        .system_prompt
+        .contains("Files and tool results are the source of truth."));
+    assert_eq!(assembly.prelude_messages.len(), 2);
+    assert_eq!(assembly.history, history);
+    assert_eq!(assembly.tools, tools);
+    assert_eq!(assembly.project_instruction_sources, project_instructions);
+    assert_eq!(
+        assembly.memory_sources,
+        vec![global_memory.clone(), project_memory.clone()]
+    );
+    assert_eq!(assembly.prompt_asset_sources.len(), 3);
+
+    match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_execution_context>"));
+            assert!(text.contains("Workspace root: /workspace"));
+            assert!(text.contains("Platform: linux"));
+            assert!(text.contains("Current date: 2026-05-14"));
+            assert!(text.contains("<kuku_project_instructions>"));
+            assert!(text.contains("instructions"));
+            assert!(text.contains("<kuku_memory>"));
+            assert!(text.contains("global"));
+            assert!(text.contains("project"));
+            assert!(!text.contains("<kuku_current_task>"));
+        }
+        other => panic!("expected one synthetic-user text block, got {other:?}"),
+    }
+
+    match &assembly.prelude_messages[1].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_tool_guidance>"));
+            assert!(
+                text.contains("Use tools to establish evidence before concluding or modifying.")
+            );
+            assert!(text.contains("Do not guess when tools can establish the answer."));
+            assert!(text.contains("Treat tool results as evidence."));
+            assert!(text.contains(
+                "Do not claim conclusions that are not supported by tool or file evidence."
+            ));
+        }
+        other => panic!("expected one tool-guidance text block, got {other:?}"),
+    }
 
     let provenance = build_request_provenance(RequestProvenanceInput {
         request_id: "req_2".to_string(),
         role: "default".to_string(),
         workspace: "/workspace".to_string(),
+        platform: "linux".to_string(),
+        current_date: "2026-05-14".to_string(),
         project_instruction_sources: vec![FileSource {
             path: "/workspace/AGENTS.md".to_string(),
             hash: "sha256-agents".to_string(),
@@ -96,7 +141,20 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             path: "/home/user/.kuku/memory.md".to_string(),
             hash: "sha256-memory".to_string(),
         }],
-        prompt_asset_sources: Vec::new(),
+        prompt_asset_sources: vec![
+            FileSource {
+                path: "crates/kuku/prompts/system.md".to_string(),
+                hash: "sha256:system".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                hash: "sha256:synthetic".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/tool-guidance.md".to_string(),
+                hash: "sha256:tool-guidance".to_string(),
+            },
+        ],
         history_range: HistoryRange {
             first_event_id: Some(events.first().unwrap().id),
             last_event_id: Some(events.last().unwrap().id),
@@ -115,9 +173,40 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     });
 
     assert_eq!(provenance.request_id, "req_2");
+    assert_eq!(provenance.platform, "linux");
+    assert_eq!(provenance.current_date, "2026-05-14");
     assert_eq!(provenance.history_range.first_event_id, Some(1));
     assert_eq!(provenance.history_range.last_event_id, Some(2));
+    assert_eq!(provenance.prompt_asset_sources.len(), 3);
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn assemble_context_keeps_stable_empty_placeholders() {
+    let assembly = assemble_context(ContextInput {
+        environment: EnvironmentSource {
+            workspace_path: "/workspace".to_string(),
+            platform: "windows".to_string(),
+            current_date: "2026-05-14".to_string(),
+        },
+        project_instructions: Vec::new(),
+        global_memory: None,
+        project_memory: None,
+        history: Vec::new(),
+        tools: Vec::new(),
+    })
+    .unwrap();
+
+    match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_execution_context>"));
+            assert!(text.contains("No project instructions found."));
+            assert!(text.contains("No global memory."));
+            assert!(text.contains("No project memory."));
+            assert!(!text.contains("<kuku_current_task>"));
+        }
+        other => panic!("expected one synthetic-user text block, got {other:?}"),
+    }
 }
 
 #[test]

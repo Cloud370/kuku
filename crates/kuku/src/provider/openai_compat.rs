@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::context::{CanonicalMessage, ContextSource, MessageBlock, Role};
+use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::error::{classify_http_error, parse_error, transport_error};
 use super::types::{
@@ -58,12 +58,25 @@ pub(crate) fn chat_completions_url(base_url: &str) -> String {
 }
 
 pub(crate) fn render_body(request: &ProviderRequest) -> Value {
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": request.assembly.system_prompt,
+    })];
+    for message in &request.assembly.prelude_messages {
+        messages.extend(convert_user_message(message));
+    }
+    for message in &request.assembly.history {
+        match message.role {
+            Role::User => messages.extend(convert_user_message(message)),
+            Role::Assistant => messages.push(convert_assistant_message(message)),
+        }
+    }
+
     let mut body = json!({
         "model": request.model,
-        "messages": build_messages(&request.assembly.sources),
+        "messages": messages,
         "stream": false,
     });
-    let tools = build_tools(&request.assembly.sources);
 
     if let Some(max_tokens) = request.max_output_tokens {
         body["max_tokens"] = json!(max_tokens);
@@ -71,65 +84,25 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if !tools.is_empty() {
-        body["tools"] = json!(tools);
+    if !request.assembly.tools.is_empty() {
+        body["tools"] = json!(request
+            .assembly
+            .tools
+            .iter()
+            .map(|schema| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.input_schema,
+                    }
+                })
+            })
+            .collect::<Vec<_>>());
     }
 
     body
-}
-
-fn build_tools(sources: &[ContextSource]) -> Vec<Value> {
-    sources
-        .iter()
-        .find_map(|source| match source {
-            ContextSource::Tools(schemas) => Some(
-                schemas
-                    .iter()
-                    .map(|schema| {
-                        json!({
-                            "type": "function",
-                            "function": {
-                                "name": schema.name,
-                                "description": schema.description,
-                                "parameters": schema.input_schema,
-                            }
-                        })
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-fn build_messages(sources: &[ContextSource]) -> Vec<Value> {
-    let mut messages = Vec::new();
-
-    for source in sources {
-        match source {
-            ContextSource::ProjectInstructions(instructions) => {
-                messages.extend(
-                    instructions.iter().map(
-                        |instruction| json!({"role": "system", "content": instruction.content}),
-                    ),
-                );
-            }
-            ContextSource::GlobalMemory(memory) | ContextSource::ProjectMemory(memory) => {
-                messages.push(json!({"role": "system", "content": memory.content}));
-            }
-            ContextSource::History(history) => {
-                for message in history {
-                    match message.role {
-                        Role::User => messages.extend(convert_user_message(message)),
-                        Role::Assistant => messages.push(convert_assistant_message(message)),
-                    }
-                }
-            }
-            ContextSource::Tools(_) => {}
-        }
-    }
-
-    messages
 }
 
 fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
@@ -191,6 +164,8 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
 
     if tool_calls.is_empty() {
         json!({"role": "assistant", "content": text})
+    } else if text.is_empty() {
+        json!({"role": "assistant", "tool_calls": tool_calls})
     } else {
         json!({"role": "assistant", "content": text, "tool_calls": tool_calls})
     }

@@ -1,18 +1,18 @@
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileSource {
     pub path: String,
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryRange {
     pub first_event_id: Option<u64>,
     pub last_event_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolRegistryProvenance {
     pub hash: String,
     pub ordered_tool_names: Vec<String>,
@@ -24,6 +24,8 @@ pub struct RequestProvenanceInput {
     pub request_id: String,
     pub role: String,
     pub workspace: String,
+    pub platform: String,
+    pub current_date: String,
     pub project_instruction_sources: Vec<FileSource>,
     pub memory_sources: Vec<FileSource>,
     pub prompt_asset_sources: Vec<FileSource>,
@@ -37,11 +39,13 @@ pub struct RequestProvenanceInput {
     pub token_estimate: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
     pub request_id: String,
     pub role: String,
     pub workspace: String,
+    pub platform: String,
+    pub current_date: String,
     pub project_instruction_sources: Vec<FileSource>,
     pub memory_sources: Vec<FileSource>,
     pub prompt_asset_sources: Vec<FileSource>,
@@ -60,6 +64,8 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         request_id: input.request_id,
         role: input.role,
         workspace: input.workspace,
+        platform: input.platform,
+        current_date: input.current_date,
         project_instruction_sources: input.project_instruction_sources,
         memory_sources: input.memory_sources,
         prompt_asset_sources: input.prompt_asset_sources,
@@ -118,6 +124,8 @@ mod tests {
             request_id: "req_1".to_string(),
             role: "default".to_string(),
             workspace: "/workspace".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-14".to_string(),
             project_instruction_sources: project_sources.clone(),
             memory_sources: memory_sources.clone(),
             prompt_asset_sources: prompt_sources.clone(),
@@ -140,6 +148,8 @@ mod tests {
             request_id,
             role,
             workspace,
+            platform,
+            current_date,
             project_instruction_sources: actual_project_sources,
             memory_sources: actual_memory_sources,
             prompt_asset_sources: actual_prompt_sources,
@@ -156,6 +166,8 @@ mod tests {
         assert_eq!(request_id, "req_1");
         assert_eq!(role, "default");
         assert_eq!(workspace, "/workspace");
+        assert_eq!(platform, "linux");
+        assert_eq!(current_date, "2026-05-14");
         assert_eq!(actual_project_sources, project_sources);
         assert_eq!(actual_memory_sources, memory_sources);
         assert_eq!(actual_prompt_sources, prompt_sources);

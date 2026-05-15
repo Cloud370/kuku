@@ -1,6 +1,6 @@
 mod context {
     pub use kuku::context::{
-        CanonicalMessage, ContextAssembly, ContextSource, InstructionSource, MemorySource,
+        CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource,
         MessageBlock, Role, ToolResult, ToolSchema, ToolUse,
     };
 }
@@ -40,8 +40,8 @@ mod provider {
 }
 
 use context::{
-    CanonicalMessage, ContextAssembly, ContextSource, InstructionSource, MemorySource,
-    MessageBlock, Role, ToolResult, ToolSchema, ToolUse,
+    CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource, MessageBlock,
+    Role, ToolResult, ToolSchema, ToolUse,
 };
 use httpmock::prelude::*;
 use provider::anthropic::{
@@ -57,27 +57,53 @@ use serde_json::json;
 
 fn sample_assembly() -> ContextAssembly {
     ContextAssembly {
-        sources: vec![
-            ContextSource::ProjectInstructions(vec![InstructionSource {
-                path: "/workspace/AGENTS.md".to_string(),
-                kind: "agents".to_string(),
-                content: "follow project instructions".to_string(),
-            }]),
-            ContextSource::GlobalMemory(MemorySource {
-                path: "/home/user/.kuku/memory.md".to_string(),
-                content: "remember the user prefers concise answers".to_string(),
-            }),
-            ContextSource::History(vec![
-                CanonicalMessage {
-                    role: Role::User,
-                    blocks: vec![MessageBlock::Text("hello".to_string())],
-                },
-                CanonicalMessage {
-                    role: Role::Assistant,
-                    blocks: vec![MessageBlock::Text("hi there".to_string())],
-                },
-            ]),
+        system_prompt:
+            "You are the agent running inside kuku, a file-native software engineering runtime."
+                .to_string(),
+        prelude_messages: vec![
+            CanonicalMessage::user_text(
+                "<kuku_execution_context>\n- Workspace root: /workspace\n- Platform: linux\n- Current date: 2026-05-14\n</kuku_execution_context>\n\n<kuku_project_instructions>\nfollow project instructions\n</kuku_project_instructions>\n\n<kuku_memory>\n<kuku_global_memory>\n- remember the user prefers concise answers\n</kuku_global_memory>\n<kuku_project_memory>\n- No project memory.\n</kuku_project_memory>\n</kuku_memory>"
+            ),
+            CanonicalMessage::user_text(
+                "<kuku_tool_guidance>\nUse tools to establish evidence before concluding or modifying.\n\nGuidance:\n- Do not guess when tools can establish the answer.\n- Prefer collecting enough evidence in fewer rounds instead of many tiny rounds.\n- When multiple read-only tool calls are independent and the targets are already known, prefer batching them in the same round.\n- When one step depends on the result of another, keep the calls sequential.\n- Understand the relevant context before modifying files.\n- Prefer focused edits over broader rewrites when both would work.\n- Reserve `run_command` for validation, project commands, scripts, generators, and other cases where a command is the right tool.\n- Treat tool results as evidence.\n- Do not claim conclusions that are not supported by tool or file evidence.\n</kuku_tool_guidance>"
+            ),
         ],
+        history: vec![
+            CanonicalMessage {
+                role: Role::User,
+                blocks: vec![MessageBlock::Text("hello".to_string())],
+            },
+            CanonicalMessage {
+                role: Role::Assistant,
+                blocks: vec![MessageBlock::Text("hi there".to_string())],
+            },
+        ],
+        tools: Vec::new(),
+        prompt_asset_sources: vec![
+            FileSource {
+                path: "crates/kuku/prompts/system.md".to_string(),
+                hash: "sha256:system".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                hash: "sha256:synthetic".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/tool-guidance.md".to_string(),
+                hash: "sha256:tool-guidance".to_string(),
+            },
+        ],
+        project_instruction_sources: vec![InstructionSource {
+            path: "/workspace/AGENTS.md".to_string(),
+            kind: "agents".to_string(),
+            hash: "sha256:agents".to_string(),
+            content: "follow project instructions".to_string(),
+        }],
+        memory_sources: vec![MemorySource {
+            path: "/home/user/.kuku/memory.md".to_string(),
+            hash: "sha256:global".to_string(),
+            content: "remember the user prefers concise answers".to_string(),
+        }],
     }
 }
 
@@ -91,15 +117,24 @@ fn sample_tool_schema() -> ToolSchema {
 
 fn assembly_with_tool_schema() -> ContextAssembly {
     let mut assembly = sample_assembly();
-    assembly
-        .sources
-        .push(ContextSource::Tools(vec![sample_tool_schema()]));
+    assembly.tools.push(sample_tool_schema());
     assembly
 }
 
 fn assembly_with_tool_history() -> ContextAssembly {
     ContextAssembly {
-        sources: vec![ContextSource::History(vec![
+        system_prompt:
+            "You are the agent running inside kuku, a file-native software engineering runtime."
+                .to_string(),
+        prelude_messages: vec![
+            CanonicalMessage::user_text(
+                "## Environment\n- Workspace: /workspace\n- Platform: linux\n\n## Project Instructions\nNo project instructions found.\n\n## Memory\n- Global memory: No global memory.\n- Project memory: No project memory."
+            ),
+            CanonicalMessage::user_text(
+                "Use specialized tools when they match the task.\n\nGuidelines:\n\n- Use file discovery tools to find files instead of guessing paths."
+            ),
+        ],
+        history: vec![
             CanonicalMessage {
                 role: Role::Assistant,
                 blocks: vec![
@@ -122,7 +157,24 @@ fn assembly_with_tool_history() -> ContextAssembly {
                     truncated: false,
                 })],
             },
-        ])],
+        ],
+        tools: Vec::new(),
+        prompt_asset_sources: vec![
+            FileSource {
+                path: "crates/kuku/prompts/system.md".to_string(),
+                hash: "sha256:system".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                hash: "sha256:synthetic".to_string(),
+            },
+            FileSource {
+                path: "crates/kuku/prompts/tool-guidance.md".to_string(),
+                hash: "sha256:tool-guidance".to_string(),
+            },
+        ],
+        project_instruction_sources: Vec::new(),
+        memory_sources: Vec::new(),
     }
 }
 
@@ -139,7 +191,7 @@ fn anthropic_messages_url_normalizes_v1_suffix() {
 }
 
 #[test]
-fn anthropic_render_body_uses_messages_api_shape() {
+fn anthropic_render_body_preserves_layer_order() {
     let body = render_anthropic_body(&ProviderRequest {
         assembly: sample_assembly(),
         model: "claude-sonnet-4-6".to_string(),
@@ -151,11 +203,20 @@ fn anthropic_render_body_uses_messages_api_shape() {
     assert_eq!(body["stream"], false);
     assert_eq!(body["max_tokens"], 1024);
     assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][1]["role"], "user");
     assert!(body.get("stop").is_none());
     assert!(body["system"]
         .as_str()
         .unwrap()
-        .contains("follow project instructions"));
+        .contains("You are the agent running inside kuku"));
+    assert!(body["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("<kuku_execution_context>"));
+    assert!(body["messages"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Use tools to establish evidence before concluding or modifying."));
 }
 
 #[test]
@@ -178,15 +239,15 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
     });
 
     assert_eq!(
-        history_body["messages"][0]["content"][1]["type"],
+        history_body["messages"][2]["content"][1]["type"],
         "tool_use"
     );
     assert_eq!(
-        history_body["messages"][1]["content"][0]["type"],
+        history_body["messages"][3]["content"][0]["type"],
         "tool_result"
     );
     assert_eq!(
-        history_body["messages"][1]["content"][0]["tool_use_id"],
+        history_body["messages"][3]["content"][0]["tool_use_id"],
         "toolu_01"
     );
 }
@@ -329,7 +390,7 @@ fn openai_chat_completions_url_appends_path() {
 }
 
 #[test]
-fn openai_render_body_uses_chat_completions_shape() {
+fn openai_render_body_preserves_layer_order() {
     let body = render_openai_body(&ProviderRequest {
         assembly: sample_assembly(),
         model: "gpt-5.4-mini".to_string(),
@@ -341,7 +402,12 @@ fn openai_render_body_uses_chat_completions_shape() {
     assert_eq!(body["stream"], false);
     assert_eq!(body["max_tokens"], 2048);
     assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][1]["role"], "user");
     assert_eq!(body["messages"][2]["role"], "user");
+    assert!(body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("You are the agent running inside kuku"));
     assert!(body.get("max_completion_tokens").is_none());
 }
 
@@ -369,12 +435,12 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
     });
 
     assert_eq!(
-        history_body["messages"][0]["tool_calls"][0]["id"],
+        history_body["messages"][3]["tool_calls"][0]["id"],
         "toolu_01"
     );
-    assert_eq!(history_body["messages"][1]["role"], "tool");
-    assert_eq!(history_body["messages"][1]["tool_call_id"], "toolu_01");
-    assert_eq!(history_body["messages"][1]["content"], "README.md");
+    assert_eq!(history_body["messages"][4]["role"], "tool");
+    assert_eq!(history_body["messages"][4]["tool_call_id"], "toolu_01");
+    assert_eq!(history_body["messages"][4]["content"], "README.md");
 }
 
 #[tokio::test(flavor = "current_thread")]

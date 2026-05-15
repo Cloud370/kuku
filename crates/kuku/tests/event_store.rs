@@ -190,6 +190,7 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             tool_registry_hash: Some("sha256:tools".to_string()),
             tool_count: Some(6),
             ordered_tool_names: Some(vec!["find_files".to_string()]),
+            provenance: None,
         })
         .unwrap();
     store

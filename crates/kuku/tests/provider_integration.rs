@@ -114,25 +114,6 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     std::fs::create_dir_all(env.workspace.path().join("src")).unwrap();
     std::fs::write(env.workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains(r#""messages":[{"content":[{"text":"find files","type":"text"}],"role":"user"}]"#);
-        then.status(200)
-            .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "I will inspect files."},
-                    {"type": "tool_use", "id": "toolu_01", "name": "find_files", "input": {"path": "."}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
     let final_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -148,6 +129,30 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
                 "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains("<kuku_execution_context>")
+            .body_contains("Workspace root:")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("find files");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will inspect files."},
+                    {"type": "tool_use", "id": "toolu_01", "name": "find_files", "input": {"path": "."}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
             }));
     });
 
@@ -227,26 +232,6 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
     std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
     std::fs::write(env.workspace.path().join("docs/tools.md"), "TODO docs\n").unwrap();
 
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains(r#""messages":[{"content":[{"text":"read and search","type":"text"}],"role":"user"}]"#);
-        then.status(200)
-            .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "I will read and search."},
-                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md", "limit": 2}},
-                    {"type": "tool_use", "id": "toolu_search", "name": "search_text", "input": {"pattern": "TODO", "view": "lines"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
     let final_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -263,6 +248,30 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
                 "content": [{"type": "text", "text": "Read and search complete."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("read and search");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read and search."},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md", "limit": 2}},
+                    {"type": "tool_use", "id": "toolu_search", "name": "search_text", "input": {"pattern": "TODO", "view": "lines"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
             }));
     });
 
@@ -328,8 +337,28 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
     server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("cargo test");
+        then.status(200)
+            .header("request-id", "req_final")
+            .json_body(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
             .body_contains(r#""tools""#)
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool")
             .json_body(serde_json::json!({
@@ -342,22 +371,6 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#)
-            .body_contains("cargo test");
-        then.status(200)
-            .header("request-id", "req_final")
-            .json_body(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
             }));
     });
 
@@ -398,8 +411,27 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200)
+            .header("request-id", "req_final_1")
+            .json_body(serde_json::json!({
+                "id": "msg_final_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "First command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
             .body_contains(r#""tools""#)
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool")
             .json_body(serde_json::json!({
@@ -412,21 +444,6 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .header("request-id", "req_final_1")
-            .json_body(serde_json::json!({
-                "id": "msg_final_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "First command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
             }));
     });
 
@@ -465,8 +482,27 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200)
+            .header("request-id", "req_final_2")
+            .json_body(serde_json::json!({
+                "id": "msg_final_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Second command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
             .body_contains(r#""tools""#)
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
         then.status(200)
             .header("request-id", "req_tool_2")
             .json_body(serde_json::json!({
@@ -479,21 +515,6 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .header("request-id", "req_final_2")
-            .json_body(serde_json::json!({
-                "id": "msg_final_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Second command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
             }));
     });
 
@@ -516,25 +537,6 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains(r#""messages":[{"content":[{"text":"run tests","type":"text"}],"role":"user"}]"#);
-        then.status(200)
-            .header("request-id", "req_tool")
-            .json_body(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            }));
-    });
     let final_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -551,6 +553,29 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 "content": [{"type": "text", "text": "Command was blocked."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
+            }));
+    });
+    let tool_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tools"#)
+            .body_contains("<kuku_execution_context>")
+            .body_contains("<kuku_project_instructions>")
+            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_tool_guidance>")
+            .body_contains("run tests");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .json_body(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will run a command."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
             }));
     });
 

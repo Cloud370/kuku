@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("invalid policy file: {0}")]
     InvalidPolicy(String),
+
+    #[error("prompt render error: {0}")]
+    PromptRender(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -83,6 +86,14 @@ mod tests {
         assert_eq!(
             Error::InvalidPolicy("malformed allow rule".to_string()).to_string(),
             "invalid policy file: malformed allow rule"
+        );
+    }
+
+    #[test]
+    fn prompt_render_variant_formats_message() {
+        assert_eq!(
+            Error::PromptRender("missing template variable: platform".to_string()).to_string(),
+            "prompt render error: missing template variable: platform"
         );
     }
 }
