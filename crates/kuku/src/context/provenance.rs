@@ -37,6 +37,9 @@ pub struct RequestProvenanceInput {
     pub resolved_model: String,
     pub params: Value,
     pub token_estimate: Option<u64>,
+    pub context_budget_tier: String,
+    pub max_context_tokens: Option<u32>,
+    pub remaining_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -57,6 +60,9 @@ pub struct RequestProvenance {
     pub resolved_model: String,
     pub params: Value,
     pub token_estimate: Option<u64>,
+    pub context_budget_tier: String,
+    pub max_context_tokens: Option<u32>,
+    pub remaining_input_tokens: Option<u32>,
 }
 
 pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvenance {
@@ -77,6 +83,9 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         resolved_model: input.resolved_model,
         params: input.params,
         token_estimate: input.token_estimate,
+        context_budget_tier: input.context_budget_tier,
+        max_context_tokens: input.max_context_tokens,
+        remaining_input_tokens: input.remaining_input_tokens,
     }
 }
 
@@ -137,6 +146,9 @@ mod tests {
             resolved_model: "claude-sonnet-4-6".to_string(),
             params: json!({"temperature": 0, "max_tokens": 1024}),
             token_estimate: Some(500),
+            context_budget_tier: "roomy".to_string(),
+            max_context_tokens: Some(200_000),
+            remaining_input_tokens: Some(170_000),
         });
 
         let debug = format!("{provenance:?}");
@@ -161,6 +173,9 @@ mod tests {
             resolved_model,
             params,
             token_estimate,
+            context_budget_tier,
+            max_context_tokens,
+            remaining_input_tokens,
         } = provenance;
 
         assert_eq!(request_id, "req_1");
@@ -179,5 +194,8 @@ mod tests {
         assert_eq!(resolved_model, "claude-sonnet-4-6");
         assert_eq!(params, json!({"temperature": 0, "max_tokens": 1024}));
         assert_eq!(token_estimate, Some(500));
+        assert_eq!(context_budget_tier, "roomy");
+        assert_eq!(max_context_tokens, Some(200_000));
+        assert_eq!(remaining_input_tokens, Some(170_000));
     }
 }

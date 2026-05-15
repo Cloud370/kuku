@@ -303,6 +303,7 @@ async fn anthropic_call_extracts_tool_use_blocks() {
         model: request.model.clone(),
         base_url: server.base_url(),
         api_key: SecretString::new("anthropic-test-key"),
+        max_context_tokens: 200_000,
     };
 
     let mock = server.mock(|when, then| {
@@ -347,6 +348,7 @@ async fn anthropic_call_sends_expected_headers_and_parses_success() {
         model: request.model.clone(),
         base_url: server.base_url(),
         api_key: SecretString::new("anthropic-test-key"),
+        max_context_tokens: 200_000,
     };
 
     let mock = server.mock(|when, then| {
@@ -396,6 +398,7 @@ async fn anthropic_http_failure_is_normalized() {
         model: request.model.clone(),
         base_url: server.base_url(),
         api_key: SecretString::new("bad-key"),
+        max_context_tokens: 200_000,
     };
 
     let mock = server.mock(|when, then| {
@@ -521,6 +524,7 @@ async fn openai_call_extracts_tool_calls() {
         model: request.model.clone(),
         base_url: format!("{}/v1", server.base_url()),
         api_key: SecretString::new("openai-test-key"),
+        max_context_tokens: 128_000,
     };
 
     let mock = server.mock(|when, then| {
@@ -567,6 +571,7 @@ async fn openai_call_sends_bearer_auth_and_parses_success() {
         model: request.model.clone(),
         base_url: format!("{}/v1", server.base_url()),
         api_key: SecretString::new("openai-test-key"),
+        max_context_tokens: 128_000,
     };
 
     let mock = server.mock(|when, then| {
@@ -619,6 +624,7 @@ async fn openai_http_failure_is_normalized() {
         model: request.model.clone(),
         base_url: format!("{}/v1", server.base_url()),
         api_key: SecretString::new("bad-key"),
+        max_context_tokens: 128_000,
     };
 
     let mock = server.mock(|when, then| {

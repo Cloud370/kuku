@@ -170,6 +170,9 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         resolved_model: "claude-sonnet-4-6".to_string(),
         params: json!({"temperature": 0}),
         token_estimate: None,
+        context_budget_tier: "normal".to_string(),
+        max_context_tokens: Some(200_000),
+        remaining_input_tokens: None,
     });
 
     assert_eq!(provenance.request_id, "req_2");

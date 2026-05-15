@@ -26,7 +26,8 @@ use crate::session::{
     project_policy_path, session_events_path, validate_session_id,
 };
 use crate::notice::{
-    render_notice_block, ContextDriftEntry, ContextDriftStatus, Notice, NoticeKind, NoticeSeverity,
+    compute_context_headroom, render_notice_block, ContextDriftEntry, ContextDriftStatus, Notice,
+    NoticeKind, NoticeSeverity,
 };
 use crate::tool::{self, ToolDefinition};
 
@@ -567,6 +568,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 .insert(1, crate::context::CanonicalMessage::user_text(drift_notice));
         }
     }
+    let context_headroom = compute_context_headroom(
+        resolved.config.max_context_tokens,
+        pending.query.max_output_tokens,
+        None,
+    );
     let request_id = format!("req_{}", pending.request_num);
     let params = serde_json::json!({
         "max_output_tokens": pending.query.max_output_tokens,
@@ -610,6 +616,9 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         resolved_model: resolved.config.model.clone(),
         params: params.clone(),
         token_estimate: None,
+        context_budget_tier: format!("{:?}", context_headroom.tier).to_lowercase(),
+        max_context_tokens: Some(context_headroom.max_context_tokens),
+        remaining_input_tokens: context_headroom.remaining_input_tokens,
     });
 
     {

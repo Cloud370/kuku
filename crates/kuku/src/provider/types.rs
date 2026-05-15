@@ -56,6 +56,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) model: String,
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
+    pub(crate) max_context_tokens: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

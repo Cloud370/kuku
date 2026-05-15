@@ -60,11 +60,14 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             )
         })?;
 
+    let max_context_tokens = default_max_context_tokens(&provider);
+
     Ok(ResolvedProvider {
         kind: provider,
         model,
         base_url,
         api_key: SecretString::new(api_key),
+        max_context_tokens,
     })
 }
 
@@ -120,5 +123,12 @@ fn default_base_url(kind: &ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "https://api.anthropic.com",
         ProviderKind::OpenAiCompatible => "https://api.openai.com/v1",
+    }
+}
+
+fn default_max_context_tokens(kind: &ProviderKind) -> u32 {
+    match kind {
+        ProviderKind::Anthropic => 200_000,
+        ProviderKind::OpenAiCompatible => 128_000,
     }
 }
