@@ -1,67 +1,86 @@
-use clap::Args;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::display;
 
-#[derive(Args)]
 pub struct QueryArgs {
-    /// The prompt to run
-    pub prompt: String,
-
-    /// Print mode: output final text only, deny all permission requests
-    #[arg(short = 'p')]
+    pub prompt: Vec<String>,
     pub print_mode: bool,
-
-    /// Model alias
-    #[arg(long = "model")]
     pub model: Option<String>,
-
-    /// Verbose output
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    pub session: Option<String>,
+    pub cont: bool,
 }
 
 pub async fn run(args: QueryArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let mut q = query(&args.prompt);
+    let prompt = args.prompt.join(" ");
+    let mut q = query(&prompt);
     if let Some(model) = &args.model {
         q = q.model(model.clone());
+    }
+    if let Some(session) = &args.session {
+        q = q.session(session.clone());
+    } else if args.cont {
+        let home = kuku::session::kuku_home()?;
+        let workspace = kuku::session::current_workspace()?;
+        let sessions = kuku::session::list_sessions(&home, &workspace)?;
+        let latest = sessions
+            .iter()
+            .max_by_key(|s| s.created_at.as_str())
+            .ok_or("no sessions found")?;
+        q = q.session(latest.session_id.clone());
     }
 
     if args.print_mode {
         let output = q.run().await?;
         println!("{}", output.text);
-        if args.verbose {
-            eprintln!("session: {}", output.session_id);
-        }
         return Ok(());
     }
 
     // Interactive mode
     let mut run = q.start().await?;
     let session_id = run.session_id().to_string();
+    display::session_start(&session_id);
+    let mut in_thinking = false;
 
     loop {
-        match run.next().await? {
+        let event = tokio::select! {
+            result = run.next() => result?,
+            _ = tokio::signal::ctrl_c() => {
+                display::interrupted(&session_id);
+                return Ok(());
+            }
+        };
+        match event {
             Some(UiEvent::TextDelta { text }) => {
+                if in_thinking {
+                    display::thinking_end();
+                    display::response_start();
+                    in_thinking = false;
+                }
                 display::text_delta(&text);
             }
+            Some(UiEvent::ThinkingDelta { text }) => {
+                if !in_thinking {
+                    display::thinking_start();
+                    in_thinking = true;
+                }
+                display::thinking_delta(&text);
+            }
             Some(UiEvent::ToolCall {
-                tool_call_id,
+                tool_call_id: _,
                 tool,
                 summary,
             }) => {
-                let extra = if args.verbose {
-                    tool_call_id
-                } else {
-                    String::new()
-                };
-                display::tool_call(args.verbose, &tool, &summary, &extra);
+                if in_thinking {
+                    display::thinking_end();
+                    in_thinking = false;
+                }
+                display::tool_call(&tool, &summary);
             }
             Some(UiEvent::ToolResult {
                 tool_call_id: _,
                 summary,
             }) => {
-                display::tool_result(args.verbose, &summary, "");
+                display::tool_result(&summary);
             }
             Some(UiEvent::PermissionRequested { request }) => {
                 let prompt = display::permission_prompt(&request.tool, &request.summary);
@@ -80,11 +99,19 @@ pub async fn run(args: QueryArgs) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = run.decide(&request.id, choice).await?;
             }
             Some(UiEvent::Done { output: _ }) => {
-                display::session_separator(&session_id);
+                if in_thinking {
+                    display::thinking_end();
+                }
+                println!();
                 break;
             }
             Some(_) => {}
-            None => break,
+            None => {
+                if in_thinking {
+                    display::thinking_end();
+                }
+                break;
+            }
         }
     }
     Ok(())

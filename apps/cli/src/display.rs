@@ -3,22 +3,34 @@ pub fn text_delta(text: &str) {
     print!("{text}");
 }
 
+/// Print a thinking section start.
+pub fn thinking_start() {
+    println!("── thinking ──");
+}
+
+/// Print a thinking delta to stdout (no newline).
+pub fn thinking_delta(text: &str) {
+    print!("{text}");
+}
+
+/// Print a thinking section end.
+pub fn thinking_end() {
+    println!("\n── /thinking ──");
+}
+
+/// Print a response section start.
+pub fn response_start() {
+    println!("── response ──");
+}
+
 /// Format a tool call line.
-pub fn tool_call(verbose: bool, tool: &str, summary: &str, extra: &str) {
-    if verbose && !extra.is_empty() {
-        println!("\n[tool] {tool} {summary}  {extra}");
-    } else {
-        println!("\n[tool] {tool} {summary}");
-    }
+pub fn tool_call(tool: &str, summary: &str) {
+    println!("\n[tool] {tool} {summary}");
 }
 
 /// Format a tool result line.
-pub fn tool_result(verbose: bool, summary: &str, extra: &str) {
-    if verbose && !extra.is_empty() {
-        println!("       \u{2192} {summary}  {extra}");
-    } else {
-        println!("       \u{2192} {summary}");
-    }
+pub fn tool_result(summary: &str) {
+    println!("       \u{2192} {summary}");
 }
 
 /// Permission prompt.
@@ -26,9 +38,14 @@ pub fn permission_prompt(tool: &str, summary: &str) -> String {
     format!("[ask] {tool} {summary} \u{2014} (y/n/session/project)?")
 }
 
-/// Session separator line.
-pub fn session_separator(session_id: &str) {
-    println!("\n\u{2500}\u{2500} session: {session_id} \u{2500}\u{2500}");
+/// Session start line.
+pub fn session_start(session_id: &str) {
+    println!("session: {session_id}");
+}
+
+/// Interrupted line.
+pub fn interrupted(session_id: &str) {
+    eprintln!("\ninterrupted. session: {session_id}");
 }
 
 /// Print an event line (for show events).
