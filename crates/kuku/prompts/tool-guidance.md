@@ -9,6 +9,9 @@ Guidance:
 - Understand the relevant context before modifying files.
 - Prefer focused edits over broader rewrites when both would work.
 - Reserve `run_command` for validation, project commands, scripts, generators, and other cases where a command is the right tool.
+- If a context drift notice appears, treat it as a signal that some previously relied-on file-backed context is stale.
+- Do not infer the new contents of a changed file from the notice alone.
+- If detailed reasoning depends on a changed file that is not fully included in the current prompt, read it again.
 - Treat tool results as evidence.
 - Do not claim conclusions that are not supported by tool or file evidence.
 </kuku_tool_guidance>

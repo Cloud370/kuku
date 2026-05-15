@@ -25,6 +25,9 @@ use crate::session::{
     current_workspace, global_memory_path, kuku_home, new_session_id, project_memory_path,
     project_policy_path, session_events_path, validate_session_id,
 };
+use crate::notice::{
+    render_notice_block, ContextDriftEntry, ContextDriftStatus, Notice, NoticeKind, NoticeSeverity,
+};
 use crate::tool::{self, ToolDefinition};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1072,46 +1075,44 @@ fn build_context_drift_notice(workspace: &Path, events: &[StoredEvent]) -> Resul
         return Ok(None);
     }
 
-    let mut changed = Vec::new();
+    let mut entries = Vec::new();
     for snapshot in tracked.values() {
         let path = PathBuf::from(&snapshot.path);
+        let label = path
+            .strip_prefix(workspace)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
         match std::fs::read(&path) {
             Ok(current_bytes) => {
                 let current_hash = content_hash_bytes(&current_bytes);
                 if current_hash == snapshot.hash {
                     continue;
                 }
-                changed.push(render_drift_notice_line(workspace, &path, "updated"));
+                entries.push(ContextDriftEntry {
+                    path: label,
+                    status: ContextDriftStatus::Updated,
+                });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                changed.push(render_drift_notice_line(workspace, &path, "deleted"));
+                entries.push(ContextDriftEntry {
+                    path: label,
+                    status: ContextDriftStatus::Deleted,
+                });
             }
             Err(_) => continue,
         }
     }
 
-    if changed.is_empty() {
+    if entries.is_empty() {
         return Ok(None);
     }
 
-    let mut lines = vec![
-        "<kuku_system_notice>".to_string(),
-        "Previously loaded file-backed context has changed since the last acknowledged snapshot.".to_string(),
-        "".to_string(),
-        "Only unacknowledged drift is reported here.".to_string(),
-        "Changes already acknowledged through successful full-file reads or writes are not included.".to_string(),
-        "".to_string(),
-        "This notice does not include the changed file contents.".to_string(),
-        "Do not assume you know what changed from this notice alone.".to_string(),
-        "".to_string(),
-        "Use the context loaded in this turn as the current source of truth.".to_string(),
-        "If the task depends on the details of a changed file that is not fully included in the current prompt, read that file again before relying on it.".to_string(),
-        "".to_string(),
-        "Changed tracked files:".to_string(),
-    ];
-    lines.extend(changed);
-    lines.push("</kuku_system_notice>".to_string());
-    Ok(Some(lines.join("\n")))
+    let notice = Notice {
+        kind: NoticeKind::ContextDrift { entries },
+        severity: NoticeSeverity::Info,
+    };
+    Ok(Some(render_notice_block(&notice)))
 }
 
 fn rebuild_tracked_file_snapshots(events: &[StoredEvent]) -> BTreeMap<String, TrackedFileSnapshot> {
@@ -1248,15 +1249,6 @@ fn update_tracked_snapshot_from_tool_result(
         }
         _ => {}
     }
-}
-
-fn render_drift_notice_line(workspace: &Path, path: &Path, status: &str) -> String {
-    let label = path
-        .strip_prefix(workspace)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/");
-    format!("- {label} ({status})")
 }
 
 fn content_hash_bytes(bytes: &[u8]) -> String {
