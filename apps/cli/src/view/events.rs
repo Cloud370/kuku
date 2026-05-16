@@ -1,5 +1,6 @@
 use kuku::event::{EventPayload, StoredEvent};
 
+/// Format a stored event as a single summary line for terminal display.
 pub fn render_event_brief(event: &StoredEvent, verbose: bool) -> String {
     let mut line = format!("evt:{} | {}", event.id, event_type_name(&event.payload));
     let details = event_details(&event.payload, verbose);

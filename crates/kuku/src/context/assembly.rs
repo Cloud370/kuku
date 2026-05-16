@@ -5,6 +5,7 @@ use super::message::CanonicalMessage;
 use super::provenance::FileSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Runtime environment facts passed into context assembly.
 pub struct EnvironmentSource {
     pub workspace_path: String,
     pub platform: String,
@@ -12,6 +13,7 @@ pub struct EnvironmentSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A project instruction file (AGENTS.md, CLAUDE.md) with its content and hash.
 pub struct InstructionSource {
     pub path: String,
     pub kind: String,
@@ -20,6 +22,7 @@ pub struct InstructionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A memory file with its content and content hash.
 pub struct MemorySource {
     pub path: String,
     pub hash: String,
@@ -27,6 +30,7 @@ pub struct MemorySource {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Tool definition passed to the provider in the request.
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
@@ -34,6 +38,7 @@ pub struct ToolSchema {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// All sources needed to assemble a provider request context.
 pub struct ContextInput {
     pub environment: EnvironmentSource,
     pub project_instructions: Vec<InstructionSource>,
@@ -45,6 +50,7 @@ pub struct ContextInput {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Assembled system prompt, prelude messages, history, and tool schemas ready for the provider.
 pub struct ContextAssembly {
     pub system_prompt: String,
     pub prelude_messages: Vec<CanonicalMessage>,
@@ -55,6 +61,7 @@ pub struct ContextAssembly {
     pub memory_sources: Vec<MemorySource>,
 }
 
+/// Build a complete context assembly from environment, instructions, memory, history, and tools.
 pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
     let catalog = builtin_prompt_catalog();
     let project_instructions_text = if input.project_instructions.is_empty() {

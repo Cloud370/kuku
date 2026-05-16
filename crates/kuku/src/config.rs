@@ -64,22 +64,11 @@ pub enum ApiKeySource {
 }
 
 /// Per-level thinking budget overrides from the config file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolvedThinking {
     pub low: Option<toml::Value>,
     pub medium: Option<toml::Value>,
     pub high: Option<toml::Value>,
-}
-
-#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
-impl Default for ResolvedThinking {
-    fn default() -> Self {
-        Self {
-            low: None,
-            medium: None,
-            high: None,
-        }
-    }
 }
 
 /// Load and parse a TOML config file. Returns empty defaults if the file does not exist.

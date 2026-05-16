@@ -4,10 +4,12 @@ use home::env::{self, Env};
 
 use crate::error::{Error, Result};
 
+/// Resolve the kuku home directory from KUKU_HOME env or platform default.
 pub fn kuku_home() -> Result<PathBuf> {
     kuku_home_with_env(&env::OS_ENV)
 }
 
+/// Resolve and canonicalize the current working directory as the workspace root.
 pub fn current_workspace() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
     std::fs::canonicalize(&cwd).map_err(|_| Error::InvalidWorkspacePath(cwd.display().to_string()))
@@ -26,6 +28,7 @@ fn kuku_home_with_env(env: &dyn Env) -> Result<PathBuf> {
         .ok_or(Error::MissingHomeDirectory)
 }
 
+/// Compute the project-scoped home directory for a workspace.
 pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     let mut path = PathBuf::from(kuku_home);
     path.push("p");
@@ -44,6 +47,7 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Resolve the events.jsonl path for a session within a workspace.
 pub fn session_events_path(
     kuku_home: &Path,
     workspace: &Path,
@@ -56,16 +60,19 @@ pub fn session_events_path(
     Ok(path)
 }
 
+/// Resolve the policy.md path for a workspace.
 pub fn project_policy_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     let mut path = project_home(kuku_home, workspace)?;
     path.push("policy.md");
     Ok(path)
 }
 
+/// Resolve the global memory.md path within kuku home.
 pub fn global_memory_path(kuku_home: &Path) -> PathBuf {
     kuku_home.join("memory.md")
 }
 
+/// Resolve the project-scoped memory.md path for a workspace.
 pub fn project_memory_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     let mut path = project_home(kuku_home, workspace)?;
     path.push("memory.md");

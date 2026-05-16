@@ -20,7 +20,7 @@ pub(crate) fn edit_file(
     workspace: &Path,
     prior_events: &[StoredEvent],
 ) -> ToolResultEnvelope {
-    let request = match edit_request(args) {
+    let request = match edit_file_request(args) {
         Ok(request) => request,
         Err(result) => return result,
     };
@@ -135,7 +135,7 @@ pub(crate) fn edit_file(
     )
 }
 
-fn edit_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
+fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return Err(ToolResultEnvelope::error(
             "failed: missing path",

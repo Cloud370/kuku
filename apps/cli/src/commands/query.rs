@@ -2,6 +2,7 @@ use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::display;
 
+/// CLI arguments for running an interactive or print-mode query.
 pub struct QueryArgs {
     pub prompt: Vec<String>,
     pub print_mode: bool,

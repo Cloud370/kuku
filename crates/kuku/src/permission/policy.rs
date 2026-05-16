@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed allow/deny rules from a policy.md file.
 pub struct PermissionPolicy {
     allow: Vec<PolicyRule>,
     deny: Vec<PolicyRule>,
@@ -14,6 +15,7 @@ struct PolicyRule {
     pattern: String,
 }
 
+/// Parse a policy.md file into structured allow/deny rules.
 pub fn parse_policy(markdown: &str) -> Result<PermissionPolicy> {
     let mut allow = Vec::new();
     let mut deny = Vec::new();
@@ -50,15 +52,18 @@ pub fn parse_policy(markdown: &str) -> Result<PermissionPolicy> {
 }
 
 impl PermissionPolicy {
+    /// Check if a tool call candidate matches any allow rule.
     pub fn matches_allow(&self, tool: &str, candidate: &str) -> bool {
         self.allow.iter().any(|rule| rule.matches(tool, candidate))
     }
 
+    /// Check if a tool call candidate matches any deny rule.
     pub fn matches_deny(&self, tool: &str, candidate: &str) -> bool {
         self.deny.iter().any(|rule| rule.matches(tool, candidate))
     }
 }
 
+/// Load and parse the project policy file, returning an empty policy if the file does not exist.
 pub fn load_project_policy(path: &Path) -> Result<PermissionPolicy> {
     match std::fs::read_to_string(path) {
         Ok(markdown) => parse_policy(&markdown),
@@ -70,6 +75,7 @@ pub fn load_project_policy(path: &Path) -> Result<PermissionPolicy> {
     }
 }
 
+/// Add a new allow rule to the project policy file, preserving existing rules.
 pub fn append_project_allow_rule(path: &Path, tool: &str, pattern: &str) -> Result<()> {
     let policy = load_project_policy(path)?;
     let mut content = String::from("# policy\n\n## allow\n");

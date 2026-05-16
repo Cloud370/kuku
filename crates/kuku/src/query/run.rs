@@ -12,10 +12,12 @@ use super::types::{
 };
 
 impl Run {
+    /// The session ID for this run.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
+    /// Poll for the next UI event from the running query.
     pub async fn next(&mut self) -> Result<Option<UiEvent>> {
         loop {
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
@@ -157,6 +159,7 @@ impl Run {
         }
     }
 
+    /// Apply a permission decision for a pending tool call.
     pub async fn decide(
         &mut self,
         request_id: impl AsRef<str>,

@@ -11,6 +11,7 @@ use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider
 use crate::tool::ToolDefinition;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Builder for configuring and executing a model query.
 pub struct Query {
     pub(super) prompt: String,
     pub(super) session_id: Option<String>,
@@ -23,12 +24,14 @@ pub struct Query {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Final output from a completed query run.
 pub struct RunOutput {
     pub session_id: String,
     pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A pending permission request for a tool call.
 pub struct PermissionRequest {
     pub id: String,
     pub tool_call_id: String,
@@ -38,6 +41,7 @@ pub struct PermissionRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The host's response to a permission request.
 pub enum PermissionChoice {
     Once,
     Session,
@@ -75,6 +79,7 @@ pub enum UiEvent {
 }
 
 #[derive(Debug)]
+/// An active query execution that yields UI events via `next()`.
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
@@ -169,6 +174,7 @@ impl std::fmt::Debug for StreamingChunkState {
 // ---------- Query builder ----------
 
 impl Query {
+    /// Create a new query builder for the given prompt.
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
@@ -182,45 +188,54 @@ impl Query {
         }
     }
 
+    /// Set or resume a session by ID.
     pub fn session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
     }
 
+    /// Set the provider to use for this query.
     pub fn provider(mut self, provider: crate::provider::Provider) -> Self {
         self.provider = Some(provider);
         self
     }
 
+    /// Set the model alias or provider:model name.
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
     }
 
+    /// Override the provider base URL.
     pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = Some(base_url.into());
         self
     }
 
+    /// Set the API key directly, bypassing config resolution.
     pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = Some(api_key.into());
         self
     }
 
+    /// Set the maximum output token budget.
     pub fn max_output_tokens(mut self, max_output_tokens: u32) -> Self {
         self.max_output_tokens = Some(max_output_tokens);
         self
     }
 
+    /// Set the sampling temperature.
     pub fn temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
     }
 
+    /// The prompt text.
     pub fn prompt(&self) -> &str {
         &self.prompt
     }
 
+    /// The session ID, if set.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }

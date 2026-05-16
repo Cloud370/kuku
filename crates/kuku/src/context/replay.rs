@@ -10,6 +10,7 @@ struct PendingToolCall {
     args: serde_json::Value,
 }
 
+#[derive(Default)]
 struct ResponseGroup {
     request_id: Option<String>,
     text: Option<String>,
@@ -18,19 +19,7 @@ struct ResponseGroup {
     tool_results: BTreeMap<String, ToolResult>,
 }
 
-#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
-impl Default for ResponseGroup {
-    fn default() -> Self {
-        Self {
-            request_id: None,
-            text: None,
-            thinking: None,
-            tool_calls: BTreeMap::new(),
-            tool_results: BTreeMap::new(),
-        }
-    }
-}
-
+/// Reconstruct conversation history messages from a session's stored events.
 pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();

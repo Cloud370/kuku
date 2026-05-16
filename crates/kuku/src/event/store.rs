@@ -13,12 +13,14 @@ struct ReplayScan {
     needs_truncation: bool,
 }
 
+/// Append-only store for reading and writing events to a session's events.jsonl.
 pub struct EventStore {
     path: PathBuf,
     next_id: u64,
 }
 
 impl EventStore {
+    /// Open an event store, creating parent directories and repairing truncated lines if needed.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -41,6 +43,7 @@ impl EventStore {
         self.next_id
     }
 
+    /// Append a new event to the store and return the stored event with its assigned ID.
     pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
         let event = StoredEvent {
             id: self.next_id,
@@ -57,6 +60,7 @@ impl EventStore {
         Ok(event)
     }
 
+    /// Read all events from an events.jsonl file.
     pub fn replay(path: impl AsRef<Path>) -> Result<Vec<StoredEvent>> {
         Ok(Self::scan(path.as_ref())?.events)
     }
