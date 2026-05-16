@@ -164,12 +164,15 @@ fn provider_alias_for_kind(kind: &ProviderKind, cfg: &Config) -> String {
         return built_in.to_string();
     }
     for (alias, provider_cfg) in &cfg.providers {
-        let matches = match (kind, provider_cfg.format.as_str()) {
-            (ProviderKind::Anthropic, "anthropic") => true,
-            (ProviderKind::OpenAiCompatible, "openai" | "openai-compatible") => true,
-            _ => false,
-        };
-        if matches {
+        let found = matches!(
+            (kind, provider_cfg.format.as_str()),
+            (ProviderKind::Anthropic, "anthropic")
+                | (
+                    ProviderKind::OpenAiCompatible,
+                    "openai" | "openai-compatible"
+                )
+        );
+        if found {
             return alias.clone();
         }
     }
