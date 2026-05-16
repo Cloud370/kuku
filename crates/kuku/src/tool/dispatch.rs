@@ -35,8 +35,8 @@ pub(crate) async fn dispatch(
         }
         "edit_file" => builtin::edit_file(args, workspace, prior_events),
         "write_file" => builtin::write_file(args, workspace, prior_events),
-        "memory.remember" => builtin::memory_remember_with_home(kuku_home, args, workspace),
-        "memory.forget" => builtin::memory_forget_with_home(kuku_home, args, workspace),
+        "memory.remember" => builtin::memory_remember_with_home(args, workspace, kuku_home),
+        "memory.forget" => builtin::memory_forget_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
@@ -249,33 +249,31 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "hello\nworld\n"
         );
-    }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_blocks_memory_tools_when_runtime_permission_denied() {
-        let dir = tempfile::tempdir().unwrap();
-        let denied = denied_event("tool_memory");
-
+        // memory.remember denial
+        let memory_denied = denied_event("tool_memory");
         let remember = dispatch(
             "memory.remember",
             &serde_json::json!({"scope": "project", "kind": "how_to_work", "text": "Keep answers concise"}),
             dir.path(),
             dir.path(),
-            std::slice::from_ref(&denied),
-            18,
+            &[memory_denied],
+            19,
             Some("tool_memory"),
         )
         .await;
         assert_eq!(remember.status, "blocked");
         assert!(remember.model_content.contains("permission gate denied"));
 
+        // memory.forget denial
+        let memory_denied2 = denied_event("tool_memory");
         let forget = dispatch(
             "memory.forget",
             &serde_json::json!({"scope": "project", "text": "Keep answers concise"}),
             dir.path(),
             dir.path(),
-            &[denied],
-            19,
+            &[memory_denied2],
+            20,
             Some("tool_memory"),
         )
         .await;

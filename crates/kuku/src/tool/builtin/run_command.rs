@@ -1,0 +1,523 @@
+use std::io;
+use std::path::Path;
+use std::process::{ExitStatus, Stdio};
+use std::time::Instant;
+
+use serde_json::Value;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
+
+use crate::tool::ToolResultEnvelope;
+
+use super::common::plural;
+
+const RUN_COMMAND_MAX_CHARS: usize = 80_000;
+const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
+
+struct CommandRequest {
+    command: String,
+    timeout_seconds: u64,
+}
+
+pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+    let request = match run_command_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    if let Some(reason) = blocked_command_reason(&request.command) {
+        return ToolResultEnvelope::blocked(
+            format!("blocked by command hard guard: {reason}"),
+            format!("blocked by command hard guard: {reason}"),
+        );
+    }
+    let workspace = match workspace.canonicalize() {
+        Ok(path) => path,
+        Err(_) => {
+            return ToolResultEnvelope::error(
+                "failed: workspace not found",
+                "workspace path does not exist",
+            )
+        }
+    };
+
+    let started = Instant::now();
+    let mut command = shell_command(&request.command);
+    command
+        .current_dir(&workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: command could not start: {error}"),
+                format!("command could not start: {error}"),
+            )
+        }
+    };
+    let stdout_task = child.stdout.take().map(read_pipe_task);
+    let stderr_task = child.stderr.take().map(read_pipe_task);
+
+    let status = tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) => status,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: command wait error: {error}"),
+                    format!("command wait error: {error}"),
+                )
+            }
+        },
+        _ = sleep(Duration::from_secs(request.timeout_seconds)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let duration_ms = started.elapsed().as_millis() as u64;
+            let stdout = collect_pipe(stdout_task).await.unwrap_or_default();
+            let stderr = collect_pipe(stderr_task).await.unwrap_or_default();
+            return render_command_timeout_result(
+                &request.command,
+                request.timeout_seconds,
+                duration_ms,
+                &stdout,
+                &stderr,
+            );
+        }
+    };
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let stdout = match collect_pipe(stdout_task).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: stdout capture error: {error}"),
+                format!("stdout capture error: {error}"),
+            )
+        }
+    };
+    let stderr = match collect_pipe(stderr_task).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: stderr capture error: {error}"),
+                format!("stderr capture error: {error}"),
+            )
+        }
+    };
+
+    render_command_result(&request.command, status, stdout, stderr, duration_ms)
+}
+
+fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelope> {
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing command",
+            "run_command requires command",
+        ));
+    };
+    if command.trim().is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: command is empty",
+            "command must not be empty",
+        ));
+    }
+    let Some(timeout_seconds) = args.get("timeout").and_then(Value::as_u64) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing timeout",
+            "run_command requires timeout in seconds",
+        ));
+    };
+    if timeout_seconds == 0 {
+        return Err(ToolResultEnvelope::error(
+            "failed: timeout must be >= 1",
+            "timeout must be >= 1",
+        ));
+    }
+    if timeout_seconds > RUN_COMMAND_TIMEOUT_CAP_SECONDS {
+        return Err(ToolResultEnvelope::error(
+            format!("failed: timeout must be <= {RUN_COMMAND_TIMEOUT_CAP_SECONDS}"),
+            format!("timeout must be <= {RUN_COMMAND_TIMEOUT_CAP_SECONDS}"),
+        ));
+    }
+
+    Ok(CommandRequest {
+        command: command.to_string(),
+        timeout_seconds,
+    })
+}
+
+fn blocked_command_reason(command: &str) -> Option<&'static str> {
+    let normalized = command
+        .to_ascii_lowercase()
+        .replace("&&", "\n")
+        .replace("||", "\n")
+        .replace(';', "\n");
+    for segment in normalized
+        .lines()
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+    {
+        let segment = segment.strip_prefix("sudo ").unwrap_or(segment).trim();
+        for (prefix, reason) in [
+            ("git push", "git push affects a remote repository"),
+            ("git reset --hard", "git reset --hard discards local work"),
+            ("git clean -f", "git clean deletes untracked files"),
+            ("rm -rf", "recursive force delete is destructive"),
+            ("rm -fr", "recursive force delete is destructive"),
+            (
+                "cargo publish",
+                "publish affects external package registries",
+            ),
+            ("npm publish", "publish affects external package registries"),
+            (
+                "pnpm publish",
+                "publish affects external package registries",
+            ),
+            (
+                "yarn publish",
+                "publish affects external package registries",
+            ),
+            ("bun publish", "publish affects external package registries"),
+            ("npm run deploy", "deploy affects external systems"),
+            ("pnpm deploy", "deploy affects external systems"),
+            ("yarn deploy", "deploy affects external systems"),
+            ("make deploy", "deploy affects external systems"),
+            ("cargo release", "release affects external systems"),
+        ] {
+            if segment.starts_with(prefix) {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut child = Command::new("cmd");
+    child.arg("/C").arg(command);
+    child
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut child = Command::new("sh");
+    child.arg("-c").arg(command);
+    child
+}
+
+fn read_pipe_task<P>(pipe: P) -> JoinHandle<io::Result<Vec<u8>>>
+where
+    P: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut pipe = pipe;
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).await?;
+        Ok(bytes)
+    })
+}
+
+async fn collect_pipe(task: Option<JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match task {
+        Some(task) => task.await.map_err(io::Error::other)?,
+        None => Ok(Vec::new()),
+    }
+}
+
+fn render_command_result(
+    command: &str,
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    duration_ms: u64,
+) -> ToolResultEnvelope {
+    let stdout = String::from_utf8_lossy(&stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr).into_owned();
+    let stdout_lines = line_count(&stdout);
+    let stderr_lines = line_count(&stderr);
+    let exit_code = status.code();
+    let rendered = render_command_output(&stdout, &stderr);
+    let (model_content, truncated) = truncate_text(
+        rendered,
+        RUN_COMMAND_MAX_CHARS,
+        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
+    );
+    let mut summary = format!(
+        "command exited {} in {}ms, stdout {} line{}, stderr {} line{}",
+        exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+        duration_ms,
+        stdout_lines,
+        plural(stdout_lines),
+        stderr_lines,
+        plural(stderr_lines),
+    );
+    if truncated {
+        summary.push_str(", output truncated");
+    }
+    let structured = serde_json::json!({
+        "kind": "command_result",
+        "command": command,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "stdout_lines": stdout_lines,
+        "stderr_lines": stderr_lines,
+        "timed_out": false,
+        "line_numbered": false,
+    });
+
+    if truncated {
+        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
+    } else {
+        ToolResultEnvelope::ok(summary, model_content, structured)
+    }
+}
+
+fn render_command_timeout_result(
+    command: &str,
+    timeout_seconds: u64,
+    duration_ms: u64,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> ToolResultEnvelope {
+    let stdout = String::from_utf8_lossy(stdout).into_owned();
+    let stderr = String::from_utf8_lossy(stderr).into_owned();
+    let stdout_lines = line_count(&stdout);
+    let stderr_lines = line_count(&stderr);
+    let rendered = render_command_output(&stdout, &stderr);
+    let model_content = if rendered == "(command produced no output)" {
+        format!("command timed out after {timeout_seconds}s")
+    } else {
+        format!("command timed out after {timeout_seconds}s\n\n{rendered}")
+    };
+    let (model_content, truncated) = truncate_text(
+        model_content,
+        RUN_COMMAND_MAX_CHARS,
+        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
+    );
+    let mut summary = format!(
+        "command timed out after {timeout_seconds}s, stdout {stdout_lines} line{}, stderr {stderr_lines} line{}",
+        plural(stdout_lines),
+        plural(stderr_lines),
+    );
+    if truncated {
+        summary.push_str(", output truncated");
+    }
+    ToolResultEnvelope {
+        status: "error".to_string(),
+        summary,
+        model_content,
+        truncated,
+        structured: Some(serde_json::json!({
+            "kind": "command_result",
+            "command": command,
+            "exit_code": null,
+            "duration_ms": duration_ms,
+            "stdout_lines": stdout_lines,
+            "stderr_lines": stderr_lines,
+            "timed_out": true,
+            "line_numbered": false,
+        })),
+    }
+}
+
+fn render_command_output(stdout: &str, stderr: &str) -> String {
+    let mut sections = Vec::new();
+    if !stdout.is_empty() {
+        sections.push(format!(
+            "stdout:\n{}",
+            stdout.trim_end_matches(['\r', '\n'])
+        ));
+    }
+    if !stderr.is_empty() {
+        sections.push(format!(
+            "stderr:\n{}",
+            stderr.trim_end_matches(['\r', '\n'])
+        ));
+    }
+    if sections.is_empty() {
+        "(command produced no output)".to_string()
+    } else {
+        sections.join("\n\n")
+    }
+}
+
+fn line_count(text: &str) -> usize {
+    text.lines().count()
+}
+
+fn truncate_text(mut text: String, max_chars: usize, truncation_message: &str) -> (String, bool) {
+    if text.len() <= max_chars {
+        return (text, false);
+    }
+    let keep = max_chars.saturating_sub(truncation_message.len() + 1);
+    text.truncate(keep);
+    while !text.is_char_boundary(text.len()) {
+        text.pop();
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(truncation_message);
+    (text, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::workspace;
+    use super::*;
+
+    #[cfg(unix)]
+    fn stdout_command() -> &'static str {
+        "printf 'hello\nworld\n'"
+    }
+
+    #[cfg(windows)]
+    fn stdout_command() -> &'static str {
+        "echo hello && echo world"
+    }
+
+    #[cfg(unix)]
+    fn stderr_nonzero_command() -> &'static str {
+        "printf 'bad\n' >&2; exit 7"
+    }
+
+    #[cfg(windows)]
+    fn stderr_nonzero_command() -> &'static str {
+        "echo bad 1>&2 && exit /B 7"
+    }
+
+    #[cfg(unix)]
+    fn read_marker_command() -> &'static str {
+        "cat cwd-marker.txt"
+    }
+
+    #[cfg(windows)]
+    fn read_marker_command() -> &'static str {
+        "type cwd-marker.txt"
+    }
+
+    #[cfg(unix)]
+    fn noisy_timeout_command() -> String {
+        format!(
+            "printf '{}'; sleep 2",
+            "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
+        )
+    }
+
+    #[cfg(windows)]
+    fn noisy_timeout_command() -> String {
+        format!(
+            "echo {} && ping 127.0.0.1 -n 3 > NUL",
+            "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_captures_stdout_from_workspace() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("cwd-marker.txt"), "workspace marker\n").unwrap();
+        let result = run_command(
+            &serde_json::json!({"command": read_marker_command(), "timeout": 5}),
+            dir.path(),
+        )
+        .await;
+
+        assert_eq!(result.status, "ok");
+        assert!(result.summary.contains("command exited 0"));
+        assert!(result.model_content.contains("stdout:"));
+        assert!(result.model_content.contains("workspace marker"));
+        let structured = result.structured.unwrap();
+        assert_eq!(structured["kind"], "command_result");
+        assert_eq!(structured["exit_code"], 0);
+        assert_eq!(structured["stdout_lines"], 1);
+        assert_eq!(structured["stderr_lines"], 0);
+        assert_eq!(structured["timed_out"], false);
+        assert_eq!(structured["line_numbered"], false);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_treats_nonzero_exit_as_command_evidence() {
+        let dir = workspace();
+        let result = run_command(
+            &serde_json::json!({"command": stderr_nonzero_command(), "timeout": 5}),
+            dir.path(),
+        )
+        .await;
+
+        assert_eq!(result.status, "ok");
+        assert!(result.summary.contains("command exited 7"));
+        assert!(result.model_content.contains("stderr:"));
+        assert!(result.model_content.contains("bad"));
+        assert_eq!(result.structured.as_ref().unwrap()["exit_code"], 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_reports_timeout_as_tool_error() {
+        let dir = workspace();
+        let result = run_command(
+            &serde_json::json!({"command": noisy_timeout_command(), "timeout": 1}),
+            dir.path(),
+        )
+        .await;
+
+        assert_eq!(result.status, "error");
+        assert!(result.summary.contains("command timed out after 1s"));
+        assert_eq!(
+            result.structured.as_ref().unwrap()["kind"],
+            "command_result"
+        );
+        assert_eq!(result.structured.as_ref().unwrap()["timed_out"], true);
+        assert!(result.truncated);
+        assert!(result.model_content.len() <= RUN_COMMAND_MAX_CHARS);
+        assert!(result.model_content.contains("Command output truncated"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_commands() {
+        let dir = workspace();
+
+        let missing = run_command(&serde_json::json!({"timeout": 1}), dir.path()).await;
+        assert_eq!(missing.status, "error");
+        assert!(missing
+            .model_content
+            .contains("run_command requires command"));
+
+        let empty = run_command(
+            &serde_json::json!({"command": "   ", "timeout": 1}),
+            dir.path(),
+        )
+        .await;
+        assert_eq!(empty.status, "error");
+        assert!(empty.model_content.contains("command must not be empty"));
+
+        let zero = run_command(
+            &serde_json::json!({"command": stdout_command(), "timeout": 0}),
+            dir.path(),
+        )
+        .await;
+        assert_eq!(zero.status, "error");
+        assert!(zero.model_content.contains("timeout must be >= 1"));
+
+        let over_cap = run_command(
+            &serde_json::json!({"command": stdout_command(), "timeout": 601}),
+            dir.path(),
+        )
+        .await;
+        assert_eq!(over_cap.status, "error");
+        assert!(over_cap.model_content.contains("timeout must be <= 600"));
+
+        let dangerous = run_command(
+            &serde_json::json!({"command": "git reset --hard HEAD", "timeout": 1}),
+            dir.path(),
+        )
+        .await;
+        assert_eq!(dangerous.status, "blocked");
+        assert!(dangerous
+            .model_content
+            .contains("blocked by command hard guard"));
+    }
+}

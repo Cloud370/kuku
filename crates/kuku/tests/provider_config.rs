@@ -24,8 +24,9 @@ mod provider {
     }
 }
 
-use std::sync::{Mutex, OnceLock};
+mod common;
 
+use common::env_lock;
 use kuku::Error;
 use provider::config::{
     resolve_config, ResolveConfigInput, ENV_ANTHROPIC_API_KEY, ENV_ANTHROPIC_BASE_URL,
@@ -33,11 +34,6 @@ use provider::config::{
     ENV_OPENAI_BASE_URL, ENV_OPENAI_MODEL, ENV_PROVIDER,
 };
 use provider::types::{Provider, ProviderKind};
-
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 fn clear_env() {
     for key in [

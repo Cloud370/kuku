@@ -220,11 +220,6 @@ mod tests {
         assert!(registry[0].concurrency_safe);
         assert_eq!(registry[0].max_result_chars, 20_000);
         assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry()));
-    }
-
-    #[test]
-    fn builtin_registry_marks_memory_tools_as_editing_operations() {
-        let registry = builtin_registry();
 
         let remember = registry
             .iter()
