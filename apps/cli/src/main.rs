@@ -40,6 +40,11 @@ enum Command {
     },
     /// List sessions for current workspace
     List(commands::show::ListArgs),
+    /// Show or validate configuration
+    Config {
+        #[command(subcommand)]
+        cmd: commands::config::ConfigSubcommand,
+    },
 }
 
 #[tokio::main]
@@ -49,6 +54,7 @@ async fn main() {
     let result = match cli.command {
         Some(Command::Show { cmd }) => commands::show::run(cmd).await,
         Some(Command::List(args)) => commands::show::list(args).await,
+        Some(Command::Config { cmd }) => commands::config::run(cmd).await,
         None => {
             if cli.prompt.is_empty() {
                 eprintln!("Usage: kuku [OPTIONS] <PROMPT>");

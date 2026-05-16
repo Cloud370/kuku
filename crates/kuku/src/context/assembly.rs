@@ -41,6 +41,7 @@ pub struct ContextInput {
     pub project_memory: Option<MemorySource>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
+    pub model_aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +79,12 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
         .map(|source| source.content.clone())
         .unwrap_or_else(|| "No project memory.".to_string());
 
+    let model_aliases_text = if input.model_aliases.is_empty() {
+        "No model aliases configured.".to_string()
+    } else {
+        input.model_aliases.join("\n")
+    };
+
     let synthetic_text = render_synthetic_user(
         catalog.synthetic_user.text,
         &SyntheticUserTemplateInput {
@@ -87,6 +94,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
             project_instructions_rendered: project_instructions_text,
             global_memory_rendered: global_memory_text,
             project_memory_rendered: project_memory_text,
+            model_aliases_rendered: model_aliases_text,
         },
     )?;
 
@@ -194,6 +202,7 @@ mod tests {
             project_memory: Some(project_memory.clone()),
             history: history.clone(),
             tools: tools.clone(),
+            model_aliases: Vec::new(),
         })
         .unwrap();
 
@@ -221,6 +230,7 @@ mod tests {
             project_memory: None,
             history: Vec::new(),
             tools: Vec::new(),
+            model_aliases: Vec::new(),
         })
         .unwrap();
 

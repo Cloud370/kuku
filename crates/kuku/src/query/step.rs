@@ -282,6 +282,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
+    let model_aliases: Vec<String> = pending
+        .config
+        .model_names()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+
     let mut assembly = match assemble_context(ContextInput {
         environment: EnvironmentSource {
             workspace_path: pending.workspace.display().to_string(),
@@ -293,6 +300,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         project_memory,
         history,
         tools: tool::to_tool_schemas(&resolved.registry),
+        model_aliases,
     }) {
         Ok(assembly) => assembly,
         Err(error) => {

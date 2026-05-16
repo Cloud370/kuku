@@ -75,6 +75,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         project_memory: Some(project_memory.clone()),
         history: history.clone(),
         tools: tools.clone(),
+        model_aliases: Vec::new(),
     })
     .unwrap();
 
@@ -198,6 +199,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
         project_memory: None,
         history: Vec::new(),
         tools: Vec::new(),
+        model_aliases: Vec::new(),
     })
     .unwrap();
 
@@ -226,6 +228,7 @@ fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
         project_memory: None,
         history: Vec::new(),
         tools: Vec::new(),
+        model_aliases: Vec::new(),
     })
     .unwrap();
 

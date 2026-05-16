@@ -8,6 +8,7 @@ pub(crate) struct SyntheticUserTemplateInput {
     pub(crate) project_instructions_rendered: String,
     pub(crate) global_memory_rendered: String,
     pub(crate) project_memory_rendered: String,
+    pub(crate) model_aliases_rendered: String,
 }
 
 pub(crate) fn render_synthetic_user(
@@ -31,6 +32,10 @@ pub(crate) fn render_synthetic_user(
         (
             "project_memory_rendered",
             input.project_memory_rendered.as_str(),
+        ),
+        (
+            "model_aliases_rendered",
+            input.model_aliases_rendered.as_str(),
         ),
     ];
 
@@ -58,6 +63,7 @@ fn validate_template_placeholders(template: &str) -> Result<()> {
                 | "project_instructions_rendered"
                 | "global_memory_rendered"
                 | "project_memory_rendered"
+                | "model_aliases_rendered"
         ) {
             return Err(Error::PromptRender(format!(
                 "missing template variable: {name}"
@@ -82,6 +88,7 @@ mod tests {
             project_instructions_rendered: "No project instructions found.".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
+            model_aliases_rendered: "No model aliases configured.".to_string(),
         };
 
         let rendered = render_synthetic_user(
@@ -108,6 +115,7 @@ mod tests {
             project_instructions_rendered: "literal {{value}} from instructions".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
+            model_aliases_rendered: "No model aliases configured.".to_string(),
         };
 
         let rendered =

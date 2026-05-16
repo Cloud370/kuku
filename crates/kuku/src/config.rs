@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ConfigFile {
+pub struct ConfigFile {
     #[serde(default)]
     pub(crate) model: BTreeMap<String, String>,
     #[serde(default)]
@@ -67,7 +67,8 @@ pub struct ResolvedThinking {
     pub high: Option<toml::Value>,
 }
 
-pub(crate) fn load_config(path: &Path) -> Result<ConfigFile> {
+/// Load and parse a TOML config file. Returns empty defaults if the file does not exist.
+pub fn load_config(path: &Path) -> Result<ConfigFile> {
     if !path.exists() {
         return Ok(ConfigFile {
             model: BTreeMap::new(),
@@ -80,7 +81,8 @@ pub(crate) fn load_config(path: &Path) -> Result<ConfigFile> {
 }
 
 impl ConfigFile {
-    pub(crate) fn resolve(&self) -> Result<Config> {
+    /// Validate and resolve the raw config into typed, validated Config.
+    pub fn resolve(&self) -> Result<Config> {
         let mut models = BTreeMap::new();
         for (alias, value) in &self.model {
             if alias == "default" {

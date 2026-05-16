@@ -17,3 +17,7 @@
 </kuku_project_memory>
 </kuku_memory>
 
+<kuku_model_aliases>
+{{model_aliases_rendered}}
+</kuku_model_aliases>
+
