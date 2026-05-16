@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::config::ResolvedThinking;
 use crate::context::ContextAssembly;
 
 /// Public provider selector for the query builder.
@@ -20,6 +21,15 @@ impl From<Provider> for ProviderKind {
         match provider {
             Provider::Anthropic => ProviderKind::Anthropic,
             Provider::OpenAiCompatible => ProviderKind::OpenAiCompatible,
+        }
+    }
+}
+
+impl ProviderKind {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAiCompatible => "openai-compatible",
         }
     }
 }
@@ -50,13 +60,14 @@ impl fmt::Display for SecretString {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedProvider {
     pub(crate) kind: ProviderKind,
     pub(crate) model: String,
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
+    pub(crate) thinking: ResolvedThinking,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +77,8 @@ pub(crate) struct ProviderRequest {
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: bool,
+    pub(crate) think_level: String,
+    pub(crate) thinking: ResolvedThinking,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

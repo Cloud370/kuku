@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures_core::Stream;
 
+use crate::config::Config;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
@@ -99,6 +101,7 @@ pub(super) struct PendingRun {
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) saved_tool_call: Option<QueuedToolCall>,
+    pub(super) config: Arc<Config>,
 }
 
 #[derive(Debug)]
@@ -108,7 +111,6 @@ pub(super) struct ResolvedRuntime {
     pub(super) registry_hash: String,
     pub(super) ordered_tool_names: Vec<String>,
     pub(super) tool_count: usize,
-    pub(super) provider_name: String,
 }
 
 #[derive(Debug)]

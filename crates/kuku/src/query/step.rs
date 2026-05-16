@@ -13,7 +13,6 @@ use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
 use crate::provider::config::{resolve_config, ResolveConfigInput};
-use crate::provider::types::ProviderKind;
 use crate::tool;
 
 use super::helpers::{
@@ -253,7 +252,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         let provider_name = pending
             .resolved
             .as_ref()
-            .map(|resolved| resolved.provider_name.clone())
+            .map(|resolved| resolved.config.kind.as_str().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let model = pending
             .resolved
@@ -304,7 +303,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 request_id,
                 "prompt_render",
                 &error.to_string(),
-                Some(resolved.provider_name.clone()),
+                Some(resolved.config.kind.as_str().to_string()),
                 Some(resolved.config.model.clone()),
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
@@ -335,9 +334,17 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         "max_output_tokens": pending.query.max_output_tokens,
         "temperature": pending.query.temperature,
     });
+    let role = "main";
+    let alias = pending
+        .config
+        .resolve_model_alias(pending.config.default_model())
+        .map(|s| s.split(':').next().unwrap_or("default").to_string())
+        .unwrap_or_else(|| "default".to_string());
+    let think = "medium";
+
     let provenance = build_request_provenance(RequestProvenanceInput {
         request_id: request_id.clone(),
-        role: "default".to_string(),
+        role: role.to_string(),
         workspace: pending.workspace.display().to_string(),
         platform: platform.clone(),
         current_date: current_date.clone(),
@@ -367,9 +374,9 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             ordered_tool_names: resolved.ordered_tool_names.clone(),
             tool_count: resolved.tool_count,
         },
-        provider_alias: resolved.provider_name.clone(),
+        provider_alias: resolved.config.kind.as_str().to_string(),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
-        resolved_provider: resolved.provider_name.clone(),
+        resolved_provider: resolved.config.kind.as_str().to_string(),
         resolved_model: resolved.config.model.clone(),
         params: params.clone(),
         token_estimate: None,
@@ -380,14 +387,15 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
+
         store.append(EventPayload::ModelRequest {
             turn: pending.turn,
             ts: now_timestamp()?,
             request_id: request_id.clone(),
-            role: "default".to_string(),
-            alias: resolved.provider_name.clone(),
-            think: "auto".to_string(),
-            resolved_provider: resolved.provider_name.clone(),
+            role: role.to_string(),
+            alias,
+            think: think.to_string(),
+            resolved_provider: resolved.config.kind.as_str().to_string(),
             resolved_model: resolved.config.model.clone(),
             params,
             base_url: Some(resolved.config.base_url.clone()),
@@ -407,6 +415,8 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         max_output_tokens: pending.query.max_output_tokens,
         temperature: pending.query.temperature,
         stream: true,
+        think_level: think.to_string(),
+        thinking: resolved.config.thinking.clone(),
     };
 
     match crate::provider::stream_provider(&resolved.config, &request).await {
@@ -429,7 +439,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 request_id,
                 provider_failure_kind(&failure.kind),
                 &failure.message,
-                Some(resolved.provider_name.clone()),
+                Some(resolved.config.kind.as_str().to_string()),
                 Some(resolved.config.model.clone()),
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
@@ -448,6 +458,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         model: pending.query.model.clone(),
         base_url: pending.query.base_url.clone(),
         api_key: pending.query.api_key.clone(),
+        config: Some((*pending.config).clone()),
     }) {
         Ok(config) => config,
         Err(error) => {
@@ -482,11 +493,6 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
             mode: "default".to_string(),
         })?;
     }
-    let provider_name = match config.kind {
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::OpenAiCompatible => "openai-compatible",
-    }
-    .to_string();
 
     pending.resolved = Some(ResolvedRuntime {
         config,
@@ -494,7 +500,6 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         registry_hash,
         ordered_tool_names,
         tool_count,
-        provider_name,
     });
     Ok(())
 }

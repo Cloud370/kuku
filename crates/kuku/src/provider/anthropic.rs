@@ -44,6 +44,33 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if request.think_level != "auto" {
+        let budget_tokens = match request.think_level.as_str() {
+            "low" => request
+                .thinking
+                .low
+                .as_ref()
+                .and_then(|v| v.as_integer())
+                .unwrap_or(1024),
+            "medium" => request
+                .thinking
+                .medium
+                .as_ref()
+                .and_then(|v| v.as_integer())
+                .unwrap_or(4096),
+            "high" => request
+                .thinking
+                .high
+                .as_ref()
+                .and_then(|v| v.as_integer())
+                .unwrap_or(16000),
+            _ => 4096,
+        };
+        body["thinking"] = json!({
+            "type": "enabled",
+            "budget_tokens": budget_tokens,
+        });
+    }
     if !request.assembly.tools.is_empty() {
         body["tools"] = json!(request
             .assembly

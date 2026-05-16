@@ -1,3 +1,7 @@
+mod config {
+    pub use kuku::config::ResolvedThinking;
+}
+
 mod context {
     pub use kuku::context::ContextAssembly;
 }

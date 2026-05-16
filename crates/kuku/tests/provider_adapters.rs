@@ -1,3 +1,7 @@
+mod config {
+    pub use kuku::config::ResolvedThinking;
+}
+
 mod context {
     pub use kuku::context::{
         CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource,
@@ -57,6 +61,7 @@ mod provider {
     }
 }
 
+use config::ResolvedThinking;
 use context::{
     CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource, MessageBlock,
     Role, ToolResult, ToolSchema, ToolUse,
@@ -220,6 +225,8 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(body["messages"][0]["role"], "user");
@@ -247,6 +254,8 @@ fn anthropic_render_body_preserves_layer_order() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(body["model"], "claude-sonnet-4-6");
@@ -277,6 +286,8 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(tool_body["tools"][0]["name"], "find_files");
@@ -288,6 +299,8 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(
@@ -324,6 +337,8 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(body["messages"][0]["role"], "system");
@@ -352,6 +367,8 @@ fn openai_render_body_preserves_layer_order() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(body["model"], "gpt-5.4-mini");
@@ -375,6 +392,8 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(tool_body["tools"][0]["type"], "function");
@@ -390,6 +409,8 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
     });
 
     assert_eq!(

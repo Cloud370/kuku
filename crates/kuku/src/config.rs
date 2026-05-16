@@ -76,8 +76,7 @@ pub(crate) fn load_config(path: &Path) -> Result<ConfigFile> {
     }
     let text = std::fs::read_to_string(path)
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
-    toml::from_str(&text)
-        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+    toml::from_str(&text).map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
 }
 
 impl ConfigFile {
@@ -148,12 +147,7 @@ impl ConfigFile {
             .model
             .get("default")
             .cloned()
-            .or_else(|| {
-                self.model
-                    .keys()
-                    .find(|k| *k != "default")
-                    .cloned()
-            })
+            .or_else(|| self.model.keys().find(|k| *k != "default").cloned())
             .unwrap_or_else(|| "default".to_string());
 
         Ok(Config {

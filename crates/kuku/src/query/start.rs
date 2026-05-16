@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::config::load_config;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::session::{
@@ -15,6 +18,9 @@ impl Query {
 
     async fn start_session(self) -> Result<Run> {
         let kuku_home = kuku_home()?;
+        let config_path = kuku_home.join("config.toml");
+        let config_file = load_config(&config_path)?;
+        let config = Arc::new(config_file.resolve()?);
         let workspace = current_workspace()?;
         let session_id = match self.session_id.as_deref() {
             Some(session_id) => {
@@ -68,6 +74,7 @@ impl Query {
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,
+                config,
             })),
         })
     }

@@ -1,3 +1,7 @@
+mod config {
+    pub use kuku::config::{ApiKeySource, Config, ResolvedThinking};
+}
+
 mod context {
     pub use kuku::context::ContextAssembly;
 }
@@ -66,6 +70,7 @@ fn builder_values_override_env_values() {
         model: Some("claude-sonnet-4-6".to_string()),
         base_url: Some("https://builder.example".to_string()),
         api_key: Some("builder-key".to_string()),
+        ..Default::default()
     })
     .unwrap();
 
@@ -154,4 +159,18 @@ fn unknown_provider_env_value_is_rejected() {
     assert!(
         matches!(error, Error::MissingProviderConfig(message) if message.contains("unknown KUKU_PROVIDER value"))
     );
+}
+
+#[test]
+fn resolves_from_env_vars_when_no_config_file() {
+    let _guard = env_lock().lock().unwrap();
+    clear_env();
+    std::env::set_var(ENV_PROVIDER, "anthropic");
+    std::env::set_var(ENV_ANTHROPIC_MODEL, "claude-sonnet-4-6");
+    std::env::set_var(ENV_ANTHROPIC_API_KEY, "sk-ant-legacy");
+
+    let resolved = resolve_config(ResolveConfigInput::default()).unwrap();
+    assert_eq!(resolved.kind, ProviderKind::Anthropic);
+    assert_eq!(resolved.model, "claude-sonnet-4-6");
+    assert!(resolved.thinking.low.is_none());
 }
