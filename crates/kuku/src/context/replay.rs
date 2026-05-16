@@ -31,6 +31,7 @@ impl Default for ResponseGroup {
     }
 }
 
+/// Reconstruct conversation history messages from a session's stored events.
 pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();

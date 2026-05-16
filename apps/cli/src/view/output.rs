@@ -1,5 +1,6 @@
 use kuku::event::{EventPayload, StoredEvent};
 
+/// Extract the final assistant response text from a completed session's events.
 pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ModelResponse {

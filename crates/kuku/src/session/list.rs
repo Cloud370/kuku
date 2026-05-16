@@ -4,12 +4,14 @@ use crate::error::Result;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 
 #[derive(Debug, Clone)]
+/// Summary metadata for a listed session.
 pub struct SessionSummary {
     pub session_id: String,
     pub created_at: String,
     pub turn_count: u64,
 }
 
+/// List all sessions in a workspace, sorted by creation time.
 pub fn list_sessions(kuku_home: &Path, workspace: &Path) -> Result<Vec<SessionSummary>> {
     let sessions_dir = super::paths::project_home(kuku_home, workspace)?.join("sessions");
     let mut summaries = Vec::new();

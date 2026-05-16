@@ -1,12 +1,14 @@
 use crate::event::{EventPayload, StoredEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A permission grant scoped to the current session.
 pub struct SessionGrant {
     pub tool: String,
     pub pattern: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a tool call is allowed, denied, or requires user confirmation.
 pub enum GateDecisionKind {
     Allow,
     Deny,
@@ -14,6 +16,7 @@ pub enum GateDecisionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How long a permission decision applies.
 pub enum GateScope {
     Once,
     Session,
@@ -21,6 +24,7 @@ pub enum GateScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which authority produced the permission decision.
 pub enum GateSource {
     HardGuard,
     ProjectPolicy,
@@ -31,6 +35,7 @@ pub enum GateSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// The complete result of a permission gate evaluation.
 pub struct GateDecision {
     pub kind: GateDecisionKind,
     pub scope: GateScope,
@@ -38,6 +43,7 @@ pub struct GateDecision {
     pub rule: String,
 }
 
+/// Extract session-scoped permission grants from previously recorded permission decisions.
 pub fn recover_session_grants(events: &[StoredEvent]) -> Vec<SessionGrant> {
     events
         .iter()
@@ -53,6 +59,7 @@ pub fn recover_session_grants(events: &[StoredEvent]) -> Vec<SessionGrant> {
         .collect()
 }
 
+/// Evaluate a tool call against hard guards, policy, session grants, and default posture.
 pub fn decide_tool_call(
     tool: &str,
     risk: &str,

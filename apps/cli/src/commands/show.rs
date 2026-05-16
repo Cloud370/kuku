@@ -5,6 +5,7 @@ use kuku::session::{current_workspace, kuku_home, list_sessions, session_events_
 use crate::view::{derive_final_output, render_event_brief};
 
 #[derive(Subcommand)]
+/// Subcommands for inspecting session data.
 pub enum ShowCommand {
     /// Show final output from a session
     Output { session_id: String },
@@ -17,6 +18,7 @@ pub enum ShowCommand {
 }
 
 #[derive(Args)]
+/// CLI arguments for listing sessions.
 pub struct ListArgs {
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,

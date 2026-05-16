@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Generate a new unique session ID based on timestamp, process ID, and counter.
 pub fn new_session_id() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -14,6 +15,7 @@ pub fn new_session_id() -> String {
     format!("s_{millis}_{}_{counter}", std::process::id())
 }
 
+/// Validate a session ID against path-traversal and reserved-name rules.
 pub fn validate_session_id(session_id: &str) -> Result<()> {
     let invalid = session_id.is_empty()
         || session_id == "."

@@ -1,4 +1,5 @@
 #[derive(Debug, thiserror::Error)]
+/// All error types produced by the kuku SDK.
 pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -46,6 +47,7 @@ pub enum Error {
     ConfigLoad(String),
 }
 
+/// Convenience alias for `std::result::Result<T, kuku::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

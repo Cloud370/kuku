@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A single event persisted in a session's events.jsonl.
 pub struct StoredEvent {
     pub id: u64,
     #[serde(flatten)]
@@ -10,6 +11,7 @@ pub struct StoredEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+/// All event types that can be written to and read from a session's events.jsonl.
 pub enum EventPayload {
     #[serde(rename = "session.meta")]
     SessionMeta {
