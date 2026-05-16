@@ -124,6 +124,7 @@ fn parse_provider(value: &str) -> Result<ProviderKind> {
     match value {
         "anthropic" => Ok(ProviderKind::Anthropic),
         "openai-compatible" | "openai" => Ok(ProviderKind::OpenAiCompatible),
+        "openai-responses" => Ok(ProviderKind::OpenAiResponses),
         other => Err(Error::MissingProviderConfig(format!(
             "unknown KUKU_PROVIDER value: {other}"
         ))),
@@ -137,9 +138,11 @@ fn resolve_provider_from_config(cfg: &Config) -> Option<ProviderKind> {
     match provider_name {
         "anthropic" => Some(ProviderKind::Anthropic),
         "openai" | "openai-compatible" => Some(ProviderKind::OpenAiCompatible),
+        "openai-responses" => Some(ProviderKind::OpenAiResponses),
         other => cfg.provider(other).and_then(|p| match p.format.as_str() {
             "anthropic" => Some(ProviderKind::Anthropic),
             "openai" | "openai-compatible" => Some(ProviderKind::OpenAiCompatible),
+            "openai-responses" => Some(ProviderKind::OpenAiResponses),
             _ => None,
         }),
     }
@@ -158,6 +161,7 @@ fn provider_alias_for_kind(kind: &ProviderKind, cfg: &Config) -> String {
                     ProviderKind::OpenAiCompatible,
                     "openai" | "openai-compatible"
                 )
+                | (ProviderKind::OpenAiResponses, "openai-responses")
         );
         if found {
             return alias.clone();
@@ -201,7 +205,7 @@ fn provider_specific_values(
             env_opt(ENV_ANTHROPIC_BASE_URL),
             env_opt(ENV_ANTHROPIC_API_KEY),
         ),
-        ProviderKind::OpenAiCompatible => (
+        ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => (
             env_opt(ENV_OPENAI_MODEL),
             env_opt(ENV_OPENAI_BASE_URL),
             env_opt(ENV_OPENAI_API_KEY),
@@ -213,6 +217,7 @@ fn provider_default_model(kind: &ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "claude-sonnet-4-6",
         ProviderKind::OpenAiCompatible => "gpt-5-mini",
+        ProviderKind::OpenAiResponses => "gpt-5.4",
     }
 }
 
@@ -220,6 +225,7 @@ fn default_base_url(kind: &ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "https://api.anthropic.com",
         ProviderKind::OpenAiCompatible => "https://api.openai.com/v1",
+        ProviderKind::OpenAiResponses => "https://api.openai.com/v1",
     }
 }
 
