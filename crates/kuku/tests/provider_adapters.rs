@@ -568,3 +568,70 @@ data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_inde
         .last()
         .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
 }
+
+#[test]
+fn render_responses_body_basic_text() {
+    let assembly = sample_assembly();
+    let request = ProviderRequest {
+        assembly,
+        model: "gpt-5.4".to_string(),
+        max_output_tokens: Some(100),
+        temperature: None,
+        stream: true,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
+    };
+
+    let body = render_responses_body(&request);
+
+    assert_eq!("gpt-5.4", body["model"].as_str().unwrap());
+    assert_eq!(
+        "You are the agent running inside kuku, a file-native software engineering runtime.",
+        body["instructions"].as_str().unwrap()
+    );
+    assert_eq!(100, body["max_output_tokens"].as_u64().unwrap());
+    assert!(body["input"].is_array());
+    assert!(body.get("stream").is_none());
+    assert!(body.get("reasoning").is_none());
+}
+
+#[test]
+fn render_responses_body_with_tools() {
+    let assembly = assembly_with_tool_schema();
+    let request = ProviderRequest {
+        assembly,
+        model: "gpt-5.4".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        stream: true,
+        think_level: "auto".to_string(),
+        thinking: ResolvedThinking::default(),
+    };
+
+    let body = render_responses_body(&request);
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(1, tools.len());
+    let tool = &tools[0];
+    assert_eq!("function", tool["type"].as_str().unwrap());
+    assert_eq!("find_files", tool["name"].as_str().unwrap());
+    assert_eq!(true, tool["strict"].as_bool().unwrap());
+    assert!(tool["parameters"].is_object());
+}
+
+#[test]
+fn render_responses_body_with_reasoning() {
+    let assembly = sample_assembly();
+    let request = ProviderRequest {
+        assembly,
+        model: "gpt-5.4".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        stream: true,
+        think_level: "high".to_string(),
+        thinking: ResolvedThinking::default(),
+    };
+
+    let body = render_responses_body(&request);
+    let reasoning = body["reasoning"].as_object().unwrap();
+    assert_eq!("high", reasoning["effort"].as_str().unwrap());
+}
