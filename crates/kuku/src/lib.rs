@@ -10,10 +10,14 @@ pub(crate) mod provider;
 pub mod query;
 pub mod session;
 pub(crate) mod tool;
-pub mod view;
 
 pub use error::{Error, Result};
 pub use provider::Provider;
 pub use query::{query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, UiEvent};
 pub use session::{list_sessions, SessionSummary};
-pub use view::{derive_final_output, format_event_brief};
+
+#[cfg(test)]
+pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}

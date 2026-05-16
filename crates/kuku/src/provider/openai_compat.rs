@@ -224,15 +224,7 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let mdl = data
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            chunks.push(ProviderChunk::StreamStart {
-                request_id: rid,
-                model: mdl,
-            });
+            chunks.push(ProviderChunk::StreamStart { request_id: rid });
             started = true;
         }
 
@@ -250,11 +242,6 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
                             .get("completion_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
-                        cache_read_input_tokens: usage
-                            .get("prompt_tokens_details")
-                            .and_then(|d| d.get("cached_tokens"))
-                            .and_then(Value::as_u64),
-                        cache_creation_input_tokens: None,
                     });
                 }
                 continue;

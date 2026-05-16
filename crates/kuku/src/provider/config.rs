@@ -2,12 +2,24 @@ use crate::error::{Error, Result};
 
 use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolveConfigInput {
     pub(crate) provider: Option<Provider>,
     pub(crate) model: Option<String>,
     pub(crate) base_url: Option<String>,
     pub(crate) api_key: Option<String>,
+}
+
+#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
+impl Default for ResolveConfigInput {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            base_url: None,
+            api_key: None,
+        }
+    }
 }
 
 pub(crate) const ENV_PROVIDER: &str = "KUKU_PROVIDER";

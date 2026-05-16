@@ -10,13 +10,25 @@ struct PendingToolCall {
     args: serde_json::Value,
 }
 
-#[derive(Default)]
 struct ResponseGroup {
     request_id: Option<String>,
     text: Option<String>,
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
+}
+
+#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
+impl Default for ResponseGroup {
+    fn default() -> Self {
+        Self {
+            request_id: None,
+            text: None,
+            thinking: None,
+            tool_calls: BTreeMap::new(),
+            tool_results: BTreeMap::new(),
+        }
+    }
 }
 
 pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {

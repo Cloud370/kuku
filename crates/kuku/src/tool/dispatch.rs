@@ -280,4 +280,53 @@ mod tests {
         assert_eq!(forget.status, "blocked");
         assert!(forget.model_content.contains("permission gate denied"));
     }
+
+    #[test]
+    fn dispatch_uses_the_captured_home_for_memory_tools() {
+        let _guard = crate::env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session_home = tempfile::tempdir().unwrap();
+        let runtime_home = tempfile::tempdir().unwrap();
+        let workspace = Path::new(dir.path());
+        let args = serde_json::json!({"scope": "project", "kind": "how_to_work", "text": "Keep answers concise"});
+        let expected_path = crate::session::project_memory_path(
+            session_home.path(),
+            &std::fs::canonicalize(workspace).unwrap(),
+        )
+        .unwrap();
+        let unexpected_path = crate::session::project_memory_path(
+            runtime_home.path(),
+            &std::fs::canonicalize(workspace).unwrap(),
+        )
+        .unwrap();
+
+        let previous = std::env::var_os("KUKU_HOME");
+        std::env::set_var("KUKU_HOME", runtime_home.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            dispatch(
+                "memory.remember",
+                &args,
+                workspace,
+                session_home.path(),
+                &[],
+                1,
+                None,
+            )
+            .await
+        });
+        match previous {
+            Some(value) => std::env::set_var("KUKU_HOME", value),
+            None => std::env::remove_var("KUKU_HOME"),
+        }
+
+        assert_eq!(result.status, "ok");
+        assert!(std::fs::read_to_string(&expected_path)
+            .unwrap()
+            .contains("Keep answers concise"));
+        assert!(!unexpected_path.exists());
+    }
 }

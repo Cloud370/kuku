@@ -143,16 +143,9 @@ fn is_hard_guarded_path(candidate: &str) -> bool {
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")
         || candidate.split('/').any(|part| part == ".kuku") && candidate.ends_with("/policy.md")
-        || is_sensitive_file_name(candidate.rsplit('/').next().unwrap_or(candidate))
-}
-
-fn is_sensitive_file_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".env" | "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519"
-    ) || name.starts_with(".env.")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
+        || crate::tool::builtin::common::is_sensitive_file_name(
+            candidate.rsplit('/').next().unwrap_or(candidate),
+        )
 }
 
 fn is_hard_guarded_command(candidate: &str) -> bool {

@@ -1,4 +1,4 @@
-mod common;
+pub(crate) mod common;
 mod edit_file;
 mod find_files;
 mod memory;

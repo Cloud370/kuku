@@ -161,7 +161,7 @@ pub(super) fn is_blocked_relative_path(path: &str) -> bool {
         || path.rsplit('/').next().is_some_and(is_sensitive_file_name)
 }
 
-fn is_sensitive_file_name(name: &str) -> bool {
+pub(crate) fn is_sensitive_file_name(name: &str) -> bool {
     matches!(
         name,
         ".env"
@@ -180,7 +180,7 @@ fn is_sensitive_file_name(name: &str) -> bool {
 
 // ---------- Content helpers ----------
 
-pub(super) fn content_hash(bytes: &[u8]) -> String {
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("sha256:{digest:x}")
 }

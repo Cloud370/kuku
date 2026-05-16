@@ -188,15 +188,7 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    let mdl = msg
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    chunks.push(ProviderChunk::StreamStart {
-                        request_id: rid,
-                        model: mdl,
-                    });
+                    chunks.push(ProviderChunk::StreamStart { request_id: rid });
                 }
             }
             "content_block_start" => {
@@ -296,12 +288,6 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                             .get("output_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
-                        cache_read_input_tokens: usage
-                            .get("cache_read_input_tokens")
-                            .and_then(Value::as_u64),
-                        cache_creation_input_tokens: usage
-                            .get("cache_creation_input_tokens")
-                            .and_then(Value::as_u64),
                     });
                 }
             }

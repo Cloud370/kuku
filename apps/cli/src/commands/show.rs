@@ -1,7 +1,8 @@
 use clap::{Args, Subcommand};
 use kuku::event::EventStore;
 use kuku::session::{current_workspace, kuku_home, list_sessions, session_events_path};
-use kuku::view::{derive_final_output, format_event_brief};
+
+use crate::view::{derive_final_output, render_event_brief};
 
 #[derive(Subcommand)]
 pub enum ShowCommand {
@@ -41,7 +42,7 @@ pub async fn run(cmd: ShowCommand) -> Result<(), Box<dyn std::error::Error>> {
             let path = session_events_path(&home, &workspace, &session_id)?;
             let events = EventStore::replay(&path)?;
             for event in &events {
-                println!("{}", format_event_brief(event, verbose));
+                println!("{}", render_event_brief(event, verbose));
             }
         }
     }

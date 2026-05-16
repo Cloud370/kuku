@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -12,6 +10,7 @@ use kuku::session::session_events_path;
 // ---------- SSE response builders ----------
 
 /// Wrap an Anthropic-style message JSON into SSE streaming frames.
+#[allow(dead_code)] // used by provider_integration and query_runtime test binaries
 pub fn anthropic_sse_response(msg: Value) -> String {
     let id = msg
         .get("id")
@@ -97,6 +96,7 @@ pub fn anthropic_sse_response(msg: Value) -> String {
 }
 
 /// Wrap an OpenAI-style chat completion JSON into SSE streaming frames.
+#[allow(dead_code)] // used by provider_integration test binary
 pub fn openai_sse_response(completion: Value) -> String {
     let id = completion
         .get("id")
@@ -191,6 +191,7 @@ pub fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[allow(dead_code)] // used by provider_integration test binary
 pub fn restore_env(key: &str, value: Option<OsString>) {
     match value {
         Some(value) => std::env::set_var(key, value),
@@ -200,15 +201,26 @@ pub fn restore_env(key: &str, value: Option<OsString>) {
 
 // ---------- TestEnv for integration tests ----------
 
+#[allow(dead_code)] // used by provider_integration and query_runtime test binaries
+const PROVIDER_ENV_KEYS: &[&str] = &[
+    "KUKU_PROVIDER",
+    "KUKU_ANTHROPIC_API_KEY",
+    "KUKU_OPENAI_API_KEY",
+    "KUKU_API_KEY",
+];
+
+#[allow(dead_code)] // used by provider_integration and query_runtime test binaries
 pub struct TestEnv {
     pub _guard: MutexGuard<'static, ()>,
     pub home: TempDir,
     pub workspace: TempDir,
     previous_kuku_home: Option<OsString>,
     previous_cwd: PathBuf,
+    previous_provider_env: Vec<(&'static str, Option<OsString>)>,
 }
 
 impl TestEnv {
+    #[allow(dead_code)] // used by provider_integration and query_runtime test binaries
     pub fn new() -> Self {
         let guard = env_lock()
             .lock()
@@ -217,6 +229,14 @@ impl TestEnv {
         let previous_cwd = std::env::current_dir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+
+        let previous_provider_env: Vec<_> = PROVIDER_ENV_KEYS
+            .iter()
+            .map(|&key| (key, std::env::var_os(key)))
+            .collect();
+        for &key in PROVIDER_ENV_KEYS {
+            std::env::remove_var(key);
+        }
 
         std::env::set_var("KUKU_HOME", home.path());
         std::env::set_current_dir(workspace.path()).unwrap();
@@ -227,13 +247,16 @@ impl TestEnv {
             workspace,
             previous_kuku_home,
             previous_cwd,
+            previous_provider_env,
         }
     }
 
+    #[allow(dead_code)] // used by provider_integration test binary
     pub fn workspace_path(&self) -> &Path {
         self.workspace.path()
     }
 
+    #[allow(dead_code)] // used by provider_integration and query_runtime test binaries
     pub fn events_path(&self, session_id: &str) -> PathBuf {
         let workspace = std::fs::canonicalize(self.workspace.path()).unwrap();
         session_events_path(self.home.path(), &workspace, session_id).unwrap()
@@ -242,6 +265,9 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
+        for (key, value) in &self.previous_provider_env {
+            restore_env(key, value.clone());
+        }
         std::env::set_current_dir(&self.previous_cwd).unwrap();
         match &self.previous_kuku_home {
             Some(value) => std::env::set_var("KUKU_HOME", value),

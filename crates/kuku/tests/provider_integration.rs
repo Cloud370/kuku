@@ -1,6 +1,6 @@
 mod common;
 
-use common::{anthropic_sse_response, openai_sse_response, restore_env, TestEnv};
+use common::{anthropic_sse_response, openai_sse_response, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
@@ -720,15 +720,6 @@ async fn http_error_writes_model_error_and_turn_end() {
 async fn missing_config_writes_error_without_fake_model_request() {
     let env = TestEnv::new();
     let sid = "s_no_cfg";
-    let saved_provider = std::env::var_os("KUKU_PROVIDER");
-    let saved_anthropic_key = std::env::var_os("KUKU_ANTHROPIC_API_KEY");
-    let saved_openai_key = std::env::var_os("KUKU_OPENAI_API_KEY");
-    let saved_key = std::env::var_os("KUKU_API_KEY");
-
-    std::env::remove_var("KUKU_PROVIDER");
-    std::env::remove_var("KUKU_ANTHROPIC_API_KEY");
-    std::env::remove_var("KUKU_OPENAI_API_KEY");
-    std::env::remove_var("KUKU_API_KEY");
 
     let err = query("test").session(sid).run().await.unwrap_err();
     assert!(matches!(err, Error::MissingProviderConfig(_)));
@@ -743,11 +734,6 @@ async fn missing_config_writes_error_without_fake_model_request() {
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::TurnEnd { .. })));
-
-    restore_env("KUKU_PROVIDER", saved_provider);
-    restore_env("KUKU_ANTHROPIC_API_KEY", saved_anthropic_key);
-    restore_env("KUKU_OPENAI_API_KEY", saved_openai_key);
-    restore_env("KUKU_API_KEY", saved_key);
 }
 
 #[tokio::test(flavor = "current_thread")]

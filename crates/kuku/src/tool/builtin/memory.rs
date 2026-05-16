@@ -417,15 +417,9 @@ fn render_memory_section(out: &mut String, section: MemorySection, entries: &[St
 mod tests {
     use super::super::test_helpers::workspace;
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn with_kuku_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = crate::env_lock().lock().unwrap();
         let previous = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", home);
         let result = f();

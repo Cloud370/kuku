@@ -1,0 +1,375 @@
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+use crate::context::{InstructionSource, MemorySource};
+use crate::error::Result;
+use crate::event::{EventPayload, EventStore};
+use crate::provider;
+use crate::provider::types::{ProviderKind, ProviderToolCall};
+use crate::session::{global_memory_path, project_memory_path};
+
+use super::types::{PendingRun, PermissionChoice, PermissionRequest};
+
+// ---------- Tool execution ----------
+
+pub(super) async fn execute_tool_call(
+    pending: &mut PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Result<()> {
+    let prior_events = EventStore::replay(&pending.events_path)?;
+    let result_event_id = EventStore::open(&pending.events_path)?.next_id();
+    let result = crate::tool::dispatch(
+        &tool_call.name,
+        &tool_call.args,
+        &pending.workspace,
+        &pending.kuku_home,
+        &prior_events,
+        result_event_id,
+        Some(&tool_call.id),
+    )
+    .await;
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call.id.clone(),
+        status: result.status,
+        summary: result.summary,
+        model_content: result.model_content,
+        truncated: result.truncated,
+        structured: result.structured,
+    })?;
+    Ok(())
+}
+
+// ---------- Permission helpers ----------
+
+pub(super) fn permission_summary(name: &str, args: &serde_json::Value) -> String {
+    format!(
+        "{} {}",
+        name,
+        serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+    )
+}
+
+pub(super) fn permission_rule(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
+    format!(
+        "{}({})",
+        name,
+        permission_candidate(kuku_home, workspace, name, args)
+    )
+}
+
+pub(super) fn permission_candidate(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
+    match name {
+        "run_command" => args
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        "memory.remember" | "memory.forget" => match args
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+        {
+            Some("global") => global_memory_path(kuku_home).display().to_string(),
+            Some("project") => project_memory_path(kuku_home, workspace)
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        },
+        _ => args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    }
+}
+
+pub(super) fn permission_decision(choice: PermissionChoice) -> &'static str {
+    match choice {
+        PermissionChoice::Deny => "deny",
+        PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => "allow",
+    }
+}
+
+pub(super) fn permission_scope(choice: PermissionChoice) -> &'static str {
+    match choice {
+        PermissionChoice::Once | PermissionChoice::Deny => "once",
+        PermissionChoice::Session => "session",
+        PermissionChoice::Project => "project",
+    }
+}
+
+pub(super) fn gate_source_name(source: crate::permission::GateSource) -> &'static str {
+    match source {
+        crate::permission::GateSource::HardGuard => "hard_guard",
+        crate::permission::GateSource::ProjectPolicy => "project_policy",
+        crate::permission::GateSource::SessionGrant => "session_grant",
+        crate::permission::GateSource::TrustPosture => "trust_posture",
+        crate::permission::GateSource::Host => "host",
+        crate::permission::GateSource::DefaultAsk => "default_ask",
+    }
+}
+
+// ---------- Event append helpers ----------
+
+pub(super) fn append_permission_request(
+    events_path: &std::path::PathBuf,
+    turn: u64,
+    request: &PermissionRequest,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::PermissionRequest {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: request.tool_call_id.clone(),
+        tool: request.tool.clone(),
+        risk: request.risk.clone(),
+        summary: request.summary.clone(),
+    })?;
+    Ok(())
+}
+
+pub(super) fn append_permission_decision(
+    events_path: &std::path::PathBuf,
+    turn: u64,
+    tool_call_id: &str,
+    choice: PermissionChoice,
+    source: &str,
+    rule: &str,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::PermissionDecision {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call_id.to_string(),
+        decision: permission_decision(choice).to_string(),
+        scope: permission_scope(choice).to_string(),
+        source: source.to_string(),
+        rule: rule.to_string(),
+    })?;
+    Ok(())
+}
+
+pub(super) fn append_model_error(
+    events_path: &std::path::PathBuf,
+    turn: u64,
+    request_id: String,
+    kind: &str,
+    message: &str,
+    resolved_provider: Option<String>,
+    resolved_model: Option<String>,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::ModelError {
+        turn,
+        ts: now_timestamp()?,
+        request_id,
+        kind: kind.to_string(),
+        message: message.to_string(),
+        status: None,
+        retryable: Some(false),
+        resolved_provider,
+        resolved_model,
+    })?;
+    Ok(())
+}
+
+pub(super) fn append_turn_end(events_path: &std::path::PathBuf, turn: u64) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::TurnEnd {
+        turn,
+        ts: now_timestamp()?,
+    })?;
+    Ok(())
+}
+
+// ---------- Env / utility helpers ----------
+
+pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    match events.first().map(|event| &event.payload) {
+        Some(EventPayload::SessionMeta { .. }) => Ok(()),
+        _ => Err(crate::error::Error::InvalidEventStream(
+            "first event must be session.meta".to_string(),
+        )),
+    }
+}
+
+pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::TurnStart { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+pub(super) fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'static str {
+    match kind {
+        provider::types::ProviderFailureKind::Authentication => "authentication",
+        provider::types::ProviderFailureKind::RateLimited => "rate_limited",
+        provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
+        provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
+        provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
+        provider::types::ProviderFailureKind::Transport => "transport",
+        provider::types::ProviderFailureKind::Unknown => "unknown",
+    }
+}
+
+pub(super) fn platform_label() -> &'static str {
+    match std::env::consts::OS {
+        "linux" => "linux",
+        "windows" => "windows",
+        "macos" => "macos",
+        _ => "unknown",
+    }
+}
+
+pub(super) fn current_date_string() -> String {
+    OffsetDateTime::now_utc().date().to_string()
+}
+
+pub(super) fn provider_format_name(kind: &ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAiCompatible => "openai-compatible",
+    }
+}
+
+pub(super) fn now_timestamp() -> Result<String> {
+    Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
+}
+
+pub(super) fn load_project_instruction_sources(
+    workspace: &std::path::Path,
+) -> Result<Vec<InstructionSource>> {
+    let mut sources = Vec::new();
+    for (name, kind) in [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")] {
+        let path = workspace.join(name);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            sources.push(InstructionSource {
+                path: path.display().to_string(),
+                kind: kind.to_string(),
+                hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+                content,
+            });
+        }
+    }
+    Ok(sources)
+}
+
+pub(super) fn load_memory_sources(
+    kuku_home: &std::path::Path,
+    workspace: &std::path::Path,
+) -> Result<(Option<MemorySource>, Option<MemorySource>)> {
+    let global_memory = std::fs::read_to_string(global_memory_path(kuku_home))
+        .ok()
+        .map(|content| MemorySource {
+            path: global_memory_path(kuku_home).display().to_string(),
+            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+            content,
+        });
+
+    let project_path = project_memory_path(kuku_home, workspace)?;
+    let project_memory = std::fs::read_to_string(&project_path)
+        .ok()
+        .map(|content| MemorySource {
+            path: project_path.display().to_string(),
+            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+            content,
+        });
+
+    Ok((global_memory, project_memory))
+}
+
+pub(super) fn last_input_tokens(
+    kind: &ProviderKind,
+    events: &[crate::event::StoredEvent],
+) -> Option<u32> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ModelResponse { usage, .. } => extract_input_tokens(kind, usage),
+        _ => None,
+    })
+}
+
+pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Value) -> Option<u32> {
+    let total = match kind {
+        ProviderKind::Anthropic => {
+            let input = usage
+                .get("input_tokens")
+                .and_then(serde_json::Value::as_u64)?;
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let cache_creation = usage
+                .get("cache_creation_input_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            input + cache_read + cache_creation
+        }
+        ProviderKind::OpenAiCompatible => usage
+            .get("prompt_tokens")
+            .and_then(serde_json::Value::as_u64)?,
+    };
+    u32::try_from(total).ok().filter(|&v| v > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_input_tokens;
+    use crate::provider::types::ProviderKind;
+
+    #[test]
+    fn extract_input_tokens_sums_anthropic_cache_fields() {
+        let usage = serde_json::json!({
+            "input_tokens": 845,
+            "output_tokens": 106,
+            "cache_read_input_tokens": 181888,
+            "cache_creation_input_tokens": 0,
+        });
+        let result = extract_input_tokens(&ProviderKind::Anthropic, &usage);
+        assert_eq!(result, Some(845 + 181888));
+    }
+
+    #[test]
+    fn extract_input_tokens_uses_openai_prompt_tokens() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "total_tokens": 600,
+        });
+        let result = extract_input_tokens(&ProviderKind::OpenAiCompatible, &usage);
+        assert_eq!(result, Some(500));
+    }
+
+    #[test]
+    fn extract_input_tokens_returns_none_for_empty_usage() {
+        let usage = serde_json::json!({});
+        assert_eq!(extract_input_tokens(&ProviderKind::Anthropic, &usage), None);
+        assert_eq!(
+            extract_input_tokens(&ProviderKind::OpenAiCompatible, &usage),
+            None
+        );
+    }
+}
