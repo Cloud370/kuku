@@ -171,7 +171,6 @@ pub(crate) async fn stream(
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
     let mut chunks = Vec::new();
     let mut started = false;
-    let mut tool_call_indices: Vec<u64> = Vec::new();
 
     for frame in body.split("\n\n") {
         let frame = frame.trim();
@@ -237,9 +236,6 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                         id: call_id,
                         name,
                     });
-                    if !tool_call_indices.contains(&index) {
-                        tool_call_indices.push(index);
-                    }
                 }
             }
             "response.output_text.delta" => {
@@ -271,7 +267,6 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 chunks.push(ProviderChunk::ContentBlockStop { index });
-                tool_call_indices.retain(|&i| i != index);
             }
             "response.completed" => {
                 if let Some(resp) = data.get("response") {

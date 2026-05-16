@@ -342,6 +342,18 @@ fn openai_chat_completions_url_appends_path() {
 }
 
 #[test]
+fn responses_url_appends_path() {
+    assert_eq!(
+        responses_url("https://api.openai.com/v1"),
+        "https://api.openai.com/v1/responses"
+    );
+    assert_eq!(
+        responses_url("https://gateway.example/v1/"),
+        "https://gateway.example/v1/responses"
+    );
+}
+
+#[test]
 fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
     let body = render_openai_body(&ProviderRequest {
         stream: false,
