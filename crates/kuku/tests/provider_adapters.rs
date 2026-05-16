@@ -75,11 +75,11 @@ use context::{
     Role, ToolResult, ToolSchema, ToolUse,
 };
 use provider::anthropic::{messages_url, render_body as render_anthropic_body};
+use provider::chunk::ProviderChunk;
 use provider::openai_compat::{chat_completions_url, render_body as render_openai_body};
 use provider::openai_responses::{
     parse_responses_sse, render_body as render_responses_body, responses_url,
 };
-use provider::chunk::ProviderChunk;
 use provider::types::ProviderRequest;
 use serde_json::json;
 
@@ -467,7 +467,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"stat
 
     let chunks = parse_responses_sse(sse);
 
-    assert!(matches!(&chunks[0], ProviderChunk::StreamStart { request_id } if request_id == "resp_test"));
+    assert!(
+        matches!(&chunks[0], ProviderChunk::StreamStart { request_id } if request_id == "resp_test")
+    );
 
     let text: String = chunks
         .iter()
@@ -538,9 +540,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status
     let args: String = chunks
         .iter()
         .filter_map(|c| match c {
-            ProviderChunk::ToolCallArgDelta {
-                index: 0, fragment,
-            } => Some(fragment.as_str()),
+            ProviderChunk::ToolCallArgDelta { index: 0, fragment } => Some(fragment.as_str()),
             _ => None,
         })
         .collect();
