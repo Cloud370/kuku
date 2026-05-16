@@ -12,7 +12,6 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) config: Option<Config>,
 }
 
-
 pub(crate) const ENV_PROVIDER: &str = "KUKU_PROVIDER";
 pub(crate) const ENV_MODEL: &str = "KUKU_MODEL";
 pub(crate) const ENV_BASE_URL: &str = "KUKU_BASE_URL";

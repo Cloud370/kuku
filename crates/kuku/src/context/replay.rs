@@ -19,7 +19,6 @@ struct ResponseGroup {
     tool_results: BTreeMap<String, ToolResult>,
 }
 
-
 /// Reconstruct conversation history messages from a session's stored events.
 pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
     let mut messages = Vec::new();

@@ -71,7 +71,6 @@ pub struct ResolvedThinking {
     pub high: Option<toml::Value>,
 }
 
-
 /// Load and parse a TOML config file. Returns empty defaults if the file does not exist.
 pub fn load_config(path: &Path) -> Result<ConfigFile> {
     if !path.exists() {
