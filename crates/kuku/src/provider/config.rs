@@ -12,7 +12,7 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) config: Option<Config>,
 }
 
-#[allow(clippy::derivable_impls)]
+#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
 impl Default for ResolveConfigInput {
     fn default() -> Self {
         Self {

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+/// Raw deserialized contents of `config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(default)]
@@ -38,6 +39,7 @@ pub(crate) struct ThinkingEntry {
     pub(crate) high: Option<toml::Value>,
 }
 
+/// Validated, resolved configuration for provider and model setup.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub models: BTreeMap<String, String>,
@@ -45,6 +47,7 @@ pub struct Config {
     pub default_model: String,
 }
 
+/// Validated provider entry with API key source and thinking overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedProviderConfig {
     pub format: String,
@@ -60,11 +63,23 @@ pub enum ApiKeySource {
     Env(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Per-level thinking budget overrides from the config file.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedThinking {
     pub low: Option<toml::Value>,
     pub medium: Option<toml::Value>,
     pub high: Option<toml::Value>,
+}
+
+#[allow(clippy::derivable_impls)] // explicit impl preferred over derive(Default) per project convention
+impl Default for ResolvedThinking {
+    fn default() -> Self {
+        Self {
+            low: None,
+            medium: None,
+            high: None,
+        }
+    }
 }
 
 /// Load and parse a TOML config file. Returns empty defaults if the file does not exist.
