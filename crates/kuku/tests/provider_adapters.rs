@@ -59,6 +59,14 @@ mod provider {
             "/src/provider/openai_compat.rs"
         ));
     }
+
+    #[allow(dead_code)]
+    pub mod openai_responses {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/openai_responses.rs"
+        ));
+    }
 }
 
 use config::ResolvedThinking;
@@ -68,6 +76,10 @@ use context::{
 };
 use provider::anthropic::{messages_url, render_body as render_anthropic_body};
 use provider::openai_compat::{chat_completions_url, render_body as render_openai_body};
+use provider::openai_responses::{
+    parse_responses_sse, render_body as render_responses_body, responses_url,
+};
+use provider::chunk::ProviderChunk;
 use provider::types::ProviderRequest;
 use serde_json::json;
 
@@ -420,4 +432,139 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
     assert_eq!(history_body["messages"][4]["role"], "tool");
     assert_eq!(history_body["messages"][4]["tool_call_id"], "toolu_01");
     assert_eq!(history_body["messages"][4]["content"], "README.md");
+}
+
+#[test]
+fn parse_responses_sse_plain_text() {
+    let sse = "\
+event: response.created
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}
+
+event: response.output_item.added
+data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_test\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}
+
+event: response.content_part.added
+data: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_test\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}
+
+event: response.output_text.delta
+data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_test\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello\"}
+
+event: response.output_text.delta
+data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_test\",\"output_index\":0,\"content_index\":0,\"delta\":\" world\"}
+
+event: response.output_text.done
+data: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_test\",\"output_index\":0,\"content_index\":0,\"text\":\"Hello world\"}
+
+event: response.content_part.done
+data: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_test\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Hello world\",\"annotations\":[]}}
+
+event: response.output_item.done
+data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world\",\"annotations\":[]}]}}
+
+event: response.completed
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}
+";
+
+    let chunks = parse_responses_sse(sse);
+
+    assert!(matches!(&chunks[0], ProviderChunk::StreamStart { request_id } if request_id == "resp_test"));
+
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ProviderChunk::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!("Hello world", text);
+
+    assert!(chunks
+        .iter()
+        .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 })));
+    assert!(chunks
+        .iter()
+        .any(|c| matches!(c, ProviderChunk::StopReason { reason } if reason == "end_turn")));
+    assert!(chunks.iter().any(|c| matches!(
+        c,
+        ProviderChunk::StreamUsage {
+            input_tokens: 10,
+            output_tokens: 5
+        }
+    )));
+    assert!(chunks
+        .last()
+        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
+}
+
+#[test]
+fn parse_responses_sse_function_call() {
+    let sse = "\
+event: response.created
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_fc\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}
+
+event: response.output_item.added
+data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_test\",\"type\":\"function_call\",\"call_id\":\"call_test123\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"}}
+
+event: response.function_call_arguments.delta
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_test\",\"output_index\":0,\"delta\":\"{\\\"location\\\":\"}
+
+event: response.function_call_arguments.delta
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_test\",\"output_index\":0,\"delta\":\"\\\"Boston\\\"}\"}
+
+event: response.function_call_arguments.done
+data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_test\",\"output_index\":0,\"item\":{\"id\":\"fc_test\",\"type\":\"function_call\",\"call_id\":\"call_test123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Boston\\\"}\",\"status\":\"completed\"}}
+
+event: response.output_item.done
+data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_test\",\"type\":\"function_call\",\"call_id\":\"call_test123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Boston\\\"}\",\"status\":\"completed\"}}
+
+event: response.completed
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":30,\"output_tokens\":15,\"total_tokens\":45}}}
+";
+
+    let chunks = parse_responses_sse(sse);
+
+    let start = chunks.iter().find_map(|c| match c {
+        ProviderChunk::ToolCallStart { index, id, name } => {
+            Some((*index, id.clone(), name.clone()))
+        }
+        _ => None,
+    });
+    assert!(start.is_some());
+    let (index, id, name) = start.unwrap();
+    assert_eq!(0u64, index);
+    assert_eq!("call_test123", id);
+    assert_eq!("get_weather", name);
+
+    let args: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ProviderChunk::ToolCallArgDelta {
+                index: 0, fragment,
+            } => Some(fragment.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!("{\"location\":\"Boston\"}", args);
+
+    assert!(chunks
+        .iter()
+        .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 })));
+    assert!(chunks
+        .last()
+        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
+}
+
+#[test]
+fn parse_responses_sse_adds_stream_end_when_missing() {
+    let sse = "\
+event: response.created
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_partial\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}
+
+event: response.output_text.delta
+data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial text\"}
+";
+    let chunks = parse_responses_sse(sse);
+    assert!(chunks
+        .last()
+        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
 }

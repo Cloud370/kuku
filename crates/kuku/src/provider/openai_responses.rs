@@ -168,7 +168,7 @@ pub(crate) async fn stream(
     Ok(Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))))
 }
 
-fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
+pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
     let mut chunks = Vec::new();
     let mut started = false;
     let mut tool_call_indices: Vec<u64> = Vec::new();
