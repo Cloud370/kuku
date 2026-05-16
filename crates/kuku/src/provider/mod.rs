@@ -3,6 +3,7 @@ pub(crate) mod chunk;
 pub(crate) mod config;
 pub(crate) mod error;
 pub(crate) mod openai_compat;
+pub(crate) mod openai_responses;
 pub(crate) mod types;
 
 pub use types::Provider;
@@ -23,5 +24,6 @@ pub(crate) async fn stream_provider(
     match config.kind {
         ProviderKind::Anthropic => anthropic::stream(config, request).await,
         ProviderKind::OpenAiCompatible => openai_compat::stream(config, request).await,
+        ProviderKind::OpenAiResponses => openai_responses::stream(config, request).await,
     }
 }

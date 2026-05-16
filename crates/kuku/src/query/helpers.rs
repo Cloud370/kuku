@@ -253,6 +253,7 @@ pub(super) fn provider_format_name(kind: &ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "anthropic",
         ProviderKind::OpenAiCompatible => "openai-compatible",
+        ProviderKind::OpenAiResponses => "openai-responses",
     }
 }
 
@@ -314,7 +315,7 @@ pub(super) fn last_input_tokens(
 
 pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Value) -> Option<u32> {
     let total = match kind {
-        ProviderKind::Anthropic => {
+        ProviderKind::Anthropic | ProviderKind::OpenAiResponses => {
             let input = usage
                 .get("input_tokens")
                 .and_then(serde_json::Value::as_u64)?;
