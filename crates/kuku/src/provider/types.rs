@@ -8,12 +8,14 @@ use crate::context::ContextAssembly;
 pub enum Provider {
     Anthropic,
     OpenAiCompatible,
+    OpenAiResponses,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderKind {
     Anthropic,
     OpenAiCompatible,
+    OpenAiResponses,
 }
 
 impl From<Provider> for ProviderKind {
@@ -21,6 +23,7 @@ impl From<Provider> for ProviderKind {
         match provider {
             Provider::Anthropic => ProviderKind::Anthropic,
             Provider::OpenAiCompatible => ProviderKind::OpenAiCompatible,
+            Provider::OpenAiResponses => ProviderKind::OpenAiResponses,
         }
     }
 }
@@ -30,6 +33,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAiCompatible => "openai-compatible",
+            ProviderKind::OpenAiResponses => "openai-responses",
         }
     }
 }
