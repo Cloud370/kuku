@@ -180,6 +180,7 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             request_id: "req_1".to_string(),
             role: "default".to_string(),
             alias: "anthropic".to_string(),
+            think: "auto".to_string(),
             resolved_provider: "anthropic".to_string(),
             resolved_model: "claude-sonnet-4-6".to_string(),
             params: serde_json::json!({"temperature": 0.2}),

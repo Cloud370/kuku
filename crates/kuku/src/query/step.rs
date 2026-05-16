@@ -386,6 +386,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             request_id: request_id.clone(),
             role: "default".to_string(),
             alias: resolved.provider_name.clone(),
+            think: "auto".to_string(),
             resolved_provider: resolved.provider_name.clone(),
             resolved_model: resolved.config.model.clone(),
             params,

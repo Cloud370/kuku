@@ -33,6 +33,7 @@ pub enum EventPayload {
         request_id: String,
         role: String,
         alias: String,
+        think: String,
         resolved_provider: String,
         resolved_model: String,
         params: Value,
