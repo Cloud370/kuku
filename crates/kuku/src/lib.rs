@@ -1,6 +1,7 @@
 #[doc(hidden)]
 pub mod context;
 
+pub mod config;
 pub mod error;
 pub mod event;
 pub(crate) mod notice;

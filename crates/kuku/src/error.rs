@@ -41,6 +41,9 @@ pub enum Error {
 
     #[error("prompt render error: {0}")]
     PromptRender(String),
+
+    #[error("config: {0}")]
+    ConfigLoad(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
