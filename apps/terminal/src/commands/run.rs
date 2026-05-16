@@ -48,7 +48,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 .to_json_line()
         );
     } else {
-        println!("{}", display.session_start(&session_id, "default", "normal"));
+        println!(
+            "{}",
+            display.session_start(&session_id, "default", "normal")
+        );
     }
 
     let mut in_thinking = false;
@@ -151,7 +154,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                             .to_json_line()
                         );
                     } else {
-                        println!("{}", display.permission_decision("allow", &request.tool, "posture"));
+                        println!(
+                            "{}",
+                            display.permission_decision("allow", &request.tool, "posture")
+                        );
                     }
                 } else {
                     use std::io::{self, Write};
@@ -170,7 +176,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         "deny"
                     };
-                    println!("{}", display.permission_decision(decision_str, &request.tool, rule));
+                    println!(
+                        "{}",
+                        display.permission_decision(decision_str, &request.tool, rule)
+                    );
                 }
             }
             Some(UiEvent::Done { .. }) => {

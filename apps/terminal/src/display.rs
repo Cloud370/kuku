@@ -20,7 +20,8 @@ const CODE_LINE: &str = "\u{2502} ";
 const CODE_CLOSE: &str = "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
 const TABLE_OPEN: &str = "\u{250c}\u{2500} table";
-const TABLE_CLOSE: &str = "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+const TABLE_CLOSE: &str =
+    "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
 const TOOL_PREFIX: &str = "\u{2699}";
 const RESULT_PREFIX: &str = "  \u{21b3}";
@@ -59,7 +60,12 @@ impl Display {
 
 impl Display {
     pub fn thinking_start(&self, tokens: u64) -> String {
-        format!("{} ({}) {}", THINKING_OPEN, fmt_tokens(tokens), THINKING_SEP)
+        format!(
+            "{} ({}) {}",
+            THINKING_OPEN,
+            fmt_tokens(tokens),
+            THINKING_SEP
+        )
     }
 
     pub fn thinking_text(&self, text: &str) -> Option<String> {
@@ -262,9 +268,7 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
     match payload {
         EventPayload::UserInput { text, .. } => text.chars().take(60).collect(),
         EventPayload::ModelResponse {
-            text,
-            stop_reason,
-            ..
+            text, stop_reason, ..
         } => {
             let preview: String = text.chars().take(60).collect();
             format!("{preview}  stop={stop_reason}")
@@ -298,9 +302,7 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
                 format!("{status}  {summary}")
             }
         }
-        EventPayload::PermissionDecision {
-            decision, rule, ..
-        } => {
+        EventPayload::PermissionDecision { decision, rule, .. } => {
             format!("{decision}  {rule}")
         }
         _ => String::new(),

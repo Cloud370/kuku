@@ -107,12 +107,7 @@ fn json_tool_call_serializes() {
 
 #[test]
 fn json_error_serializes() {
-    let line = OutputLine::error(
-        "provider".into(),
-        "auth".into(),
-        "invalid key".into(),
-        None,
-    );
+    let line = OutputLine::error("provider".into(), "auth".into(), "invalid key".into(), None);
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"error\""));
     assert!(json.contains("\"source\":\"provider\""));
@@ -120,11 +115,7 @@ fn json_error_serializes() {
 
 #[test]
 fn json_session_serializes() {
-    let line = OutputLine::session_started(
-        "abc123".into(),
-        "claude-opus".into(),
-        "xhigh".into(),
-    );
+    let line = OutputLine::session_started("abc123".into(), "claude-opus".into(), "xhigh".into());
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"session\""));
     assert!(json.contains("\"event\":\"started\""));
@@ -136,23 +127,13 @@ fn all_json_types_have_type_field() {
     let lines = vec![
         OutputLine::thinking(100, None).to_json_line(),
         OutputLine::text_delta("hello".into()).to_json_line(),
-        OutputLine::tool_call(
-            "t".into(),
-            "id".into(),
-            "s".into(),
-            serde_json::Value::Null,
-        )
-        .to_json_line(),
+        OutputLine::tool_call("t".into(), "id".into(), "s".into(), serde_json::Value::Null)
+            .to_json_line(),
         OutputLine::tool_result("id".into(), "ok".into(), "s".into(), None, false).to_json_line(),
         OutputLine::permission_ask("pr".into(), "t".into(), "read".into(), "s".into())
             .to_json_line(),
-        OutputLine::permission_decision(
-            "pr".into(),
-            "t".into(),
-            "allow".into(),
-            "posture".into(),
-        )
-        .to_json_line(),
+        OutputLine::permission_decision("pr".into(), "t".into(), "allow".into(), "posture".into())
+            .to_json_line(),
         OutputLine::error("s".into(), "k".into(), "m".into(), None).to_json_line(),
         OutputLine::session_started("id".into(), "m".into(), "e".into()).to_json_line(),
     ];
