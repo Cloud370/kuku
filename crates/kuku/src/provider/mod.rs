@@ -7,8 +7,10 @@ pub(crate) mod types;
 
 pub use types::Provider;
 
-use futures_core::Stream;
 use std::pin::Pin;
+
+use futures_core::Stream;
+
 use types::{ProviderFailure, ProviderKind, ProviderRequest, ResolvedProvider};
 
 pub(crate) type ProviderChunkStream =

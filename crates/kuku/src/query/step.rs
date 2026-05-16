@@ -28,6 +28,8 @@ use super::types::{
     QueuedToolCall, ResolvedRuntime, StreamingChunkState, UiEvent,
 };
 
+const MAX_REQUEST_LOOP: u64 = 20;
+
 pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
     let StreamingChunkState {
         mut pending,
@@ -248,7 +250,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     ensure_resolved(&mut pending)?;
     pending.request_num += 1;
 
-    if pending.request_num > 20 {
+    if pending.request_num > MAX_REQUEST_LOOP {
         let provider_name = pending
             .resolved
             .as_ref()

@@ -8,6 +8,10 @@ use super::error::{classify_http_error, transport_error};
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
+const DEFAULT_THINKING_LOW: i64 = 1024;
+const DEFAULT_THINKING_MEDIUM: i64 = 4096;
+const DEFAULT_THINKING_HIGH: i64 = 16000;
 
 pub(crate) fn messages_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -36,7 +40,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     let mut body = json!({
         "model": request.model,
         "messages": messages,
-        "max_tokens": request.max_output_tokens.unwrap_or(4096),
+        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u32),
         "stream": false,
         "system": request.assembly.system_prompt,
     });
@@ -51,20 +55,20 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
                 .low
                 .as_ref()
                 .and_then(|v| v.as_integer())
-                .unwrap_or(1024),
+                .unwrap_or(DEFAULT_THINKING_LOW),
             "medium" => request
                 .thinking
                 .medium
                 .as_ref()
                 .and_then(|v| v.as_integer())
-                .unwrap_or(4096),
+                .unwrap_or(DEFAULT_THINKING_MEDIUM),
             "high" => request
                 .thinking
                 .high
                 .as_ref()
                 .and_then(|v| v.as_integer())
-                .unwrap_or(16000),
-            _ => 4096,
+                .unwrap_or(DEFAULT_THINKING_HIGH),
+            _ => DEFAULT_THINKING_MEDIUM,
         };
         body["thinking"] = json!({
             "type": "enabled",
