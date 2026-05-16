@@ -1,8 +1,11 @@
+use std::io::{self, Write};
+
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine, Verbosity};
 
+/// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
     let verbosity = if args.verbose {
@@ -160,7 +163,6 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 } else {
-                    use std::io::{self, Write};
                     let prompt_line = display.permission_ask(&request.tool, &request.summary);
                     print!("{prompt_line} ");
                     io::stdout().flush()?;
@@ -208,8 +210,6 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// Interactive mode: bare `kuku` (no subcommand).
 /// Currently uses CLI text streaming; future TUI.
 pub async fn interactive() -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{self, Write};
-
     print!("> ");
     io::stdout().flush()?;
     let mut input = String::new();

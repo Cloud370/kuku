@@ -1,3 +1,5 @@
+//! CLI subcommand implementations.
+
 pub mod config;
 pub mod events;
 pub mod list;

@@ -3,6 +3,7 @@ use kuku::session::kuku_home;
 
 use crate::cli_args::{ConfigArgs, ConfigSubcommand, PolicySubcommand};
 
+/// Show or manage configuration: `kuku config [validate|policy]`
 pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
     match args.cmd {
         None | Some(ConfigSubcommand::Validate) => {

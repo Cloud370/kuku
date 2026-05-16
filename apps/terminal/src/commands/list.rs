@@ -2,6 +2,7 @@ use kuku::session::{current_workspace, kuku_home, list_sessions};
 
 use crate::cli_args::ListArgs;
 
+/// List sessions for the current workspace: `kuku list [-v]`
 pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = kuku_home()?;
     let workspace = current_workspace()?;

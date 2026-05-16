@@ -7,6 +7,7 @@
 //! Style constants live at the top of this file so they can be
 //! adjusted in one place.
 
+use kuku::event::{EventPayload, StoredEvent};
 use serde::Serialize;
 
 // ── Style constants (one place to tune) ──
@@ -36,29 +37,30 @@ const SESSION_PREFIX: &str = "--";
 
 // ── Render mode ──
 
+/// Controls output detail level for text rendering.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Verbosity {
     Concise,
     Verbose,
 }
 
+/// Text and JSON terminal output renderer.
 pub struct Display {
     verbosity: Verbosity,
 }
 
 impl Display {
+    /// Create a new display with the given verbosity.
     pub fn new(verbosity: Verbosity) -> Self {
         Self { verbosity }
     }
 
+    /// Whether verbose mode is active.
     pub fn is_verbose(&self) -> bool {
         self.verbosity == Verbosity::Verbose
     }
-}
 
-// ── Thinking ──
-
-impl Display {
+    /// Render a thinking block start line.
     pub fn thinking_start(&self, tokens: u64) -> String {
         format!(
             "{} ({}) {}",
@@ -68,6 +70,7 @@ impl Display {
         )
     }
 
+    /// Return thinking text only in verbose mode.
     pub fn thinking_text(&self, text: &str) -> Option<String> {
         if self.is_verbose() {
             Some(text.to_string())
@@ -76,6 +79,7 @@ impl Display {
         }
     }
 
+    /// Render a thinking block close line.
     pub fn thinking_end(&self, tokens: u64) -> String {
         format!(
             "{} \u{b7} {} tokens {}",
@@ -84,19 +88,8 @@ impl Display {
             THINKING_SEP
         )
     }
-}
 
-fn fmt_tokens(n: u64) -> String {
-    if n >= 1000 {
-        format!("{:.1}k", n as f64 / 1000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-// ── Tool call / result ──
-
-impl Display {
+    /// Render a tool call line.
     pub fn tool_call(&self, tool: &str, summary: &str, tool_call_id: &str) -> String {
         if self.is_verbose() {
             format!("{} {}  id={}", TOOL_PREFIX, tool, tool_call_id)
@@ -105,6 +98,7 @@ impl Display {
         }
     }
 
+    /// Render a tool result line.
     pub fn tool_result(&self, status: &str, summary: &str, tool_call_id: &str) -> String {
         if self.is_verbose() {
             format!(
@@ -116,6 +110,7 @@ impl Display {
         }
     }
 
+    /// Return tool result output only in verbose mode.
     pub fn tool_result_output(&self, output: &str) -> Option<String> {
         if self.is_verbose() {
             Some(output.to_string())
@@ -123,15 +118,13 @@ impl Display {
             None
         }
     }
-}
 
-// ── Permission ──
-
-impl Display {
+    /// Render a permission ask prompt.
     pub fn permission_ask(&self, tool: &str, summary: &str) -> String {
         format!("{} {} \u{b7} {}  (y/n)?", PERM_ASK_PREFIX, tool, summary)
     }
 
+    /// Render a permission decision line.
     pub fn permission_decision(&self, decision: &str, tool: &str, rule: &str) -> String {
         let prefix = if decision == "allow" {
             PERM_ALLOW_PREFIX
@@ -140,11 +133,8 @@ impl Display {
         };
         format!("{} {} \u{b7} {} \u{b7} {}", prefix, decision, tool, rule)
     }
-}
 
-// ── Error, session, code block, table ──
-
-impl Display {
+    /// Render an error line.
     pub fn error(&self, source: &str, kind: &str, message: &str) -> String {
         format!(
             "{} {} \u{b7} {} \u{b7} {}",
@@ -152,6 +142,7 @@ impl Display {
         )
     }
 
+    /// Return error detail only in verbose mode.
     pub fn error_detail(&self, detail: &str) -> Option<String> {
         if self.is_verbose() {
             Some(detail.to_string())
@@ -160,6 +151,7 @@ impl Display {
         }
     }
 
+    /// Render a session start line.
     pub fn session_start(&self, session_id: &str, model: &str, effort: &str) -> String {
         format!(
             "{} session: {} \u{b7} {} \u{b7} {} {}",
@@ -167,6 +159,7 @@ impl Display {
         )
     }
 
+    /// Render a session completed line.
     pub fn session_completed(
         &self,
         session_id: &str,
@@ -185,6 +178,7 @@ impl Display {
         )
     }
 
+    /// Render a session interrupted line.
     pub fn session_interrupted(&self, session_id: &str, turns: u64) -> String {
         format!(
             "{} interrupted: {} \u{b7} {} turns {}",
@@ -192,6 +186,7 @@ impl Display {
         )
     }
 
+    /// Render a code block opening line.
     pub fn code_block_open(&self, language: Option<&str>) -> String {
         match language {
             Some(lang) => format!("{} {}", CODE_OPEN, lang),
@@ -199,18 +194,22 @@ impl Display {
         }
     }
 
+    /// Render a single code line with prefix.
     pub fn code_line(&self, line: &str) -> String {
         format!("{}{}", CODE_LINE, line)
     }
 
+    /// Render a code block closing line.
     pub fn code_block_close(&self) -> String {
         CODE_CLOSE.to_string()
     }
 
+    /// Render a table opening line.
     pub fn table_open(&self) -> String {
         TABLE_OPEN.to_string()
     }
 
+    /// Render a table row with padded cells.
     pub fn table_row(&self, cells: &[&str], widths: &[usize]) -> String {
         let padded: Vec<String> = cells
             .iter()
@@ -220,6 +219,7 @@ impl Display {
         format!("{}{}", CODE_LINE, padded.join("\u{2502}"))
     }
 
+    /// Render a table separator line.
     pub fn table_separator(&self, widths: &[usize]) -> String {
         let parts: Vec<String> = widths
             .iter()
@@ -228,15 +228,23 @@ impl Display {
         format!("{}\u{2502}{}\u{2502}", CODE_LINE, parts.join("\u{253c}"))
     }
 
+    /// Render a table closing line.
     pub fn table_close(&self) -> String {
         TABLE_CLOSE.to_string()
     }
 }
 
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 // ── Event rendering (ported from old view/) ──
 
-use kuku::event::{EventPayload, StoredEvent};
-
+/// Format a stored event as a single summary line.
 pub fn render_event_brief(event: &StoredEvent, verbose: bool) -> String {
     let mut line = format!("evt:{} | {}", event.id, event_type_name(&event.payload));
     let details = event_details(&event.payload, verbose);
@@ -309,6 +317,7 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
     }
 }
 
+/// Extract the final assistant response from completed session events.
 pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ModelResponse {
@@ -320,6 +329,7 @@ pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
 
 // ── JSON output types (stable schema) ──
 
+/// Structured JSON output line matching the display-spec schema.
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum OutputLine {
@@ -400,24 +410,29 @@ pub enum OutputLine {
 }
 
 impl OutputLine {
+    /// Serialize to a single JSON line with trailing newline.
     pub fn to_json_line(&self) -> String {
         let mut line = serde_json::to_string(self).unwrap_or_default();
         line.push('\n');
         line
     }
 
+    /// Create a thinking output line.
     pub fn thinking(tokens: u64, text: Option<String>) -> Self {
         OutputLine::Thinking { tokens, text }
     }
 
+    /// Create a text delta output line.
     pub fn text_delta(text: String) -> Self {
         OutputLine::TextDelta { text }
     }
 
+    /// Create a code block output line.
     pub fn code_block(language: Option<String>, content: String) -> Self {
         OutputLine::CodeBlock { language, content }
     }
 
+    /// Create a table output line.
     pub fn table(headers: Vec<String>, rows: Vec<Vec<String>>, align: Option<Vec<String>>) -> Self {
         OutputLine::Table {
             headers,
@@ -426,6 +441,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a tool call output line.
     pub fn tool_call(
         tool: String,
         tool_call_id: String,
@@ -440,6 +456,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a tool result output line.
     pub fn tool_result(
         tool_call_id: String,
         status: String,
@@ -456,6 +473,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a permission ask output line.
     pub fn permission_ask(request_id: String, tool: String, risk: String, summary: String) -> Self {
         OutputLine::PermissionAsk {
             request_id,
@@ -465,6 +483,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a permission decision output line.
     pub fn permission_decision(
         request_id: String,
         tool: String,
@@ -479,6 +498,7 @@ impl OutputLine {
         }
     }
 
+    /// Create an error output line.
     pub fn error(source: String, kind: String, message: String, detail: Option<String>) -> Self {
         OutputLine::Error {
             source,
@@ -488,6 +508,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a session started output line.
     pub fn session_started(session_id: String, model: String, effort: String) -> Self {
         OutputLine::Session {
             session_id,
@@ -500,6 +521,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a session completed output line.
     pub fn session_completed(
         session_id: String,
         turns: u64,
@@ -517,6 +539,7 @@ impl OutputLine {
         }
     }
 
+    /// Create a session interrupted output line.
     pub fn session_interrupted(session_id: String, turns: u64) -> Self {
         OutputLine::Session {
             session_id,
