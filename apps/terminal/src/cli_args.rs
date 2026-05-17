@@ -24,6 +24,8 @@ pub enum Command {
     List(ListArgs),
     /// Show or manage configuration
     Config(ConfigArgs),
+    /// Initialize config and directory structure
+    Init,
 }
 
 // ── Run ──

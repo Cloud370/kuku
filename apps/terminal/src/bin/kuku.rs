@@ -11,6 +11,7 @@ async fn main() {
         Some(Command::Events(args)) => kuku_terminal::commands::events::run(args).await,
         Some(Command::List(args)) => kuku_terminal::commands::list::run(args).await,
         Some(Command::Config(args)) => kuku_terminal::commands::config::run(args).await,
+        Some(Command::Init) => kuku_terminal::commands::init::run(),
         None => kuku_terminal::commands::run::interactive(None).await,
     };
 
