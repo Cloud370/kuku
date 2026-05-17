@@ -5,6 +5,14 @@ use kuku::{query, PermissionChoice, UiEvent};
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine, Verbosity};
 
+fn resolve_config_path(custom: Option<&str>) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    if let Some(p) = custom {
+        return Ok(std::path::PathBuf::from(p));
+    }
+    let home = kuku::session::kuku_home()?;
+    Ok(home.join("config.toml"))
+}
+
 /// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
@@ -15,7 +23,14 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let display = Display::new(verbosity);
 
-    let mut q = query(&prompt);
+    let config_path = resolve_config_path(args.config.as_deref())?;
+    if !config_path.exists() {
+        eprintln!("error: 未找到配置文件 {}", config_path.display());
+        eprintln!("提示: 运行 `kuku init` 初始化配置");
+        std::process::exit(1);
+    }
+
+    let mut q = query(&prompt).config_path(config_path);
     if let Some(model) = &args.model {
         q = q.model(model.clone());
     }
@@ -209,7 +224,14 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Interactive mode: bare `kuku` (no subcommand).
 /// Currently uses CLI text streaming; future TUI.
-pub async fn interactive() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(config.as_deref())?;
+    if !config_path.exists() {
+        eprintln!("error: 未找到配置文件 {}", config_path.display());
+        eprintln!("提示: 运行 `kuku init` 初始化配置");
+        std::process::exit(1);
+    }
+
     print!("> ");
     io::stdout().flush()?;
     let mut input = String::new();
@@ -228,6 +250,7 @@ pub async fn interactive() -> Result<(), Box<dyn std::error::Error>> {
         json: false,
         stream_json: false,
         verbose: false,
+        config,
     };
     run(args).await
 }

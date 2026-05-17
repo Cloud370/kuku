@@ -5,13 +5,17 @@ use crate::cli_args::{ConfigArgs, ConfigSubcommand, PolicySubcommand};
 
 /// Show or manage configuration: `kuku config [validate|policy]`
 pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let path = if let Some(p) = &args.config {
+        std::path::PathBuf::from(p)
+    } else {
+        kuku_home()?.join("config.toml")
+    };
+
     match args.cmd {
         None | Some(ConfigSubcommand::Validate) => {
-            let home = kuku_home()?;
-            let path = home.join("config.toml");
             if !path.exists() {
-                eprintln!("No config file at {}", path.display());
-                eprintln!("Create ~/.kuku/config.toml to configure models and providers.");
+                eprintln!("error: 未找到配置文件 {}", path.display());
+                eprintln!("提示: 运行 `kuku init` 初始化配置");
                 std::process::exit(1);
             }
             let file = load_config(&path)?;

@@ -61,6 +61,10 @@ pub struct RunArgs {
     /// Verbose output
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+
+    /// Path to config.toml (default: ~/.kuku/config.toml)
+    #[arg(long = "config")]
+    pub config: Option<String>,
 }
 
 // ── Show ──
@@ -98,6 +102,10 @@ pub struct ListArgs {
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub cmd: Option<ConfigSubcommand>,
+
+    /// Path to config.toml (default: ~/.kuku/config.toml)
+    #[arg(long = "config", global = true)]
+    pub config: Option<String>,
 }
 
 #[derive(Subcommand)]
