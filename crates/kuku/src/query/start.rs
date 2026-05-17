@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::config::load_config;
+use crate::config::{self, load_config};
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::session::{
@@ -16,12 +16,29 @@ impl Query {
         self.start_session().await
     }
 
-    async fn start_session(self) -> Result<Run> {
+    async fn start_session(mut self) -> Result<Run> {
+        self.validate()?;
+
         let kuku_home = kuku_home()?;
-        let config_path = kuku_home.join("config.toml");
-        let config_file = load_config(&config_path)?;
-        let config = Arc::new(config_file.resolve()?);
-        let workspace = current_workspace()?;
+
+        let workspace = match self.workspace_path.take() {
+            Some(path) => path,
+            None => current_workspace()?,
+        };
+
+        let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path)
+        {
+            (Some(cfg), _) => Arc::new(cfg),
+            (None, Some(path)) => {
+                let file = load_config(path)?;
+                Arc::new(file.resolve()?)
+            }
+            (None, None) => {
+                return Err(Error::MissingProviderConfig(
+                    "no config provided; set .config_path() or .config()".to_string(),
+                ));
+            }
+        };
         let session_id = match self.session_id.as_deref() {
             Some(session_id) => {
                 validate_session_id(session_id)?;

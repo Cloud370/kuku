@@ -6,6 +6,7 @@ use std::sync::Arc;
 use futures_core::Stream;
 
 use crate::config::Config;
+use crate::error::{Error, Result};
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
@@ -17,10 +18,14 @@ pub struct Query {
     pub(super) session_id: Option<String>,
     pub(super) provider: Option<crate::provider::Provider>,
     pub(super) model: Option<String>,
+    pub(super) tier: Option<String>,
+    pub(super) config_path: Option<PathBuf>,
+    pub(super) config_obj: Option<Config>,
     pub(super) base_url: Option<String>,
     pub(super) api_key: Option<String>,
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
+    pub(super) workspace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,10 +186,14 @@ impl Query {
             session_id: None,
             provider: None,
             model: None,
+            tier: None,
+            config_path: None,
+            config_obj: None,
             base_url: None,
             api_key: None,
             max_output_tokens: None,
             temperature: None,
+            workspace_path: None,
         }
     }
 
@@ -228,6 +237,39 @@ impl Query {
     pub fn temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
+    }
+
+    /// Select a capability tier (strong/balanced/light). Mutually exclusive with `.model()`.
+    pub fn tier(mut self, tier: impl Into<String>) -> Self {
+        self.tier = Some(tier.into());
+        self
+    }
+
+    /// Load config from the given path.
+    pub fn config_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config_path = Some(path.into());
+        self
+    }
+
+    /// Use an in-memory config (bypasses file loading).
+    pub fn config(mut self, cfg: Config) -> Self {
+        self.config_obj = Some(cfg);
+        self
+    }
+
+    /// Set the workspace directory (defaults to cwd).
+    pub fn workspace(mut self, path: impl Into<PathBuf>) -> Self {
+        self.workspace_path = Some(path.into());
+        self
+    }
+
+    pub(super) fn validate(&self) -> Result<()> {
+        if self.tier.is_some() && self.model.is_some() {
+            return Err(Error::InvalidArgument(
+                ".tier() and .model() are mutually exclusive".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// The prompt text.
