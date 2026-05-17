@@ -114,7 +114,7 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
         event = run.next().await.unwrap().expect("event");
     }
     match event {
-        UiEvent::Done { output } => assert_eq!(output.text, "Captured home memory."),
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "Captured home memory."),
         _ => unreachable!(),
     }
 
@@ -334,7 +334,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         event = run.next().await.unwrap().expect("event");
     }
     match event {
-        UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
         _ => unreachable!(),
     }
 
@@ -393,7 +393,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         event = run.next().await.unwrap().expect("event");
     }
     match event {
-        UiEvent::Done { output } => assert_eq!(output.text, "Second command completed."),
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "Second command completed."),
         _ => unreachable!(),
     }
 

@@ -13,7 +13,7 @@ pub mod session;
 pub(crate) mod tool;
 
 pub use error::{Error, Result};
-pub use provider::Provider;
+pub use provider::{Provider, ProviderUsage};
 pub use query::{query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, UiEvent};
 pub use session::{list_sessions, SessionSummary};
 

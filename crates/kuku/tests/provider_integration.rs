@@ -424,7 +424,7 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
         event = run.next().await.unwrap().unwrap();
     }
     match event {
-        kuku::UiEvent::Done { output } => assert_eq!(output.text, "Command completed."),
+        kuku::UiEvent::Done { output, .. } => assert_eq!(output.text, "Command completed."),
         _ => unreachable!(),
     }
 
@@ -503,7 +503,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
         event = run.next().await.unwrap().unwrap();
     }
     match event {
-        kuku::UiEvent::Done { output } => assert_eq!(output.text, "First command completed."),
+        kuku::UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
         _ => unreachable!(),
     }
 

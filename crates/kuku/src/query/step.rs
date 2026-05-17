@@ -76,7 +76,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             return Ok(PendingStep::Done(super::types::RunOutput {
                 session_id: pending.session_id.clone(),
                 text: accumulated_text,
-            }));
+            }, usage.clone(), pending.turn));
         }
 
         for tool_call in &tool_calls {

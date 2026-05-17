@@ -6,7 +6,7 @@ pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
 pub(crate) mod types;
 
-pub use types::Provider;
+pub use types::{Provider, ProviderUsage};
 
 use std::pin::Pin;
 

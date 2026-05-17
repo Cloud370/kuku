@@ -41,9 +41,9 @@ impl Run {
                         self.state = RunState::Pending(pending);
                         return Ok(Some(ui_event));
                     }
-                    PendingStep::Done(output) => {
+                    PendingStep::Done(output, usage, turn) => {
                         self.state = RunState::Done(None);
-                        return Ok(Some(UiEvent::Done { output }));
+                        return Ok(Some(UiEvent::Done { output, usage, turn }));
                     }
                 },
                 RunState::Streaming(mut streaming) => {
@@ -58,9 +58,9 @@ impl Run {
                                 PendingStep::Pending(next_pending) => {
                                     self.state = RunState::Pending(next_pending);
                                 }
-                                PendingStep::Done(output) => {
+                                PendingStep::Done(output, usage, turn) => {
                                     self.state = RunState::Done(None);
-                                    return Ok(Some(UiEvent::Done { output }));
+                                    return Ok(Some(UiEvent::Done { output, usage, turn }));
                                 }
                                 _ => {
                                     self.state = RunState::Done(None);
@@ -74,9 +74,9 @@ impl Run {
                     self.state = RunState::WaitingForPermission(waiting);
                     return Ok(Some(UiEvent::PermissionRequested { request }));
                 }
-                RunState::Done(Some(output)) => {
+                RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
-                    return Ok(Some(UiEvent::Done { output }));
+                    return Ok(Some(UiEvent::Done { output, usage, turn }));
                 }
                 RunState::Done(None) => {
                     self.state = RunState::Done(None);

@@ -86,10 +86,10 @@ pub(crate) struct ProviderRequest {
     pub(crate) thinking: crate::config::ResolvedThinking,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub(crate) struct ProviderUsage {
-    pub(crate) input_tokens: Option<u64>,
-    pub(crate) output_tokens: Option<u64>,
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProviderUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

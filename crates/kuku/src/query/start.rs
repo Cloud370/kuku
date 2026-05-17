@@ -102,7 +102,7 @@ impl Query {
                 Some(UiEvent::PermissionRequested { .. }) => {
                     run.deny_pending().await?;
                 }
-                Some(UiEvent::Done { output }) => return Ok(output),
+                Some(UiEvent::Done { output, .. }) => return Ok(output),
                 Some(_) => continue,
                 None => {
                     return Err(Error::InvalidEventStream(
