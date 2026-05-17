@@ -17,7 +17,7 @@ use crate::tool;
 
 use super::helpers::{
     append_model_error, append_permission_decision, append_permission_request, append_turn_end,
-    current_date_string, execute_tool_call, gate_source_name, last_input_tokens,
+    current_date_string, display_summary, execute_tool_call, gate_source_name, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, permission_candidate,
     permission_rule, permission_summary, platform_label, provider_failure_kind,
     provider_format_name,
@@ -98,9 +98,10 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
 
     for tool_call in tool_calls {
         let summary = permission_summary(&tool_call.name, &tool_call.args);
+        let display = display_summary(&tool_call.name, &tool_call.args, None);
         pending
             .queued_tool_calls
-            .push_back(QueuedToolCall { tool_call, summary });
+            .push_back(QueuedToolCall { tool_call, summary, display_summary: display });
     }
 
     Ok(PendingStep::Pending(Box::new(pending)))
@@ -148,7 +149,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             tool_call_id: queued_tool_call.tool_call.id.clone(),
                             tool: queued_tool_call.tool_call.name.clone(),
                             risk: definition.risk.clone(),
-                            summary: queued_tool_call.summary.clone(),
+                            summary: queued_tool_call.display_summary.clone(),
                         };
                         append_permission_request(&pending.events_path, pending.turn, &request)?;
                         return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
@@ -184,7 +185,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                         let saved = pending.saved_tool_call.as_ref().unwrap();
                         let tc_id = saved.tool_call.id.clone();
                         let tc_name = saved.tool_call.name.clone();
-                        let tc_summary = saved.summary.clone();
+                        let tc_summary = saved.display_summary.clone();
                         return Ok(PendingStep::ToolCallReady {
                             pending: Box::new(pending),
                             ui_event: UiEvent::ToolCall {
@@ -203,7 +204,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                                 tool_call_id: queued_tool_call.tool_call.id.clone(),
                                 tool: queued_tool_call.tool_call.name.clone(),
                                 risk: definition.risk.clone(),
-                                summary: queued_tool_call.summary.clone(),
+                                summary: queued_tool_call.display_summary.clone(),
                             },
                         )?;
                         append_permission_decision(
@@ -238,7 +239,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
             let saved = pending.saved_tool_call.as_ref().unwrap();
             let tc_id = saved.tool_call.id.clone();
             let tc_name = saved.tool_call.name.clone();
-            let tc_summary = saved.summary.clone();
+            let tc_summary = saved.display_summary.clone();
             return Ok(PendingStep::ToolCallReady {
                 pending: Box::new(pending),
                 ui_event: UiEvent::ToolCall {
