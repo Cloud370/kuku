@@ -570,8 +570,7 @@ mod tests {
     fn thinking_start_has_no_duration() {
         let d = Display::new(false);
         let line = d.thinking_start();
-        assert!(line.contains("thinking"), "should contain thinking label");
-        assert!(!line.contains("s"), "should not contain duration");
+        assert_eq!(line, "\u{250c}\u{2500}\u{2500} thinking \u{2500}");
     }
 
     #[test]
@@ -602,5 +601,31 @@ mod tests {
             line.contains("previous"),
             "should indicate previous context"
         );
+    }
+
+    #[test]
+    fn tool_result_shows_status_and_summary() {
+        let d = Display::new(false);
+        let line = d.tool_result("ok", "120 lines", "tc_01");
+        assert!(line.contains("ok"), "should contain status");
+        assert!(line.contains("120 lines"), "should contain summary");
+    }
+
+    #[test]
+    fn permission_decision_shows_decision_and_tool() {
+        let d = Display::new(false);
+        let line = d.permission_decision("allow", "run_command", "user");
+        assert!(line.contains("allow"), "should contain decision");
+        assert!(line.contains("run_command"), "should contain tool");
+        assert!(line.contains("user"), "should contain rule");
+    }
+
+    #[test]
+    fn session_interrupted_shows_session_and_turns() {
+        let d = Display::new(false);
+        let line = d.session_interrupted("s_001", 3);
+        assert!(line.contains("s_001"), "should contain session id");
+        assert!(line.contains("3 turns"), "should contain turn count");
+        assert!(line.contains("interrupted"), "should indicate interruption");
     }
 }
