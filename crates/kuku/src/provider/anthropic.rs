@@ -48,7 +48,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if request.think_level != "auto" {
+    if request.think_level != "off" {
         let budget_tokens = match request.think_level.as_str() {
             "low" => request
                 .thinking

@@ -95,11 +95,11 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if request.think_level != "auto" {
+    if request.think_level != "off" {
         let effort = match request.think_level.as_str() {
             "low" => "low",
             "medium" => "medium",
-            "high" => "high",
+            "high" => "xhigh",
             _ => "medium",
         };
         body["reasoning"] = json!({

@@ -38,7 +38,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if request.think_level != "auto" {
+    if request.think_level != "off" {
         let effort = match request.think_level.as_str() {
             "low" => request
                 .thinking
@@ -57,7 +57,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
                 .high
                 .as_ref()
                 .and_then(|v| v.as_str())
-                .unwrap_or("high"),
+                .unwrap_or("xhigh"),
             _ => "medium",
         };
         body["reasoning_effort"] = json!(effort);
