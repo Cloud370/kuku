@@ -33,10 +33,7 @@ pub(crate) fn render_synthetic_user(
             "project_memory_rendered",
             input.project_memory_rendered.as_str(),
         ),
-        (
-            "model_tiers_rendered",
-            input.model_tiers_rendered.as_str(),
-        ),
+        ("model_tiers_rendered", input.model_tiers_rendered.as_str()),
     ];
 
     let mut rendered = template.to_string();

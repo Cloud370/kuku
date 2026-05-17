@@ -26,8 +26,7 @@ impl Query {
             None => current_workspace()?,
         };
 
-        let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path)
-        {
+        let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path) {
             (Some(cfg), _) => Arc::new(cfg),
             (None, Some(path)) => {
                 let file = load_config(path)?;

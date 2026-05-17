@@ -1,4 +1,4 @@
-use crate::config::{Config, ProviderConfig as CfgProvider, TierConfig, ThinkLevel};
+use crate::config::{Config, ProviderConfig as CfgProvider, ThinkLevel, TierConfig};
 use crate::error::{Error, Result};
 
 use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
@@ -21,14 +21,9 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let tier_config: Option<&TierConfig> = if input.model.is_some() {
         cfg.and_then(|c| c.tier(c.default_tier()))
     } else if let Some(ref tier_name) = input.tier {
-        Some(
-            cfg.and_then(|c| c.tier(tier_name))
-                .ok_or_else(|| {
-                    Error::MissingProviderConfig(format!(
-                        "tier '{tier_name}' not found in config"
-                    ))
-                })?,
-        )
+        Some(cfg.and_then(|c| c.tier(tier_name)).ok_or_else(|| {
+            Error::MissingProviderConfig(format!("tier '{tier_name}' not found in config"))
+        })?)
     } else {
         cfg.and_then(|c| c.tier(c.default_tier()))
     };
@@ -46,11 +41,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let provider_cfg: Option<&CfgProvider> = match input.provider {
         Some(p) => {
             let target_format = provider_kind_to_format(ProviderKind::from(p));
-            cfg.and_then(|c| {
-                c.providers
-                    .values()
-                    .find(|pc| pc.format == target_format)
-            })
+            cfg.and_then(|c| c.providers.values().find(|pc| pc.format == target_format))
         }
         None => cfg.and_then(|c| c.provider(provider_name)),
     };
@@ -58,14 +49,12 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let model: String = if let Some(ref model) = input.model {
         model.clone()
     } else {
-        tier_config
-            .map(|tc| tc.model.clone())
-            .ok_or_else(|| {
-                Error::MissingProviderConfig(
-                    "no model configured; set builder .model(), .tier(), or configure tiers"
-                        .to_string(),
-                )
-            })?
+        tier_config.map(|tc| tc.model.clone()).ok_or_else(|| {
+            Error::MissingProviderConfig(
+                "no model configured; set builder .model(), .tier(), or configure tiers"
+                    .to_string(),
+            )
+        })?
     };
 
     let think_level = tier_config.map(|tc| tc.think).unwrap_or(ThinkLevel::Medium);
@@ -90,9 +79,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         )));
     };
 
-    let context_window = tier_config
-        .map(|tc| tc.context_window)
-        .unwrap_or(200_000);
+    let context_window = tier_config.map(|tc| tc.context_window).unwrap_or(200_000);
 
     let max_output_tokens = input
         .max_output_tokens

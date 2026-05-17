@@ -34,7 +34,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use config::{ApiKey, Config, ProviderConfig, TierConfig, ThinkLevel};
+use config::{ApiKey, Config, ProviderConfig, ThinkLevel, TierConfig};
 use kuku::Error;
 use provider::config::{resolve_config, ResolveConfigInput};
 use provider::types::{Provider, ProviderKind};
@@ -72,7 +72,6 @@ fn default_config() -> Config {
 
 #[test]
 fn builder_values_override_config_values() {
-
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
@@ -93,7 +92,6 @@ fn builder_values_override_config_values() {
 
 #[test]
 fn tier_resolution_uses_config_defaults() {
-
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
@@ -110,8 +108,6 @@ fn tier_resolution_uses_config_defaults() {
 
 #[test]
 fn explicit_tier_selects_different_tier() {
-
-
     let mut tiers = BTreeMap::new();
     tiers.insert(
         "balanced".to_string(),
@@ -166,8 +162,6 @@ fn explicit_tier_selects_different_tier() {
 
 #[test]
 fn missing_config_returns_structured_error() {
-
-
     let error = resolve_config(ResolveConfigInput::default()).unwrap_err();
 
     assert!(matches!(error, Error::MissingProviderConfig(_)));
@@ -175,7 +169,6 @@ fn missing_config_returns_structured_error() {
 
 #[test]
 fn builder_model_overrides_tier_model() {
-
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
@@ -210,7 +203,6 @@ fn builder_values_override_all_config_tier_settings() {
 
 #[test]
 fn nonexistent_tier_returns_error() {
-
     let cfg = default_config();
 
     let error = resolve_config(ResolveConfigInput {
@@ -225,7 +217,6 @@ fn nonexistent_tier_returns_error() {
 
 #[test]
 fn config_api_key_and_base_url_are_used() {
-
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {

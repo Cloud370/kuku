@@ -124,7 +124,9 @@ api_key = "sk-ant-123"
     .unwrap();
     let file = load_config(&path).unwrap();
     let err = file.resolve().unwrap_err();
-    assert!(err.to_string().contains("required tier 'balanced' is missing"));
+    assert!(err
+        .to_string()
+        .contains("required tier 'balanced' is missing"));
 }
 
 #[test]

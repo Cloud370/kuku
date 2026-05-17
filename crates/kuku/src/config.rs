@@ -203,7 +203,10 @@ impl ConfigFile {
                     "provider '{name}': format is required"
                 )));
             }
-            if !matches!(format.as_str(), "anthropic" | "openai-chat" | "openai-responses") {
+            if !matches!(
+                format.as_str(),
+                "anthropic" | "openai-chat" | "openai-responses"
+            ) {
                 return Err(Error::ConfigLoad(format!(
                     "provider '{name}': format '{format}' is not supported, must be anthropic/openai-chat/openai-responses"
                 )));
@@ -342,9 +345,7 @@ impl ApiKey {
     pub fn resolve(&self) -> Result<String> {
         match self {
             ApiKey::Env(name) => std::env::var(name).map_err(|_| {
-                Error::ConfigLoad(format!(
-                    "env var '{name}' referenced by api_key is not set"
-                ))
+                Error::ConfigLoad(format!("env var '{name}' referenced by api_key is not set"))
             }),
             ApiKey::Plaintext(key) => Ok(key.clone()),
         }

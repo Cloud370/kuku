@@ -9,7 +9,11 @@ use kuku::{query, Error, Provider, UiEvent};
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
 
-    let run = query("inspect this project").config(test_config()).start().await.unwrap();
+    let run = query("inspect this project")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
@@ -121,8 +125,18 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
 async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     let env = TestEnv::new();
 
-    query("first").session("s_continue").config(test_config()).start().await.unwrap();
-    query("second").session("s_continue").config(test_config()).start().await.unwrap();
+    query("first")
+        .session("s_continue")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+    query("second")
+        .session("s_continue")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
     assert_eq!(events.len(), 5);
@@ -159,7 +173,11 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
 async fn workspace_is_not_polluted() {
     let env = TestEnv::new();
 
-    let _ = query("no pollution").config(test_config()).run().await.unwrap_err();
+    let _ = query("no pollution")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap_err();
 
     assert_eq!(std::fs::read_dir(env.workspace_path()).unwrap().count(), 0);
     assert!(!env.workspace_path().join(".kuku").exists());
@@ -182,7 +200,12 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
         "name.",
         "name ",
     ] {
-        let error = query("bad").session(session_id).config(test_config()).run().await.unwrap_err();
+        let error = query("bad")
+            .session(session_id)
+            .config(test_config())
+            .run()
+            .await
+            .unwrap_err();
         assert!(matches!(error, Error::InvalidSessionId(ref value) if value == session_id));
     }
 
