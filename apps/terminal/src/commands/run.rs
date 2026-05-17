@@ -190,6 +190,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     in_thinking = true;
                     thinking_start = Some(Instant::now());
                     if !use_stream_json {
+                        println!();
                         println!("{}", display.thinking_start());
                     }
                 }

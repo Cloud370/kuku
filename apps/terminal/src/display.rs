@@ -14,9 +14,9 @@ use serde::Serialize;
 
 // ── Style constants (one place to tune) ──
 
-const THINKING_OPEN: &str = "\u{250c}\u{2500}\u{2500} thinking";
+const THINKING_OPEN: &str = "\u{250c}\u{2500} thinking";
 const THINKING_SEP: &str = "\u{2500}";
-const THINKING_CLOSE: &str = "\u{2514}\u{2500}\u{2500} thinking";
+const THINKING_CLOSE: &str = "\u{2514}\u{2500} thinking";
 
 const CODE_OPEN: &str = "\u{250c}\u{2500} code";
 const CODE_LINE: &str = "\u{2502} ";
@@ -103,7 +103,7 @@ impl Display {
             return None;
         }
         let prefix = match self.mode {
-            RenderMode::Pretty => "| ",
+            RenderMode::Pretty => "\u{2502} ",
             RenderMode::Raw => "thinking ",
         };
         let mut output = String::new();
@@ -653,7 +653,7 @@ mod tests {
     fn thinking_start_has_no_duration() {
         let d = Display::new(false, "high");
         let line = d.thinking_start();
-        assert_eq!(line, "\u{250c}\u{2500}\u{2500} thinking [high] \u{2500}");
+        assert_eq!(line, "\u{250c}\u{2500} thinking [high] \u{2500}");
     }
 
     #[test]
@@ -743,14 +743,14 @@ mod tests {
     fn thinking_line_adds_prefix() {
         let mut d = Display::new(true, "high");
         let out = d.thinking_line("hello world").unwrap();
-        assert_eq!(out, "| hello world");
+        assert_eq!(out, "\u{2502} hello world");
     }
 
     #[test]
     fn thinking_line_tracks_newlines() {
         let mut d = Display::new(true, "high");
         let out = d.thinking_line("line1\nline2\n").unwrap();
-        assert_eq!(out, "| line1\n| line2\n");
+        assert_eq!(out, "\u{2502} line1\n\u{2502} line2\n");
     }
 
     #[test]
@@ -766,7 +766,10 @@ mod tests {
         d.thinking_line("some text").unwrap();
         d.thinking_end(Duration::from_millis(1000));
         let out = d.thinking_line("new block").unwrap();
-        assert!(out.starts_with("| "), "should reset line_start: {out}");
+        assert!(
+            out.starts_with("\u{2502} "),
+            "should reset line_start: {out}"
+        );
     }
 
     #[test]
@@ -786,7 +789,10 @@ mod tests {
     fn thinking_line_consecutive_newlines() {
         let mut d = Display::new(true, "high");
         let out = d.thinking_line("\n\n").unwrap();
-        assert_eq!(out, "| \n| \n", "each empty line gets prefix with space");
+        assert_eq!(
+            out, "\u{2502} \n\u{2502} \n",
+            "each empty line gets prefix with space"
+        );
     }
 
     #[test]
@@ -805,11 +811,11 @@ mod tests {
     fn thinking_line_cross_chunk_continuity() {
         let mut d = Display::new(true, "high");
         let out1 = d.thinking_line("hello ").unwrap();
-        assert_eq!(out1, "| hello ");
+        assert_eq!(out1, "\u{2502} hello ");
         let out2 = d.thinking_line("world\n").unwrap();
         assert_eq!(out2, "world\n", "no prefix mid-line");
         let out3 = d.thinking_line("next").unwrap();
-        assert_eq!(out3, "| next", "prefix after newline");
+        assert_eq!(out3, "\u{2502} next", "prefix after newline");
     }
 
     #[test]
