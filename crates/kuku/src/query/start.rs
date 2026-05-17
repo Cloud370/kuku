@@ -87,6 +87,8 @@ impl Query {
                 policy_path,
                 turn,
                 request_num: 0,
+                cumulative_input_tokens: 0,
+                cumulative_output_tokens: 0,
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,

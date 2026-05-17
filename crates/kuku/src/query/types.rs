@@ -118,6 +118,8 @@ pub(super) struct PendingRun {
     pub(super) policy_path: PathBuf,
     pub(super) turn: u64,
     pub(super) request_num: u64,
+    pub(super) cumulative_input_tokens: u64,
+    pub(super) cumulative_output_tokens: u64,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) saved_tool_call: Option<QueuedToolCall>,
