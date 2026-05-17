@@ -7,7 +7,8 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    glob_match, is_blocked_relative_path, join_bounded_strings, relative_path, resolve_path,
+    glob_match, is_blocked_relative_path, is_default_excluded_dir, join_bounded_strings,
+    relative_path, resolve_path,
 };
 
 const SEARCH_TEXT_MAX_CHARS: usize = 80_000;
@@ -167,6 +168,10 @@ fn collect_search_files(
             continue;
         }
         if file_type.is_dir() {
+            let file_name = entry.file_name();
+            if is_default_excluded_dir(&file_name.to_string_lossy()) {
+                continue;
+            }
             collect_search_files(&path, workspace, include, files, blocked_file_count)?;
         } else if file_type.is_file() {
             push_search_file(&path, workspace, include, files, blocked_file_count);
@@ -330,5 +335,18 @@ mod tests {
         let invalid_regex = search_text(&serde_json::json!({"pattern": "["}), dir.path());
         assert_eq!(invalid_regex.status, "error");
         assert!(invalid_regex.model_content.contains("invalid regex"));
+    }
+
+    #[test]
+    fn search_text_excludes_build_dirs() {
+        let dir = workspace();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("target/debug/junk.rs"), "TODO in build").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "TODO in src").unwrap();
+
+        let result = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
+        assert!(result.model_content.contains("src/main.rs"));
+        assert!(!result.model_content.contains("target"));
     }
 }
