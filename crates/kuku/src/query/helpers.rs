@@ -98,11 +98,11 @@ pub(super) fn display_summary(
     let raw = match tool {
         "find_files" => {
             let path = args.get("path").and_then(|v| v.as_str());
-            let include = args.get("include").and_then(|v| v.as_str());
-            match (path, include) {
-                (Some(p), Some(inc)) => format!("path: {:?}, include: {:?}", p, inc),
+            let pattern = args.get("pattern").and_then(|v| v.as_str());
+            match (path, pattern) {
+                (Some(p), Some(pat)) => format!("path: {:?}, pattern: {:?}", p, pat),
                 (Some(p), None) => format!("path: {:?}", p),
-                (None, Some(inc)) => format!("path: \"\", include: {:?}", inc),
+                (None, Some(pat)) => format!("path: \"\", pattern: {:?}", pat),
                 (None, None) => return tool.to_string(),
             }
         }
@@ -426,10 +426,10 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_with_include() {
-        let args = serde_json::json!({"path": ".", "include": "*.rs"});
+    fn display_summary_find_files_with_pattern() {
+        let args = serde_json::json!({"path": ".", "pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
-        assert_eq!(s, "path: \".\", include: \"*.rs\"");
+        assert_eq!(s, "path: \".\", pattern: \"*.rs\"");
     }
 
     #[test]
@@ -509,11 +509,11 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_only_include() {
-        let args = serde_json::json!({"include": "*.rs"});
+    fn display_summary_find_files_only_pattern() {
+        let args = serde_json::json!({"pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
         assert_eq!(
-            s, "path: \"\", include: \"*.rs\"",
+            s, "path: \"\", pattern: \"*.rs\"",
             "missing path defaults to empty"
         );
     }

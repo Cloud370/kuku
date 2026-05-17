@@ -19,17 +19,18 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
     vec![
         tool(
             "find_files",
-            "Find files and browse the file tree. Returns workspace-relative paths sorted lexicographically.",
+            "Browse the file tree — prefer this over shell commands for listing files. Directories shown with trailing /. Use pattern to filter, max_depth to limit recursion. Excludes build/dependency directories by default.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
-                    "include": {"type": "string", "description": "File-name glob filter, e.g. *.md or docs/**/*.md."}
+                    "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
+                    "max_depth": {"type": "integer", "description": "Maximum recursion depth (default: unlimited)."}
                 }
             }),
             true,
             true,
-            20_000,
+            8_000,
             "read",
         ),
         tool(
@@ -218,7 +219,7 @@ mod tests {
         assert_eq!(registry[0].risk, "read");
         assert!(registry[0].read_only);
         assert!(registry[0].concurrency_safe);
-        assert_eq!(registry[0].max_result_chars, 20_000);
+        assert_eq!(registry[0].max_result_chars, 8_000);
         assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry()));
 
         let remember = registry
