@@ -98,6 +98,52 @@ pub(super) fn permission_candidate(
     }
 }
 
+pub(super) fn display_summary(tool: &str, args: &serde_json::Value, max_len: Option<usize>) -> String {
+    let raw = match tool {
+        "find_files" => {
+            let path = args.get("path").and_then(|v| v.as_str());
+            let include = args.get("include").and_then(|v| v.as_str());
+            match (path, include) {
+                (Some(p), Some(inc)) => format!("path: {:?}, include: {:?}", p, inc),
+                (Some(p), None) => format!("path: {:?}", p),
+                (None, Some(inc)) => format!("path: \"\", include: {:?}", inc),
+                (None, None) => return tool.to_string(),
+            }
+        }
+        "read_file" | "edit_file" | "write_file" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(tool)
+            .to_string(),
+        "search_text" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str());
+            match path {
+                Some(p) => format!("{:?} in {}", pattern, p),
+                None => format!("{:?}", pattern),
+            }
+        }
+        "run_command" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or(tool)
+            .to_string(),
+        "memory.remember" | "memory.forget" => args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|t| format!("{:?}", t))
+            .unwrap_or_else(|| tool.to_string()),
+        _ => tool.to_string(),
+    };
+    match max_len {
+        Some(max) if raw.chars().count() > max => {
+            let truncated: String = raw.chars().take(max).collect();
+            format!("{}...", truncated)
+        }
+        _ => raw,
+    }
+}
+
 pub(super) fn permission_decision(choice: PermissionChoice) -> &'static str {
     match choice {
         PermissionChoice::Deny => "deny",
@@ -372,5 +418,95 @@ mod tests {
             extract_input_tokens(&ProviderKind::OpenAiCompatible, &usage),
             None
         );
+    }
+
+    use super::display_summary;
+
+    #[test]
+    fn display_summary_find_files_with_path() {
+        let args = serde_json::json!({"path": "."});
+        let s = display_summary("find_files", &args, None);
+        assert_eq!(s, "path: \".\"");
+    }
+
+    #[test]
+    fn display_summary_find_files_with_include() {
+        let args = serde_json::json!({"path": ".", "include": "*.rs"});
+        let s = display_summary("find_files", &args, None);
+        assert_eq!(s, "path: \".\", include: \"*.rs\"");
+    }
+
+    #[test]
+    fn display_summary_read_file() {
+        let args = serde_json::json!({"path": "src/main.rs"});
+        let s = display_summary("read_file", &args, None);
+        assert_eq!(s, "src/main.rs");
+    }
+
+    #[test]
+    fn display_summary_search_text() {
+        let args = serde_json::json!({"pattern": "fn query", "path": "crates/"});
+        let s = display_summary("search_text", &args, None);
+        assert_eq!(s, "\"fn query\" in crates/");
+    }
+
+    #[test]
+    fn display_summary_run_command() {
+        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60});
+        let s = display_summary("run_command", &args, None);
+        assert_eq!(s, "cargo build --release");
+    }
+
+    #[test]
+    fn display_summary_run_command_truncated() {
+        let long_cmd = "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu";
+        let args = serde_json::json!({"command": long_cmd, "timeout": 60});
+        let s = display_summary("run_command", &args, Some(30));
+        assert!(s.ends_with("..."), "should end with ...");
+        let cjk_args = serde_json::json!({"command": "构建项目/src/文件.txt", "timeout": 60});
+        let s2 = display_summary("run_command", &cjk_args, Some(5));
+        assert!(s2.ends_with("..."), "CJK truncation should not panic: {s2}");
+    }
+
+    #[test]
+    fn display_summary_memory_remember() {
+        let args = serde_json::json!({"scope": "global", "kind": "what_is_true", "text": "kuku is Rust"});
+        let s = display_summary("memory.remember", &args, None);
+        assert_eq!(s, "\"kuku is Rust\"");
+    }
+
+    #[test]
+    fn display_summary_edit_file() {
+        let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new"});
+        let s = display_summary("edit_file", &args, None);
+        assert_eq!(s, "src/main.rs");
+    }
+
+    #[test]
+    fn display_summary_write_file() {
+        let args = serde_json::json!({"path": "src/lib.rs", "content": "fn main() {}"});
+        let s = display_summary("write_file", &args, None);
+        assert_eq!(s, "src/lib.rs");
+    }
+
+    #[test]
+    fn display_summary_unknown_tool() {
+        let args = serde_json::json!({"foo": "bar"});
+        let s = display_summary("unknown_tool", &args, None);
+        assert_eq!(s, "unknown_tool");
+    }
+
+    #[test]
+    fn display_summary_empty_args() {
+        let args = serde_json::json!({});
+        let s = display_summary("find_files", &args, None);
+        assert_eq!(s, "find_files");
+    }
+
+    #[test]
+    fn display_summary_find_files_only_include() {
+        let args = serde_json::json!({"include": "*.rs"});
+        let s = display_summary("find_files", &args, None);
+        assert_eq!(s, "path: \"\", include: \"*.rs\"", "missing path defaults to empty");
     }
 }
