@@ -27,8 +27,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = resolve_config_path(args.config.as_deref())?;
     if !config_path.exists() {
-        eprintln!("error: 未找到配置文件 {}", config_path.display());
-        eprintln!("提示: 运行 `kuku init` 初始化配置");
+        eprintln!("error: config file not found: {}", config_path.display());
+        eprintln!("hint: run `kuku init` to initialize");
         std::process::exit(1);
     }
 
@@ -229,8 +229,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = resolve_config_path(config.as_deref())?;
     if !config_path.exists() {
-        eprintln!("error: 未找到配置文件 {}", config_path.display());
-        eprintln!("提示: 运行 `kuku init` 初始化配置");
+        eprintln!("error: config file not found: {}", config_path.display());
+        eprintln!("hint: run `kuku init` to initialize");
         std::process::exit(1);
     }
 

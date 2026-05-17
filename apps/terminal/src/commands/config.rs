@@ -14,8 +14,8 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
     match args.cmd {
         None | Some(ConfigSubcommand::Show) => {
             if !path.exists() {
-                eprintln!("error: 未找到配置文件 {}", path.display());
-                eprintln!("提示: 运行 `kuku init` 初始化配置");
+                eprintln!("error: config file not found: {}", path.display());
+                eprintln!("hint: run `kuku init` to initialize");
                 std::process::exit(1);
             }
             let output = show_redacted(&path)?;
@@ -24,8 +24,8 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(ConfigSubcommand::Validate) => {
             if !path.exists() {
-                eprintln!("error: 未找到配置文件 {}", path.display());
-                eprintln!("提示: 运行 `kuku init` 初始化配置");
+                eprintln!("error: config file not found: {}", path.display());
+                eprintln!("hint: run `kuku init` to initialize");
                 std::process::exit(1);
             }
             let file = load_config(&path)?;
@@ -35,8 +35,8 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(ConfigSubcommand::Set { key, value }) => {
             if !path.exists() {
-                eprintln!("error: 未找到配置文件 {}", path.display());
-                eprintln!("提示: 运行 `kuku init` 初始化配置");
+                eprintln!("error: config file not found: {}", path.display());
+                eprintln!("hint: run `kuku init` to initialize");
                 std::process::exit(1);
             }
             set_value(&path, &key, &value)?;
@@ -51,7 +51,7 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 format!("\"{value}\"")
             };
-            println!("已更新 {key} = {display_value}");
+            println!("updated {key} = {display_value}");
             Ok(())
         }
         Some(ConfigSubcommand::Policy(policy_args)) => match policy_args.cmd {
