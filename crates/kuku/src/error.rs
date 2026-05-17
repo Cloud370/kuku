@@ -45,6 +45,9 @@ pub enum Error {
 
     #[error("config: {0}")]
     ConfigLoad(String),
+
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 /// Convenience alias for `std::result::Result<T, kuku::Error>`.
