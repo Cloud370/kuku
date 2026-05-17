@@ -44,14 +44,6 @@ pub(super) async fn execute_tool_call(
 
 // ---------- Permission helpers ----------
 
-pub(super) fn permission_summary(name: &str, args: &serde_json::Value) -> String {
-    format!(
-        "{} {}",
-        name,
-        serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
-    )
-}
-
 pub(super) fn permission_rule(
     kuku_home: &std::path::Path,
     workspace: &std::path::Path,
@@ -98,7 +90,11 @@ pub(super) fn permission_candidate(
     }
 }
 
-pub(super) fn display_summary(tool: &str, args: &serde_json::Value, max_len: Option<usize>) -> String {
+pub(super) fn display_summary(
+    tool: &str,
+    args: &serde_json::Value,
+    max_len: Option<usize>,
+) -> String {
     let raw = match tool {
         "find_files" => {
             let path = args.get("path").and_then(|v| v.as_str());
@@ -459,7 +455,8 @@ mod tests {
 
     #[test]
     fn display_summary_run_command_truncated() {
-        let long_cmd = "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu";
+        let long_cmd =
+            "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu";
         let args = serde_json::json!({"command": long_cmd, "timeout": 60});
         let s = display_summary("run_command", &args, Some(30));
         assert!(s.ends_with("..."), "should end with ...");
@@ -470,7 +467,8 @@ mod tests {
 
     #[test]
     fn display_summary_memory_remember() {
-        let args = serde_json::json!({"scope": "global", "kind": "what_is_true", "text": "kuku is Rust"});
+        let args =
+            serde_json::json!({"scope": "global", "kind": "what_is_true", "text": "kuku is Rust"});
         let s = display_summary("memory.remember", &args, None);
         assert_eq!(s, "\"kuku is Rust\"");
     }
@@ -507,6 +505,9 @@ mod tests {
     fn display_summary_find_files_only_include() {
         let args = serde_json::json!({"include": "*.rs"});
         let s = display_summary("find_files", &args, None);
-        assert_eq!(s, "path: \"\", include: \"*.rs\"", "missing path defaults to empty");
+        assert_eq!(
+            s, "path: \"\", include: \"*.rs\"",
+            "missing path defaults to empty"
+        );
     }
 }

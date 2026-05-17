@@ -4,7 +4,7 @@ use kuku_terminal::display::{Display, OutputLine};
 
 #[test]
 fn thinking_default_hides_text() {
-    let d = Display::new(false);
+    let mut d = Display::new(false, "medium");
     assert!(d.thinking_text("secret reasoning").is_none());
     assert!(d.thinking_start().contains("thinking"));
     assert!(d.thinking_end(Duration::from_millis(3200)).contains("3.2s"));
@@ -12,7 +12,7 @@ fn thinking_default_hides_text() {
 
 #[test]
 fn thinking_show_thinking_reveals_text() {
-    let d = Display::new(true);
+    let d = Display::new(true, "medium");
     assert_eq!(
         d.thinking_text("secret reasoning"),
         Some("secret reasoning".into())
@@ -21,7 +21,7 @@ fn thinking_show_thinking_reveals_text() {
 
 #[test]
 fn tool_call_format() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let line = d.tool_call("read_file", "src/main.rs", "tc_01");
     assert!(line.contains("read_file"));
     assert!(line.contains("src/main.rs"));
@@ -29,7 +29,7 @@ fn tool_call_format() {
 
 #[test]
 fn permission_ask_format() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let line = d.permission_ask("run_command", "cargo build");
     assert!(line.contains("?"));
     assert!(line.contains("run_command"));
@@ -38,7 +38,7 @@ fn permission_ask_format() {
 
 #[test]
 fn error_format() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let line = d.error("provider", "auth", "invalid API key");
     assert!(line.contains("!!"));
     assert!(line.contains("provider"));
@@ -47,7 +47,7 @@ fn error_format() {
 
 #[test]
 fn session_start_shows_tier_and_model() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let line = d.session_start("abc123", "strong", "claude-sonnet-4-6");
     assert!(line.contains("abc123"));
     assert!(line.contains("strong"));
@@ -56,7 +56,7 @@ fn session_start_shows_tier_and_model() {
 
 #[test]
 fn session_completed_shows_in_out_tokens() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let line = d.session_completed("s_001", 2, 35000, 7000, Duration::from_secs(18));
     assert!(
         line.contains("in 35.0k"),
@@ -72,13 +72,13 @@ fn session_completed_shows_in_out_tokens() {
 
 #[test]
 fn code_block_basic() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     assert!(d.code_block_open(Some("rust")).contains("rust"));
 }
 
 #[test]
 fn table_row_pads_cells() {
-    let d = Display::new(false);
+    let d = Display::new(false, "medium");
     let row = d.table_row(&["foo", "12"], &[8, 6]);
     assert!(row.contains("foo"));
     assert!(row.contains("12"));

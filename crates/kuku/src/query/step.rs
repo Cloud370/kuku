@@ -19,8 +19,7 @@ use super::helpers::{
     append_model_error, append_permission_decision, append_permission_request, append_turn_end,
     current_date_string, display_summary, execute_tool_call, gate_source_name, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, permission_candidate,
-    permission_rule, permission_summary, platform_label, provider_failure_kind,
-    provider_format_name,
+    permission_rule, platform_label, provider_failure_kind, provider_format_name,
 };
 use super::run::find_tool_definition;
 use super::types::{
@@ -97,11 +96,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     }
 
     for tool_call in tool_calls {
-        let summary = permission_summary(&tool_call.name, &tool_call.args);
         let display = display_summary(&tool_call.name, &tool_call.args, None);
-        pending
-            .queued_tool_calls
-            .push_back(QueuedToolCall { tool_call, summary, display_summary: display });
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call,
+            display_summary: display,
+        });
     }
 
     Ok(PendingStep::Pending(Box::new(pending)))
@@ -221,7 +220,8 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             ),
                         )?;
                         let tc_id = queued_tool_call.tool_call.id.clone();
-                        let result = execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+                        let result =
+                            execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
                         return Ok(PendingStep::ToolResultReady {
                             pending: Box::new(pending),
                             ui_event: UiEvent::ToolResult {

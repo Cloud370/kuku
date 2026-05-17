@@ -64,6 +64,10 @@ pub struct RunArgs {
     #[arg(long = "show-thinking")]
     pub show_thinking: bool,
 
+    /// Raw output mode: plain text without decorations
+    #[arg(long = "raw")]
+    pub raw: bool,
+
     /// Path to config.toml (default: ~/.kuku/config.toml)
     #[arg(long = "config")]
     pub config: Option<String>,

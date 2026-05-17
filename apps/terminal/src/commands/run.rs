@@ -4,7 +4,7 @@ use std::time::Instant;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine};
+use crate::display::{Display, OutputLine, RenderMode};
 
 fn resolve_config_path(
     custom: Option<&str>,
@@ -19,7 +19,11 @@ fn resolve_config_path(
 /// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
-    let display = Display::new(args.show_thinking);
+
+    if args.raw && (args.json || args.stream_json) {
+        eprintln!("error: --raw and --json/--stream-json are mutually exclusive");
+        std::process::exit(1);
+    }
 
     let config_path = resolve_config_path(args.config.as_deref())?;
     if !config_path.exists() {
@@ -40,6 +44,21 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         .tier(&tier_name)
         .map(|t| t.model.clone())
         .unwrap_or_else(|| tier_name.clone());
+
+    use std::io::IsTerminal;
+    let mode = if args.raw || !std::io::stdout().is_terminal() {
+        RenderMode::Raw
+    } else {
+        RenderMode::Pretty
+    };
+    let think_level_str = cfg
+        .tier(&tier_name)
+        .map(|t| t.think.as_str())
+        .unwrap_or("medium");
+    let mut display = match mode {
+        RenderMode::Pretty => Display::new(args.show_thinking, think_level_str),
+        RenderMode::Raw => Display::new_raw(args.show_thinking, think_level_str),
+    };
 
     let mut q = query(&prompt).config_path(config_path);
     if let Some(model) = &args.model {
@@ -179,8 +198,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         println!("{}", display.thinking_start());
                     }
                 }
-                if let Some(rendered) = display.thinking_text(&text) {
-                    if !use_stream_json {
+                if !use_stream_json {
+                    if let Some(rendered) = display.thinking_line(&text) {
                         print!("{rendered}");
                     }
                 }
@@ -352,6 +371,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         json: false,
         stream_json: false,
         show_thinking: false,
+        raw: false,
         config,
     };
     run(args).await

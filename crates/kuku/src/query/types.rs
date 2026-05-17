@@ -136,7 +136,6 @@ pub(super) struct ResolvedRuntime {
 #[derive(Debug)]
 pub(super) struct QueuedToolCall {
     pub(super) tool_call: ProviderToolCall,
-    pub(super) summary: String,
     pub(super) display_summary: String,
 }
 
