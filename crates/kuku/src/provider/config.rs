@@ -1,4 +1,4 @@
-use crate::config::{ApiKeySource, Config};
+use crate::config::{ApiKey, Config, ProviderConfig as CfgProvider, TierConfig, ThinkLevel};
 use crate::error::{Error, Result};
 
 use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
@@ -7,228 +7,130 @@ use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
 pub(crate) struct ResolveConfigInput {
     pub(crate) provider: Option<Provider>,
     pub(crate) model: Option<String>,
+    pub(crate) tier: Option<String>,
     pub(crate) base_url: Option<String>,
     pub(crate) api_key: Option<String>,
+    pub(crate) max_output_tokens: Option<u32>,
     pub(crate) config: Option<Config>,
 }
 
-pub(crate) const ENV_PROVIDER: &str = "KUKU_PROVIDER";
-pub(crate) const ENV_MODEL: &str = "KUKU_MODEL";
-pub(crate) const ENV_BASE_URL: &str = "KUKU_BASE_URL";
-pub(crate) const ENV_API_KEY: &str = "KUKU_API_KEY";
-
-pub(crate) const ENV_ANTHROPIC_MODEL: &str = "KUKU_ANTHROPIC_MODEL";
-pub(crate) const ENV_ANTHROPIC_BASE_URL: &str = "KUKU_ANTHROPIC_BASE_URL";
-pub(crate) const ENV_ANTHROPIC_API_KEY: &str = "KUKU_ANTHROPIC_API_KEY";
-
-pub(crate) const ENV_OPENAI_MODEL: &str = "KUKU_OPENAI_MODEL";
-pub(crate) const ENV_OPENAI_BASE_URL: &str = "KUKU_OPENAI_BASE_URL";
-pub(crate) const ENV_OPENAI_API_KEY: &str = "KUKU_OPENAI_API_KEY";
-
+/// Resolve a complete provider configuration from builder inputs + config file.
 pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvider> {
-    // 1. Resolve provider kind (explicit → env → config → provider-specific env inference)
-    let kind = match input.provider {
-        Some(provider) => ProviderKind::from(provider),
-        None => match env_opt(ENV_PROVIDER) {
-            Some(value) => parse_provider(&value)?,
-            None => match input.config.as_ref().and_then(resolve_provider_from_config) {
-                Some(kind) => kind,
-                None => infer_provider_from_provider_specific_env()?,
-            },
-        },
-    };
+    let cfg = input.config.as_ref();
 
-    // 2. Provider alias for config lookup (built-in or custom)
-    let provider_alias = match &input.config {
-        Some(cfg) => provider_alias_for_kind(&kind, cfg),
-        None => kind.as_str().to_string(),
-    };
-
-    // 3. Provider-specific env values (backwards compat)
-    let (ps_model, ps_base_url, ps_api_key) = provider_specific_values(&kind);
-
-    // 4. Model: explicit → provider-specific env → generic env → config → default
-    let model = if let Some(model) = input.model {
-        resolve_model_alias(&model, input.config.as_ref())
-    } else if let Some(model) = ps_model {
-        model
-    } else if let Some(model) = env_opt(ENV_MODEL) {
-        model
-    } else if let Some(ref cfg) = input.config {
-        let default_alias = cfg.default_model();
-        cfg.resolve_model_alias(default_alias)
-            .map(|target| target.split(':').nth(1).unwrap_or(target).to_string())
-            .unwrap_or_else(|| provider_default_model(&kind).to_string())
+    let tier_config: Option<&TierConfig> = if input.model.is_some() {
+        cfg.and_then(|c| c.tier(c.default_tier()))
+    } else if let Some(ref tier_name) = input.tier {
+        Some(
+            cfg.and_then(|c| c.tier(tier_name))
+                .ok_or_else(|| {
+                    Error::MissingProviderConfig(format!(
+                        "tier '{tier_name}' not found in config"
+                    ))
+                })?,
+        )
     } else {
-        return Err(Error::MissingProviderConfig(
-            "no model configured; set builder .model(...) or env".to_string(),
-        ));
+        cfg.and_then(|c| c.tier(c.default_tier()))
     };
 
-    // 5. Base URL: explicit → provider-specific env → generic env → config → default
-    let base_url = input
-        .base_url
-        .or(ps_base_url)
-        .or_else(|| env_opt(ENV_BASE_URL))
-        .or_else(|| {
-            input.config.as_ref().and_then(|cfg| {
-                cfg.provider(&provider_alias)
-                    .and_then(|p| p.base_url.clone())
-            })
-        })
-        .unwrap_or_else(|| default_base_url(&kind).to_string());
-
-    // 6. API key: explicit → provider-specific env → generic env → config → error
-    let api_key = input
-        .api_key
-        .or(ps_api_key)
-        .or_else(|| env_opt(ENV_API_KEY))
-        .or_else(|| {
-            input.config.as_ref().and_then(|cfg| {
-                cfg.provider(&provider_alias)
-                    .and_then(|p| match &p.api_key {
-                        ApiKeySource::Plaintext(key) => Some(key.clone()),
-                        ApiKeySource::Env(env_name) => env_opt(env_name),
-                    })
-            })
-        })
-        .ok_or_else(|| {
+    let provider_name_from_tier = tier_config.map(|tc| tc.provider.as_str());
+    let provider_name: &str = match input.provider {
+        Some(p) => ProviderKind::from(p).as_str(),
+        None => provider_name_from_tier.ok_or_else(|| {
             Error::MissingProviderConfig(
-                "no API key configured; set api_key in config file or env".to_string(),
+                "no provider configured; set builder .provider() or configure tiers".to_string(),
             )
-        })?;
+        })?,
+    };
 
-    // 7. Thinking config: config file only (uses provider alias, not resolved kind)
-    let thinking = input
-        .config
-        .as_ref()
-        .and_then(|cfg| cfg.provider(&provider_alias))
-        .map(|p| p.thinking.clone())
-        .unwrap_or_default();
+    let provider_cfg: Option<&CfgProvider> = match input.provider {
+        Some(p) => {
+            let target_format = provider_kind_to_format(ProviderKind::from(p));
+            cfg.and_then(|c| {
+                c.providers
+                    .values()
+                    .find(|pc| pc.format == target_format)
+            })
+        }
+        None => cfg.and_then(|c| c.provider(provider_name)),
+    };
+
+    let model: String = if let Some(ref model) = input.model {
+        model.clone()
+    } else {
+        tier_config
+            .map(|tc| tc.model.clone())
+            .ok_or_else(|| {
+                Error::MissingProviderConfig(
+                    "no model configured; set builder .model(), .tier(), or configure tiers"
+                        .to_string(),
+                )
+            })?
+    };
+
+    let think_level = tier_config.map(|tc| tc.think).unwrap_or(ThinkLevel::Medium);
+
+    let api_key: String = if let Some(ref key) = input.api_key {
+        key.clone()
+    } else if let Some(pc) = provider_cfg {
+        pc.api_key.resolve()?
+    } else {
+        return Err(Error::MissingProviderConfig(format!(
+            "no api_key for provider '{provider_name}'; set builder .api_key() or configure [provider.{provider_name}]"
+        )));
+    };
+
+    let base_url: String = if let Some(ref url) = input.base_url {
+        url.clone()
+    } else if let Some(pc) = provider_cfg {
+        pc.base_url.clone()
+    } else {
+        return Err(Error::MissingProviderConfig(format!(
+            "no base_url for provider '{provider_name}'; set builder .base_url() or configure [provider.{provider_name}]"
+        )));
+    };
+
+    let context_window = tier_config
+        .map(|tc| tc.context_window)
+        .unwrap_or(200_000);
+
+    let max_output_tokens = input
+        .max_output_tokens
+        .or_else(|| tier_config.map(|tc| tc.max_output_tokens))
+        .unwrap_or(48_000);
+
+    let kind: ProviderKind = match provider_cfg.map(|pc| pc.format.as_str()) {
+        Some("anthropic") => ProviderKind::Anthropic,
+        Some("openai-chat") => ProviderKind::OpenAiCompatible,
+        Some("openai-responses") => ProviderKind::OpenAiResponses,
+        Some(other) => {
+            return Err(Error::MissingProviderConfig(format!(
+                "unknown format '{other}' for provider '{provider_name}'"
+            )));
+        }
+        None => {
+            return Err(Error::MissingProviderConfig(format!(
+                "no provider config for '{provider_name}'; define [provider.{provider_name}] or set builder .provider()"
+            )));
+        }
+    };
 
     Ok(ResolvedProvider {
         kind,
         model,
         base_url,
         api_key: SecretString::new(api_key),
-        max_context_tokens: default_max_context_tokens(),
-        thinking,
+        max_context_tokens: context_window,
+        max_output_tokens,
+        think_level,
+        thinking: Default::default(),
     })
 }
 
-fn env_opt(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|value| !value.is_empty())
-}
-
-fn parse_provider(value: &str) -> Result<ProviderKind> {
-    match value {
-        "anthropic" => Ok(ProviderKind::Anthropic),
-        "openai-compatible" | "openai" => Ok(ProviderKind::OpenAiCompatible),
-        "openai-responses" => Ok(ProviderKind::OpenAiResponses),
-        other => Err(Error::MissingProviderConfig(format!(
-            "unknown KUKU_PROVIDER value: {other}"
-        ))),
-    }
-}
-
-fn resolve_provider_from_config(cfg: &Config) -> Option<ProviderKind> {
-    let default_model = cfg.default_model();
-    let target = cfg.resolve_model_alias(default_model)?;
-    let provider_name = target.split(':').next().unwrap_or("anthropic");
-    match provider_name {
-        "anthropic" => Some(ProviderKind::Anthropic),
-        "openai" | "openai-compatible" => Some(ProviderKind::OpenAiCompatible),
-        "openai-responses" => Some(ProviderKind::OpenAiResponses),
-        other => cfg.provider(other).and_then(|p| match p.format.as_str() {
-            "anthropic" => Some(ProviderKind::Anthropic),
-            "openai" | "openai-compatible" => Some(ProviderKind::OpenAiCompatible),
-            "openai-responses" => Some(ProviderKind::OpenAiResponses),
-            _ => None,
-        }),
-    }
-}
-
-fn provider_alias_for_kind(kind: &ProviderKind, cfg: &Config) -> String {
-    let built_in = kind.as_str();
-    if cfg.provider(built_in).is_some() {
-        return built_in.to_string();
-    }
-    for (alias, provider_cfg) in &cfg.providers {
-        let found = matches!(
-            (kind, provider_cfg.format.as_str()),
-            (ProviderKind::Anthropic, "anthropic")
-                | (
-                    ProviderKind::OpenAiCompatible,
-                    "openai" | "openai-compatible"
-                )
-                | (ProviderKind::OpenAiResponses, "openai-responses")
-        );
-        if found {
-            return alias.clone();
-        }
-    }
-    built_in.to_string()
-}
-
-fn resolve_model_alias(model: &str, cfg: Option<&Config>) -> String {
-    if let Some(cfg) = cfg {
-        if let Some(target) = cfg.resolve_model_alias(model) {
-            return target.split(':').nth(1).unwrap_or(target).to_string();
-        }
-    }
-    model.to_string()
-}
-
-fn infer_provider_from_provider_specific_env() -> Result<ProviderKind> {
-    let has_anthropic = env_opt(ENV_ANTHROPIC_API_KEY).is_some();
-    let has_openai = env_opt(ENV_OPENAI_API_KEY).is_some();
-
-    match (has_anthropic, has_openai) {
-        (true, false) => Ok(ProviderKind::Anthropic),
-        (false, true) => Ok(ProviderKind::OpenAiCompatible),
-        (true, true) => Err(Error::AmbiguousProviderConfig(
-            "both KUKU_ANTHROPIC_API_KEY and KUKU_OPENAI_API_KEY are set; set KUKU_PROVIDER to disambiguate"
-                .to_string(),
-        )),
-        (false, false) => Err(Error::MissingProviderConfig(
-            "no provider configured; set KUKU_PROVIDER or provider-specific env vars".to_string(),
-        )),
-    }
-}
-
-fn provider_specific_values(
-    kind: &ProviderKind,
-) -> (Option<String>, Option<String>, Option<String>) {
+fn provider_kind_to_format(kind: ProviderKind) -> &'static str {
     match kind {
-        ProviderKind::Anthropic => (
-            env_opt(ENV_ANTHROPIC_MODEL),
-            env_opt(ENV_ANTHROPIC_BASE_URL),
-            env_opt(ENV_ANTHROPIC_API_KEY),
-        ),
-        ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => (
-            env_opt(ENV_OPENAI_MODEL),
-            env_opt(ENV_OPENAI_BASE_URL),
-            env_opt(ENV_OPENAI_API_KEY),
-        ),
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAiCompatible => "openai-chat",
+        ProviderKind::OpenAiResponses => "openai-responses",
     }
-}
-
-fn provider_default_model(kind: &ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Anthropic => "claude-sonnet-4-6",
-        ProviderKind::OpenAiCompatible => "gpt-5-mini",
-        ProviderKind::OpenAiResponses => "gpt-5.4",
-    }
-}
-
-fn default_base_url(kind: &ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Anthropic => "https://api.anthropic.com",
-        ProviderKind::OpenAiCompatible => "https://api.openai.com/v1",
-        ProviderKind::OpenAiResponses => "https://api.openai.com/v1",
-    }
-}
-
-fn default_max_context_tokens() -> u32 {
-    200_000
 }

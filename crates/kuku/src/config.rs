@@ -98,6 +98,14 @@ impl ThinkLevel {
     }
 }
 
+/// Per-level thinking budget overrides (retained for provider adapter override support).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResolvedThinking {
+    pub low: Option<toml::Value>,
+    pub medium: Option<toml::Value>,
+    pub high: Option<toml::Value>,
+}
+
 /// Lightweight tier info for prompt injection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TierInfo {

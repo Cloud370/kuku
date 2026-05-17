@@ -1,6 +1,5 @@
 use std::fmt;
 
-use crate::config::ResolvedThinking;
 use crate::context::ContextAssembly;
 
 /// Public provider selector for the query builder.
@@ -71,7 +70,9 @@ pub(crate) struct ResolvedProvider {
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
-    pub(crate) thinking: ResolvedThinking,
+    pub(crate) max_output_tokens: u32,
+    pub(crate) think_level: crate::config::ThinkLevel,
+    pub(crate) thinking: crate::config::ResolvedThinking,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +83,7 @@ pub(crate) struct ProviderRequest {
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: bool,
     pub(crate) think_level: String,
-    pub(crate) thinking: ResolvedThinking,
+    pub(crate) thinking: crate::config::ResolvedThinking,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
