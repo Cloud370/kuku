@@ -60,9 +60,9 @@ pub struct RunArgs {
     #[arg(long = "stream-json", conflicts_with = "json")]
     pub stream_json: bool,
 
-    /// Verbose output
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    /// Show thinking content from the model
+    #[arg(long = "show-thinking")]
+    pub show_thinking: bool,
 
     /// Path to config.toml (default: ~/.kuku/config.toml)
     #[arg(long = "config")]

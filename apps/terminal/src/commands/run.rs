@@ -1,9 +1,10 @@
 use std::io::{self, Write};
+use std::time::Instant;
 
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine, Verbosity};
+use crate::display::{Display, OutputLine};
 
 fn resolve_config_path(
     custom: Option<&str>,
@@ -18,12 +19,7 @@ fn resolve_config_path(
 /// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
-    let verbosity = if args.verbose {
-        Verbosity::Verbose
-    } else {
-        Verbosity::Concise
-    };
-    let display = Display::new(verbosity);
+    let display = Display::new(args.show_thinking);
 
     let config_path = resolve_config_path(args.config.as_deref())?;
     if !config_path.exists() {
@@ -31,6 +27,19 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("hint: run `kuku init` to initialize");
         std::process::exit(1);
     }
+
+    let cfg = kuku::config::load_config(&config_path)
+        .and_then(|f| f.resolve())
+        .map_err(|e| format!("config error: {e}"))?;
+
+    let tier_name = args
+        .model
+        .clone()
+        .unwrap_or_else(|| cfg.default_tier().to_string());
+    let model_name = cfg
+        .tier(&tier_name)
+        .map(|t| t.model.clone())
+        .unwrap_or_else(|| tier_name.clone());
 
     let mut q = query(&prompt).config_path(config_path);
     if let Some(model) = &args.model {
@@ -52,7 +61,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     // JSON single-result path: use run(), output one final JSON line
     if args.json {
         let output = q.run().await?;
-        let line = OutputLine::session_completed(output.session_id, 0, 0, 0);
+        let line = OutputLine::session_completed(output.session_id, 0, 0, 0, 0);
         println!("{}", line.to_json_line());
         return Ok(());
     }
@@ -64,18 +73,57 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     if use_stream_json {
         println!(
             "{}",
-            OutputLine::session_started(session_id.clone(), "default".into(), "normal".into())
+            OutputLine::session_started(session_id.clone(), tier_name.clone(), model_name.clone(),)
                 .to_json_line()
         );
     } else {
         println!(
             "{}",
-            display.session_start(&session_id, "default", "normal")
+            display.session_start(&session_id, &tier_name, &model_name)
         );
     }
 
+    // -c context extraction
+    let mut previous_input_tokens: u64 = 0;
+    if args.cont {
+        let home = kuku::session::kuku_home()?;
+        let workspace = kuku::session::current_workspace()?;
+        let sessions = kuku::session::list_sessions(&home, &workspace)?;
+        if let Some(latest) = sessions.iter().max_by_key(|s| s.created_at.as_str()) {
+            if let Ok(events_path) =
+                kuku::session::session_events_path(&home, &workspace, &latest.session_id)
+            {
+                if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
+                    for event in events.iter().rev() {
+                        if let kuku::event::EventPayload::ModelResponse { usage, .. } =
+                            &event.payload
+                        {
+                            if let Some(tokens) = usage.get("input_tokens").and_then(|v| v.as_u64())
+                            {
+                                previous_input_tokens = tokens;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if previous_input_tokens > 0 && !use_stream_json {
+        println!("{}", display.context_previous(previous_input_tokens));
+    } else if previous_input_tokens > 0 && use_stream_json {
+        println!(
+            "{}",
+            OutputLine::session_context(session_id.clone(), previous_input_tokens).to_json_line()
+        );
+    }
+
+    let session_start = Instant::now();
     let mut in_thinking = false;
-    let thinking_tokens: u64 = 0;
+    let mut thinking_start: Option<Instant> = None;
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
+    let mut current_turn: u64 = 0;
 
     loop {
         let event = tokio::select! {
@@ -83,10 +131,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::signal::ctrl_c() => {
                 if use_stream_json {
                     println!("{}", OutputLine::session_interrupted(
-                        session_id.clone(), 0,
+                        session_id.clone(), current_turn,
                     ).to_json_line());
                 } else {
-                    eprintln!("{}", display.session_interrupted(&session_id, 0));
+                    eprintln!("{}", display.session_interrupted(&session_id, current_turn));
                 }
                 std::process::exit(130);
             }
@@ -96,8 +144,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             Some(UiEvent::TextDelta { text }) => {
                 if in_thinking {
                     in_thinking = false;
+                    let elapsed = thinking_start
+                        .take()
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
                     if !use_stream_json {
-                        println!("{}", display.thinking_end(thinking_tokens));
+                        println!("{}", display.thinking_end(elapsed));
                     }
                 }
                 if use_stream_json {
@@ -109,8 +161,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             Some(UiEvent::ThinkingDelta { text }) => {
                 if !in_thinking {
                     in_thinking = true;
+                    thinking_start = Some(Instant::now());
                     if !use_stream_json {
-                        println!("{}", display.thinking_start(0));
+                        println!("{}", display.thinking_start());
                     }
                 }
                 if let Some(rendered) = display.thinking_text(&text) {
@@ -126,8 +179,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             }) => {
                 if in_thinking {
                     in_thinking = false;
+                    let elapsed = thinking_start
+                        .take()
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
                     if !use_stream_json {
-                        println!("{}", display.thinking_end(thinking_tokens));
+                        println!("{}", display.thinking_end(elapsed));
                     }
                 }
                 if use_stream_json {
@@ -201,10 +258,19 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            Some(UiEvent::Done { .. }) => {
+            Some(UiEvent::Done { usage, turn, .. }) => {
                 if in_thinking && !use_stream_json {
-                    println!("{}", display.thinking_end(thinking_tokens));
+                    let elapsed = thinking_start
+                        .take()
+                        .map(|s| s.elapsed())
+                        .unwrap_or_default();
+                    println!("{}", display.thinking_end(elapsed));
                 }
+                if let Some(u) = &usage {
+                    total_input_tokens += u.input_tokens.unwrap_or(0);
+                    total_output_tokens += u.output_tokens.unwrap_or(0);
+                }
+                current_turn = turn;
                 break;
             }
             Some(_) => {}
@@ -212,14 +278,31 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let session_elapsed = session_start.elapsed();
     println!();
     if use_stream_json {
         println!(
             "{}",
-            OutputLine::session_completed(session_id.clone(), 0, 0, 0).to_json_line()
+            OutputLine::session_completed(
+                session_id.clone(),
+                current_turn,
+                total_input_tokens,
+                total_output_tokens,
+                session_elapsed.as_millis() as u64,
+            )
+            .to_json_line()
         );
     } else {
-        println!("{}", display.session_completed(&session_id, 0, 0, 0));
+        println!(
+            "{}",
+            display.session_completed(
+                &session_id,
+                current_turn,
+                total_input_tokens,
+                total_output_tokens,
+                session_elapsed,
+            )
+        );
     }
     Ok(())
 }
@@ -251,7 +334,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         cont: false,
         json: false,
         stream_json: false,
-        verbose: false,
+        show_thinking: false,
         config,
     };
     run(args).await

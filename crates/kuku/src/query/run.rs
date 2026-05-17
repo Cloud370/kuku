@@ -43,7 +43,11 @@ impl Run {
                     }
                     PendingStep::Done(output, usage, turn) => {
                         self.state = RunState::Done(None);
-                        return Ok(Some(UiEvent::Done { output, usage, turn }));
+                        return Ok(Some(UiEvent::Done {
+                            output,
+                            usage,
+                            turn,
+                        }));
                     }
                 },
                 RunState::Streaming(mut streaming) => {
@@ -60,7 +64,11 @@ impl Run {
                                 }
                                 PendingStep::Done(output, usage, turn) => {
                                     self.state = RunState::Done(None);
-                                    return Ok(Some(UiEvent::Done { output, usage, turn }));
+                                    return Ok(Some(UiEvent::Done {
+                                        output,
+                                        usage,
+                                        turn,
+                                    }));
                                 }
                                 _ => {
                                     self.state = RunState::Done(None);
@@ -76,7 +84,11 @@ impl Run {
                 }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
-                    return Ok(Some(UiEvent::Done { output, usage, turn }));
+                    return Ok(Some(UiEvent::Done {
+                        output,
+                        usage,
+                        turn,
+                    }));
                 }
                 RunState::Done(None) => {
                     self.state = RunState::Done(None);

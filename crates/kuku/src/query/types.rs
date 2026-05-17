@@ -97,7 +97,13 @@ pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
-    Done(Option<(RunOutput, Option<crate::provider::types::ProviderUsage>, u64)>),
+    Done(
+        Option<(
+            RunOutput,
+            Option<crate::provider::types::ProviderUsage>,
+            u64,
+        )>,
+    ),
 }
 
 #[derive(Debug)]
@@ -150,7 +156,11 @@ pub(super) enum PendingStep {
         pending: Box<PendingRun>,
         ui_event: UiEvent,
     },
-    Done(RunOutput, Option<crate::provider::types::ProviderUsage>, u64),
+    Done(
+        RunOutput,
+        Option<crate::provider::types::ProviderUsage>,
+        u64,
+    ),
 }
 
 pub(super) struct StreamingChunkState {

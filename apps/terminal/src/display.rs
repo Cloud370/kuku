@@ -1,11 +1,13 @@
 //! Terminal output rendering for kuku.
 //!
 //! Two rendering backends from the same structured event:
-//! - text (concise/verbose) — human-readable terminal output
+//! - text — human-readable terminal output
 //! - JSON — structured, machine-consumable
 //!
 //! Style constants live at the top of this file so they can be
 //! adjusted in one place.
+
+use std::time::Duration;
 
 use kuku::event::{EventPayload, StoredEvent};
 use serde::Serialize;
@@ -35,88 +37,48 @@ const ERROR_PREFIX: &str = "!!";
 
 const SESSION_PREFIX: &str = "--";
 
-// ── Render mode ──
+// ── Display ──
 
-/// Controls output detail level for text rendering.
+/// Controls whether thinking content is rendered.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Verbosity {
-    Concise,
-    Verbose,
-}
-
-/// Text and JSON terminal output renderer.
 pub struct Display {
-    verbosity: Verbosity,
+    show_thinking: bool,
 }
 
 impl Display {
-    /// Create a new display with the given verbosity.
-    pub fn new(verbosity: Verbosity) -> Self {
-        Self { verbosity }
-    }
-
-    /// Whether verbose mode is active.
-    pub fn is_verbose(&self) -> bool {
-        self.verbosity == Verbosity::Verbose
+    /// Create a new display.
+    pub fn new(show_thinking: bool) -> Self {
+        Self { show_thinking }
     }
 
     /// Render a thinking block start line.
-    pub fn thinking_start(&self, tokens: u64) -> String {
-        format!(
-            "{} ({}) {}",
-            THINKING_OPEN,
-            fmt_tokens(tokens),
-            THINKING_SEP
-        )
+    pub fn thinking_start(&self) -> String {
+        format!("{} {}", THINKING_OPEN, THINKING_SEP)
     }
 
-    /// Return thinking text only in verbose mode.
+    /// Return thinking text only when show_thinking is enabled.
     pub fn thinking_text(&self, text: &str) -> Option<String> {
-        if self.is_verbose() {
+        if self.show_thinking {
             Some(text.to_string())
         } else {
             None
         }
     }
 
-    /// Render a thinking block close line.
-    pub fn thinking_end(&self, tokens: u64) -> String {
-        format!(
-            "{} \u{b7} {} tokens {}",
-            THINKING_CLOSE,
-            fmt_tokens(tokens),
-            THINKING_SEP
-        )
+    /// Render a thinking block close line with duration.
+    pub fn thinking_end(&self, duration: Duration) -> String {
+        let secs = duration.as_secs_f64();
+        format!("{} \u{b7} {:.1}s {}", THINKING_CLOSE, secs, THINKING_SEP)
     }
 
     /// Render a tool call line.
-    pub fn tool_call(&self, tool: &str, summary: &str, tool_call_id: &str) -> String {
-        if self.is_verbose() {
-            format!("{} {}  id={}", TOOL_PREFIX, tool, tool_call_id)
-        } else {
-            format!("{} {} {}", TOOL_PREFIX, tool, summary)
-        }
+    pub fn tool_call(&self, tool: &str, summary: &str, _tool_call_id: &str) -> String {
+        format!("{} {} {}", TOOL_PREFIX, tool, summary)
     }
 
     /// Render a tool result line.
-    pub fn tool_result(&self, status: &str, summary: &str, tool_call_id: &str) -> String {
-        if self.is_verbose() {
-            format!(
-                "{} {} \u{b7} {}  id={}",
-                RESULT_PREFIX, status, summary, tool_call_id
-            )
-        } else {
-            format!("{} {} \u{b7} {}", RESULT_PREFIX, status, summary)
-        }
-    }
-
-    /// Return tool result output only in verbose mode.
-    pub fn tool_result_output(&self, output: &str) -> Option<String> {
-        if self.is_verbose() {
-            Some(output.to_string())
-        } else {
-            None
-        }
+    pub fn tool_result(&self, status: &str, summary: &str, _tool_call_id: &str) -> String {
+        format!("{} {} \u{b7} {}", RESULT_PREFIX, status, summary)
     }
 
     /// Render a permission ask prompt.
@@ -142,38 +104,32 @@ impl Display {
         )
     }
 
-    /// Return error detail only in verbose mode.
-    pub fn error_detail(&self, detail: &str) -> Option<String> {
-        if self.is_verbose() {
-            Some(detail.to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Render a session start line.
-    pub fn session_start(&self, session_id: &str, model: &str, effort: &str) -> String {
+    /// Render a session start line with tier and model.
+    pub fn session_start(&self, session_id: &str, tier: &str, model: &str) -> String {
         format!(
             "{} session: {} \u{b7} {} \u{b7} {} {}",
-            SESSION_PREFIX, session_id, model, effort, SESSION_PREFIX
+            SESSION_PREFIX, session_id, tier, model, SESSION_PREFIX
         )
     }
 
-    /// Render a session completed line.
+    /// Render a session completed line with separate in/out tokens.
     pub fn session_completed(
         &self,
         session_id: &str,
         turns: u64,
-        tokens: u64,
-        duration_ms: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        duration: Duration,
     ) -> String {
+        let secs = duration.as_secs();
         format!(
-            "{} completed: {} \u{b7} {} turns \u{b7} {} tokens \u{b7} {}s {}",
+            "{} completed: {} \u{b7} {} turns \u{b7} in {} \u{b7} out {} \u{b7} {}s {}",
             SESSION_PREFIX,
             session_id,
             turns,
-            fmt_tokens(tokens),
-            duration_ms / 1000,
+            fmt_tokens(input_tokens),
+            fmt_tokens(output_tokens),
+            secs,
             SESSION_PREFIX
         )
     }
@@ -183,6 +139,16 @@ impl Display {
         format!(
             "{} interrupted: {} \u{b7} {} turns {}",
             SESSION_PREFIX, session_id, turns, SESSION_PREFIX
+        )
+    }
+
+    /// Render a context continuation line.
+    pub fn context_previous(&self, tokens: u64) -> String {
+        format!(
+            "{} context: {} tokens (previous) {}",
+            SESSION_PREFIX,
+            fmt_tokens(tokens),
+            SESSION_PREFIX
         )
     }
 
@@ -335,7 +301,7 @@ pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
 pub enum OutputLine {
     #[serde(rename = "thinking")]
     Thinking {
-        tokens: u64,
+        duration_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
@@ -397,15 +363,19 @@ pub enum OutputLine {
         session_id: String,
         event: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
+        tier: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        effort: Option<String>,
+        model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         turns: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        tokens: Option<u64>,
+        input_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        previous_input_tokens: Option<u64>,
     },
 }
 
@@ -418,8 +388,8 @@ impl OutputLine {
     }
 
     /// Create a thinking output line.
-    pub fn thinking(tokens: u64, text: Option<String>) -> Self {
-        OutputLine::Thinking { tokens, text }
+    pub fn thinking(duration_ms: u64, text: Option<String>) -> Self {
+        OutputLine::Thinking { duration_ms, text }
     }
 
     /// Create a text delta output line.
@@ -509,15 +479,17 @@ impl OutputLine {
     }
 
     /// Create a session started output line.
-    pub fn session_started(session_id: String, model: String, effort: String) -> Self {
+    pub fn session_started(session_id: String, tier: String, model: String) -> Self {
         OutputLine::Session {
             session_id,
             event: "started".into(),
+            tier: Some(tier),
             model: Some(model),
-            effort: Some(effort),
             turns: None,
-            tokens: None,
+            input_tokens: None,
+            output_tokens: None,
             duration_ms: None,
+            previous_input_tokens: None,
         }
     }
 
@@ -525,17 +497,20 @@ impl OutputLine {
     pub fn session_completed(
         session_id: String,
         turns: u64,
-        tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
         duration_ms: u64,
     ) -> Self {
         OutputLine::Session {
             session_id,
             event: "completed".into(),
+            tier: None,
             model: None,
-            effort: None,
             turns: Some(turns),
-            tokens: Some(tokens),
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
             duration_ms: Some(duration_ms),
+            previous_input_tokens: None,
         }
     }
 
@@ -544,11 +519,96 @@ impl OutputLine {
         OutputLine::Session {
             session_id,
             event: "interrupted".into(),
+            tier: None,
             model: None,
-            effort: None,
             turns: Some(turns),
-            tokens: None,
+            input_tokens: None,
+            output_tokens: None,
             duration_ms: None,
+            previous_input_tokens: None,
         }
+    }
+
+    /// Create a session context output line.
+    pub fn session_context(session_id: String, previous_input_tokens: u64) -> Self {
+        OutputLine::Session {
+            session_id,
+            event: "context".into(),
+            tier: None,
+            model: None,
+            turns: None,
+            input_tokens: None,
+            output_tokens: None,
+            duration_ms: None,
+            previous_input_tokens: Some(previous_input_tokens),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_start_contains_tier_and_model() {
+        let d = Display::new(false);
+        let line = d.session_start("s_001", "strong", "claude-sonnet-4-6");
+        assert!(line.contains("strong"), "should contain tier");
+        assert!(line.contains("claude-sonnet-4-6"), "should contain model");
+        assert!(line.contains("s_001"), "should contain session id");
+    }
+
+    #[test]
+    fn session_completed_shows_in_out_tokens() {
+        let d = Display::new(false);
+        let line = d.session_completed("s_001", 2, 35000, 7000, Duration::from_secs(18));
+        assert!(
+            line.contains("in 35.0k"),
+            "should show input tokens: {line}"
+        );
+        assert!(
+            line.contains("out 7.0k"),
+            "should show output tokens: {line}"
+        );
+        assert!(line.contains("2 turns"), "should show turn count");
+        assert!(line.contains("18s"), "should show duration");
+    }
+
+    #[test]
+    fn thinking_start_has_no_duration() {
+        let d = Display::new(false);
+        let line = d.thinking_start();
+        assert!(line.contains("thinking"), "should contain thinking label");
+        assert!(!line.contains("s"), "should not contain duration");
+    }
+
+    #[test]
+    fn thinking_end_shows_duration() {
+        let d = Display::new(false);
+        let line = d.thinking_end(Duration::from_millis(12500));
+        assert!(line.contains("12.5s"), "should show duration");
+    }
+
+    #[test]
+    fn thinking_text_shown_when_enabled() {
+        let d = Display::new(true);
+        assert_eq!(d.thinking_text("reasoning"), Some("reasoning".to_string()));
+    }
+
+    #[test]
+    fn thinking_text_hidden_when_disabled() {
+        let d = Display::new(false);
+        assert_eq!(d.thinking_text("reasoning"), None);
+    }
+
+    #[test]
+    fn context_previous_shows_tokens() {
+        let d = Display::new(false);
+        let line = d.context_previous(35000);
+        assert!(line.contains("35.0k"), "should show token count: {line}");
+        assert!(
+            line.contains("previous"),
+            "should indicate previous context"
+        );
     }
 }

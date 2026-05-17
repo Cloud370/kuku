@@ -1,16 +1,18 @@
-use kuku_terminal::display::{Display, OutputLine, Verbosity};
+use std::time::Duration;
+
+use kuku_terminal::display::{Display, OutputLine};
 
 #[test]
-fn thinking_concise_hides_text() {
-    let d = Display::new(Verbosity::Concise);
+fn thinking_default_hides_text() {
+    let d = Display::new(false);
     assert!(d.thinking_text("secret reasoning").is_none());
-    assert!(d.thinking_start(3200).contains("thinking"));
-    assert!(d.thinking_end(3200).contains("3.2k"));
+    assert!(d.thinking_start().contains("thinking"));
+    assert!(d.thinking_end(Duration::from_millis(3200)).contains("3.2s"));
 }
 
 #[test]
-fn thinking_verbose_shows_text() {
-    let d = Display::new(Verbosity::Verbose);
+fn thinking_show_thinking_reveals_text() {
+    let d = Display::new(true);
     assert_eq!(
         d.thinking_text("secret reasoning"),
         Some("secret reasoning".into())
@@ -18,24 +20,16 @@ fn thinking_verbose_shows_text() {
 }
 
 #[test]
-fn tool_call_concise_hides_id() {
-    let d = Display::new(Verbosity::Concise);
+fn tool_call_format() {
+    let d = Display::new(false);
     let line = d.tool_call("read_file", "src/main.rs", "tc_01");
     assert!(line.contains("read_file"));
     assert!(line.contains("src/main.rs"));
-    assert!(!line.contains("tc_01"));
-}
-
-#[test]
-fn tool_call_verbose_shows_id() {
-    let d = Display::new(Verbosity::Verbose);
-    let line = d.tool_call("read_file", "src/main.rs", "tc_01");
-    assert!(line.contains("tc_01"));
 }
 
 #[test]
 fn permission_ask_format() {
-    let d = Display::new(Verbosity::Concise);
+    let d = Display::new(false);
     let line = d.permission_ask("run_command", "cargo build");
     assert!(line.contains("?"));
     assert!(line.contains("run_command"));
@@ -44,7 +38,7 @@ fn permission_ask_format() {
 
 #[test]
 fn error_format() {
-    let d = Display::new(Verbosity::Concise);
+    let d = Display::new(false);
     let line = d.error("provider", "auth", "invalid API key");
     assert!(line.contains("!!"));
     assert!(line.contains("provider"));
@@ -52,23 +46,39 @@ fn error_format() {
 }
 
 #[test]
-fn session_start_shows_model_and_effort() {
-    let d = Display::new(Verbosity::Concise);
-    let line = d.session_start("abc123", "claude-opus", "xhigh");
+fn session_start_shows_tier_and_model() {
+    let d = Display::new(false);
+    let line = d.session_start("abc123", "strong", "claude-sonnet-4-6");
     assert!(line.contains("abc123"));
-    assert!(line.contains("claude-opus"));
-    assert!(line.contains("xhigh"));
+    assert!(line.contains("strong"));
+    assert!(line.contains("claude-sonnet-4-6"));
+}
+
+#[test]
+fn session_completed_shows_in_out_tokens() {
+    let d = Display::new(false);
+    let line = d.session_completed("s_001", 2, 35000, 7000, Duration::from_secs(18));
+    assert!(
+        line.contains("in 35.0k"),
+        "should show input tokens: {line}"
+    );
+    assert!(
+        line.contains("out 7.0k"),
+        "should show output tokens: {line}"
+    );
+    assert!(line.contains("2 turns"));
+    assert!(line.contains("18s"));
 }
 
 #[test]
 fn code_block_basic() {
-    let d = Display::new(Verbosity::Concise);
+    let d = Display::new(false);
     assert!(d.code_block_open(Some("rust")).contains("rust"));
 }
 
 #[test]
 fn table_row_pads_cells() {
-    let d = Display::new(Verbosity::Concise);
+    let d = Display::new(false);
     let row = d.table_row(&["foo", "12"], &[8, 6]);
     assert!(row.contains("foo"));
     assert!(row.contains("12"));
@@ -81,12 +91,12 @@ fn json_thinking_serializes() {
     let line = OutputLine::thinking(1200, None);
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"thinking\""));
-    assert!(json.contains("\"tokens\":1200"));
+    assert!(json.contains("\"duration_ms\":1200"));
     assert!(!json.contains("\"text\""));
 }
 
 #[test]
-fn json_thinking_verbose_serializes_text() {
+fn json_thinking_serializes_text() {
     let line = OutputLine::thinking(1200, Some("reasoning...".into()));
     let json = line.to_json_line();
     assert!(json.contains("\"text\":\"reasoning...\""));
@@ -115,11 +125,13 @@ fn json_error_serializes() {
 
 #[test]
 fn json_session_serializes() {
-    let line = OutputLine::session_started("abc123".into(), "claude-opus".into(), "xhigh".into());
+    let line =
+        OutputLine::session_started("abc123".into(), "strong".into(), "claude-sonnet-4-6".into());
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"session\""));
     assert!(json.contains("\"event\":\"started\""));
-    assert!(json.contains("\"model\":\"claude-opus\""));
+    assert!(json.contains("\"tier\":\"strong\""));
+    assert!(json.contains("\"model\":\"claude-sonnet-4-6\""));
 }
 
 #[test]
@@ -135,7 +147,7 @@ fn all_json_types_have_type_field() {
         OutputLine::permission_decision("pr".into(), "t".into(), "allow".into(), "posture".into())
             .to_json_line(),
         OutputLine::error("s".into(), "k".into(), "m".into(), None).to_json_line(),
-        OutputLine::session_started("id".into(), "m".into(), "e".into()).to_json_line(),
+        OutputLine::session_started("id".into(), "t".into(), "m".into()).to_json_line(),
     ];
     for line in &lines {
         assert!(line.contains("\"type\":\""), "missing type field: {line}");
