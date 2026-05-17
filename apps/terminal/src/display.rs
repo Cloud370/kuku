@@ -727,6 +727,14 @@ mod tests {
     }
 
     #[test]
+    fn tool_running_pretty_and_raw() {
+        let pretty = Display::new(false, "medium");
+        assert_eq!(pretty.tool_running(), "  ...");
+        let raw = Display::new_raw(false, "medium");
+        assert_eq!(raw.tool_running(), "run ...");
+    }
+
+    #[test]
     fn raw_tool_call() {
         let d = Display::new_raw(false, "medium");
         let line = d.tool_call("find_files", "path: \".\"", "tc_01");
