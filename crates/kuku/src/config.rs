@@ -1,6 +1,7 @@
 //! Config file types, loading, and typed access for `~/.kuku/config.toml`.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -270,6 +271,107 @@ impl ConfigFile {
             default_tier,
         })
     }
+
+    /// Structural validation without runtime checks (no env var existence).
+    /// Used by `set_value` to verify cross-references, types, and enum values.
+    fn validate_structural(&self) -> Result<()> {
+        const REQUIRED_TIERS: &[&str] = &["strong", "balanced", "light"];
+        for &name in REQUIRED_TIERS {
+            if !self.model.contains_key(name) {
+                return Err(Error::ConfigLoad(format!(
+                    "required tier '{name}' is missing"
+                )));
+            }
+        }
+
+        for (name, entry) in &self.model {
+            let provider = entry.provider.trim();
+            if provider.is_empty() {
+                return Err(Error::ConfigLoad(format!(
+                    "tier '{name}': provider is required"
+                )));
+            }
+            if entry.model.trim().is_empty() {
+                return Err(Error::ConfigLoad(format!(
+                    "tier '{name}': model is required"
+                )));
+            }
+            if let Some(ref think) = entry.think {
+                if !matches!(think.as_str(), "off" | "low" | "medium" | "high") {
+                    return Err(Error::ConfigLoad(format!(
+                        "tier '{name}': think '{think}' is invalid, must be off/low/medium/high"
+                    )));
+                }
+            }
+            if let Some(cw) = entry.context_window {
+                if cw == 0 {
+                    return Err(Error::ConfigLoad(format!(
+                        "tier '{name}': context_window must be a positive integer"
+                    )));
+                }
+            }
+            if let Some(mot) = entry.max_output_tokens {
+                if mot == 0 {
+                    return Err(Error::ConfigLoad(format!(
+                        "tier '{name}': max_output_tokens must be a positive integer"
+                    )));
+                }
+            }
+        }
+
+        for (name, entry) in &self.provider {
+            let format = entry.format.trim();
+            if format.is_empty() {
+                return Err(Error::ConfigLoad(format!(
+                    "provider '{name}': format is required"
+                )));
+            }
+            if !matches!(format, "anthropic" | "openai-chat" | "openai-responses") {
+                return Err(Error::ConfigLoad(format!(
+                    "provider '{name}': format '{format}' is not supported, must be anthropic/openai-chat/openai-responses"
+                )));
+            }
+            if entry.base_url.trim().is_empty() {
+                return Err(Error::ConfigLoad(format!(
+                    "provider '{name}': base_url is required"
+                )));
+            }
+            let api_key = entry.api_key.trim();
+            if api_key.is_empty() {
+                return Err(Error::ConfigLoad(format!(
+                    "provider '{name}': api_key is required"
+                )));
+            }
+            if let Some(env_name) = api_key.strip_prefix('$') {
+                if env_name.is_empty() {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': api_key '$' prefix must be followed by an env var name"
+                    )));
+                }
+            }
+        }
+
+        for (name, tier) in &self.model {
+            if !self.provider.contains_key(tier.provider.trim()) {
+                return Err(Error::ConfigLoad(format!(
+                    "tier '{name}': provider '{}' is not defined in [provider]",
+                    tier.provider
+                )));
+            }
+        }
+
+        let default_tier = self
+            .default_model
+            .as_deref()
+            .unwrap_or("balanced");
+        if !self.model.contains_key(default_tier) {
+            return Err(Error::ConfigLoad(format!(
+                "default_model '{default_tier}' is not defined in [model]"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 // ── Config methods ──
@@ -396,4 +498,257 @@ format = "openai-responses"
 base_url = "https://api.openai.com/v1"
 api_key = "$OPENAI_API_KEY"
 "##
+}
+
+/// Modify a single value in a config file by dot-notation key.
+///
+/// Validates the modified config structurally (cross-references, types, enum values).
+/// Does NOT validate runtime constraints (env var existence).
+/// Preserves comments and formatting via `toml_edit`.
+pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| Error::ConfigLoad(format!("cannot read config: {error}")))?;
+
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
+
+    let parts: Vec<&str> = dot_key.split('.').collect();
+    if parts.is_empty() {
+        return Err(Error::ConfigLoad("empty config key".to_string()));
+    }
+
+    let (parent_parts, leaf_key) = parts.split_at(parts.len() - 1);
+    let leaf = leaf_key[0];
+
+    let mut table = doc.as_table_mut();
+    for part in parent_parts {
+        let item = table.get_mut(part).ok_or_else(|| {
+            Error::ConfigLoad(format!("unknown config key: segment '{part}' not found"))
+        })?;
+        table = item.as_table_mut().ok_or_else(|| {
+            Error::ConfigLoad(format!("unknown config key: segment '{part}' is not a table"))
+        })?;
+    }
+
+    let new_value = match leaf {
+        "context_window" | "max_output_tokens" => {
+            let n: i64 = value.parse().map_err(|_| {
+                Error::ConfigLoad(format!("'{dot_key}' must be a positive integer, got '{value}'"))
+            })?;
+            if n <= 0 {
+                return Err(Error::ConfigLoad(format!(
+                    "'{dot_key}' must be a positive integer, got '{value}'"
+                )));
+            }
+            toml_edit::value(n)
+        }
+        "think" => {
+            if !matches!(value, "off" | "low" | "medium" | "high") {
+                return Err(Error::ConfigLoad(format!(
+                    "'think' must be off/low/medium/high, got '{value}'"
+                )));
+            }
+            toml_edit::value(value)
+        }
+        "format" => {
+            if !matches!(value, "anthropic" | "openai-chat" | "openai-responses") {
+                return Err(Error::ConfigLoad(format!(
+                    "'format' must be anthropic/openai-chat/openai-responses, got '{value}'"
+                )));
+            }
+            toml_edit::value(value)
+        }
+        _ => toml_edit::value(value),
+    };
+
+    table[leaf] = new_value;
+
+    let modified_text = doc.to_string();
+    let config_file: ConfigFile = toml::from_str(&modified_text)
+        .map_err(|error| Error::ConfigLoad(format!("modified config is invalid: {error}")))?;
+    config_file.validate_structural()?;
+
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|error| Error::ConfigLoad(format!("cannot create temp file: {error}")))?;
+    temp.write_all(modified_text.as_bytes())
+        .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
+    temp.persist(path)
+        .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod set_value_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_config(content: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("config.toml"), content).unwrap();
+        dir
+    }
+
+    const FULL_CONFIG: &str = r#"# kuku config
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+context_window = 200000
+max_output_tokens = 64000
+purpose = "deep reasoning"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+context_window = 200000
+max_output_tokens = 48000
+purpose = "general purpose"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+context_window = 200000
+max_output_tokens = 32000
+purpose = "quick tasks"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key-anthropic"
+"#;
+
+    #[test]
+    fn set_value_updates_string_field() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        set_value(&path, "default_model", "strong").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains(r#"default_model = "strong""#));
+        assert!(!content.contains(r#"default_model = "balanced""#));
+    }
+
+    #[test]
+    fn set_value_updates_nested_string_field() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        set_value(&path, "model.balanced.think", "high").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("think = \"high\""));
+    }
+
+    #[test]
+    fn set_value_updates_integer_field() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        set_value(&path, "model.balanced.context_window", "128000").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("context_window = 128000"));
+    }
+
+    #[test]
+    fn set_value_preserves_comments() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        set_value(&path, "default_model", "light").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# kuku config"));
+    }
+
+    #[test]
+    fn set_value_rejects_invalid_think_level() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.think", "invalid").unwrap_err();
+        assert!(error.to_string().contains("think"));
+        assert!(error.to_string().contains("off/low/medium/high"));
+    }
+
+    #[test]
+    fn set_value_rejects_invalid_format() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "provider.anthropic.format", "invalid").unwrap_err();
+        assert!(error.to_string().contains("format"));
+    }
+
+    #[test]
+    fn set_value_rejects_zero_context_window() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.context_window", "0").unwrap_err();
+        assert!(error.to_string().contains("context_window"));
+    }
+
+    #[test]
+    fn set_value_rejects_non_numeric_for_integer_field() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.context_window", "abc").unwrap_err();
+        assert!(error.to_string().contains("positive integer"));
+        assert!(error.to_string().contains("abc"));
+    }
+
+    #[test]
+    fn set_value_rejects_negative_integer() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.context_window", "-1").unwrap_err();
+        assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn set_value_rejects_zero_max_output_tokens() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.max_output_tokens", "0").unwrap_err();
+        assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn set_value_rejects_missing_subsection() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.nonexistent.think", "high").unwrap_err();
+        assert!(error.to_string().contains("unknown config key"));
+    }
+
+    #[test]
+    fn set_value_rejects_invalid_provider_reference() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "model.balanced.provider", "nonexistent").unwrap_err();
+        assert!(error.to_string().contains("provider"));
+    }
+
+    #[test]
+    fn set_value_rejects_unknown_dot_path() {
+        let dir = temp_config(FULL_CONFIG);
+        let path = dir.path().join("config.toml");
+
+        let error = set_value(&path, "unknown.field", "value").unwrap_err();
+        assert!(error.to_string().contains("unknown config key"));
+    }
 }
