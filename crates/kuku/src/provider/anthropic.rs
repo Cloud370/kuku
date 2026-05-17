@@ -9,9 +9,6 @@ use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
-const DEFAULT_THINKING_LOW: i64 = 1024;
-const DEFAULT_THINKING_MEDIUM: i64 = 4096;
-const DEFAULT_THINKING_HIGH: i64 = 16000;
 
 pub(crate) fn messages_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -49,31 +46,17 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         body["temperature"] = json!(temperature);
     }
     if request.think_level != "off" {
-        let budget_tokens = match request.think_level.as_str() {
-            "low" => request
-                .thinking
-                .low
-                .as_ref()
-                .and_then(|v| v.as_integer())
-                .unwrap_or(DEFAULT_THINKING_LOW),
-            "medium" => request
-                .thinking
-                .medium
-                .as_ref()
-                .and_then(|v| v.as_integer())
-                .unwrap_or(DEFAULT_THINKING_MEDIUM),
-            "high" => request
-                .thinking
-                .high
-                .as_ref()
-                .and_then(|v| v.as_integer())
-                .unwrap_or(DEFAULT_THINKING_HIGH),
-            _ => DEFAULT_THINKING_MEDIUM,
-        };
         body["thinking"] = json!({
-            "type": "enabled",
-            "budget_tokens": budget_tokens,
+            "type": "adaptive",
+            "display": "summarized",
         });
+        let effort = match request.think_level.as_str() {
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "max",
+            _ => "medium",
+        };
+        body["output_config"] = json!({ "effort": effort });
     }
     if !request.assembly.tools.is_empty() {
         body["tools"] = json!(request
@@ -338,4 +321,65 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::ContextAssembly;
+    use crate::provider::types::ProviderRequest;
+
+    fn minimal_request(think_level: &str) -> ProviderRequest {
+        ProviderRequest {
+            assembly: ContextAssembly {
+                system_prompt: "test".into(),
+                prelude_messages: vec![],
+                history: vec![],
+                tools: vec![],
+                prompt_asset_sources: vec![],
+                project_instruction_sources: vec![],
+                memory_sources: vec![],
+            },
+            model: "test-model".into(),
+            max_output_tokens: Some(1024),
+            temperature: None,
+            stream: false,
+            think_level: think_level.into(),
+            thinking: crate::config::ResolvedThinking {
+                low: None,
+                medium: None,
+                high: None,
+            },
+        }
+    }
+
+    #[test]
+    fn render_body_adaptive_thinking_high() {
+        let body = render_body(&minimal_request("high"));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(body["output_config"]["effort"], "max");
+        assert!(body.get("budget_tokens").is_none());
+    }
+
+    #[test]
+    fn render_body_adaptive_thinking_medium() {
+        let body = render_body(&minimal_request("medium"));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "medium");
+    }
+
+    #[test]
+    fn render_body_adaptive_thinking_low() {
+        let body = render_body(&minimal_request("low"));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+    }
+
+    #[test]
+    fn render_body_no_thinking_when_off() {
+        let body = render_body(&minimal_request("off"));
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+    }
 }
