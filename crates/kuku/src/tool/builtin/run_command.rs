@@ -19,6 +19,7 @@ const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
 struct CommandRequest {
     command: String,
     timeout_seconds: u64,
+    brief: String,
 }
 
 pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnvelope {
@@ -143,9 +144,23 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
         ));
     }
 
+    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing brief",
+            "run_command requires brief",
+        ));
+    };
+    if brief.trim().is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: brief is empty",
+            "brief must not be empty",
+        ));
+    }
+
     Ok(CommandRequest {
         command: command.to_string(),
         timeout_seconds,
+        brief: brief.to_string(),
     })
 }
 
@@ -421,7 +436,7 @@ mod tests {
         let dir = workspace();
         std::fs::write(dir.path().join("cwd-marker.txt"), "workspace marker\n").unwrap();
         let result = run_command(
-            &serde_json::json!({"command": read_marker_command(), "timeout": 5}),
+            &serde_json::json!({"command": read_marker_command(), "timeout": 5, "brief": "read marker"}),
             dir.path(),
         )
         .await;
@@ -443,7 +458,7 @@ mod tests {
     async fn run_command_treats_nonzero_exit_as_command_evidence() {
         let dir = workspace();
         let result = run_command(
-            &serde_json::json!({"command": stderr_nonzero_command(), "timeout": 5}),
+            &serde_json::json!({"command": stderr_nonzero_command(), "timeout": 5, "brief": "test stderr"}),
             dir.path(),
         )
         .await;
@@ -459,7 +474,7 @@ mod tests {
     async fn run_command_reports_timeout_as_tool_error() {
         let dir = workspace();
         let result = run_command(
-            &serde_json::json!({"command": noisy_timeout_command(), "timeout": 1}),
+            &serde_json::json!({"command": noisy_timeout_command(), "timeout": 1, "brief": "test timeout"}),
             dir.path(),
         )
         .await;
@@ -480,14 +495,14 @@ mod tests {
     async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_commands() {
         let dir = workspace();
 
-        let missing = run_command(&serde_json::json!({"timeout": 1}), dir.path()).await;
+        let missing = run_command(&serde_json::json!({"timeout": 1, "brief": "test"}), dir.path()).await;
         assert_eq!(missing.status, "error");
         assert!(missing
             .model_content
             .contains("run_command requires command"));
 
         let empty = run_command(
-            &serde_json::json!({"command": "   ", "timeout": 1}),
+            &serde_json::json!({"command": "   ", "timeout": 1, "brief": "test"}),
             dir.path(),
         )
         .await;
@@ -495,7 +510,7 @@ mod tests {
         assert!(empty.model_content.contains("command must not be empty"));
 
         let zero = run_command(
-            &serde_json::json!({"command": stdout_command(), "timeout": 0}),
+            &serde_json::json!({"command": stdout_command(), "timeout": 0, "brief": "test"}),
             dir.path(),
         )
         .await;
@@ -503,7 +518,7 @@ mod tests {
         assert!(zero.model_content.contains("timeout must be >= 1"));
 
         let over_cap = run_command(
-            &serde_json::json!({"command": stdout_command(), "timeout": 601}),
+            &serde_json::json!({"command": stdout_command(), "timeout": 601, "brief": "test"}),
             dir.path(),
         )
         .await;
@@ -511,7 +526,7 @@ mod tests {
         assert!(over_cap.model_content.contains("timeout must be <= 600"));
 
         let dangerous = run_command(
-            &serde_json::json!({"command": "git reset --hard HEAD", "timeout": 1}),
+            &serde_json::json!({"command": "git reset --hard HEAD", "timeout": 1, "brief": "test danger"}),
             dir.path(),
         )
         .await;
@@ -519,5 +534,19 @@ mod tests {
         assert!(dangerous
             .model_content
             .contains("blocked by command hard guard"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_rejects_missing_brief() {
+        let dir = workspace();
+        let result = run_command(
+            &serde_json::json!({"command": "echo hi", "timeout": 1}),
+            dir.path(),
+        )
+        .await;
+        assert_eq!(result.status, "error");
+        assert!(result
+            .model_content
+            .contains("run_command requires brief"));
     }
 }

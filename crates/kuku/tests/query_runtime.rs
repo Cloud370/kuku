@@ -226,7 +226,7 @@ async fn run_emits_permission_requested_for_gated_tool() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -299,7 +299,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -370,7 +370,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -438,7 +438,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}

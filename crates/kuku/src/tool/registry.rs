@@ -77,9 +77,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."}
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
+                    "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
-                "required": ["path", "old_text", "new_text"]
+                "required": ["path", "old_text", "new_text", "brief"]
             }),
             false,
             false,
@@ -93,9 +94,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
-                    "content": {"type": "string", "description": "Complete file content."}
+                    "content": {"type": "string", "description": "Complete file content."},
+                    "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
-                "required": ["path", "content"]
+                "required": ["path", "content", "brief"]
             }),
             false,
             false,
@@ -142,9 +144,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command string to execute."},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds."}
+                    "timeout": {"type": "integer", "description": "Timeout in seconds."},
+                    "brief": {"type": "string", "description": "What this command does, in 3-5 words."}
                 },
-                "required": ["command", "timeout"]
+                "required": ["command", "timeout", "brief"]
             }),
             false,
             false,

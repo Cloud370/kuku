@@ -159,7 +159,7 @@ mod tests {
         let denied = denied_event("tool_command");
         let gated = dispatch(
             "run_command",
-            &serde_json::json!({"command": "cargo test", "timeout": 1}),
+            &serde_json::json!({"command": "cargo test", "timeout": 1, "brief": "run tests"}),
             dir.path(),
             dir.path(),
             &[denied],
@@ -193,7 +193,7 @@ mod tests {
 
         let edited = dispatch(
             "edit_file",
-            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
+            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku", "brief": "edit a.txt"}),
             dir.path(),
             dir.path(),
             std::slice::from_ref(&read),
@@ -211,7 +211,7 @@ mod tests {
         let read_after_edit = read_event(19, dir.path(), "a.txt", after_edit);
         let written = dispatch(
             "write_file",
-            &serde_json::json!({"path": "a.txt", "content": "done\n"}),
+            &serde_json::json!({"path": "a.txt", "content": "done\n", "brief": "write done"}),
             dir.path(),
             dir.path(),
             &[read_after_edit],
@@ -236,7 +236,7 @@ mod tests {
 
         let result = dispatch(
             "edit_file",
-            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku"}),
+            &serde_json::json!({"path": "a.txt", "old_text": "world", "new_text": "kuku", "brief": "edit a.txt"}),
             dir.path(),
             dir.path(),
             &[read, denied],

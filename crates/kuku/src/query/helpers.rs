@@ -106,8 +106,13 @@ pub(super) fn display_summary(
                 (None, None) => return tool.to_string(),
             }
         }
-        "read_file" | "edit_file" | "write_file" => args
+        "read_file" => args
             .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(tool)
+            .to_string(),
+        "edit_file" | "write_file" => args
+            .get("brief")
             .and_then(|v| v.as_str())
             .unwrap_or(tool)
             .to_string(),
@@ -120,7 +125,7 @@ pub(super) fn display_summary(
             }
         }
         "run_command" => args
-            .get("command")
+            .get("brief")
             .and_then(|v| v.as_str())
             .unwrap_or(tool)
             .to_string(),
@@ -448,19 +453,17 @@ mod tests {
 
     #[test]
     fn display_summary_run_command() {
-        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60});
+        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60, "brief": "build release"});
         let s = display_summary("run_command", &args, None);
-        assert_eq!(s, "cargo build --release");
+        assert_eq!(s, "build release");
     }
 
     #[test]
     fn display_summary_run_command_truncated() {
-        let long_cmd =
-            "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu";
-        let args = serde_json::json!({"command": long_cmd, "timeout": 60});
+        let args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
         let s = display_summary("run_command", &args, Some(30));
         assert!(s.ends_with("..."), "should end with ...");
-        let cjk_args = serde_json::json!({"command": "构建项目/src/文件.txt", "timeout": 60});
+        let cjk_args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "构建项目/src/文件.txt"});
         let s2 = display_summary("run_command", &cjk_args, Some(5));
         assert!(s2.ends_with("..."), "CJK truncation should not panic: {s2}");
     }
@@ -482,16 +485,16 @@ mod tests {
 
     #[test]
     fn display_summary_edit_file() {
-        let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new"});
+        let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new", "brief": "rename main"});
         let s = display_summary("edit_file", &args, None);
-        assert_eq!(s, "src/main.rs");
+        assert_eq!(s, "rename main");
     }
 
     #[test]
     fn display_summary_write_file() {
-        let args = serde_json::json!({"path": "src/lib.rs", "content": "fn main() {}"});
+        let args = serde_json::json!({"path": "src/lib.rs", "content": "fn main() {}", "brief": "create lib"});
         let s = display_summary("write_file", &args, None);
-        assert_eq!(s, "src/lib.rs");
+        assert_eq!(s, "create lib");
     }
 
     #[test]
