@@ -13,7 +13,7 @@ use super::common::{
 struct WriteRequest {
     path: String,
     content: String,
-    brief: String,
+    _brief: String,
 }
 
 pub(crate) fn write_file(
@@ -146,7 +146,7 @@ fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
     Ok(WriteRequest {
         path: path.to_string(),
         content: content.to_string(),
-        brief: brief.to_string(),
+        _brief: brief.to_string(),
     })
 }
 

@@ -164,14 +164,7 @@ pub(super) fn is_blocked_relative_path(path: &str) -> bool {
 pub(super) fn is_default_excluded_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git"
-            | "target"
-            | "node_modules"
-            | "__pycache__"
-            | ".venv"
-            | "venv"
-            | "dist"
-            | "build"
+        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
     )
 }
 

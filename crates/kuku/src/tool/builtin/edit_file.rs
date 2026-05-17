@@ -13,7 +13,7 @@ struct EditRequest {
     old_text: String,
     new_text: String,
     replace_all: bool,
-    brief: String,
+    _brief: String,
 }
 
 pub(crate) fn edit_file(
@@ -181,7 +181,7 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        brief: brief.to_string(),
+        _brief: brief.to_string(),
     })
 }
 

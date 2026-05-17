@@ -19,7 +19,7 @@ const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
 struct CommandRequest {
     command: String,
     timeout_seconds: u64,
-    brief: String,
+    _brief: String,
 }
 
 pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnvelope {
@@ -160,7 +160,7 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
     Ok(CommandRequest {
         command: command.to_string(),
         timeout_seconds,
-        brief: brief.to_string(),
+        _brief: brief.to_string(),
     })
 }
 
@@ -495,7 +495,11 @@ mod tests {
     async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_commands() {
         let dir = workspace();
 
-        let missing = run_command(&serde_json::json!({"timeout": 1, "brief": "test"}), dir.path()).await;
+        let missing = run_command(
+            &serde_json::json!({"timeout": 1, "brief": "test"}),
+            dir.path(),
+        )
+        .await;
         assert_eq!(missing.status, "error");
         assert!(missing
             .model_content
@@ -545,8 +549,6 @@ mod tests {
         )
         .await;
         assert_eq!(result.status, "error");
-        assert!(result
-            .model_content
-            .contains("run_command requires brief"));
+        assert!(result.model_content.contains("run_command requires brief"));
     }
 }

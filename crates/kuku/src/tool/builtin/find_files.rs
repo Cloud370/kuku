@@ -140,9 +140,7 @@ fn collect_entries(
                 }
             }
             if recurse {
-                collect_entries(
-                    &path, workspace, pattern, max_depth, depth + 1, files, dirs,
-                )?;
+                collect_entries(&path, workspace, pattern, max_depth, depth + 1, files, dirs)?;
             }
         } else if file_type.is_file() {
             push_entry(&path, workspace, pattern, files);
@@ -239,7 +237,10 @@ mod tests {
         let lines: Vec<_> = shallow.model_content.lines().collect();
         assert!(lines.contains(&"a/"), "a/ at depth 0: {lines:?}");
         assert!(lines.contains(&"a/b/"), "a/b/ at depth 1: {lines:?}");
-        assert!(!lines.iter().any(|l| l.starts_with("a/b/c")), "a/b/c at depth 2 should be excluded: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("a/b/c")),
+            "a/b/c at depth 2 should be excluded: {lines:?}"
+        );
     }
 
     #[test]
@@ -264,10 +265,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
         std::fs::write(dir.path().join("target/debug/build.txt"), "build").unwrap();
 
-        let result = find_files(
-            &serde_json::json!({"path": "target"}),
-            dir.path(),
-        );
+        let result = find_files(&serde_json::json!({"path": "target"}), dir.path());
         assert!(result.model_content.contains("debug/"));
         assert!(result.model_content.contains("build.txt"));
     }
