@@ -479,7 +479,12 @@ impl OutputLine {
     }
 
     /// Create a session started output line.
-    pub fn session_started(session_id: String, tier: String, model: String) -> Self {
+    pub fn session_started(
+        session_id: String,
+        tier: String,
+        model: String,
+        previous_input_tokens: Option<u64>,
+    ) -> Self {
         OutputLine::Session {
             session_id,
             event: "started".into(),
@@ -489,13 +494,15 @@ impl OutputLine {
             input_tokens: None,
             output_tokens: None,
             duration_ms: None,
-            previous_input_tokens: None,
+            previous_input_tokens,
         }
     }
 
     /// Create a session completed output line.
     pub fn session_completed(
         session_id: String,
+        tier: String,
+        model: String,
         turns: u64,
         input_tokens: u64,
         output_tokens: u64,
@@ -504,8 +511,8 @@ impl OutputLine {
         OutputLine::Session {
             session_id,
             event: "completed".into(),
-            tier: None,
-            model: None,
+            tier: Some(tier),
+            model: Some(model),
             turns: Some(turns),
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
@@ -526,21 +533,6 @@ impl OutputLine {
             output_tokens: None,
             duration_ms: None,
             previous_input_tokens: None,
-        }
-    }
-
-    /// Create a session context output line.
-    pub fn session_context(session_id: String, previous_input_tokens: u64) -> Self {
-        OutputLine::Session {
-            session_id,
-            event: "context".into(),
-            tier: None,
-            model: None,
-            turns: None,
-            input_tokens: None,
-            output_tokens: None,
-            duration_ms: None,
-            previous_input_tokens: Some(previous_input_tokens),
         }
     }
 }

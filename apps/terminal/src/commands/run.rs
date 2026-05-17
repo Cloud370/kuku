@@ -61,7 +61,15 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     // JSON single-result path: use run(), output one final JSON line
     if args.json {
         let output = q.run().await?;
-        let line = OutputLine::session_completed(output.session_id, 0, 0, 0, 0);
+        let line = OutputLine::session_completed(
+            output.session_id,
+            tier_name.clone(),
+            model_name.clone(),
+            0,
+            0,
+            0,
+            0,
+        );
         println!("{}", line.to_json_line());
         return Ok(());
     }
@@ -70,20 +78,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut run = q.start().await?;
     let session_id = run.session_id().to_string();
 
-    if use_stream_json {
-        println!(
-            "{}",
-            OutputLine::session_started(session_id.clone(), tier_name.clone(), model_name.clone(),)
-                .to_json_line()
-        );
-    } else {
-        println!(
-            "{}",
-            display.session_start(&session_id, &tier_name, &model_name)
-        );
-    }
-
-    // -c context extraction
+    // -c context extraction (before session_started so previous_input_tokens is known)
     let mut previous_input_tokens: u64 = 0;
     if args.cont {
         let home = kuku::session::kuku_home()?;
@@ -109,13 +104,31 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    if previous_input_tokens > 0 && !use_stream_json {
-        println!("{}", display.context_previous(previous_input_tokens));
-    } else if previous_input_tokens > 0 && use_stream_json {
+
+    let prev_tokens = if previous_input_tokens > 0 {
+        Some(previous_input_tokens)
+    } else {
+        None
+    };
+    if use_stream_json {
         println!(
             "{}",
-            OutputLine::session_context(session_id.clone(), previous_input_tokens).to_json_line()
+            OutputLine::session_started(
+                session_id.clone(),
+                tier_name.clone(),
+                model_name.clone(),
+                prev_tokens,
+            )
+            .to_json_line()
         );
+    } else {
+        println!(
+            "{}",
+            display.session_start(&session_id, &tier_name, &model_name)
+        );
+        if previous_input_tokens > 0 {
+            println!("{}", display.context_previous(previous_input_tokens));
+        }
     }
 
     let session_start = Instant::now();
@@ -285,6 +298,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             "{}",
             OutputLine::session_completed(
                 session_id.clone(),
+                tier_name.clone(),
+                model_name.clone(),
                 current_turn,
                 total_input_tokens,
                 total_output_tokens,

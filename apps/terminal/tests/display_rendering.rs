@@ -125,8 +125,12 @@ fn json_error_serializes() {
 
 #[test]
 fn json_session_serializes() {
-    let line =
-        OutputLine::session_started("abc123".into(), "strong".into(), "claude-sonnet-4-6".into());
+    let line = OutputLine::session_started(
+        "abc123".into(),
+        "strong".into(),
+        "claude-sonnet-4-6".into(),
+        None,
+    );
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"session\""));
     assert!(json.contains("\"event\":\"started\""));
@@ -147,7 +151,7 @@ fn all_json_types_have_type_field() {
         OutputLine::permission_decision("pr".into(), "t".into(), "allow".into(), "posture".into())
             .to_json_line(),
         OutputLine::error("s".into(), "k".into(), "m".into(), None).to_json_line(),
-        OutputLine::session_started("id".into(), "t".into(), "m".into()).to_json_line(),
+        OutputLine::session_started("id".into(), "t".into(), "m".into(), None).to_json_line(),
     ];
     for line in &lines {
         assert!(line.contains("\"type\":\""), "missing type field: {line}");
