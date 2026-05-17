@@ -65,7 +65,7 @@ pub struct RunArgs {
     pub show_thinking: bool,
 
     /// Raw output mode: plain text without decorations
-    #[arg(long = "raw")]
+    #[arg(long = "raw", conflicts_with_all = ["json", "stream_json"])]
     pub raw: bool,
 
     /// Path to config.toml (default: ~/.kuku/config.toml)

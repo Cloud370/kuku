@@ -20,11 +20,6 @@ fn resolve_config_path(
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
 
-    if args.raw && (args.json || args.stream_json) {
-        eprintln!("error: --raw and --json/--stream-json are mutually exclusive");
-        std::process::exit(1);
-    }
-
     let config_path = resolve_config_path(args.config.as_deref())?;
     if !config_path.exists() {
         eprintln!("error: config file not found: {}", config_path.display());

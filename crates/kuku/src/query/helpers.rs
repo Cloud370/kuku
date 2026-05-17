@@ -474,6 +474,13 @@ mod tests {
     }
 
     #[test]
+    fn display_summary_memory_forget() {
+        let args = serde_json::json!({"scope": "project", "text": "kuku is Rust"});
+        let s = display_summary("memory.forget", &args, None);
+        assert_eq!(s, "\"kuku is Rust\"");
+    }
+
+    #[test]
     fn display_summary_edit_file() {
         let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new"});
         let s = display_summary("edit_file", &args, None);
