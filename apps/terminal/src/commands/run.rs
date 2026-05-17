@@ -217,16 +217,18 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(UiEvent::ToolResult {
                 tool_call_id,
+                status,
                 summary,
+                structured: _,
             }) => {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_result(tool_call_id, "ok".into(), summary, None, false)
+                        OutputLine::tool_result(tool_call_id, status, summary, None, false)
                             .to_json_line()
                     );
                 } else {
-                    println!("{}", display.tool_result("ok", &summary, &tool_call_id));
+                    println!("{}", display.tool_result(&status, &summary, &tool_call_id));
                 }
             }
             Some(UiEvent::PermissionRequested { request }) => {

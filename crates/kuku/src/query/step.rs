@@ -108,12 +108,14 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
 
 pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
     if let Some(saved) = pending.saved_tool_call.take() {
-        execute_tool_call(&mut pending, &saved.tool_call).await?;
+        let result = execute_tool_call(&mut pending, &saved.tool_call).await?;
         return Ok(PendingStep::ToolResultReady {
             pending: Box::new(pending),
             ui_event: UiEvent::ToolResult {
                 tool_call_id: saved.tool_call.id.clone(),
-                summary: saved.summary,
+                status: result.status,
+                summary: result.summary,
+                structured: result.structured,
             },
         });
     }
@@ -218,13 +220,14 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             ),
                         )?;
                         let tc_id = queued_tool_call.tool_call.id.clone();
-                        let summary = queued_tool_call.summary.clone();
-                        execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
+                        let result = execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
                         return Ok(PendingStep::ToolResultReady {
                             pending: Box::new(pending),
                             ui_event: UiEvent::ToolResult {
                                 tool_call_id: tc_id,
-                                summary,
+                                status: result.status,
+                                summary: result.summary,
+                                structured: result.structured,
                             },
                         });
                     }

@@ -15,7 +15,7 @@ use super::types::{PendingRun, PermissionChoice, PermissionRequest};
 pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
-) -> Result<()> {
+) -> Result<crate::tool::ToolResultEnvelope> {
     let prior_events = EventStore::replay(&pending.events_path)?;
     let result_event_id = EventStore::open(&pending.events_path)?.next_id();
     let result = crate::tool::dispatch(
@@ -33,13 +33,13 @@ pub(super) async fn execute_tool_call(
         turn: pending.turn,
         ts: now_timestamp()?,
         tool_call_id: tool_call.id.clone(),
-        status: result.status,
-        summary: result.summary,
-        model_content: result.model_content,
+        status: result.status.clone(),
+        summary: result.summary.clone(),
+        model_content: result.model_content.clone(),
         truncated: result.truncated,
-        structured: result.structured,
+        structured: result.structured.clone(),
     })?;
-    Ok(())
+    Ok(result)
 }
 
 // ---------- Permission helpers ----------

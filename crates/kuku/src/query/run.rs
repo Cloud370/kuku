@@ -235,10 +235,12 @@ impl Run {
             source,
             &rule,
         )?;
-        execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
+        let result = execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
         let tool_result_event = Some(UiEvent::ToolResult {
             tool_call_id: waiting.queued_tool_call.tool_call.id.clone(),
-            summary: waiting.queued_tool_call.summary.clone(),
+            status: result.status,
+            summary: result.summary,
+            structured: result.structured,
         });
         self.state = RunState::Pending(Box::new(pending));
         Ok(tool_result_event)

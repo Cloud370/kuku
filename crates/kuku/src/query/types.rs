@@ -73,7 +73,9 @@ pub enum UiEvent {
     },
     ToolResult {
         tool_call_id: String,
+        status: String,
         summary: String,
+        structured: Option<serde_json::Value>,
     },
     PermissionRequested {
         request: PermissionRequest,
