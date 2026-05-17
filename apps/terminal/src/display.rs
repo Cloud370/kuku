@@ -143,6 +143,14 @@ impl Display {
         }
     }
 
+    /// Render a running indicator shown while a tool executes.
+    pub fn tool_running(&self) -> String {
+        match self.mode {
+            RenderMode::Pretty => "  ...".to_string(),
+            RenderMode::Raw => "run ...".to_string(),
+        }
+    }
+
     /// Render a tool result line.
     pub fn tool_result(&self, status: &str, summary: &str, _tool_call_id: &str) -> String {
         match self.mode {
