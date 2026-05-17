@@ -28,22 +28,26 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         cfg.and_then(|c| c.tier(c.default_tier()))
     };
 
-    let provider_name_from_tier = tier_config.map(|tc| tc.provider.as_str());
-    let provider_name: &str = match input.provider {
-        Some(p) => ProviderKind::from(p).as_str(),
-        None => provider_name_from_tier.ok_or_else(|| {
+    // Find provider config and its section name
+    let (provider_name, provider_cfg): (&str, Option<&CfgProvider>) = if let Some(p) =
+        input.provider
+    {
+        let target_format = provider_kind_to_format(ProviderKind::from(p));
+        match cfg.and_then(|c| {
+            c.providers
+                .iter()
+                .find(|(_, pc)| pc.format == target_format)
+        }) {
+            Some((name, pc)) => (name.as_str(), Some(pc)),
+            None => (ProviderKind::from(p).as_str(), None),
+        }
+    } else {
+        let name = tier_config.map(|tc| tc.provider.as_str()).ok_or_else(|| {
             Error::MissingProviderConfig(
                 "no provider configured; set builder .provider() or configure tiers".to_string(),
             )
-        })?,
-    };
-
-    let provider_cfg: Option<&CfgProvider> = match input.provider {
-        Some(p) => {
-            let target_format = provider_kind_to_format(ProviderKind::from(p));
-            cfg.and_then(|c| c.providers.values().find(|pc| pc.format == target_format))
-        }
-        None => cfg.and_then(|c| c.provider(provider_name)),
+        })?;
+        (name, cfg.and_then(|c| c.provider(name)))
     };
 
     let model: String = if let Some(ref model) = input.model {

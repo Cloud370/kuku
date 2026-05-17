@@ -316,9 +316,18 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         }
     };
     let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
+    let thinking_overhead: u32 = match resolved.config.think_level {
+        crate::config::ThinkLevel::Off => 0,
+        crate::config::ThinkLevel::Low => 1024,
+        crate::config::ThinkLevel::Medium => 4096,
+        crate::config::ThinkLevel::High => 16000,
+    };
     let context_headroom = compute_context_headroom(
-        resolved.config.max_context_tokens,
-        pending.query.max_output_tokens,
+        resolved
+            .config
+            .max_context_tokens
+            .saturating_sub(thinking_overhead),
+        Some(resolved.config.max_output_tokens),
         estimated_input,
     );
     if pending.turn > 1 {
