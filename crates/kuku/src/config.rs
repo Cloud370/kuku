@@ -360,10 +360,7 @@ impl ConfigFile {
             }
         }
 
-        let default_tier = self
-            .default_model
-            .as_deref()
-            .unwrap_or("balanced");
+        let default_tier = self.default_model.as_deref().unwrap_or("balanced");
         if !self.model.contains_key(default_tier) {
             return Err(Error::ConfigLoad(format!(
                 "default_model '{default_tier}' is not defined in [model]"
@@ -527,14 +524,18 @@ pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
             Error::ConfigLoad(format!("unknown config key: segment '{part}' not found"))
         })?;
         table = item.as_table_mut().ok_or_else(|| {
-            Error::ConfigLoad(format!("unknown config key: segment '{part}' is not a table"))
+            Error::ConfigLoad(format!(
+                "unknown config key: segment '{part}' is not a table"
+            ))
         })?;
     }
 
     let new_value = match leaf {
         "context_window" | "max_output_tokens" => {
             let n: i64 = value.parse().map_err(|_| {
-                Error::ConfigLoad(format!("'{dot_key}' must be a positive integer, got '{value}'"))
+                Error::ConfigLoad(format!(
+                    "'{dot_key}' must be a positive integer, got '{value}'"
+                ))
             })?;
             if n <= 0 {
                 return Err(Error::ConfigLoad(format!(

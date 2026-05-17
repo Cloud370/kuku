@@ -40,7 +40,7 @@ pub struct RunArgs {
     #[arg(short = 'y', long = "yes")]
     pub auto_yes: bool,
 
-    /// Model alias
+    /// Model tier name (strong/balanced/light) or bare model ID
     #[arg(long = "model")]
     pub model: Option<String>,
 

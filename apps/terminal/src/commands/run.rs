@@ -5,7 +5,9 @@ use kuku::{query, PermissionChoice, UiEvent};
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine, Verbosity};
 
-fn resolve_config_path(custom: Option<&str>) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+fn resolve_config_path(
+    custom: Option<&str>,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     if let Some(p) = custom {
         return Ok(std::path::PathBuf::from(p));
     }
