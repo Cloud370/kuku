@@ -1,4 +1,4 @@
-use crate::config::{ApiKey, Config, ProviderConfig as CfgProvider, TierConfig, ThinkLevel};
+use crate::config::{Config, ProviderConfig as CfgProvider, TierConfig, ThinkLevel};
 use crate::error::{Error, Result};
 
 use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};

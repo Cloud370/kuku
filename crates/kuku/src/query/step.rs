@@ -284,12 +284,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let model_aliases: Vec<String> = pending
-        .config
-        .model_names()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
+    let model_tiers = pending.config.tier_infos();
 
     let mut assembly = match assemble_context(ContextInput {
         environment: EnvironmentSource {
@@ -302,7 +297,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         project_memory,
         history,
         tools: tool::to_tool_schemas(&resolved.registry),
-        model_aliases,
+        model_tiers,
     }) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -340,21 +335,21 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         }
     }
     let request_id = format!("req_{}", pending.request_num);
+    let tier_name = pending
+        .query
+        .tier
+        .clone()
+        .unwrap_or_else(|| pending.config.default_tier().to_string());
+    let think = resolved.config.think_level.as_str().to_string();
+    let max_output = resolved.config.max_output_tokens;
     let params = serde_json::json!({
-        "max_output_tokens": pending.query.max_output_tokens,
+        "max_output_tokens": max_output,
         "temperature": pending.query.temperature,
     });
-    let role = "main";
-    let alias = pending
-        .config
-        .resolve_model_alias(pending.config.default_model())
-        .map(|s| s.split(':').next().unwrap_or("default").to_string())
-        .unwrap_or_else(|| "default".to_string());
-    let think = "medium";
 
     let provenance = build_request_provenance(RequestProvenanceInput {
         request_id: request_id.clone(),
-        role: role.to_string(),
+        tier: tier_name.clone(),
         workspace: pending.workspace.display().to_string(),
         platform: platform.clone(),
         current_date: current_date.clone(),
@@ -384,7 +379,6 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             ordered_tool_names: resolved.ordered_tool_names.clone(),
             tool_count: resolved.tool_count,
         },
-        provider_alias: resolved.config.kind.as_str().to_string(),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
         resolved_provider: resolved.config.kind.as_str().to_string(),
         resolved_model: resolved.config.model.clone(),
@@ -402,9 +396,8 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             turn: pending.turn,
             ts: now_timestamp()?,
             request_id: request_id.clone(),
-            role: role.to_string(),
-            alias,
-            think: think.to_string(),
+            tier: tier_name,
+            think: think.clone(),
             resolved_provider: resolved.config.kind.as_str().to_string(),
             resolved_model: resolved.config.model.clone(),
             params,
@@ -422,10 +415,10 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let request = crate::provider::types::ProviderRequest {
         assembly,
         model: resolved.config.model.clone(),
-        max_output_tokens: pending.query.max_output_tokens,
+        max_output_tokens: Some(max_output),
         temperature: pending.query.temperature,
         stream: true,
-        think_level: think.to_string(),
+        think_level: think,
         thinking: resolved.config.thinking.clone(),
     };
 
@@ -466,8 +459,10 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     let config = match resolve_config(ResolveConfigInput {
         provider: pending.query.provider,
         model: pending.query.model.clone(),
+        tier: pending.query.tier.clone(),
         base_url: pending.query.base_url.clone(),
         api_key: pending.query.api_key.clone(),
+        max_output_tokens: pending.query.max_output_tokens,
         config: Some((*pending.config).clone()),
     }) {
         Ok(config) => config,

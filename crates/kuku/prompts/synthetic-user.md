@@ -17,7 +17,8 @@
 </kuku_project_memory>
 </kuku_memory>
 
-<kuku_model_aliases>
-{{model_aliases_rendered}}
-</kuku_model_aliases>
+<kuku_models>
+{{model_tiers_rendered}}
 
+Choose the appropriate tier when dispatching sub-agents.
+</kuku_models>

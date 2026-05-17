@@ -26,7 +26,7 @@ pub struct ToolRegistryProvenance {
 /// Inputs for building request provenance metadata.
 pub struct RequestProvenanceInput {
     pub request_id: String,
-    pub role: String,
+    pub tier: String,
     pub workspace: String,
     pub platform: String,
     pub current_date: String,
@@ -35,7 +35,6 @@ pub struct RequestProvenanceInput {
     pub prompt_asset_sources: Vec<FileSource>,
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
-    pub provider_alias: String,
     pub provider_format: String,
     pub resolved_provider: String,
     pub resolved_model: String,
@@ -50,7 +49,7 @@ pub struct RequestProvenanceInput {
 /// Captured provenance metadata for a provider request, stored in events.jsonl.
 pub struct RequestProvenance {
     pub request_id: String,
-    pub role: String,
+    pub tier: String,
     pub workspace: String,
     pub platform: String,
     pub current_date: String,
@@ -59,7 +58,6 @@ pub struct RequestProvenance {
     pub prompt_asset_sources: Vec<FileSource>,
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
-    pub provider_alias: String,
     pub provider_format: String,
     pub resolved_provider: String,
     pub resolved_model: String,
@@ -74,7 +72,7 @@ pub struct RequestProvenance {
 pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvenance {
     RequestProvenance {
         request_id: input.request_id,
-        role: input.role,
+        tier: input.tier,
         workspace: input.workspace,
         platform: input.platform,
         current_date: input.current_date,
@@ -83,7 +81,6 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         prompt_asset_sources: input.prompt_asset_sources,
         history_range: input.history_range,
         tool_registry: input.tool_registry,
-        provider_alias: input.provider_alias,
         provider_format: input.provider_format,
         resolved_provider: input.resolved_provider,
         resolved_model: input.resolved_model,

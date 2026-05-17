@@ -8,7 +8,7 @@ pub(crate) struct SyntheticUserTemplateInput {
     pub(crate) project_instructions_rendered: String,
     pub(crate) global_memory_rendered: String,
     pub(crate) project_memory_rendered: String,
-    pub(crate) model_aliases_rendered: String,
+    pub(crate) model_tiers_rendered: String,
 }
 
 pub(crate) fn render_synthetic_user(
@@ -34,8 +34,8 @@ pub(crate) fn render_synthetic_user(
             input.project_memory_rendered.as_str(),
         ),
         (
-            "model_aliases_rendered",
-            input.model_aliases_rendered.as_str(),
+            "model_tiers_rendered",
+            input.model_tiers_rendered.as_str(),
         ),
     ];
 
@@ -63,7 +63,7 @@ fn validate_template_placeholders(template: &str) -> Result<()> {
                 | "project_instructions_rendered"
                 | "global_memory_rendered"
                 | "project_memory_rendered"
-                | "model_aliases_rendered"
+                | "model_tiers_rendered"
         ) {
             return Err(Error::PromptRender(format!(
                 "missing template variable: {name}"

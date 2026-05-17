@@ -46,7 +46,7 @@ pub struct ContextInput {
     pub project_memory: Option<MemorySource>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
-    pub model_aliases: Vec<String>,
+    pub model_tiers: Vec<crate::config::TierInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,10 +86,15 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
         .map(|source| source.content.clone())
         .unwrap_or_else(|| "No project memory.".to_string());
 
-    let model_aliases_text = if input.model_aliases.is_empty() {
-        "No model aliases configured.".to_string()
+    let model_tiers_text = if input.model_tiers.is_empty() {
+        "No model tiers configured.".to_string()
     } else {
-        input.model_aliases.join("\n")
+        input
+            .model_tiers
+            .iter()
+            .map(|info| format!("{} — {}", info.name, info.purpose))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
     let synthetic_text = render_synthetic_user(
@@ -101,7 +106,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
             project_instructions_rendered: project_instructions_text,
             global_memory_rendered: global_memory_text,
             project_memory_rendered: project_memory_text,
-            model_aliases_rendered: model_aliases_text,
+            model_tiers_rendered: model_tiers_text,
         },
     )?;
 
