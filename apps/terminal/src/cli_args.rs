@@ -112,8 +112,17 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand)]
 pub enum ConfigSubcommand {
+    /// Show current configuration (redacted)
+    Show,
     /// Validate config file
     Validate,
+    /// Set a config value (e.g. model.balanced.think high)
+    Set {
+        /// Dot-notation config key (e.g. model.balanced.think)
+        key: String,
+        /// Value to set
+        value: String,
+    },
     /// Manage project permission policy
     Policy(PolicyArgs),
 }

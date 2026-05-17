@@ -1,9 +1,9 @@
-use kuku::config::load_config;
+use kuku::config::{load_config, set_value, show_redacted};
 use kuku::session::kuku_home;
 
 use crate::cli_args::{ConfigArgs, ConfigSubcommand, PolicySubcommand};
 
-/// Show or manage configuration: `kuku config [validate|policy]`
+/// Show or manage configuration: `kuku config [show|validate|set|policy]`
 pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
     let path = if let Some(p) = &args.config {
         std::path::PathBuf::from(p)
@@ -12,7 +12,17 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match args.cmd {
-        None | Some(ConfigSubcommand::Validate) => {
+        None | Some(ConfigSubcommand::Show) => {
+            if !path.exists() {
+                eprintln!("error: 未找到配置文件 {}", path.display());
+                eprintln!("提示: 运行 `kuku init` 初始化配置");
+                std::process::exit(1);
+            }
+            let output = show_redacted(&path)?;
+            print!("{output}");
+            Ok(())
+        }
+        Some(ConfigSubcommand::Validate) => {
             if !path.exists() {
                 eprintln!("error: 未找到配置文件 {}", path.display());
                 eprintln!("提示: 运行 `kuku init` 初始化配置");
@@ -23,14 +33,33 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
             println!("Config is valid.");
             Ok(())
         }
+        Some(ConfigSubcommand::Set { key, value }) => {
+            if !path.exists() {
+                eprintln!("error: 未找到配置文件 {}", path.display());
+                eprintln!("提示: 运行 `kuku init` 初始化配置");
+                std::process::exit(1);
+            }
+            set_value(&path, &key, &value)?;
+            let display_value = if key.contains("api_key") {
+                if value.starts_with('$') {
+                    value.clone()
+                } else {
+                    "<redacted>".to_string()
+                }
+            } else if value.parse::<i64>().is_ok() {
+                value.clone()
+            } else {
+                format!("\"{value}\"")
+            };
+            println!("已更新 {key} = {display_value}");
+            Ok(())
+        }
         Some(ConfigSubcommand::Policy(policy_args)) => match policy_args.cmd {
             PolicySubcommand::Allow { risk: _ } => {
-                // TODO: implement policy.md write
                 eprintln!("kuku config policy: policy.md write not yet implemented");
                 Ok(())
             }
             PolicySubcommand::Deny { risk: _ } => {
-                // TODO: implement policy.md write
                 eprintln!("kuku config policy: policy.md write not yet implemented");
                 Ok(())
             }
