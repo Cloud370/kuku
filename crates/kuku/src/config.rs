@@ -580,6 +580,15 @@ pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Load a config file, validate it, and return a redacted display string.
+///
+/// Env-var references (`$FOO`) are shown as-is. Plaintext keys are masked.
+pub fn show_redacted(path: &Path) -> Result<String> {
+    let config_file = load_config(path)?;
+    let config = config_file.resolve()?;
+    Ok(config.redacted_display())
+}
+
 #[cfg(test)]
 mod set_value_tests {
     use super::*;
@@ -750,5 +759,118 @@ api_key = "test-key-anthropic"
 
         let error = set_value(&path, "unknown.field", "value").unwrap_err();
         assert!(error.to_string().contains("unknown config key"));
+    }
+}
+
+#[cfg(test)]
+mod show_redacted_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_config(content: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("config.toml"), content).unwrap();
+        dir
+    }
+
+    #[test]
+    fn show_redacted_masks_plaintext_api_key() {
+        let config = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+context_window = 200000
+max_output_tokens = 64000
+purpose = "deep reasoning"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+context_window = 200000
+max_output_tokens = 48000
+purpose = "general purpose"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+context_window = 200000
+max_output_tokens = 32000
+purpose = "quick tasks"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-secret123"
+"#;
+        let dir = temp_config(config);
+        let path = dir.path().join("config.toml");
+
+        let output = show_redacted(&path).unwrap();
+        assert!(output.contains("<redacted>"));
+        assert!(!output.contains("sk-ant-secret123"));
+    }
+
+    #[test]
+    fn show_redacted_preserves_env_var_reference() {
+        let _guard = crate::env_lock().lock().unwrap();
+        std::env::set_var("_KUKU_TEST_SHOW_KEY", "test-value");
+        let config = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+context_window = 200000
+max_output_tokens = 64000
+purpose = "deep reasoning"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+context_window = 200000
+max_output_tokens = 48000
+purpose = "general purpose"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+context_window = 200000
+max_output_tokens = 32000
+purpose = "quick tasks"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "$_KUKU_TEST_SHOW_KEY"
+"#;
+        let dir = temp_config(config);
+        let path = dir.path().join("config.toml");
+
+        let output = show_redacted(&path).unwrap();
+        assert!(output.contains("$_KUKU_TEST_SHOW_KEY"));
+        std::env::remove_var("_KUKU_TEST_SHOW_KEY");
+    }
+
+    #[test]
+    fn show_redacted_errors_on_missing_file() {
+        let error = show_redacted(std::path::Path::new("/nonexistent/config.toml")).unwrap_err();
+        assert!(error.to_string().contains("required tier"));
+    }
+
+    #[test]
+    fn show_redacted_errors_on_invalid_config() {
+        let dir = temp_config("not valid toml [[[");
+        let path = dir.path().join("config.toml");
+
+        let error = show_redacted(&path).unwrap_err();
+        assert!(error.to_string().contains("invalid config"));
     }
 }
