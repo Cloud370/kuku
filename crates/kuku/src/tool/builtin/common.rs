@@ -161,6 +161,20 @@ pub(super) fn is_blocked_relative_path(path: &str) -> bool {
         || path.rsplit('/').next().is_some_and(is_sensitive_file_name)
 }
 
+pub(super) fn is_default_excluded_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | "dist"
+            | "build"
+    )
+}
+
 pub(crate) fn is_sensitive_file_name(name: &str) -> bool {
     matches!(
         name,
