@@ -16,6 +16,24 @@ fn resolve_config_path(
     Ok(home.join("config.toml"))
 }
 
+fn close_thinking(
+    in_thinking: &mut bool,
+    thinking_start: &mut Option<Instant>,
+    display: &mut Display,
+    use_stream_json: bool,
+) {
+    if *in_thinking {
+        *in_thinking = false;
+        let elapsed = thinking_start
+            .take()
+            .map(|s| s.elapsed())
+            .unwrap_or_default();
+        if !use_stream_json {
+            println!("{}", display.thinking_end(elapsed));
+        }
+    }
+}
+
 /// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
@@ -55,6 +73,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         RenderMode::Raw => Display::new_raw(args.show_thinking, think_level_str),
     };
 
+    let mut previous_input_tokens: u64 = 0;
+
     let mut q = query(&prompt).config_path(config_path);
     if let Some(model) = &args.model {
         q = q.model(model.clone());
@@ -69,7 +89,22 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .max_by_key(|s| s.created_at.as_str())
             .ok_or("no sessions found")?;
-        q = q.session(latest.session_id.clone());
+        let session_id = latest.session_id.clone();
+        q = q.session(session_id.clone());
+
+        if let Ok(events_path) = kuku::session::session_events_path(&home, &workspace, &session_id)
+        {
+            if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
+                for event in events.iter().rev() {
+                    if let kuku::event::EventPayload::ModelResponse { usage, .. } = &event.payload {
+                        if let Some(tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            previous_input_tokens = tokens;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // JSON single-result path: use run(), output one final JSON line
@@ -91,33 +126,6 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let use_stream_json = args.stream_json;
     let mut run = q.start().await?;
     let session_id = run.session_id().to_string();
-
-    // -c context extraction (before session_started so previous_input_tokens is known)
-    let mut previous_input_tokens: u64 = 0;
-    if args.cont {
-        let home = kuku::session::kuku_home()?;
-        let workspace = kuku::session::current_workspace()?;
-        let sessions = kuku::session::list_sessions(&home, &workspace)?;
-        if let Some(latest) = sessions.iter().max_by_key(|s| s.created_at.as_str()) {
-            if let Ok(events_path) =
-                kuku::session::session_events_path(&home, &workspace, &latest.session_id)
-            {
-                if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
-                    for event in events.iter().rev() {
-                        if let kuku::event::EventPayload::ModelResponse { usage, .. } =
-                            &event.payload
-                        {
-                            if let Some(tokens) = usage.get("input_tokens").and_then(|v| v.as_u64())
-                            {
-                                previous_input_tokens = tokens;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     let prev_tokens = if previous_input_tokens > 0 {
         Some(previous_input_tokens)
@@ -169,16 +177,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         match event {
             Some(UiEvent::TextDelta { text }) => {
-                if in_thinking {
-                    in_thinking = false;
-                    let elapsed = thinking_start
-                        .take()
-                        .map(|s| s.elapsed())
-                        .unwrap_or_default();
-                    if !use_stream_json {
-                        println!("{}", display.thinking_end(elapsed));
-                    }
-                }
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
                 if use_stream_json {
                     println!("{}", OutputLine::text_delta(text).to_json_line());
                 } else {
@@ -205,16 +209,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 tool,
                 summary,
             }) => {
-                if in_thinking {
-                    in_thinking = false;
-                    let elapsed = thinking_start
-                        .take()
-                        .map(|s| s.elapsed())
-                        .unwrap_or_default();
-                    if !use_stream_json {
-                        println!("{}", display.thinking_end(elapsed));
-                    }
-                }
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
                 if use_stream_json {
                     println!(
                         "{}",
@@ -247,6 +247,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Some(UiEvent::PermissionRequested { request }) => {
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
                 if args.auto_yes || use_stream_json {
                     let _ = run.decide(&request.id, PermissionChoice::Once).await?;
                     if use_stream_json {
@@ -289,13 +295,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Some(UiEvent::Done { usage, turn, .. }) => {
-                if in_thinking && !use_stream_json {
-                    let elapsed = thinking_start
-                        .take()
-                        .map(|s| s.elapsed())
-                        .unwrap_or_default();
-                    println!("{}", display.thinking_end(elapsed));
-                }
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
                 if let Some(u) = &usage {
                     total_input_tokens += u.input_tokens.unwrap_or(0);
                     total_output_tokens += u.output_tokens.unwrap_or(0);
