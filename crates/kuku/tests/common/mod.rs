@@ -275,3 +275,50 @@ impl Drop for TestEnv {
         }
     }
 }
+
+// ---------- Test config helpers ----------
+
+/// Build a minimal Config with anthropic + openai providers and a balanced tier.
+/// Builder overrides (.model(), .base_url(), .api_key()) take precedence at resolution time.
+#[allow(dead_code)]
+pub fn test_config() -> kuku::config::Config {
+    use std::collections::BTreeMap;
+    use kuku::config::{ApiKey, Config, ProviderConfig, TierConfig, ThinkLevel};
+
+    let mut tiers = BTreeMap::new();
+    tiers.insert(
+        "balanced".to_string(),
+        TierConfig {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            think: ThinkLevel::Medium,
+            context_window: 200_000,
+            max_output_tokens: 48_000,
+            purpose: "balanced".to_string(),
+        },
+    );
+
+    let mut providers = BTreeMap::new();
+    providers.insert(
+        "anthropic".to_string(),
+        ProviderConfig {
+            format: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            api_key: ApiKey::Plaintext("unused".to_string()),
+        },
+    );
+    providers.insert(
+        "openai".to_string(),
+        ProviderConfig {
+            format: "openai-chat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: ApiKey::Plaintext("unused".to_string()),
+        },
+    );
+
+    Config {
+        tiers,
+        providers,
+        default_tier: "balanced".to_string(),
+    }
+}

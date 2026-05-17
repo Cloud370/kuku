@@ -88,7 +88,7 @@ mod tests {
             project_instructions_rendered: "No project instructions found.".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
-            model_aliases_rendered: "No model aliases configured.".to_string(),
+            model_tiers_rendered: "No model tiers configured.".to_string(),
         };
 
         let rendered = render_synthetic_user(
@@ -115,7 +115,7 @@ mod tests {
             project_instructions_rendered: "literal {{value}} from instructions".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
-            model_aliases_rendered: "No model aliases configured.".to_string(),
+            model_tiers_rendered: "No model tiers configured.".to_string(),
         };
 
         let rendered =

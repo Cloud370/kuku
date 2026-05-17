@@ -1,5 +1,7 @@
 mod config {
-    pub use kuku::config::{load_config, ApiKeySource, Config, ResolvedThinking};
+    pub use kuku::config::{
+        load_config, ApiKey, Config, ProviderConfig, ResolvedThinking, ThinkLevel, TierConfig,
+    };
 }
 
 mod context {
@@ -30,7 +32,7 @@ mod provider {
 
 mod common;
 
-use config::{load_config, Config};
+use config::{load_config, ApiKey, Config, ThinkLevel};
 use provider::config::{resolve_config, ResolveConfigInput};
 
 fn config_from_toml(toml: &str) -> Config {
@@ -41,120 +43,226 @@ fn config_from_toml(toml: &str) -> Config {
     file.resolve().unwrap()
 }
 
-#[test]
-fn full_config_round_trip() {
-    let cfg = config_from_toml(
-        r#"
-[model]
-strong = "anthropic:claude-sonnet-4-6"
-fast = "openai:gpt-5-mini"
-default = "strong"
+fn minimal_valid_toml() -> &'static str {
+    r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+context_window = 200000
+max_output_tokens = 64000
+purpose = "deep reasoning"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+context_window = 200000
+max_output_tokens = 48000
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+context_window = 200000
+max_output_tokens = 32000
 
 [provider.anthropic]
 format = "anthropic"
+base_url = "https://api.anthropic.com"
 api_key = "sk-ant-123"
+"#
+}
 
-[provider.anthropic.thinking]
-low = 2048
-medium = 8192
-high = 32000
+#[test]
+fn full_config_round_trip() {
+    let cfg = config_from_toml(minimal_valid_toml());
 
-[provider.openai]
-format = "openai"
-api_key_env = "OPENAI_API_KEY"
-"#,
-    );
+    assert_eq!(cfg.default_tier(), "balanced");
+    let strong = cfg.tier("strong").unwrap();
+    assert_eq!(strong.provider, "anthropic");
+    assert_eq!(strong.model, "claude-sonnet-4-6");
+    assert_eq!(strong.think, ThinkLevel::High);
+    assert_eq!(strong.context_window, 200_000);
+    assert_eq!(strong.max_output_tokens, 64_000);
+    assert_eq!(strong.purpose, "deep reasoning");
 
-    assert_eq!(cfg.default_model(), "strong");
-    assert_eq!(
-        cfg.resolve_model_alias("strong"),
-        Some("anthropic:claude-sonnet-4-6")
-    );
-    assert_eq!(cfg.resolve_model_alias("fast"), Some("openai:gpt-5-mini"));
+    let balanced = cfg.tier("balanced").unwrap();
+    assert_eq!(balanced.think, ThinkLevel::Medium);
+    assert_eq!(balanced.max_output_tokens, 48_000);
+
+    let light = cfg.tier("light").unwrap();
+    assert_eq!(light.think, ThinkLevel::Off);
+    assert_eq!(light.max_output_tokens, 32_000);
+
     assert_eq!(cfg.provider("anthropic").unwrap().format, "anthropic");
-    assert!(cfg.provider("anthropic").unwrap().thinking.low.is_some());
-    assert!(cfg.provider("openai").unwrap().thinking.low.is_none());
 
     let display = cfg.redacted_display();
     assert!(!display.contains("sk-ant-123"));
     assert!(display.contains("<redacted>"));
-    assert!(display.contains("OPENAI_API_KEY"));
 }
 
 #[test]
-fn empty_config_has_sensible_defaults() {
-    let cfg = config_from_toml("");
-    assert!(cfg.models.is_empty());
-    assert!(cfg.providers.is_empty());
-    assert_eq!(cfg.default_model(), "default");
-}
-
-#[test]
-fn model_without_colon_is_rejected() {
+fn missing_required_tier_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
-[model]
-bad = "no-colon"
-"#,
-    )
-    .unwrap();
-    let file = load_config(&path).unwrap();
-    let err = file.resolve().unwrap_err();
-    assert!(err.to_string().contains("no-colon"));
-}
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
 
-#[test]
-fn both_api_key_types_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    std::fs::write(
-        &path,
-        r#"
-[provider.dup]
+[provider.anthropic]
 format = "anthropic"
-api_key = "sk-123"
-api_key_env = "ENV"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-123"
 "#,
     )
     .unwrap();
     let file = load_config(&path).unwrap();
     let err = file.resolve().unwrap_err();
-    assert!(err.to_string().contains("not both"));
+    assert!(err.to_string().contains("required tier 'balanced' is missing"));
+}
+
+#[test]
+fn invalid_think_level_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "extreme"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-123"
+"#,
+    )
+    .unwrap();
+    let file = load_config(&path).unwrap();
+    let err = file.resolve().unwrap_err();
+    assert!(err.to_string().contains("think 'extreme' is invalid"));
+}
+
+#[test]
+fn api_key_env_ref_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "$TEST_API_KEY_VAR"
+"#,
+    )
+    .unwrap();
+    let file = load_config(&path).unwrap();
+    let cfg = file.resolve().unwrap();
+    let api_key = &cfg.provider("anthropic").unwrap().api_key;
+    match api_key {
+        ApiKey::Env(name) => assert_eq!(name, "TEST_API_KEY_VAR"),
+        other => panic!("expected Env, got {other:?}"),
+    }
+}
+
+#[test]
+fn unsupported_format_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "custom"
+model = "test"
+
+[model.balanced]
+provider = "custom"
+model = "test"
+
+[model.light]
+provider = "custom"
+model = "test"
+
+[provider.custom]
+format = "grpc"
+base_url = "https://custom.api"
+api_key = "key"
+"#,
+    )
+    .unwrap();
+    let file = load_config(&path).unwrap();
+    let err = file.resolve().unwrap_err();
+    assert!(err.to_string().contains("format 'grpc' is not supported"));
+}
+
+#[test]
+fn tier_referencing_missing_provider_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "nonexistent"
+model = "test"
+
+[model.balanced]
+provider = "nonexistent"
+model = "test"
+
+[model.light]
+provider = "nonexistent"
+model = "test"
+"#,
+    )
+    .unwrap();
+    let file = load_config(&path).unwrap();
+    let err = file.resolve().unwrap_err();
+    assert!(err.to_string().contains("not defined in [provider]"));
 }
 
 #[test]
 fn redacted_display_never_leaks_api_keys() {
-    let cfg = config_from_toml(
-        r#"
-[provider.anthropic]
-format = "anthropic"
-api_key = "sk-ant-very-secret-key-12345"
-"#,
-    );
+    let cfg = config_from_toml(minimal_valid_toml());
     let display = cfg.redacted_display();
-    assert!(!display.contains("sk-ant-very-secret-key-12345"));
-    assert!(!display.contains("very-secret"));
+    assert!(!display.contains("sk-ant-123"));
     assert!(display.contains("<redacted>"));
 }
 
 #[test]
-fn resolution_chain_order_explicit_beats_env_beats_file_beats_default() {
-    let cfg = config_from_toml(
-        r#"
-[model]
-strong = "anthropic:claude-file"
-default = "strong"
+fn resolution_chain_builder_model_wins() {
+    let cfg = config_from_toml(minimal_valid_toml());
 
-[provider.anthropic]
-format = "anthropic"
-api_key = "sk-ant-file"
-"#,
-    );
-
-    // explicit model param wins over everything
     let resolved = resolve_config(ResolveConfigInput {
         model: Some("claude-opus-4-7".to_string()),
         config: Some(cfg.clone()),
@@ -163,14 +271,11 @@ api_key = "sk-ant-file"
     .unwrap();
     assert_eq!(resolved.model, "claude-opus-4-7");
 
-    // config file model used when no explicit param
     let resolved = resolve_config(ResolveConfigInput {
         config: Some(cfg),
         ..Default::default()
     })
     .unwrap();
-    assert_eq!(resolved.model, "claude-file");
-
-    // API key from config file is resolved
-    assert_eq!(resolved.api_key.expose(), "sk-ant-file");
+    assert_eq!(resolved.model, "claude-sonnet-4-6");
+    assert_eq!(resolved.api_key.expose(), "sk-ant-123");
 }

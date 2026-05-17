@@ -1,6 +1,6 @@
 mod common;
 
-use common::{anthropic_sse_response, openai_sse_response, TestEnv};
+use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
@@ -32,6 +32,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -107,6 +108,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -197,6 +199,7 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
         .model("claude-sonnet-4-6")
         .base_url(first_server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -229,6 +232,7 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -297,6 +301,7 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -396,6 +401,7 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -476,6 +482,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -554,6 +561,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -615,6 +623,7 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -668,6 +677,7 @@ async fn openai_success_returns_text_and_writes_events() {
         .model("gpt-5.4-mini")
         .base_url(server.base_url())
         .api_key("openai-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -701,6 +711,7 @@ async fn http_error_writes_model_error_and_turn_end() {
         .base_url(server.base_url())
         .api_key("bad")
         .session(sid)
+        .config(test_config())
         .run()
         .await
         .unwrap_err();
@@ -717,23 +728,16 @@ async fn http_error_writes_model_error_and_turn_end() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn missing_config_writes_error_without_fake_model_request() {
+async fn missing_config_fails_before_writing_session_events() {
     let env = TestEnv::new();
     let sid = "s_no_cfg";
 
     let err = query("test").session(sid).run().await.unwrap_err();
     assert!(matches!(err, Error::MissingProviderConfig(_)));
 
+    // Config error happens before any session events are written.
     let events = EventStore::replay(env.events_path(sid)).unwrap();
-    assert!(!events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelRequest { .. })));
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelError { .. })));
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::TurnEnd { .. })));
+    assert!(events.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -761,6 +765,7 @@ async fn api_key_is_not_written_to_events() {
         .api_key("secret-123")
         .base_url(server.base_url())
         .session(sid)
+        .config(test_config())
         .run()
         .await
         .unwrap();

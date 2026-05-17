@@ -75,7 +75,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         project_memory: Some(project_memory.clone()),
         history: history.clone(),
         tools: tools.clone(),
-        model_aliases: Vec::new(),
+        model_tiers: Vec::new(),
     })
     .unwrap();
 
@@ -131,7 +131,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
 
     let provenance = build_request_provenance(RequestProvenanceInput {
         request_id: "req_2".to_string(),
-        role: "default".to_string(),
+        tier: "balanced".to_string(),
         workspace: "/workspace".to_string(),
         platform: "linux".to_string(),
         current_date: "2026-05-14".to_string(),
@@ -166,7 +166,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             ordered_tool_names: vec!["read".to_string()],
             tool_count: 1,
         },
-        provider_alias: "sonnet".to_string(),
         provider_format: "anthropic".to_string(),
         resolved_provider: "anthropic".to_string(),
         resolved_model: "claude-sonnet-4-6".to_string(),
@@ -199,7 +198,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
         project_memory: None,
         history: Vec::new(),
         tools: Vec::new(),
-        model_aliases: Vec::new(),
+        model_tiers: Vec::new(),
     })
     .unwrap();
 
@@ -228,7 +227,7 @@ fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
         project_memory: None,
         history: Vec::new(),
         tools: Vec::new(),
-        model_aliases: Vec::new(),
+        model_tiers: Vec::new(),
     })
     .unwrap();
 

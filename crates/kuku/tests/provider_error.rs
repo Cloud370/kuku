@@ -1,5 +1,5 @@
 mod config {
-    pub use kuku::config::ResolvedThinking;
+    pub use kuku::config::{ResolvedThinking, ThinkLevel};
 }
 
 mod context {

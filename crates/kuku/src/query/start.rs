@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::config::{self, load_config};
+use crate::config::load_config;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::session::{

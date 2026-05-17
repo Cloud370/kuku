@@ -1,5 +1,5 @@
 mod config {
-    pub use kuku::config::ResolvedThinking;
+    pub use kuku::config::{ResolvedThinking, ThinkLevel};
 }
 
 mod context {
@@ -237,7 +237,7 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -266,7 +266,7 @@ fn anthropic_render_body_preserves_layer_order() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -298,7 +298,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -311,7 +311,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -361,7 +361,7 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -391,7 +391,7 @@ fn openai_render_body_preserves_layer_order() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -416,7 +416,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -433,7 +433,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     });
 
@@ -590,7 +590,7 @@ fn render_responses_body_basic_text() {
         max_output_tokens: Some(100),
         temperature: None,
         stream: true,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     };
 
@@ -616,7 +616,7 @@ fn render_responses_body_with_tools() {
         max_output_tokens: None,
         temperature: None,
         stream: true,
-        think_level: "auto".to_string(),
+        think_level: "off".to_string(),
         thinking: ResolvedThinking::default(),
     };
 
@@ -645,5 +645,5 @@ fn render_responses_body_with_reasoning() {
 
     let body = render_responses_body(&request);
     let reasoning = body["reasoning"].as_object().unwrap();
-    assert_eq!("high", reasoning["effort"].as_str().unwrap());
+    assert_eq!("xhigh", reasoning["effort"].as_str().unwrap());
 }

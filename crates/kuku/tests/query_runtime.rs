@@ -1,6 +1,6 @@
 mod common;
 
-use common::{anthropic_sse_response, TestEnv};
+use common::{anthropic_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
@@ -9,7 +9,7 @@ use kuku::{query, Error, Provider, UiEvent};
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
 
-    let run = query("inspect this project").start().await.unwrap();
+    let run = query("inspect this project").config(test_config()).start().await.unwrap();
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
@@ -54,7 +54,7 @@ async fn start_creates_session_events_under_kuku_home() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_without_provider_config_writes_error_and_closes_turn() {
+async fn run_without_config_fails_before_writing_events() {
     let env = TestEnv::new();
 
     let error = query("summarize")
@@ -64,25 +64,9 @@ async fn run_without_provider_config_writes_error_and_closes_turn() {
         .unwrap_err();
 
     assert!(matches!(error, Error::MissingProviderConfig(_)));
+    // Config error happens before any session events are written.
     let events = EventStore::replay(env.events_path("s_run_fixed")).unwrap();
-    assert_eq!(events.len(), 5);
-    assert!(matches!(
-        events[0].payload,
-        EventPayload::SessionMeta { .. }
-    ));
-    assert!(matches!(
-        events[1].payload,
-        EventPayload::TurnStart { turn: 1, .. }
-    ));
-    assert!(matches!(
-        events[2].payload,
-        EventPayload::UserInput { turn: 1, .. }
-    ));
-    assert!(matches!(events[3].payload, EventPayload::ModelError { .. }));
-    assert!(matches!(
-        events[4].payload,
-        EventPayload::TurnEnd { turn: 1, .. }
-    ));
+    assert!(events.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -114,6 +98,7 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -136,8 +121,8 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
 async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     let env = TestEnv::new();
 
-    query("first").session("s_continue").start().await.unwrap();
-    query("second").session("s_continue").start().await.unwrap();
+    query("first").session("s_continue").config(test_config()).start().await.unwrap();
+    query("second").session("s_continue").config(test_config()).start().await.unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
     assert_eq!(events.len(), 5);
@@ -174,7 +159,7 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
 async fn workspace_is_not_polluted() {
     let env = TestEnv::new();
 
-    let _ = query("no pollution").run().await.unwrap_err();
+    let _ = query("no pollution").config(test_config()).run().await.unwrap_err();
 
     assert_eq!(std::fs::read_dir(env.workspace_path()).unwrap().count(), 0);
     assert!(!env.workspace_path().join(".kuku").exists());
@@ -197,7 +182,7 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
         "name.",
         "name ",
     ] {
-        let error = query("bad").session(session_id).run().await.unwrap_err();
+        let error = query("bad").session(session_id).config(test_config()).run().await.unwrap_err();
         assert!(matches!(error, Error::InvalidSessionId(ref value) if value == session_id));
     }
 
@@ -230,6 +215,7 @@ async fn run_emits_permission_requested_for_gated_tool() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -304,6 +290,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -373,6 +360,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .start()
         .await
         .unwrap();
@@ -439,6 +427,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -478,6 +467,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -512,6 +502,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -568,6 +559,7 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -600,6 +592,7 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();
@@ -652,6 +645,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .config(test_config())
         .run()
         .await
         .unwrap();

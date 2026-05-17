@@ -214,7 +214,7 @@ mod tests {
             project_memory: Some(project_memory.clone()),
             history: history.clone(),
             tools: tools.clone(),
-            model_aliases: Vec::new(),
+            model_tiers: Vec::new(),
         })
         .unwrap();
 
@@ -242,7 +242,7 @@ mod tests {
             project_memory: None,
             history: Vec::new(),
             tools: Vec::new(),
-            model_aliases: Vec::new(),
+            model_tiers: Vec::new(),
         })
         .unwrap();
 

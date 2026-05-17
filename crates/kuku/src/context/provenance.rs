@@ -134,7 +134,7 @@ mod tests {
 
         let provenance = build_request_provenance(RequestProvenanceInput {
             request_id: "req_1".to_string(),
-            role: "default".to_string(),
+            tier: "balanced".to_string(),
             workspace: "/workspace".to_string(),
             platform: "linux".to_string(),
             current_date: "2026-05-14".to_string(),
@@ -143,7 +143,6 @@ mod tests {
             prompt_asset_sources: prompt_sources.clone(),
             history_range: history_range.clone(),
             tool_registry: tool_registry.clone(),
-            provider_alias: "sonnet".to_string(),
             provider_format: "anthropic".to_string(),
             resolved_provider: "anthropic".to_string(),
             resolved_model: "claude-sonnet-4-6".to_string(),
@@ -161,7 +160,7 @@ mod tests {
 
         let super::RequestProvenance {
             request_id,
-            role,
+            tier,
             workspace,
             platform,
             current_date,
@@ -170,7 +169,6 @@ mod tests {
             prompt_asset_sources: actual_prompt_sources,
             history_range: actual_history_range,
             tool_registry: actual_tool_registry,
-            provider_alias,
             provider_format,
             resolved_provider,
             resolved_model,
@@ -182,7 +180,7 @@ mod tests {
         } = provenance;
 
         assert_eq!(request_id, "req_1");
-        assert_eq!(role, "default");
+        assert_eq!(tier, "balanced");
         assert_eq!(workspace, "/workspace");
         assert_eq!(platform, "linux");
         assert_eq!(current_date, "2026-05-14");
@@ -191,7 +189,6 @@ mod tests {
         assert_eq!(actual_prompt_sources, prompt_sources);
         assert_eq!(actual_history_range, history_range);
         assert_eq!(actual_tool_registry, tool_registry);
-        assert_eq!(provider_alias, "sonnet");
         assert_eq!(provider_format, "anthropic");
         assert_eq!(resolved_provider, "anthropic");
         assert_eq!(resolved_model, "claude-sonnet-4-6");
