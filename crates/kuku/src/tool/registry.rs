@@ -163,7 +163,7 @@ pub(crate) fn registry_hash(registry: &[ToolDefinition]) -> String {
     format!("sha256:{digest:x}")
 }
 
-pub(crate) fn ordered_tool_names(registry: &[ToolDefinition]) -> Vec<String> {
+pub(crate) fn tool_names(registry: &[ToolDefinition]) -> Vec<String> {
     registry.iter().map(|tool| tool.name.clone()).collect()
 }
 
@@ -200,14 +200,14 @@ fn tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_registry, ordered_tool_names, registry_hash};
+    use super::{builtin_registry, tool_names, registry_hash};
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {
         let registry = builtin_registry();
 
         assert_eq!(
-            ordered_tool_names(&registry),
+            tool_names(&registry),
             vec![
                 "find_files",
                 "read_file",

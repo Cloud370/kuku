@@ -402,13 +402,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         },
         tool_registry: ToolRegistryProvenance {
             hash: resolved.registry_hash.clone(),
-            ordered_tool_names: resolved.ordered_tool_names.clone(),
+            names: resolved.tool_names.clone(),
             tool_count: resolved.tool_count,
         },
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
-        resolved_provider: resolved.config.kind.as_str().to_string(),
-        resolved_model: resolved.config.model.clone(),
-        params: params.clone(),
+        provider: resolved.config.kind.as_str().to_string(),
+        model: resolved.config.model.clone(),
+        request_params: params.clone(),
         token_estimate: None,
         context_budget_tier: context_headroom.tier.as_str().to_string(),
         max_context_tokens: Some(context_headroom.max_context_tokens),
@@ -433,7 +433,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             history_range_last: existing_events.last().map(|event| event.id),
             tool_registry_hash: Some(resolved.registry_hash.clone()),
             tool_count: Some(resolved.tool_count),
-            ordered_tool_names: Some(resolved.ordered_tool_names.clone()),
+            ordered_tool_names: Some(resolved.tool_names.clone()),
             provenance: Some(serde_json::to_value(&provenance)?),
         })?;
     }
@@ -513,7 +513,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
 
     let registry = tool::builtin_registry();
     let registry_hash = tool::registry_hash(&registry);
-    let ordered_tool_names = tool::ordered_tool_names(&registry);
+    let tool_names = tool::tool_names(&registry);
     let tool_count = registry.len();
     if let Ok(policy_text) = std::fs::read_to_string(&pending.policy_path) {
         let policy_hash = sha2::Sha256::digest(policy_text.as_bytes());
@@ -529,7 +529,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         config,
         registry,
         registry_hash,
-        ordered_tool_names,
+        tool_names,
         tool_count,
     });
     Ok(())

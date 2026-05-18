@@ -131,7 +131,7 @@ pub(super) struct ResolvedRuntime {
     pub(super) config: ResolvedProvider,
     pub(super) registry: Vec<ToolDefinition>,
     pub(super) registry_hash: String,
-    pub(super) ordered_tool_names: Vec<String>,
+    pub(super) tool_names: Vec<String>,
     pub(super) tool_count: usize,
 }
 
