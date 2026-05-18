@@ -78,6 +78,7 @@ impl Query {
 
         let prompts_dir = self.prompts_dir.take();
         let subagent_registry = self.subagent_registry.clone();
+        let tool_registry_override = self.tool_registry_override.clone();
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -98,6 +99,7 @@ impl Query {
                 prompts_dir,
                 subagent_registry,
                 child_session_count: 0,
+                tool_registry_override,
             })),
         })
     }

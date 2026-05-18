@@ -29,6 +29,7 @@ pub struct Query {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
+    pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +131,7 @@ pub(super) struct PendingRun {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(super) child_session_count: u32,
+    pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
 
 #[derive(Debug)]
@@ -219,6 +221,7 @@ impl Query {
             prompts_dir: None,
             disable_agents: false,
             subagent_registry: None,
+            tool_registry_override: None,
         }
     }
 
