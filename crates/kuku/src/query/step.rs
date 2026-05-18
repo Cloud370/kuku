@@ -314,6 +314,61 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         crate::prompt::builtin_prompt_catalog()
     };
 
+    // Compute context headroom for notice budget
+    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
+    let thinking_overhead: u32 = match resolved.config.think_level {
+        crate::config::ThinkLevel::Off => 0,
+        crate::config::ThinkLevel::Low => 1024,
+        crate::config::ThinkLevel::Medium => 4096,
+        crate::config::ThinkLevel::High => 16000,
+    };
+    let context_headroom = compute_context_headroom(
+        resolved
+            .config
+            .max_context_tokens
+            .saturating_sub(thinking_overhead),
+        Some(resolved.config.max_output_tokens),
+        estimated_input,
+    );
+
+    // Build runtime_blocks: agent catalog + notices
+    let mut runtime_blocks_parts: Vec<String> = Vec::new();
+    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
+
+    // Agent catalog
+    if let Some(ref subagent_registry) = pending.subagent_registry {
+        if let Some(catalog_text) =
+            crate::subagent::catalog::render_agent_catalog(subagent_registry)
+        {
+            runtime_blocks_parts.push(catalog_text);
+        }
+    }
+
+    // Context drift notices (turn > 1)
+    if pending.turn > 1 {
+        let notices = build_runtime_notices(NoticeAssemblyInput {
+            workspace: &pending.workspace,
+            events: &existing_events,
+            context_budget_tier: context_headroom.tier,
+        });
+        for notice in &notices {
+            runtime_blocks_parts.push(render_notice_block(notice));
+        }
+        notice_snapshots = notices
+            .iter()
+            .map(|n| crate::event::types::ContextMessage {
+                role: "user".to_string(),
+                content: render_notice_block(n),
+            })
+            .collect();
+    }
+
+    let runtime_blocks = if runtime_blocks_parts.is_empty() {
+        None
+    } else {
+        Some(runtime_blocks_parts.join("\n"))
+    };
+
     let mut assembly = match assemble_context(
         ContextInput {
             environment: EnvironmentSource {
@@ -327,7 +382,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             history,
             tools: tool::to_tool_schemas(&resolved.registry),
             model_tiers,
-            runtime_blocks: None,
+            runtime_blocks,
         },
         catalog,
     ) {
@@ -347,44 +402,29 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
-    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
-    let thinking_overhead: u32 = match resolved.config.think_level {
-        crate::config::ThinkLevel::Off => 0,
-        crate::config::ThinkLevel::Low => 1024,
-        crate::config::ThinkLevel::Medium => 4096,
-        crate::config::ThinkLevel::High => 16000,
-    };
-    let context_headroom = compute_context_headroom(
-        resolved
-            .config
-            .max_context_tokens
-            .saturating_sub(thinking_overhead),
-        Some(resolved.config.max_output_tokens),
-        estimated_input,
-    );
     let prelude_snapshot = assembly.snapshot_prelude();
-    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
-    if pending.turn > 1 {
-        let notices = build_runtime_notices(NoticeAssemblyInput {
-            workspace: &pending.workspace,
-            events: &existing_events,
-            context_budget_tier: context_headroom.tier,
-        });
-        let rendered_notices: Vec<String> = notices.iter().map(render_notice_block).collect();
-        notice_snapshots = rendered_notices
-            .iter()
-            .map(|content| crate::event::types::ContextMessage {
-                role: "user".to_string(),
-                content: content.clone(),
-            })
-            .collect();
-        for (offset, rendered) in rendered_notices.into_iter().enumerate() {
-            assembly.prelude_messages.insert(
-                1 + offset,
-                crate::context::CanonicalMessage::user_text(rendered),
-            );
+
+    // Inject runtime_context into the last user message (before human input)
+    if let Some(ref runtime_context) = assembly.runtime_context {
+        if let Some(last_msg) = assembly.history.last_mut() {
+            if last_msg.role == crate::context::Role::User {
+                let human_text: String = last_msg
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::context::MessageBlock::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                last_msg.blocks = vec![
+                    crate::context::MessageBlock::Text(runtime_context.clone()),
+                    crate::context::MessageBlock::Text(human_text),
+                ];
+            }
         }
     }
+
     let request_id = format!("req_{}", pending.request_num);
     let tier_name = pending
         .query

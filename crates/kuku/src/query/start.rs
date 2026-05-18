@@ -77,6 +77,7 @@ impl Query {
         })?;
 
         let prompts_dir = self.prompts_dir.take();
+        let subagent_registry = self.subagent_registry.clone();
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -95,6 +96,8 @@ impl Query {
                 saved_tool_call: None,
                 config,
                 prompts_dir,
+                subagent_registry,
+                child_session_count: 0,
             })),
         })
     }

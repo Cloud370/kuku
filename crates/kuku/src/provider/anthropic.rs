@@ -339,6 +339,7 @@ mod tests {
                 prompt_asset_sources: vec![],
                 project_instruction_sources: vec![],
                 memory_sources: vec![],
+                runtime_context: None,
             },
             model: "test-model".into(),
             max_output_tokens: Some(1024),

@@ -11,7 +11,7 @@ use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 /// Builder for configuring and executing a model query.
 pub struct Query {
     pub(super) prompt: String,
@@ -28,6 +28,7 @@ pub struct Query {
     pub(super) workspace_path: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
+    pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +128,8 @@ pub(super) struct PendingRun {
     pub(super) saved_tool_call: Option<QueuedToolCall>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
+    pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
+    pub(super) child_session_count: u32,
 }
 
 #[derive(Debug)]
@@ -215,7 +218,17 @@ impl Query {
             workspace_path: None,
             prompts_dir: None,
             disable_agents: false,
+            subagent_registry: None,
         }
+    }
+
+    /// Register a subagent registry for agent tool dispatch.
+    pub fn subagents(
+        mut self,
+        registry: crate::subagent::registry::SubagentRegistry,
+    ) -> Self {
+        self.subagent_registry = Some(registry);
+        self
     }
 
     /// Disable the agent tool (subagent delegation).

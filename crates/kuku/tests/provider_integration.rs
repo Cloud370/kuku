@@ -210,7 +210,7 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
     let second_request = second_server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
-            .body_matches(Regex::new(r#"(?s).*<kuku_execution_context>.*<kuku_system_notice>.*<kuku_tool_guidance>.*"#).unwrap())
+            .body_matches(Regex::new(r#"(?s).*<kuku_runtime_context>.*<kuku_system_notice>.*"#).unwrap())
             .body_contains("Only unacknowledged drift is reported here.")
             .body_contains("- AGENTS.md (updated)");
         then.status(200)
