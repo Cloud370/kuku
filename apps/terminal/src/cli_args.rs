@@ -28,6 +28,8 @@ pub enum Command {
     Init,
     /// Show or export embedded prompt assets
     Prompts(PromptsArgs),
+    /// List or inspect available subagent definitions
+    Agents(AgentsArgs),
 }
 
 // ── Prompts ──
@@ -99,6 +101,29 @@ pub struct RunArgs {
     /// Directory containing prompt files to override embedded defaults
     #[arg(long = "prompts-dir")]
     pub prompts_dir: Option<String>,
+
+    /// Disable the agent tool (subagent delegation)
+    #[arg(long = "no-agents")]
+    pub no_agents: bool,
+}
+
+// ── Agents ──
+
+#[derive(Args)]
+pub struct AgentsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<AgentsSubcommand>,
+}
+
+#[derive(Subcommand)]
+pub enum AgentsSubcommand {
+    /// List all available subagent definitions
+    List,
+    /// Show full details for a specific subagent
+    Show {
+        /// Subagent name
+        name: String,
+    },
 }
 
 // ── Show ──

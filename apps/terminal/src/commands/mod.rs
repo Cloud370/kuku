@@ -1,5 +1,6 @@
 //! CLI subcommand implementations.
 
+pub mod agents;
 pub mod config;
 pub mod events;
 pub mod init;

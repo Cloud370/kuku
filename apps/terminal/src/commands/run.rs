@@ -76,6 +76,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut previous_input_tokens: u64 = 0;
 
     let mut q = query(&prompt).config_path(config_path);
+    if args.no_agents {
+        q = q.no_agents();
+    }
     if let Some(ref dir) = args.prompts_dir {
         q = q.prompts_dir(std::path::PathBuf::from(dir));
     }
@@ -380,6 +383,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         raw: false,
         config,
         prompts_dir: None,
+        no_agents: false,
     };
     run(args).await
 }
