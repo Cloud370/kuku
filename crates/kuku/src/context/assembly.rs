@@ -125,7 +125,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
     };
 
     let synthetic_text = render_synthetic_user(
-        catalog.synthetic_user.text,
+        &catalog.synthetic_user.text,
         &SyntheticUserTemplateInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
@@ -146,7 +146,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
     }
 
     Ok(ContextAssembly {
-        system_prompt: catalog.system.text.to_string(),
+        system_prompt: catalog.system.text,
         prelude_messages: vec![
             CanonicalMessage::user_text(synthetic_text),
             CanonicalMessage::user_text(catalog.tool_guidance.text),
@@ -155,15 +155,15 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
         tools: input.tools,
         prompt_asset_sources: vec![
             FileSource {
-                path: catalog.system.path.to_string(),
+                path: catalog.system.path,
                 hash: catalog.system.hash,
             },
             FileSource {
-                path: catalog.synthetic_user.path.to_string(),
+                path: catalog.synthetic_user.path,
                 hash: catalog.synthetic_user.hash,
             },
             FileSource {
-                path: catalog.tool_guidance.path.to_string(),
+                path: catalog.tool_guidance.path,
                 hash: catalog.tool_guidance.hash,
             },
         ],

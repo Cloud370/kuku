@@ -1,5 +1,5 @@
-pub(crate) mod catalog;
+pub mod catalog;
 pub(crate) mod render;
 
-pub(crate) use catalog::builtin_prompt_catalog;
+pub use catalog::{builtin_prompt_catalog, PromptAsset, PromptCatalog};
 pub(crate) use render::{render_synthetic_user, SyntheticUserTemplateInput};
