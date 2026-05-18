@@ -103,8 +103,6 @@ pub struct RunArgs {
 
 // ── Show ──
 
-// ── Show ──
-
 #[derive(Args)]
 pub struct ShowArgs {
     /// Session ID

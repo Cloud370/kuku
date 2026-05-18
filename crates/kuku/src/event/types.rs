@@ -10,6 +10,7 @@ pub struct StoredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// History metadata attached to a model request event.
 pub struct RequestHistory {
     pub first: Option<u64>,
     pub last: Option<u64>,
@@ -17,6 +18,7 @@ pub struct RequestHistory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Tool registry metadata attached to a model request event.
 pub struct RequestTools {
     pub hash: Option<String>,
     pub count: Option<usize>,
@@ -24,6 +26,7 @@ pub struct RequestTools {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Rendered context snapshot attached to a model request event.
 pub struct RequestContext {
     pub system: String,
     pub prelude: Vec<ContextMessage>,
@@ -31,6 +34,7 @@ pub struct RequestContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A single message in the rendered context snapshot.
 pub struct ContextMessage {
     pub role: String,
     pub content: String,
@@ -38,6 +42,7 @@ pub struct ContextMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+// ModelRequest is the largest variant; boxing adds indirection with no benefit for a serialization data enum.
 #[allow(clippy::large_enum_variant)]
 /// All event types that can be written to and read from a session's events.jsonl.
 pub enum EventPayload {
