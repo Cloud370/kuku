@@ -76,6 +76,7 @@ impl Query {
             text: self.prompt.clone(),
         })?;
 
+        let prompts_dir = self.prompts_dir.take();
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -93,6 +94,7 @@ impl Query {
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,
                 config,
+                prompts_dir,
             })),
         })
     }

@@ -303,6 +303,17 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let current_date = current_date_string();
     let model_tiers = pending.config.tier_infos();
 
+    let catalog = if let Some(dir) = &pending.prompts_dir {
+        crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
+            crate::error::Error::PromptRender(format!(
+                "failed to load prompts from {}: {e}",
+                dir.display()
+            ))
+        })?
+    } else {
+        crate::prompt::builtin_prompt_catalog()
+    };
+
     let mut assembly = match assemble_context(ContextInput {
         environment: EnvironmentSource {
             workspace_path: pending.workspace.display().to_string(),
@@ -315,7 +326,9 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         history,
         tools: tool::to_tool_schemas(&resolved.registry),
         model_tiers,
-    }) {
+    },
+        catalog,
+    ) {
         Ok(assembly) => assembly,
         Err(error) => {
             let request_id = format!("req_{}", pending.request_num);

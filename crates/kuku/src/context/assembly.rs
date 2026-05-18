@@ -89,8 +89,10 @@ impl ContextAssembly {
 }
 
 /// Build a complete context assembly from environment, instructions, memory, history, and tools.
-pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
-    let catalog = builtin_prompt_catalog();
+pub fn assemble_context(
+    input: ContextInput,
+    catalog: crate::prompt::PromptCatalog,
+) -> Result<ContextAssembly> {
     let project_instructions_text = if input.project_instructions.is_empty() {
         "No project instructions found.".to_string()
     } else {
@@ -178,6 +180,7 @@ mod tests {
         assemble_context, CanonicalMessage, ContextInput, EnvironmentSource, InstructionSource,
         MemorySource, MessageBlock, ToolSchema,
     };
+    use crate::prompt::builtin_prompt_catalog;
     use serde_json::json;
 
     fn instruction(path: &str, kind: &str, hash: &str, content: &str) -> InstructionSource {
@@ -230,19 +233,22 @@ mod tests {
             input_schema: json!({"type": "object"}),
         }];
 
-        let assembly = assemble_context(ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: "/workspace".to_string(),
-                platform: "linux".to_string(),
-                current_date: "2026-05-14".to_string(),
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "linux".to_string(),
+                    current_date: "2026-05-14".to_string(),
+                },
+                project_instructions: project_instructions.clone(),
+                global_memory: Some(global_memory.clone()),
+                project_memory: Some(project_memory.clone()),
+                history: history.clone(),
+                tools: tools.clone(),
+                model_tiers: Vec::new(),
             },
-            project_instructions: project_instructions.clone(),
-            global_memory: Some(global_memory.clone()),
-            project_memory: Some(project_memory.clone()),
-            history: history.clone(),
-            tools: tools.clone(),
-            model_tiers: Vec::new(),
-        })
+            builtin_prompt_catalog(),
+        )
         .unwrap();
 
         assert!(assembly.system_prompt.contains("<kuku_identity>"));
@@ -258,19 +264,22 @@ mod tests {
 
     #[test]
     fn keeps_empty_optional_sources_without_removing_placeholders() {
-        let assembly = assemble_context(ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: "/workspace".to_string(),
-                platform: "windows".to_string(),
-                current_date: "2026-05-14".to_string(),
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "windows".to_string(),
+                    current_date: "2026-05-14".to_string(),
+                },
+                project_instructions: Vec::new(),
+                global_memory: None,
+                project_memory: None,
+                history: Vec::new(),
+                tools: Vec::new(),
+                model_tiers: Vec::new(),
             },
-            project_instructions: Vec::new(),
-            global_memory: None,
-            project_memory: None,
-            history: Vec::new(),
-            tools: Vec::new(),
-            model_tiers: Vec::new(),
-        })
+            builtin_prompt_catalog(),
+        )
         .unwrap();
 
         match &assembly.prelude_messages[0].blocks[..] {
@@ -286,19 +295,22 @@ mod tests {
 
     #[test]
     fn snapshot_prelude_contains_synthetic_user_and_tool_guidance_without_notices() {
-        let assembly = assemble_context(ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: "/workspace".to_string(),
-                platform: "linux".to_string(),
-                current_date: "2026-05-18".to_string(),
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "linux".to_string(),
+                    current_date: "2026-05-18".to_string(),
+                },
+                project_instructions: Vec::new(),
+                global_memory: None,
+                project_memory: None,
+                history: Vec::new(),
+                tools: Vec::new(),
+                model_tiers: Vec::new(),
             },
-            project_instructions: Vec::new(),
-            global_memory: None,
-            project_memory: None,
-            history: Vec::new(),
-            tools: Vec::new(),
-            model_tiers: Vec::new(),
-        })
+            builtin_prompt_catalog(),
+        )
         .unwrap();
 
         let snapshot = assembly.snapshot_prelude();
