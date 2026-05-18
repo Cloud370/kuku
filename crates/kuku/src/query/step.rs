@@ -347,16 +347,28 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         Some(resolved.config.max_output_tokens),
         estimated_input,
     );
+    let prelude_snapshot = assembly.snapshot_prelude();
     if pending.turn > 1 {
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: &pending.workspace,
             events: &existing_events,
             context_budget_tier: context_headroom.tier,
         });
-        for (offset, notice) in notices.into_iter().enumerate() {
+        let rendered_notices: Vec<String> = notices
+            .iter()
+            .map(|n| render_notice_block(n))
+            .collect();
+        let _notice_snapshots: Vec<crate::event::types::ContextMessage> = rendered_notices
+            .iter()
+            .map(|content| crate::event::types::ContextMessage {
+                role: "user".to_string(),
+                content: content.clone(),
+            })
+            .collect();
+        for (offset, rendered) in rendered_notices.into_iter().enumerate() {
             assembly.prelude_messages.insert(
                 1 + offset,
-                crate::context::CanonicalMessage::user_text(render_notice_block(&notice)),
+                crate::context::CanonicalMessage::user_text(rendered),
             );
         }
     }

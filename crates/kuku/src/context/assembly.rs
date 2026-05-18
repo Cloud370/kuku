@@ -1,7 +1,8 @@
 use crate::error::Result;
+use crate::event::types::ContextMessage;
 use crate::prompt::{builtin_prompt_catalog, render_synthetic_user, SyntheticUserTemplateInput};
 
-use super::message::CanonicalMessage;
+use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +60,32 @@ pub struct ContextAssembly {
     pub prompt_asset_sources: Vec<FileSource>,
     pub project_instruction_sources: Vec<InstructionSource>,
     pub memory_sources: Vec<MemorySource>,
+}
+
+impl ContextAssembly {
+    /// Snapshot the current prelude messages as ContextMessage values.
+    /// Call BEFORE inserting runtime notices to capture the clean prelude layer.
+    pub fn snapshot_prelude(&self) -> Vec<ContextMessage> {
+        self.prelude_messages
+            .iter()
+            .map(|msg| {
+                let content = msg
+                    .blocks
+                    .iter()
+                    .map(|b| match b {
+                        MessageBlock::Text(t) => t.as_str(),
+                        MessageBlock::Thinking(t) => t.as_str(),
+                        MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => "",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                ContextMessage {
+                    role: "user".to_string(),
+                    content,
+                }
+            })
+            .collect()
+    }
 }
 
 /// Build a complete context assembly from environment, instructions, memory, history, and tools.
@@ -255,5 +282,30 @@ mod tests {
             }
             other => panic!("expected one synthetic-user text block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn snapshot_prelude_contains_synthetic_user_and_tool_guidance_without_notices() {
+        let assembly = assemble_context(ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: "/workspace".to_string(),
+                platform: "linux".to_string(),
+                current_date: "2026-05-18".to_string(),
+            },
+            project_instructions: Vec::new(),
+            global_memory: None,
+            project_memory: None,
+            history: Vec::new(),
+            tools: Vec::new(),
+            model_tiers: Vec::new(),
+        })
+        .unwrap();
+
+        let snapshot = assembly.snapshot_prelude();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].role, "user");
+        assert!(snapshot[0].content.contains("<kuku_execution_context>"));
+        assert_eq!(snapshot[1].role, "user");
+        assert!(snapshot[1].content.contains("<kuku_tool_guidance>"));
     }
 }
