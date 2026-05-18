@@ -121,14 +121,13 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelRequest {
-            tool_count: Some(8),
-            ref ordered_tool_names,
-            ref tool_registry_hash,
+            ref tools,
             ..
-        } if ordered_tool_names.as_ref().is_some_and(|names| names[0] == "find_files")
-            && ordered_tool_names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string()))
-            && ordered_tool_names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string()))
-            && tool_registry_hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:"))
+        } if tools.as_ref().is_some_and(|t| t.count == Some(8))
+            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
+            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string())))
+            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string())))
+            && tools.as_ref().is_some_and(|t| t.hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:")))
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,

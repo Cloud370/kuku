@@ -180,16 +180,21 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             request_id: "req_1".to_string(),
             tier: "balanced".to_string(),
             think: "auto".to_string(),
-            resolved_provider: "anthropic".to_string(),
-            resolved_model: "claude-sonnet-4-6".to_string(),
-            params: serde_json::json!({"temperature": 0.2}),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            request_params: serde_json::json!({"temperature": 0.2}),
             base_url: Some("https://api.anthropic.com".to_string()),
-            message_count: Some(3),
-            history_range_first: Some(1),
-            history_range_last: Some(9),
-            tool_registry_hash: Some("sha256:tools".to_string()),
-            tool_count: Some(6),
-            ordered_tool_names: Some(vec!["find_files".to_string()]),
+            history: Some(kuku::event::types::RequestHistory {
+                first: Some(1),
+                last: Some(9),
+                message_count: Some(3),
+            }),
+            tools: Some(kuku::event::types::RequestTools {
+                hash: Some("sha256:tools".to_string()),
+                count: Some(6),
+                names: Some(vec!["find_files".to_string()]),
+            }),
+            context: None,
             provenance: None,
         })
         .unwrap();
@@ -202,8 +207,8 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             message: "HTTP 429: rate limited".to_string(),
             status: Some(429),
             retryable: Some(true),
-            resolved_provider: Some("anthropic".to_string()),
-            resolved_model: Some("claude-sonnet-4-6".to_string()),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
         })
         .unwrap();
 
@@ -213,21 +218,21 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
     match &replayed[0].payload {
         EventPayload::ModelRequest {
             base_url,
-            message_count,
-            history_range_first,
-            history_range_last,
-            tool_registry_hash,
-            tool_count,
-            ordered_tool_names,
+            history,
+            tools,
+            context,
             ..
         } => {
             assert_eq!(base_url.as_deref(), Some("https://api.anthropic.com"));
-            assert_eq!(*message_count, Some(3));
-            assert_eq!(*history_range_first, Some(1));
-            assert_eq!(*history_range_last, Some(9));
-            assert_eq!(tool_registry_hash.as_deref(), Some("sha256:tools"));
-            assert_eq!(*tool_count, Some(6));
-            assert_eq!(ordered_tool_names.as_ref().unwrap()[0], "find_files");
+            let h = history.as_ref().unwrap();
+            assert_eq!(h.message_count, Some(3));
+            assert_eq!(h.first, Some(1));
+            assert_eq!(h.last, Some(9));
+            let t = tools.as_ref().unwrap();
+            assert_eq!(t.hash.as_deref(), Some("sha256:tools"));
+            assert_eq!(t.count, Some(6));
+            assert_eq!(t.names.as_ref().unwrap()[0], "find_files");
+            assert!(context.is_none());
         }
         other => panic!("expected model.request, got {other:?}"),
     }
@@ -236,14 +241,14 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
         EventPayload::ModelError {
             status,
             retryable,
-            resolved_provider,
-            resolved_model,
+            provider,
+            model,
             ..
         } => {
             assert_eq!(*status, Some(429));
             assert_eq!(*retryable, Some(true));
-            assert_eq!(resolved_provider.as_deref(), Some("anthropic"));
-            assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-6"));
+            assert_eq!(provider.as_deref(), Some("anthropic"));
+            assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
         }
         other => panic!("expected model.error, got {other:?}"),
     }

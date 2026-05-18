@@ -10,6 +10,33 @@ pub struct StoredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestHistory {
+    pub first: Option<u64>,
+    pub last: Option<u64>,
+    pub message_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestTools {
+    pub hash: Option<String>,
+    pub count: Option<usize>,
+    pub names: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestContext {
+    pub system: String,
+    pub prelude: Vec<ContextMessage>,
+    pub notices: Vec<ContextMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 /// All event types that can be written to and read from a session's events.jsonl.
 pub enum EventPayload {
@@ -35,23 +62,17 @@ pub enum EventPayload {
         request_id: String,
         tier: String,
         think: String,
-        resolved_provider: String,
-        resolved_model: String,
-        params: Value,
+        provider: String,
+        model: String,
+        request_params: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        message_count: Option<usize>,
+        history: Option<RequestHistory>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        history_range_first: Option<u64>,
+        tools: Option<RequestTools>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        history_range_last: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tool_registry_hash: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tool_count: Option<usize>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ordered_tool_names: Option<Vec<String>>,
+        context: Option<RequestContext>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<Value>,
     },
@@ -82,9 +103,9 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retryable: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        resolved_provider: Option<String>,
+        provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        resolved_model: Option<String>,
+        model: Option<String>,
     },
 
     #[serde(rename = "tool.call")]

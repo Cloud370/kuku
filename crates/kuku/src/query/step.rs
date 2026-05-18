@@ -424,16 +424,23 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             request_id: request_id.clone(),
             tier: tier_name,
             think: think.clone(),
-            resolved_provider: resolved.config.kind.as_str().to_string(),
-            resolved_model: resolved.config.model.clone(),
-            params,
+            provider: resolved.config.kind.as_str().to_string(),
+            model: resolved.config.model.clone(),
+            request_params: params,
             base_url: Some(resolved.config.base_url.clone()),
-            message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
-            history_range_first: existing_events.first().map(|event| event.id),
-            history_range_last: existing_events.last().map(|event| event.id),
-            tool_registry_hash: Some(resolved.registry_hash.clone()),
-            tool_count: Some(resolved.tool_count),
-            ordered_tool_names: Some(resolved.tool_names.clone()),
+            history: Some(crate::event::types::RequestHistory {
+                first: existing_events.first().map(|event| event.id),
+                last: existing_events.last().map(|event| event.id),
+                message_count: Some(
+                    1 + assembly.prelude_messages.len() + assembly.history.len(),
+                ),
+            }),
+            tools: Some(crate::event::types::RequestTools {
+                hash: Some(resolved.registry_hash.clone()),
+                count: Some(resolved.tool_count),
+                names: Some(resolved.tool_names.clone()),
+            }),
+            context: None,
             provenance: Some(serde_json::to_value(&provenance)?),
         })?;
     }
