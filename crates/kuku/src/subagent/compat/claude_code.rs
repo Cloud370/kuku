@@ -133,7 +133,9 @@ pub(crate) fn map_claude_model_to_tier(model: &str) -> String {
     }
 }
 
-fn infer_profile_from_tools(tools: &[serde_yaml::Value]) -> super::super::definition::ToolProfile {
+pub(crate) fn infer_profile_from_tools(
+    tools: &[serde_yaml::Value],
+) -> super::super::definition::ToolProfile {
     let tool_names: Vec<&str> = tools.iter().filter_map(|v| v.as_str()).collect();
     let has_write = tool_names
         .iter()

@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Tool profile preset that determines which tools a subagent can use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ToolProfile {
     /// No tools — subagent can only read its own instruction and the delegated prompt.
     #[serde(rename = "none")]
+    #[default]
     None,
     /// Read-only inspection: find_files, read_file, search_text.
     #[serde(rename = "read")]
@@ -44,7 +45,7 @@ impl ToolProfile {
 }
 
 /// Expected output format from a subagent. In v1 this is injected as a hint in the instructions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum OutputContract {
     /// Brief summary of work done and conclusions.
     #[serde(rename = "summary")]
@@ -86,7 +87,7 @@ impl OutputContract {
 
 /// Maximum permission posture a subagent definition declares.
 /// v1: reserved field, no runtime behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum PermissionPosture {
     #[serde(rename = "default")]
     #[default]
@@ -94,7 +95,7 @@ pub enum PermissionPosture {
 }
 
 /// Where this subagent definition was loaded from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DefinitionSource {
     #[serde(rename = "builtin")]
     Builtin,

@@ -59,6 +59,9 @@ fn parse_opencode_agent(
         if let Some(model) = fm.get("model").and_then(|v| v.as_str()) {
             def.tier = super::claude_code::map_claude_model_to_tier(model);
         }
+        if let Some(tools) = fm.get("tools").and_then(|v| v.as_sequence()) {
+            def.tool_profile = super::claude_code::infer_profile_from_tools(tools);
+        }
         let known = ["name", "description", "model", "tools", "mode"];
         let mut meta = serde_json::Map::new();
         for (key, value) in &fm {
