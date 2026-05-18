@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 
 use kuku::error::Error;
-use kuku::event::{EventPayload, EventStore};
+use kuku::event::{EventPayload, EventStore, StoredEvent};
 
 fn session_meta() -> EventPayload {
     EventPayload::SessionMeta {
@@ -268,4 +268,126 @@ fn open_returns_io_error_for_missing_parent_file_path() {
     assert!(
         matches!(error, Error::Io(ref io_error) if io_error.kind() == ErrorKind::AlreadyExists || io_error.kind() == ErrorKind::NotADirectory)
     );
+}
+
+#[test]
+fn model_request_context_survives_roundtrip() {
+    use kuku::event::types::{ContextMessage, RequestContext, RequestHistory, RequestTools};
+
+    let event = StoredEvent {
+        id: 5,
+        payload: EventPayload::ModelRequest {
+            turn: 1,
+            ts: "2026-05-18T00:00:00Z".to_string(),
+            request_id: "req_1".to_string(),
+            tier: "balanced".to_string(),
+            think: "medium".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            request_params: serde_json::json!({}),
+            base_url: None,
+            history: Some(RequestHistory {
+                first: Some(1),
+                last: Some(4),
+                message_count: Some(3),
+            }),
+            tools: Some(RequestTools {
+                hash: Some("sha256:abc".to_string()),
+                count: Some(8),
+                names: Some(vec!["find_files".to_string()]),
+            }),
+            context: Some(RequestContext {
+                system: "<kuku_identity>test identity</kuku_identity>".to_string(),
+                prelude: vec![
+                    ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_execution_context>workspace: /test</kuku_execution_context>".to_string(),
+                    },
+                    ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
+                    },
+                ],
+                notices: vec![],
+            }),
+            provenance: None,
+        },
+    };
+
+    let json = serde_json::to_string(&event).unwrap();
+    let roundtripped: StoredEvent = serde_json::from_str(&json).unwrap();
+
+    match &roundtripped.payload {
+        EventPayload::ModelRequest { context, .. } => {
+            let ctx = context.as_ref().unwrap();
+            assert!(ctx.system.contains("<kuku_identity>"));
+            assert_eq!(ctx.prelude.len(), 2);
+            assert!(ctx.prelude[0].content.contains("<kuku_execution_context>"));
+            assert!(ctx.prelude[1].content.contains("<kuku_tool_guidance>"));
+            assert!(ctx.notices.is_empty());
+        }
+        other => panic!("expected ModelRequest, got {other:?}"),
+    }
+}
+
+#[test]
+fn model_request_context_with_notices_survives_roundtrip() {
+    use kuku::event::types::{ContextMessage, RequestContext, RequestHistory, RequestTools};
+
+    let event = StoredEvent {
+        id: 10,
+        payload: EventPayload::ModelRequest {
+            turn: 2,
+            ts: "2026-05-18T00:01:00Z".to_string(),
+            request_id: "req_2".to_string(),
+            tier: "balanced".to_string(),
+            think: "medium".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            request_params: serde_json::json!({}),
+            base_url: None,
+            history: Some(RequestHistory {
+                first: Some(1),
+                last: Some(9),
+                message_count: Some(5),
+            }),
+            tools: Some(RequestTools {
+                hash: Some("sha256:abc".to_string()),
+                count: Some(8),
+                names: Some(vec!["find_files".to_string()]),
+            }),
+            context: Some(RequestContext {
+                system: "<kuku_identity>test identity</kuku_identity>".to_string(),
+                prelude: vec![
+                    ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_execution_context>workspace: /test</kuku_execution_context>".to_string(),
+                    },
+                    ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
+                    },
+                ],
+                notices: vec![
+                    ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_system_notice>Context drift detected: AGENTS.md changed</kuku_system_notice>".to_string(),
+                    },
+                ],
+            }),
+            provenance: None,
+        },
+    };
+
+    let json = serde_json::to_string(&event).unwrap();
+    let roundtripped: StoredEvent = serde_json::from_str(&json).unwrap();
+
+    match &roundtripped.payload {
+        EventPayload::ModelRequest { context, .. } => {
+            let ctx = context.as_ref().unwrap();
+            assert_eq!(ctx.notices.len(), 1);
+            assert!(ctx.notices[0].content.contains("Context drift"));
+        }
+        other => panic!("expected ModelRequest, got {other:?}"),
+    }
 }

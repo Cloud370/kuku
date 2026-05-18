@@ -348,6 +348,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         estimated_input,
     );
     let prelude_snapshot = assembly.snapshot_prelude();
+    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
     if pending.turn > 1 {
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: &pending.workspace,
@@ -358,7 +359,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             .iter()
             .map(|n| render_notice_block(n))
             .collect();
-        let _notice_snapshots: Vec<crate::event::types::ContextMessage> = rendered_notices
+        notice_snapshots = rendered_notices
             .iter()
             .map(|content| crate::event::types::ContextMessage {
                 role: "user".to_string(),
@@ -452,7 +453,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 count: Some(resolved.tool_count),
                 names: Some(resolved.tool_names.clone()),
             }),
-            context: None,
+            context: Some(crate::event::types::RequestContext {
+                system: assembly.system_prompt.clone(),
+                prelude: prelude_snapshot,
+                notices: notice_snapshots,
+            }),
             provenance: Some(serde_json::to_value(&provenance)?),
         })?;
     }
