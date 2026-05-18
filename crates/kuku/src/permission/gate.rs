@@ -321,8 +321,13 @@ mod tests {
         )
         .unwrap();
         let grants = vec![];
-        let decision =
-            decide_tool_call("run_command", "command", "cargo test --lib", &policy, &grants);
+        let decision = decide_tool_call(
+            "run_command",
+            "command",
+            "cargo test --lib",
+            &policy,
+            &grants,
+        );
         assert_eq!(decision.kind, GateDecisionKind::Allow);
     }
 }

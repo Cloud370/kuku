@@ -20,8 +20,8 @@ pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
     match args.cmd {
         None | Some(AgentsSubcommand::List) => {
             println!(
-                "{:<16} {:<20} {:<10} {:<12} {}",
-                "NAME", "SOURCE", "TIER", "TOOLS", "DESCRIPTION"
+                "{:<16} {:<20} {:<10} {:<12} DESCRIPTION",
+                "NAME", "SOURCE", "TIER", "TOOLS"
             );
             for def in registry.definitions() {
                 println!(

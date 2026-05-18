@@ -226,10 +226,7 @@ impl Query {
     }
 
     /// Register a subagent registry for agent tool dispatch.
-    pub fn subagents(
-        mut self,
-        registry: crate::subagent::registry::SubagentRegistry,
-    ) -> Self {
+    pub fn subagents(mut self, registry: crate::subagent::registry::SubagentRegistry) -> Self {
         self.subagent_registry = Some(registry);
         self
     }

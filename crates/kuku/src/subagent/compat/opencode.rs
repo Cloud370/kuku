@@ -5,10 +5,7 @@ use crate::error::Result;
 use super::super::definition::{DefinitionSource, SubagentDefinition};
 
 /// Load OpenCode agent definitions from a directory.
-pub fn load_from_dir(
-    dir: &Path,
-    source: DefinitionSource,
-) -> Result<Vec<SubagentDefinition>> {
+pub fn load_from_dir(dir: &Path, source: DefinitionSource) -> Result<Vec<SubagentDefinition>> {
     let mut definitions = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -16,7 +13,7 @@ pub fn load_from_dir(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |ext| ext != "md") {
+        if path.extension().is_none_or(|ext| ext != "md") {
             continue;
         }
         if let Some(def) = parse_opencode_agent(&path, source.clone())? {

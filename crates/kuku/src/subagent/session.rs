@@ -21,13 +21,14 @@ pub enum ChildSessionStatus {
     Error(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_child_session(
     parent_session_dir: &Path,
     child_session_id: &str,
     definition: &SubagentDefinition,
     delegated_prompt: &str,
     workspace: &Path,
-    kuku_home: &Path,
+    _kuku_home: &Path,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<&Path>,
 ) -> Result<ChildSessionResult> {
@@ -60,10 +61,7 @@ pub async fn spawn_child_session(
         query = query.prompts_dir(dir.to_path_buf());
     }
 
-    let mut run = query
-        .session(child_session_id.to_string())
-        .start()
-        .await?;
+    let mut run = query.session(child_session_id.to_string()).start().await?;
 
     let mut turns = 0u32;
     let mut cumulative_text = String::new();

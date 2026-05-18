@@ -229,7 +229,10 @@ mod tests {
         assert!(registry[0].read_only);
         assert!(registry[0].concurrency_safe);
         assert_eq!(registry[0].max_result_chars, 8_000);
-        assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry(false)));
+        assert_eq!(
+            registry_hash(&registry),
+            registry_hash(&builtin_registry(false))
+        );
 
         let remember = registry
             .iter()

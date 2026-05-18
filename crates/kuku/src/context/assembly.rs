@@ -255,7 +255,10 @@ mod tests {
             first.contains("<kuku_project_context>"),
             "messages[0] should be project_context, got: {first}"
         );
-        assert!(first.contains("instr"), "should contain project instructions");
+        assert!(
+            first.contains("instr"),
+            "should contain project instructions"
+        );
 
         let second = match &assembly.prelude_messages[1].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),

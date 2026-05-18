@@ -23,17 +23,9 @@ impl PromptCatalog {
         let builtin = builtin_prompt_catalog();
         Ok(PromptCatalog {
             system: load_or_fallback(dir, "system.md", builtin.system)?,
-            project_context: load_or_fallback(
-                dir,
-                "project-context.md",
-                builtin.project_context,
-            )?,
+            project_context: load_or_fallback(dir, "project-context.md", builtin.project_context)?,
             tool_guidance: load_or_fallback(dir, "tool-guidance.md", builtin.tool_guidance)?,
-            runtime_context: load_or_fallback(
-                dir,
-                "runtime-context.md",
-                builtin.runtime_context,
-            )?,
+            runtime_context: load_or_fallback(dir, "runtime-context.md", builtin.runtime_context)?,
         })
     }
 }

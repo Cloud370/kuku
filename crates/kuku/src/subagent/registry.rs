@@ -190,10 +190,7 @@ fn builtin_explore() -> SubagentDefinition {
     }
 }
 
-fn compute_registry_hash(
-    defs: &BTreeMap<String, SubagentDefinition>,
-    names: &[String],
-) -> String {
+fn compute_registry_hash(defs: &BTreeMap<String, SubagentDefinition>, names: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     for name in names {

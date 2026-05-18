@@ -5,10 +5,7 @@ use crate::error::Result;
 use super::super::definition::{DefinitionSource, SubagentDefinition};
 
 /// Load Claude Code agent definitions from a directory (`.claude/agents/` or `~/.claude/agents/`).
-pub fn load_from_dir(
-    dir: &Path,
-    source: DefinitionSource,
-) -> Result<Vec<SubagentDefinition>> {
+pub fn load_from_dir(dir: &Path, source: DefinitionSource) -> Result<Vec<SubagentDefinition>> {
     let mut definitions = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -16,7 +13,7 @@ pub fn load_from_dir(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |ext| ext != "md") {
+        if path.extension().is_none_or(|ext| ext != "md") {
             continue;
         }
         if let Some(def) = parse_claude_code_agent(&path, source.clone())? {
@@ -211,7 +208,10 @@ mod tests {
         assert_eq!(infer_profile_from_tools(&tools), ToolProfile::ReadWrite);
 
         let bash_tools = vec![serde_yaml::Value::String("Bash".into())];
-        assert_eq!(infer_profile_from_tools(&bash_tools), ToolProfile::ReadWrite);
+        assert_eq!(
+            infer_profile_from_tools(&bash_tools),
+            ToolProfile::ReadWrite
+        );
     }
 
     #[test]

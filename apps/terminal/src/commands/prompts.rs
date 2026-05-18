@@ -14,18 +14,12 @@ pub fn run(args: PromptsArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(PromptsSubcommand::Show { name: Some(ref n) }) => match n.as_str() {
             "system" => print_prompt("system", &catalog.system.text),
-            "project-context" => {
-                print_prompt("project-context", &catalog.project_context.text)
-            }
+            "project-context" => print_prompt("project-context", &catalog.project_context.text),
             "tool-guidance" => print_prompt("tool-guidance", &catalog.tool_guidance.text),
-            "runtime-context" => {
-                print_prompt("runtime-context", &catalog.runtime_context.text)
-            }
+            "runtime-context" => print_prompt("runtime-context", &catalog.runtime_context.text),
             other => {
                 eprintln!("unknown prompt: {other}");
-                eprintln!(
-                    "available: system, project-context, tool-guidance, runtime-context"
-                );
+                eprintln!("available: system, project-context, tool-guidance, runtime-context");
                 std::process::exit(1);
             }
         },

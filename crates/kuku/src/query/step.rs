@@ -691,10 +691,7 @@ async fn handle_agent_tool_call(
             format!("{} completed in {} turns", name, result.turns_completed)
         }
         crate::subagent::session::ChildSessionStatus::TurnLimitReached => {
-            format!(
-                "{} reached turn limit ({})",
-                name, result.turns_completed
-            )
+            format!("{} reached turn limit ({})", name, result.turns_completed)
         }
         crate::subagent::session::ChildSessionStatus::Error(ref e) => {
             format!("{} error: {e}", name)
