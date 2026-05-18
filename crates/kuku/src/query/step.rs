@@ -327,6 +327,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             history,
             tools: tool::to_tool_schemas(&resolved.registry),
             model_tiers,
+            runtime_blocks: None,
         },
         catalog,
     ) {
@@ -544,7 +545,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         }
     };
 
-    let registry = tool::builtin_registry();
+    let registry = tool::builtin_registry(!pending.query.disable_agents);
     let registry_hash = tool::registry_hash(&registry);
     let tool_names = tool::tool_names(&registry);
     let tool_count = registry.len();

@@ -17,3 +17,28 @@ pub(crate) use read_file::read_file;
 pub(crate) use run_command::run_command;
 pub(crate) use search_text::search_text;
 pub(crate) use write_file::write_file;
+
+pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        name: "agent".to_string(),
+        description: "Delegate a task to a named subagent (child session). Use this for work that benefits from isolated context: explore search, code review, plan exploration.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the subagent to dispatch (from the available catalog below)"
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The task to delegate, with enough context for the subagent to work independently"
+                }
+            },
+            "required": ["name", "prompt"]
+        }),
+        read_only: false,
+        concurrency_safe: true,
+        max_result_chars: 20_000,
+        risk: "read".to_string(),
+    }
+}

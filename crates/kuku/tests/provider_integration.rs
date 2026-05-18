@@ -123,7 +123,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
         EventPayload::ModelRequest {
             ref tools,
             ..
-        } if tools.as_ref().is_some_and(|t| t.count == Some(8))
+        } if tools.as_ref().is_some_and(|t| t.count == Some(9))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string())))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string())))

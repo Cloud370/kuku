@@ -20,6 +20,10 @@ pub(crate) async fn dispatch(
     tool_call_id: Option<&str>,
 ) -> ToolResultEnvelope {
     match name {
+        "agent" => ToolResultEnvelope::error(
+            "agent tool must be executed via subagent handler".to_string(),
+            "the agent tool can only be invoked through the normal agent loop".to_string(),
+        ),
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),

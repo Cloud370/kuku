@@ -27,6 +27,7 @@ pub struct Query {
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
+    pub(super) disable_agents: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,7 +214,14 @@ impl Query {
             temperature: None,
             workspace_path: None,
             prompts_dir: None,
+            disable_agents: false,
         }
+    }
+
+    /// Disable the agent tool (subagent delegation).
+    pub fn no_agents(mut self) -> Self {
+        self.disable_agents = true;
+        self
     }
 
     /// Set or resume a session by ID.

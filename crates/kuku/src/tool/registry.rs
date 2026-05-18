@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 
 use crate::context::ToolSchema;
 
+use super::builtin;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ToolDefinition {
     pub name: String,
@@ -15,8 +17,8 @@ pub(crate) struct ToolDefinition {
     pub risk: String,
 }
 
-pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
-    vec![
+pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
+    let mut tools = vec![
         tool(
             "find_files",
             "Browse the file tree — prefer this over shell commands for listing files. Directories shown with trailing /. Use pattern to filter, max_depth to limit recursion. Excludes build/dependency directories by default.",
@@ -154,7 +156,11 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
             80_000,
             "command",
         ),
-    ]
+    ];
+    if agent_enabled {
+        tools.push(builtin::agent_definition());
+    }
+    tools
 }
 
 pub(crate) fn registry_hash(registry: &[ToolDefinition]) -> String {
@@ -204,7 +210,7 @@ mod tests {
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {
-        let registry = builtin_registry();
+        let registry = builtin_registry(false);
 
         assert_eq!(
             tool_names(&registry),
@@ -223,7 +229,7 @@ mod tests {
         assert!(registry[0].read_only);
         assert!(registry[0].concurrency_safe);
         assert_eq!(registry[0].max_result_chars, 8_000);
-        assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry()));
+        assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry(false)));
 
         let remember = registry
             .iter()
@@ -240,5 +246,22 @@ mod tests {
         assert!(!forget.read_only);
         assert!(!forget.concurrency_safe);
         assert_eq!(forget.risk, "edit");
+    }
+
+    #[test]
+    fn builtin_registry_includes_agent_when_enabled() {
+        let registry = builtin_registry(true);
+        let names = tool_names(&registry);
+        assert!(names.contains(&"agent".to_string()));
+        assert_eq!(names.len(), 9);
+        assert_eq!(names.last().unwrap(), "agent");
+    }
+
+    #[test]
+    fn builtin_registry_excludes_agent_when_disabled() {
+        let registry = builtin_registry(false);
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"agent".to_string()));
+        assert_eq!(names.len(), 8);
     }
 }

@@ -129,6 +129,11 @@ pub(super) fn display_summary(
             .and_then(|v| v.as_str())
             .unwrap_or(tool)
             .to_string(),
+        "agent" => args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent")
+            .to_string(),
         "memory.remember" | "memory.forget" => args
             .get("text")
             .and_then(|v| v.as_str())
