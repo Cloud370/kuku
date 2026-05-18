@@ -26,6 +26,7 @@ pub struct Query {
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
+    pub(super) prompts_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +125,7 @@ pub(super) struct PendingRun {
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) saved_tool_call: Option<QueuedToolCall>,
     pub(super) config: Arc<Config>,
+    pub(super) prompts_dir: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -131,7 +133,7 @@ pub(super) struct ResolvedRuntime {
     pub(super) config: ResolvedProvider,
     pub(super) registry: Vec<ToolDefinition>,
     pub(super) registry_hash: String,
-    pub(super) ordered_tool_names: Vec<String>,
+    pub(super) tool_names: Vec<String>,
     pub(super) tool_count: usize,
 }
 
@@ -210,6 +212,7 @@ impl Query {
             max_output_tokens: None,
             temperature: None,
             workspace_path: None,
+            prompts_dir: None,
         }
     }
 
@@ -276,6 +279,12 @@ impl Query {
     /// Set the workspace directory (defaults to cwd).
     pub fn workspace(mut self, path: impl Into<PathBuf>) -> Self {
         self.workspace_path = Some(path.into());
+        self
+    }
+
+    /// Directory containing prompt files to override embedded defaults.
+    pub fn prompts_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.prompts_dir = Some(path.into());
         self
     }
 

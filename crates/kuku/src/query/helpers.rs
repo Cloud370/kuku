@@ -217,8 +217,8 @@ pub(super) fn append_model_error(
     request_id: String,
     kind: &str,
     message: &str,
-    resolved_provider: Option<String>,
-    resolved_model: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
 ) -> Result<()> {
     let mut store = EventStore::open(events_path)?;
     store.append(EventPayload::ModelError {
@@ -229,8 +229,8 @@ pub(super) fn append_model_error(
         message: message.to_string(),
         status: None,
         retryable: Some(false),
-        resolved_provider,
-        resolved_model,
+        provider,
+        model,
     })?;
     Ok(())
 }

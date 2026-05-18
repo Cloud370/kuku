@@ -26,6 +26,30 @@ pub enum Command {
     Config(ConfigArgs),
     /// Initialize config and directory structure
     Init,
+    /// Show or export embedded prompt assets
+    Prompts(PromptsArgs),
+}
+
+// ── Prompts ──
+
+#[derive(Args)]
+pub struct PromptsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<PromptsSubcommand>,
+}
+
+#[derive(Subcommand)]
+pub enum PromptsSubcommand {
+    /// Show embedded prompt content
+    Show {
+        /// Prompt name: system, synthetic-user, tool-guidance, or omit for all
+        name: Option<String>,
+    },
+    /// Export embedded prompts to a directory
+    Export {
+        /// Target directory path
+        dir: String,
+    },
 }
 
 // ── Run ──
@@ -71,6 +95,10 @@ pub struct RunArgs {
     /// Path to config.toml (default: ~/.kuku/config.toml)
     #[arg(long = "config")]
     pub config: Option<String>,
+
+    /// Directory containing prompt files to override embedded defaults
+    #[arg(long = "prompts-dir")]
+    pub prompts_dir: Option<String>,
 }
 
 // ── Show ──
@@ -88,9 +116,9 @@ pub struct EventsArgs {
     /// Session ID
     pub session_id: String,
 
-    /// Verbose event output
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    /// Verbose output (-v for metadata, -vv for full context)
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    pub verbose: u8,
 }
 
 // ── List ──

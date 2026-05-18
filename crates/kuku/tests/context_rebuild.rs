@@ -4,6 +4,7 @@ use kuku::context::{
     RequestProvenanceInput, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
 };
 use kuku::event::{EventPayload, EventStore};
+use kuku::prompt::builtin_prompt_catalog;
 use serde_json::json;
 
 #[test]
@@ -64,19 +65,22 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         input_schema: json!({"type": "object"}),
     }];
 
-    let assembly = assemble_context(ContextInput {
-        environment: EnvironmentSource {
-            workspace_path: "/workspace".to_string(),
-            platform: "linux".to_string(),
-            current_date: "2026-05-14".to_string(),
+    let assembly = assemble_context(
+        ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: "/workspace".to_string(),
+                platform: "linux".to_string(),
+                current_date: "2026-05-14".to_string(),
+            },
+            project_instructions: project_instructions.clone(),
+            global_memory: Some(global_memory.clone()),
+            project_memory: Some(project_memory.clone()),
+            history: history.clone(),
+            tools: tools.clone(),
+            model_tiers: Vec::new(),
         },
-        project_instructions: project_instructions.clone(),
-        global_memory: Some(global_memory.clone()),
-        project_memory: Some(project_memory.clone()),
-        history: history.clone(),
-        tools: tools.clone(),
-        model_tiers: Vec::new(),
-    })
+        builtin_prompt_catalog(),
+    )
     .unwrap();
 
     assert!(assembly.system_prompt.contains("<kuku_identity>"));
@@ -163,13 +167,13 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         },
         tool_registry: ToolRegistryProvenance {
             hash: "sha256-tools".to_string(),
-            ordered_tool_names: vec!["read".to_string()],
+            names: vec!["read".to_string()],
             tool_count: 1,
         },
         provider_format: "anthropic".to_string(),
-        resolved_provider: "anthropic".to_string(),
-        resolved_model: "claude-sonnet-4-6".to_string(),
-        params: json!({"temperature": 0}),
+        provider: "anthropic".to_string(),
+        model: "claude-sonnet-4-6".to_string(),
+        request_params: json!({"temperature": 0}),
         token_estimate: None,
         context_budget_tier: "normal".to_string(),
         max_context_tokens: Some(200_000),
@@ -187,19 +191,22 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
 
 #[test]
 fn assemble_context_keeps_stable_empty_placeholders() {
-    let assembly = assemble_context(ContextInput {
-        environment: EnvironmentSource {
-            workspace_path: "/workspace".to_string(),
-            platform: "windows".to_string(),
-            current_date: "2026-05-14".to_string(),
+    let assembly = assemble_context(
+        ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: "/workspace".to_string(),
+                platform: "windows".to_string(),
+                current_date: "2026-05-14".to_string(),
+            },
+            project_instructions: Vec::new(),
+            global_memory: None,
+            project_memory: None,
+            history: Vec::new(),
+            tools: Vec::new(),
+            model_tiers: Vec::new(),
         },
-        project_instructions: Vec::new(),
-        global_memory: None,
-        project_memory: None,
-        history: Vec::new(),
-        tools: Vec::new(),
-        model_tiers: Vec::new(),
-    })
+        builtin_prompt_catalog(),
+    )
     .unwrap();
 
     match &assembly.prelude_messages[0].blocks[..] {
@@ -216,19 +223,22 @@ fn assemble_context_keeps_stable_empty_placeholders() {
 
 #[test]
 fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
-    let mut assembly = assemble_context(ContextInput {
-        environment: EnvironmentSource {
-            workspace_path: "/workspace".to_string(),
-            platform: "linux".to_string(),
-            current_date: "2026-05-14".to_string(),
+    let mut assembly = assemble_context(
+        ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: "/workspace".to_string(),
+                platform: "linux".to_string(),
+                current_date: "2026-05-14".to_string(),
+            },
+            project_instructions: Vec::new(),
+            global_memory: None,
+            project_memory: None,
+            history: Vec::new(),
+            tools: Vec::new(),
+            model_tiers: Vec::new(),
         },
-        project_instructions: Vec::new(),
-        global_memory: None,
-        project_memory: None,
-        history: Vec::new(),
-        tools: Vec::new(),
-        model_tiers: Vec::new(),
-    })
+        builtin_prompt_catalog(),
+    )
     .unwrap();
 
     assembly

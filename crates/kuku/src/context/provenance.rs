@@ -18,7 +18,7 @@ pub struct HistoryRange {
 /// Snapshot of the tool registry used for a provider request.
 pub struct ToolRegistryProvenance {
     pub hash: String,
-    pub ordered_tool_names: Vec<String>,
+    pub names: Vec<String>,
     pub tool_count: usize,
 }
 
@@ -36,9 +36,9 @@ pub struct RequestProvenanceInput {
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
     pub provider_format: String,
-    pub resolved_provider: String,
-    pub resolved_model: String,
-    pub params: Value,
+    pub provider: String,
+    pub model: String,
+    pub request_params: Value,
     pub token_estimate: Option<u64>,
     pub context_budget_tier: String,
     pub max_context_tokens: Option<u32>,
@@ -59,9 +59,9 @@ pub struct RequestProvenance {
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
     pub provider_format: String,
-    pub resolved_provider: String,
-    pub resolved_model: String,
-    pub params: Value,
+    pub provider: String,
+    pub model: String,
+    pub request_params: Value,
     pub token_estimate: Option<u64>,
     pub context_budget_tier: String,
     pub max_context_tokens: Option<u32>,
@@ -82,9 +82,9 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         history_range: input.history_range,
         tool_registry: input.tool_registry,
         provider_format: input.provider_format,
-        resolved_provider: input.resolved_provider,
-        resolved_model: input.resolved_model,
-        params: input.params,
+        provider: input.provider,
+        model: input.model,
+        request_params: input.request_params,
         token_estimate: input.token_estimate,
         context_budget_tier: input.context_budget_tier,
         max_context_tokens: input.max_context_tokens,
@@ -128,7 +128,7 @@ mod tests {
         };
         let tool_registry = ToolRegistryProvenance {
             hash: "sha256-tools".to_string(),
-            ordered_tool_names: vec!["read".to_string(), "grep".to_string()],
+            names: vec!["read".to_string(), "grep".to_string()],
             tool_count: 2,
         };
 
@@ -144,9 +144,9 @@ mod tests {
             history_range: history_range.clone(),
             tool_registry: tool_registry.clone(),
             provider_format: "anthropic".to_string(),
-            resolved_provider: "anthropic".to_string(),
-            resolved_model: "claude-sonnet-4-6".to_string(),
-            params: json!({"temperature": 0, "max_tokens": 1024}),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            request_params: json!({"temperature": 0, "max_tokens": 1024}),
             token_estimate: Some(500),
             context_budget_tier: "roomy".to_string(),
             max_context_tokens: Some(200_000),
@@ -170,9 +170,9 @@ mod tests {
             history_range: actual_history_range,
             tool_registry: actual_tool_registry,
             provider_format,
-            resolved_provider,
-            resolved_model,
-            params,
+            provider,
+            model,
+            request_params,
             token_estimate,
             context_budget_tier,
             max_context_tokens,
@@ -190,9 +190,12 @@ mod tests {
         assert_eq!(actual_history_range, history_range);
         assert_eq!(actual_tool_registry, tool_registry);
         assert_eq!(provider_format, "anthropic");
-        assert_eq!(resolved_provider, "anthropic");
-        assert_eq!(resolved_model, "claude-sonnet-4-6");
-        assert_eq!(params, json!({"temperature": 0, "max_tokens": 1024}));
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-sonnet-4-6");
+        assert_eq!(
+            request_params,
+            json!({"temperature": 0, "max_tokens": 1024})
+        );
         assert_eq!(token_estimate, Some(500));
         assert_eq!(context_budget_tier, "roomy");
         assert_eq!(max_context_tokens, Some(200_000));

@@ -1,7 +1,8 @@
 use crate::error::Result;
-use crate::prompt::{builtin_prompt_catalog, render_synthetic_user, SyntheticUserTemplateInput};
+use crate::event::types::ContextMessage;
+use crate::prompt::{render_synthetic_user, SyntheticUserTemplateInput};
 
-use super::message::CanonicalMessage;
+use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +62,37 @@ pub struct ContextAssembly {
     pub memory_sources: Vec<MemorySource>,
 }
 
+impl ContextAssembly {
+    /// Snapshot the current prelude messages as ContextMessage values.
+    /// Call BEFORE inserting runtime notices to capture the clean prelude layer.
+    pub fn snapshot_prelude(&self) -> Vec<ContextMessage> {
+        self.prelude_messages
+            .iter()
+            .map(|msg| {
+                let content = msg
+                    .blocks
+                    .iter()
+                    .map(|b| match b {
+                        MessageBlock::Text(t) => t.as_str(),
+                        MessageBlock::Thinking(t) => t.as_str(),
+                        MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => "",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                ContextMessage {
+                    role: "user".to_string(),
+                    content,
+                }
+            })
+            .collect()
+    }
+}
+
 /// Build a complete context assembly from environment, instructions, memory, history, and tools.
-pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
-    let catalog = builtin_prompt_catalog();
+pub fn assemble_context(
+    input: ContextInput,
+    catalog: crate::prompt::PromptCatalog,
+) -> Result<ContextAssembly> {
     let project_instructions_text = if input.project_instructions.is_empty() {
         "No project instructions found.".to_string()
     } else {
@@ -98,7 +127,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
     };
 
     let synthetic_text = render_synthetic_user(
-        catalog.synthetic_user.text,
+        &catalog.synthetic_user.text,
         &SyntheticUserTemplateInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
@@ -119,7 +148,7 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
     }
 
     Ok(ContextAssembly {
-        system_prompt: catalog.system.text.to_string(),
+        system_prompt: catalog.system.text,
         prelude_messages: vec![
             CanonicalMessage::user_text(synthetic_text),
             CanonicalMessage::user_text(catalog.tool_guidance.text),
@@ -128,15 +157,15 @@ pub fn assemble_context(input: ContextInput) -> Result<ContextAssembly> {
         tools: input.tools,
         prompt_asset_sources: vec![
             FileSource {
-                path: catalog.system.path.to_string(),
+                path: catalog.system.path,
                 hash: catalog.system.hash,
             },
             FileSource {
-                path: catalog.synthetic_user.path.to_string(),
+                path: catalog.synthetic_user.path,
                 hash: catalog.synthetic_user.hash,
             },
             FileSource {
-                path: catalog.tool_guidance.path.to_string(),
+                path: catalog.tool_guidance.path,
                 hash: catalog.tool_guidance.hash,
             },
         ],
@@ -151,6 +180,7 @@ mod tests {
         assemble_context, CanonicalMessage, ContextInput, EnvironmentSource, InstructionSource,
         MemorySource, MessageBlock, ToolSchema,
     };
+    use crate::prompt::builtin_prompt_catalog;
     use serde_json::json;
 
     fn instruction(path: &str, kind: &str, hash: &str, content: &str) -> InstructionSource {
@@ -203,19 +233,22 @@ mod tests {
             input_schema: json!({"type": "object"}),
         }];
 
-        let assembly = assemble_context(ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: "/workspace".to_string(),
-                platform: "linux".to_string(),
-                current_date: "2026-05-14".to_string(),
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "linux".to_string(),
+                    current_date: "2026-05-14".to_string(),
+                },
+                project_instructions: project_instructions.clone(),
+                global_memory: Some(global_memory.clone()),
+                project_memory: Some(project_memory.clone()),
+                history: history.clone(),
+                tools: tools.clone(),
+                model_tiers: Vec::new(),
             },
-            project_instructions: project_instructions.clone(),
-            global_memory: Some(global_memory.clone()),
-            project_memory: Some(project_memory.clone()),
-            history: history.clone(),
-            tools: tools.clone(),
-            model_tiers: Vec::new(),
-        })
+            builtin_prompt_catalog(),
+        )
         .unwrap();
 
         assert!(assembly.system_prompt.contains("<kuku_identity>"));
@@ -231,19 +264,22 @@ mod tests {
 
     #[test]
     fn keeps_empty_optional_sources_without_removing_placeholders() {
-        let assembly = assemble_context(ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: "/workspace".to_string(),
-                platform: "windows".to_string(),
-                current_date: "2026-05-14".to_string(),
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "windows".to_string(),
+                    current_date: "2026-05-14".to_string(),
+                },
+                project_instructions: Vec::new(),
+                global_memory: None,
+                project_memory: None,
+                history: Vec::new(),
+                tools: Vec::new(),
+                model_tiers: Vec::new(),
             },
-            project_instructions: Vec::new(),
-            global_memory: None,
-            project_memory: None,
-            history: Vec::new(),
-            tools: Vec::new(),
-            model_tiers: Vec::new(),
-        })
+            builtin_prompt_catalog(),
+        )
         .unwrap();
 
         match &assembly.prelude_messages[0].blocks[..] {
@@ -255,5 +291,33 @@ mod tests {
             }
             other => panic!("expected one synthetic-user text block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn snapshot_prelude_contains_synthetic_user_and_tool_guidance_without_notices() {
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/workspace".to_string(),
+                    platform: "linux".to_string(),
+                    current_date: "2026-05-18".to_string(),
+                },
+                project_instructions: Vec::new(),
+                global_memory: None,
+                project_memory: None,
+                history: Vec::new(),
+                tools: Vec::new(),
+                model_tiers: Vec::new(),
+            },
+            builtin_prompt_catalog(),
+        )
+        .unwrap();
+
+        let snapshot = assembly.snapshot_prelude();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].role, "user");
+        assert!(snapshot[0].content.contains("<kuku_execution_context>"));
+        assert_eq!(snapshot[1].role, "user");
+        assert!(snapshot[1].content.contains("<kuku_tool_guidance>"));
     }
 }

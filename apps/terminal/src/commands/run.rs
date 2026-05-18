@@ -76,6 +76,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut previous_input_tokens: u64 = 0;
 
     let mut q = query(&prompt).config_path(config_path);
+    if let Some(ref dir) = args.prompts_dir {
+        q = q.prompts_dir(std::path::PathBuf::from(dir));
+    }
     if let Some(model) = &args.model {
         q = q.model(model.clone());
     }
@@ -376,6 +379,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         show_thinking: false,
         raw: false,
         config,
+        prompts_dir: None,
     };
     run(args).await
 }

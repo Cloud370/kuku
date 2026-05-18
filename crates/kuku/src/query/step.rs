@@ -303,19 +303,33 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let current_date = current_date_string();
     let model_tiers = pending.config.tier_infos();
 
-    let mut assembly = match assemble_context(ContextInput {
-        environment: EnvironmentSource {
-            workspace_path: pending.workspace.display().to_string(),
-            platform: platform.clone(),
-            current_date: current_date.clone(),
+    let catalog = if let Some(dir) = &pending.prompts_dir {
+        crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
+            crate::error::Error::PromptRender(format!(
+                "failed to load prompts from {}: {e}",
+                dir.display()
+            ))
+        })?
+    } else {
+        crate::prompt::builtin_prompt_catalog()
+    };
+
+    let mut assembly = match assemble_context(
+        ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: pending.workspace.display().to_string(),
+                platform: platform.clone(),
+                current_date: current_date.clone(),
+            },
+            project_instructions,
+            global_memory,
+            project_memory,
+            history,
+            tools: tool::to_tool_schemas(&resolved.registry),
+            model_tiers,
         },
-        project_instructions,
-        global_memory,
-        project_memory,
-        history,
-        tools: tool::to_tool_schemas(&resolved.registry),
-        model_tiers,
-    }) {
+        catalog,
+    ) {
         Ok(assembly) => assembly,
         Err(error) => {
             let request_id = format!("req_{}", pending.request_num);
@@ -347,16 +361,26 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         Some(resolved.config.max_output_tokens),
         estimated_input,
     );
+    let prelude_snapshot = assembly.snapshot_prelude();
+    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
     if pending.turn > 1 {
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: &pending.workspace,
             events: &existing_events,
             context_budget_tier: context_headroom.tier,
         });
-        for (offset, notice) in notices.into_iter().enumerate() {
+        let rendered_notices: Vec<String> = notices.iter().map(render_notice_block).collect();
+        notice_snapshots = rendered_notices
+            .iter()
+            .map(|content| crate::event::types::ContextMessage {
+                role: "user".to_string(),
+                content: content.clone(),
+            })
+            .collect();
+        for (offset, rendered) in rendered_notices.into_iter().enumerate() {
             assembly.prelude_messages.insert(
                 1 + offset,
-                crate::context::CanonicalMessage::user_text(render_notice_block(&notice)),
+                crate::context::CanonicalMessage::user_text(rendered),
             );
         }
     }
@@ -402,13 +426,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         },
         tool_registry: ToolRegistryProvenance {
             hash: resolved.registry_hash.clone(),
-            ordered_tool_names: resolved.ordered_tool_names.clone(),
+            names: resolved.tool_names.clone(),
             tool_count: resolved.tool_count,
         },
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
-        resolved_provider: resolved.config.kind.as_str().to_string(),
-        resolved_model: resolved.config.model.clone(),
-        params: params.clone(),
+        provider: resolved.config.kind.as_str().to_string(),
+        model: resolved.config.model.clone(),
+        request_params: params.clone(),
         token_estimate: None,
         context_budget_tier: context_headroom.tier.as_str().to_string(),
         max_context_tokens: Some(context_headroom.max_context_tokens),
@@ -424,16 +448,25 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             request_id: request_id.clone(),
             tier: tier_name,
             think: think.clone(),
-            resolved_provider: resolved.config.kind.as_str().to_string(),
-            resolved_model: resolved.config.model.clone(),
-            params,
+            provider: resolved.config.kind.as_str().to_string(),
+            model: resolved.config.model.clone(),
+            request_params: params,
             base_url: Some(resolved.config.base_url.clone()),
-            message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
-            history_range_first: existing_events.first().map(|event| event.id),
-            history_range_last: existing_events.last().map(|event| event.id),
-            tool_registry_hash: Some(resolved.registry_hash.clone()),
-            tool_count: Some(resolved.tool_count),
-            ordered_tool_names: Some(resolved.ordered_tool_names.clone()),
+            history: Some(crate::event::types::RequestHistory {
+                first: existing_events.first().map(|event| event.id),
+                last: existing_events.last().map(|event| event.id),
+                message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
+            }),
+            tools: Some(crate::event::types::RequestTools {
+                hash: Some(resolved.registry_hash.clone()),
+                count: Some(resolved.tool_count),
+                names: Some(resolved.tool_names.clone()),
+            }),
+            context: Some(crate::event::types::RequestContext {
+                system: assembly.system_prompt.clone(),
+                prelude: prelude_snapshot,
+                notices: notice_snapshots,
+            }),
             provenance: Some(serde_json::to_value(&provenance)?),
         })?;
     }
@@ -513,7 +546,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
 
     let registry = tool::builtin_registry();
     let registry_hash = tool::registry_hash(&registry);
-    let ordered_tool_names = tool::ordered_tool_names(&registry);
+    let tool_names = tool::tool_names(&registry);
     let tool_count = registry.len();
     if let Ok(policy_text) = std::fs::read_to_string(&pending.policy_path) {
         let policy_hash = sha2::Sha256::digest(policy_text.as_bytes());
@@ -529,7 +562,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         config,
         registry,
         registry_hash,
-        ordered_tool_names,
+        tool_names,
         tool_count,
     });
     Ok(())
