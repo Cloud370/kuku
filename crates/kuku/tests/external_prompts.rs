@@ -10,8 +10,8 @@ fn load_from_dir_uses_external_system_prompt() {
     assert_eq!(catalog.system.text, custom);
     // Other prompts fall back to embedded
     assert_eq!(
-        catalog.synthetic_user.text,
-        builtin_prompt_catalog().synthetic_user.text
+        catalog.project_context.text,
+        builtin_prompt_catalog().project_context.text
     );
     assert_eq!(
         catalog.tool_guidance.text,
@@ -25,6 +25,6 @@ fn load_from_dir_all_embedded_when_dir_is_empty() {
     let builtin = builtin_prompt_catalog();
     let catalog = PromptCatalog::load_from_dir(dir.path()).unwrap();
     assert_eq!(catalog.system.text, builtin.system.text);
-    assert_eq!(catalog.synthetic_user.text, builtin.synthetic_user.text);
+    assert_eq!(catalog.project_context.text, builtin.project_context.text);
     assert_eq!(catalog.tool_guidance.text, builtin.tool_guidance.text);
 }

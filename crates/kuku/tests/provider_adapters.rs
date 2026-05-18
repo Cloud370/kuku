@@ -113,7 +113,7 @@ fn sample_assembly() -> ContextAssembly {
                 hash: "sha256:system".to_string(),
             },
             FileSource {
-                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                path: "crates/kuku/prompts/project-context.md".to_string(),
                 hash: "sha256:synthetic".to_string(),
             },
             FileSource {
@@ -132,6 +132,7 @@ fn sample_assembly() -> ContextAssembly {
             hash: "sha256:global".to_string(),
             content: "remember the user prefers concise answers".to_string(),
         }],
+        runtime_context: None,
     }
 }
 
@@ -204,7 +205,7 @@ fn assembly_with_tool_history() -> ContextAssembly {
                 hash: "sha256:system".to_string(),
             },
             FileSource {
-                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                path: "crates/kuku/prompts/project-context.md".to_string(),
                 hash: "sha256:synthetic".to_string(),
             },
             FileSource {
@@ -214,6 +215,7 @@ fn assembly_with_tool_history() -> ContextAssembly {
         ],
         project_instruction_sources: Vec::new(),
         memory_sources: Vec::new(),
+        runtime_context: None,
     }
 }
 

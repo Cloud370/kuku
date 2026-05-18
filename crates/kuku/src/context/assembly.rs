@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event::types::ContextMessage;
-use crate::prompt::{render_synthetic_user, SyntheticUserTemplateInput};
+use crate::prompt::{render_project_context, render_runtime_context, ProjectContextInput};
 
 use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
@@ -48,23 +48,30 @@ pub struct ContextInput {
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
     pub model_tiers: Vec<crate::config::TierInfo>,
+    /// Optional rendered runtime blocks (agent catalog, notices, etc.).
+    /// These go into the runtime_context wrapper in the current user turn.
+    pub runtime_blocks: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// Assembled system prompt, prelude messages, history, and tool schemas ready for the provider.
 pub struct ContextAssembly {
     pub system_prompt: String,
+    /// messages[0]: project_context (behavior framework) + messages[1]: tool_guidance
     pub prelude_messages: Vec<CanonicalMessage>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
     pub prompt_asset_sources: Vec<FileSource>,
     pub project_instruction_sources: Vec<InstructionSource>,
     pub memory_sources: Vec<MemorySource>,
+    /// Runtime context text injected into the current user turn (before human input).
+    /// None if no runtime blocks are present.
+    pub runtime_context: Option<String>,
 }
 
 impl ContextAssembly {
-    /// Snapshot the current prelude messages as ContextMessage values.
-    /// Call BEFORE inserting runtime notices to capture the clean prelude layer.
+    /// Snapshot the clean prelude messages (project_context + tool_guidance) before
+    /// any turn-specific content (runtime_context) is added.
     pub fn snapshot_prelude(&self) -> Vec<ContextMessage> {
         self.prelude_messages
             .iter()
@@ -88,7 +95,7 @@ impl ContextAssembly {
     }
 }
 
-/// Build a complete context assembly from environment, instructions, memory, history, and tools.
+/// Build a complete context assembly with A2b two-layer structure.
 pub fn assemble_context(
     input: ContextInput,
     catalog: crate::prompt::PromptCatalog,
@@ -99,7 +106,7 @@ pub fn assemble_context(
         input
             .project_instructions
             .iter()
-            .map(|source| source.content.as_str())
+            .map(|s| s.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n")
     };
@@ -107,12 +114,12 @@ pub fn assemble_context(
     let global_memory_text = input
         .global_memory
         .as_ref()
-        .map(|source| source.content.clone())
+        .map(|s| s.content.clone())
         .unwrap_or_else(|| "No global memory.".to_string());
     let project_memory_text = input
         .project_memory
         .as_ref()
-        .map(|source| source.content.clone())
+        .map(|s| s.content.clone())
         .unwrap_or_else(|| "No project memory.".to_string());
 
     let model_tiers_text = if input.model_tiers.is_empty() {
@@ -126,9 +133,10 @@ pub fn assemble_context(
             .join("\n")
     };
 
-    let synthetic_text = render_synthetic_user(
-        &catalog.synthetic_user.text,
-        &SyntheticUserTemplateInput {
+    // Layer 1: project_context (behavior framework) — messages[0]
+    let project_context_text = render_project_context(
+        &catalog.project_context.text,
+        &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
             current_date: input.environment.current_date.clone(),
@@ -138,6 +146,13 @@ pub fn assemble_context(
             model_tiers_rendered: model_tiers_text,
         },
     )?;
+
+    // Layer 2: runtime_context (dynamic catalogs + notices) — injected into current user turn
+    let runtime_context = input
+        .runtime_blocks
+        .filter(|blocks| !blocks.is_empty())
+        .map(|blocks| render_runtime_context(&catalog.runtime_context.text, &blocks))
+        .transpose()?;
 
     let mut memory_sources = Vec::new();
     if let Some(global_memory) = input.global_memory.clone() {
@@ -150,7 +165,7 @@ pub fn assemble_context(
     Ok(ContextAssembly {
         system_prompt: catalog.system.text,
         prelude_messages: vec![
-            CanonicalMessage::user_text(synthetic_text),
+            CanonicalMessage::user_text(project_context_text),
             CanonicalMessage::user_text(catalog.tool_guidance.text),
         ],
         history: input.history,
@@ -161,8 +176,8 @@ pub fn assemble_context(
                 hash: catalog.system.hash,
             },
             FileSource {
-                path: catalog.synthetic_user.path,
-                hash: catalog.synthetic_user.hash,
+                path: catalog.project_context.path,
+                hash: catalog.project_context.hash,
             },
             FileSource {
                 path: catalog.tool_guidance.path,
@@ -171,6 +186,7 @@ pub fn assemble_context(
         ],
         project_instruction_sources: input.project_instructions,
         memory_sources,
+        runtime_context,
     })
 }
 
@@ -185,139 +201,138 @@ mod tests {
 
     fn instruction(path: &str, kind: &str, hash: &str, content: &str) -> InstructionSource {
         InstructionSource {
-            path: path.to_string(),
-            kind: kind.to_string(),
-            hash: hash.to_string(),
-            content: content.to_string(),
+            path: path.into(),
+            kind: kind.into(),
+            hash: hash.into(),
+            content: content.into(),
         }
     }
 
     fn memory(path: &str, hash: &str, content: &str) -> MemorySource {
         MemorySource {
-            path: path.to_string(),
-            hash: hash.to_string(),
-            content: content.to_string(),
+            path: path.into(),
+            hash: hash.into(),
+            content: content.into(),
         }
     }
 
     #[test]
-    fn assembles_context_sources_in_documented_order() {
-        let project_instructions = vec![
-            instruction(
-                "/workspace/AGENTS.md",
-                "agents",
-                "sha256:agents",
-                "primary instructions",
-            ),
-            instruction(
-                "/workspace/CLAUDE.md",
-                "claude",
-                "sha256:claude",
-                "compatibility instructions",
-            ),
-        ];
-        let global_memory = memory(
-            "/home/user/.kuku/memory.md",
-            "sha256:global",
-            "global memory",
-        );
-        let project_memory = memory(
-            "/home/user/.kuku/p/workspace/memory.md",
-            "sha256:project",
-            "project memory",
-        );
-        let history = vec![CanonicalMessage::user_text("hello")];
-        let tools = vec![ToolSchema {
-            name: "read".to_string(),
-            description: "Read a file".to_string(),
-            input_schema: json!({"type": "object"}),
-        }];
-
+    fn a2b_assembles_project_context_as_first_prelude_message() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
-                    workspace_path: "/workspace".to_string(),
-                    platform: "linux".to_string(),
-                    current_date: "2026-05-14".to_string(),
+                    workspace_path: "/ws".into(),
+                    platform: "linux".into(),
+                    current_date: "2026-05-18".into(),
                 },
-                project_instructions: project_instructions.clone(),
-                global_memory: Some(global_memory.clone()),
-                project_memory: Some(project_memory.clone()),
-                history: history.clone(),
-                tools: tools.clone(),
-                model_tiers: Vec::new(),
+                project_instructions: vec![instruction(
+                    "/ws/AGENTS.md",
+                    "agents",
+                    "sha:a",
+                    "instr",
+                )],
+                global_memory: Some(memory("mem.md", "sha:m", "mem")),
+                project_memory: None,
+                history: vec![CanonicalMessage::user_text("hello")],
+                tools: vec![ToolSchema {
+                    name: "read".into(),
+                    description: "r".into(),
+                    input_schema: json!({"type": "object"}),
+                }],
+                model_tiers: vec![],
+                runtime_blocks: None,
             },
             builtin_prompt_catalog(),
         )
         .unwrap();
 
-        assert!(assembly.system_prompt.contains("<kuku_identity>"));
-        assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
-        assert!(assembly.system_prompt.contains("<kuku_working_style>"));
         assert_eq!(assembly.prelude_messages.len(), 2);
-        assert_eq!(assembly.history, history);
-        assert_eq!(assembly.tools, tools);
-        assert_eq!(assembly.project_instruction_sources, project_instructions);
-        assert_eq!(assembly.memory_sources, vec![global_memory, project_memory]);
-        assert_eq!(assembly.prompt_asset_sources.len(), 3);
+        let first = match &assembly.prelude_messages[0].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(
+            first.contains("<kuku_project_context>"),
+            "messages[0] should be project_context, got: {first}"
+        );
+        assert!(first.contains("instr"), "should contain project instructions");
+
+        let second = match &assembly.prelude_messages[1].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(
+            second.contains("<kuku_tool_guidance>"),
+            "messages[1] should be tool_guidance"
+        );
     }
 
     #[test]
-    fn keeps_empty_optional_sources_without_removing_placeholders() {
+    fn a2b_runtime_context_is_separate_from_prelude() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
-                    workspace_path: "/workspace".to_string(),
-                    platform: "windows".to_string(),
-                    current_date: "2026-05-14".to_string(),
+                    workspace_path: "/ws".into(),
+                    platform: "linux".into(),
+                    current_date: "2026-05-18".into(),
                 },
-                project_instructions: Vec::new(),
+                project_instructions: vec![],
                 global_memory: None,
                 project_memory: None,
-                history: Vec::new(),
-                tools: Vec::new(),
-                model_tiers: Vec::new(),
+                history: vec![],
+                tools: vec![],
+                model_tiers: vec![],
+                runtime_blocks: Some(
+                    "<kuku_agent_catalog><agent name=\"r\"/></kuku_agent_catalog>".into(),
+                ),
             },
             builtin_prompt_catalog(),
         )
         .unwrap();
 
-        match &assembly.prelude_messages[0].blocks[..] {
-            [MessageBlock::Text(text)] => {
-                assert!(text.contains("No project instructions found."));
-                assert!(text.contains("No global memory."));
-                assert!(text.contains("No project memory."));
-                assert!(!text.contains("<kuku_current_task>"));
-            }
-            other => panic!("expected one synthetic-user text block, got {other:?}"),
+        let rt = assembly
+            .runtime_context
+            .as_ref()
+            .expect("runtime_context should be set");
+        assert!(
+            rt.contains("<kuku_agent_catalog>"),
+            "catalog should be in runtime_context"
+        );
+        assert!(
+            rt.contains("<kuku_runtime_context>"),
+            "should wrap in runtime_context template"
+        );
+
+        // prelude snapshot must NOT contain runtime_context
+        let snapshot = assembly.snapshot_prelude();
+        for msg in &snapshot {
+            assert!(
+                !msg.content.contains("<kuku_agent_catalog>"),
+                "prelude must not contain catalog"
+            );
         }
     }
 
     #[test]
-    fn snapshot_prelude_contains_synthetic_user_and_tool_guidance_without_notices() {
+    fn a2b_no_runtime_context_when_empty_blocks() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
-                    workspace_path: "/workspace".to_string(),
-                    platform: "linux".to_string(),
-                    current_date: "2026-05-18".to_string(),
+                    workspace_path: "/ws".into(),
+                    platform: "linux".into(),
+                    current_date: "2026-05-18".into(),
                 },
-                project_instructions: Vec::new(),
+                project_instructions: vec![],
                 global_memory: None,
                 project_memory: None,
-                history: Vec::new(),
-                tools: Vec::new(),
-                model_tiers: Vec::new(),
+                history: vec![],
+                tools: vec![],
+                model_tiers: vec![],
+                runtime_blocks: None,
             },
             builtin_prompt_catalog(),
         )
         .unwrap();
-
-        let snapshot = assembly.snapshot_prelude();
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot[0].role, "user");
-        assert!(snapshot[0].content.contains("<kuku_execution_context>"));
-        assert_eq!(snapshot[1].role, "user");
-        assert!(snapshot[1].content.contains("<kuku_tool_guidance>"));
+        assert!(assembly.runtime_context.is_none());
     }
 }

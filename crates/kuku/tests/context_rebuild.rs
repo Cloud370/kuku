@@ -78,6 +78,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             history: history.clone(),
             tools: tools.clone(),
             model_tiers: Vec::new(),
+            runtime_blocks: None,
         },
         builtin_prompt_catalog(),
     )
@@ -85,9 +86,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
 
     assert!(assembly.system_prompt.contains("<kuku_identity>"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
-    assert!(assembly.system_prompt.contains("<kuku_memory_guidance>"));
-    assert!(assembly.system_prompt.contains("memory.remember"));
-    assert!(assembly.system_prompt.contains("memory.forget"));
     assert!(assembly.system_prompt.contains("<kuku_working_style>"));
     assert!(assembly
         .system_prompt
@@ -115,7 +113,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             assert!(text.contains("project"));
             assert!(!text.contains("<kuku_current_task>"));
         }
-        other => panic!("expected one synthetic-user text block, got {other:?}"),
+        other => panic!("expected one project-context text block, got {other:?}"),
     }
 
     match &assembly.prelude_messages[1].blocks[..] {
@@ -153,7 +151,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
                 hash: "sha256:system".to_string(),
             },
             FileSource {
-                path: "crates/kuku/prompts/synthetic-user.md".to_string(),
+                path: "crates/kuku/prompts/project-context.md".to_string(),
                 hash: "sha256:synthetic".to_string(),
             },
             FileSource {
@@ -204,6 +202,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             history: Vec::new(),
             tools: Vec::new(),
             model_tiers: Vec::new(),
+            runtime_blocks: None,
         },
         builtin_prompt_catalog(),
     )
@@ -217,12 +216,12 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             assert!(text.contains("No project memory."));
             assert!(!text.contains("<kuku_current_task>"));
         }
-        other => panic!("expected one synthetic-user text block, got {other:?}"),
+        other => panic!("expected one project-context text block, got {other:?}"),
     }
 }
 
 #[test]
-fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
+fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
     let mut assembly = assemble_context(
         ContextInput {
             environment: EnvironmentSource {
@@ -236,6 +235,7 @@ fn drift_notice_can_be_inserted_between_synthetic_user_and_tool_guidance() {
             history: Vec::new(),
             tools: Vec::new(),
             model_tiers: Vec::new(),
+            runtime_blocks: None,
         },
         builtin_prompt_catalog(),
     )

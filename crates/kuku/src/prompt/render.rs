@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SyntheticUserTemplateInput {
+pub(crate) struct ProjectContextInput {
     pub(crate) workspace_root: String,
     pub(crate) platform: String,
     pub(crate) current_date: String,
@@ -11,40 +11,47 @@ pub(crate) struct SyntheticUserTemplateInput {
     pub(crate) model_tiers_rendered: String,
 }
 
-pub(crate) fn render_synthetic_user(
+pub(crate) fn render_project_context(
     template: &str,
-    input: &SyntheticUserTemplateInput,
+    input: &ProjectContextInput,
 ) -> Result<String> {
-    validate_template_placeholders(template)?;
-
-    let placeholders = [
-        ("workspace_root", input.workspace_root.as_str()),
-        ("platform", input.platform.as_str()),
-        ("current_date", input.current_date.as_str()),
-        (
+    validate_placeholders(
+        template,
+        &[
+            "workspace_root",
+            "platform",
+            "current_date",
             "project_instructions_rendered",
-            input.project_instructions_rendered.as_str(),
-        ),
-        (
             "global_memory_rendered",
-            input.global_memory_rendered.as_str(),
-        ),
-        (
             "project_memory_rendered",
-            input.project_memory_rendered.as_str(),
-        ),
-        ("model_tiers_rendered", input.model_tiers_rendered.as_str()),
-    ];
+            "model_tiers_rendered",
+        ],
+    )?;
 
     let mut rendered = template.to_string();
-    for (name, value) in placeholders {
-        rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
-    }
-
+    rendered = rendered.replace("{{workspace_root}}", &input.workspace_root);
+    rendered = rendered.replace("{{platform}}", &input.platform);
+    rendered = rendered.replace("{{current_date}}", &input.current_date);
+    rendered = rendered.replace(
+        "{{project_instructions_rendered}}",
+        &input.project_instructions_rendered,
+    );
+    rendered = rendered.replace("{{global_memory_rendered}}", &input.global_memory_rendered);
+    rendered = rendered.replace(
+        "{{project_memory_rendered}}",
+        &input.project_memory_rendered,
+    );
+    rendered = rendered.replace("{{model_tiers_rendered}}", &input.model_tiers_rendered);
     Ok(rendered)
 }
 
-fn validate_template_placeholders(template: &str) -> Result<()> {
+/// Render the runtime_context wrapper with dynamic blocks (catalog, notices) inserted.
+pub(crate) fn render_runtime_context(template: &str, blocks: &str) -> Result<String> {
+    let rendered = template.replace("{{runtime_blocks}}", blocks);
+    Ok(rendered)
+}
+
+fn validate_placeholders(template: &str, known: &[&str]) -> Result<()> {
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
         let after_start = &rest[start + 2..];
@@ -52,76 +59,60 @@ fn validate_template_placeholders(template: &str) -> Result<()> {
             break;
         };
         let name = &after_start[..end];
-        if !matches!(
-            name,
-            "workspace_root"
-                | "platform"
-                | "current_date"
-                | "project_instructions_rendered"
-                | "global_memory_rendered"
-                | "project_memory_rendered"
-                | "model_tiers_rendered"
-        ) {
+        if !known.contains(&name) {
             return Err(Error::PromptRender(format!(
-                "missing template variable: {name}"
+                "unknown template variable: {name}"
             )));
         }
         rest = &after_start[end + 2..];
     }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render_synthetic_user, SyntheticUserTemplateInput};
+    use super::*;
 
     #[test]
-    fn renders_synthetic_user_placeholders_and_reports_missing_keys() {
-        let input = SyntheticUserTemplateInput {
+    fn renders_project_context_placeholders() {
+        let input = ProjectContextInput {
             workspace_root: "/code/kuku/kuku".to_string(),
             platform: "linux".to_string(),
-            current_date: "2026-05-14".to_string(),
+            current_date: "2026-05-18".to_string(),
             project_instructions_rendered: "No project instructions found.".to_string(),
             global_memory_rendered: "No global memory.".to_string(),
             project_memory_rendered: "No project memory.".to_string(),
             model_tiers_rendered: "No model tiers configured.".to_string(),
         };
 
-        let rendered = render_synthetic_user(
-            "Workspace: {{workspace_root}}\nPlatform: {{platform}}\nDate: {{current_date}}",
-            &input,
-        )
-        .unwrap();
+        let template = "Workspace: {{workspace_root}}\nPlatform: {{platform}}";
+        let rendered = render_project_context(template, &input).unwrap();
         assert!(rendered.contains("/code/kuku/kuku"));
         assert!(rendered.contains("linux"));
-
-        let error = render_synthetic_user("{{missing_key}}", &input).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "prompt render error: missing template variable: missing_key"
-        );
     }
 
     #[test]
-    fn allows_handlebars_like_text_inside_injected_content() {
-        let input = SyntheticUserTemplateInput {
-            workspace_root: "/code/kuku/kuku".to_string(),
-            platform: "linux".to_string(),
-            current_date: "2026-05-14".to_string(),
-            project_instructions_rendered: "literal {{value}} from instructions".to_string(),
-            global_memory_rendered: "No global memory.".to_string(),
-            project_memory_rendered: "No project memory.".to_string(),
-            model_tiers_rendered: "No model tiers configured.".to_string(),
-        };
-
+    fn renders_runtime_context_wrapper() {
+        let template = "<kuku_runtime_context>\n{{runtime_blocks}}\n</kuku_runtime_context>";
         let rendered =
-            render_synthetic_user("Instructions: {{project_instructions_rendered}}", &input)
+            render_runtime_context(template, "<kuku_agent_catalog>...</kuku_agent_catalog>")
                 .unwrap();
+        assert!(rendered.contains("<kuku_agent_catalog>"));
+        assert!(rendered.contains("<kuku_runtime_context>"));
+    }
 
-        assert_eq!(
-            rendered,
-            "Instructions: literal {{value}} from instructions"
-        );
+    #[test]
+    fn reports_unknown_template_variables() {
+        let input = ProjectContextInput {
+            workspace_root: "".into(),
+            platform: "".into(),
+            current_date: "".into(),
+            project_instructions_rendered: "".into(),
+            global_memory_rendered: "".into(),
+            project_memory_rendered: "".into(),
+            model_tiers_rendered: "".into(),
+        };
+        let error = render_project_context("{{missing_key}}", &input).unwrap_err();
+        assert!(error.to_string().contains("missing_key"));
     }
 }

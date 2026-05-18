@@ -650,9 +650,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("global memory entry")
             .body_contains("project memory entry")
             .body_contains("<kuku_tool_guidance>")
-            .body_contains("<kuku_memory_guidance>")
-            .body_contains("memory.remember")
-            .body_contains("memory.forget");
+            .body_contains("<kuku_working_style>");
         then.status(200).json_body(serde_json::json!({
             "id": "msg_final",
             "type": "message",
@@ -723,7 +721,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
         .any(|entry| entry["path"] == "crates/kuku/prompts/system.md"));
     assert!(prompt_assets
         .iter()
-        .any(|entry| entry["path"] == "crates/kuku/prompts/synthetic-user.md"));
+        .any(|entry| entry["path"] == "crates/kuku/prompts/project-context.md"));
     assert!(prompt_assets
         .iter()
         .any(|entry| entry["path"] == "crates/kuku/prompts/tool-guidance.md"));

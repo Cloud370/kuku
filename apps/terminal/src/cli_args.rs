@@ -42,7 +42,7 @@ pub struct PromptsArgs {
 pub enum PromptsSubcommand {
     /// Show embedded prompt content
     Show {
-        /// Prompt name: system, synthetic-user, tool-guidance, or omit for all
+        /// Prompt name: system, project-context, tool-guidance, runtime-context, or omit for all
         name: Option<String>,
     },
     /// Export embedded prompts to a directory
