@@ -3,8 +3,8 @@ use kuku::context::{
     EnvironmentSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
     RequestProvenanceInput, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
 };
-use kuku::prompt::builtin_prompt_catalog;
 use kuku::event::{EventPayload, EventStore};
+use kuku::prompt::builtin_prompt_catalog;
 use serde_json::json;
 
 #[test]

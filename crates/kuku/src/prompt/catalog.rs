@@ -61,7 +61,11 @@ fn asset(path: &str, text: &str) -> PromptAsset {
     }
 }
 
-fn load_or_fallback(dir: &Path, filename: &str, fallback: PromptAsset) -> crate::error::Result<PromptAsset> {
+fn load_or_fallback(
+    dir: &Path,
+    filename: &str,
+    fallback: PromptAsset,
+) -> crate::error::Result<PromptAsset> {
     let path = dir.join(filename);
     if path.exists() {
         let text = std::fs::read_to_string(&path)?;
@@ -111,7 +115,10 @@ mod tests {
         let catalog = PromptCatalog::load_from_dir(dir.path()).unwrap();
         assert_eq!(catalog.system.text, custom_system);
         assert!(catalog.system.path.contains("system.md"));
-        assert!(catalog.synthetic_user.text.contains("<kuku_execution_context>"));
+        assert!(catalog
+            .synthetic_user
+            .text
+            .contains("<kuku_execution_context>"));
         assert!(catalog.tool_guidance.text.contains("<kuku_tool_guidance>"));
     }
 

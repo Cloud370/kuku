@@ -38,6 +38,7 @@ pub struct ContextMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 /// All event types that can be written to and read from a session's events.jsonl.
 pub enum EventPayload {
     #[serde(rename = "session.meta")]

@@ -192,7 +192,10 @@ mod tests {
         assert_eq!(provider_format, "anthropic");
         assert_eq!(provider, "anthropic");
         assert_eq!(model, "claude-sonnet-4-6");
-        assert_eq!(request_params, json!({"temperature": 0, "max_tokens": 1024}));
+        assert_eq!(
+            request_params,
+            json!({"temperature": 0, "max_tokens": 1024})
+        );
         assert_eq!(token_estimate, Some(500));
         assert_eq!(context_budget_tier, "roomy");
         assert_eq!(max_context_tokens, Some(200_000));

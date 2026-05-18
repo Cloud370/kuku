@@ -9,8 +9,14 @@ fn load_from_dir_uses_external_system_prompt() {
     let catalog = PromptCatalog::load_from_dir(dir.path()).unwrap();
     assert_eq!(catalog.system.text, custom);
     // Other prompts fall back to embedded
-    assert_eq!(catalog.synthetic_user.text, builtin_prompt_catalog().synthetic_user.text);
-    assert_eq!(catalog.tool_guidance.text, builtin_prompt_catalog().tool_guidance.text);
+    assert_eq!(
+        catalog.synthetic_user.text,
+        builtin_prompt_catalog().synthetic_user.text
+    );
+    assert_eq!(
+        catalog.tool_guidance.text,
+        builtin_prompt_catalog().tool_guidance.text
+    );
 }
 
 #[test]

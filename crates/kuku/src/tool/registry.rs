@@ -200,7 +200,7 @@ fn tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_registry, tool_names, registry_hash};
+    use super::{builtin_registry, registry_hash, tool_names};
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {

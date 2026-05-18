@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event::types::ContextMessage;
-use crate::prompt::{builtin_prompt_catalog, render_synthetic_user, SyntheticUserTemplateInput};
+use crate::prompt::{render_synthetic_user, SyntheticUserTemplateInput};
 
 use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;

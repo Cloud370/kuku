@@ -314,19 +314,20 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let mut assembly = match assemble_context(ContextInput {
-        environment: EnvironmentSource {
-            workspace_path: pending.workspace.display().to_string(),
-            platform: platform.clone(),
-            current_date: current_date.clone(),
+    let mut assembly = match assemble_context(
+        ContextInput {
+            environment: EnvironmentSource {
+                workspace_path: pending.workspace.display().to_string(),
+                platform: platform.clone(),
+                current_date: current_date.clone(),
+            },
+            project_instructions,
+            global_memory,
+            project_memory,
+            history,
+            tools: tool::to_tool_schemas(&resolved.registry),
+            model_tiers,
         },
-        project_instructions,
-        global_memory,
-        project_memory,
-        history,
-        tools: tool::to_tool_schemas(&resolved.registry),
-        model_tiers,
-    },
         catalog,
     ) {
         Ok(assembly) => assembly,
@@ -368,10 +369,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             events: &existing_events,
             context_budget_tier: context_headroom.tier,
         });
-        let rendered_notices: Vec<String> = notices
-            .iter()
-            .map(|n| render_notice_block(n))
-            .collect();
+        let rendered_notices: Vec<String> = notices.iter().map(render_notice_block).collect();
         notice_snapshots = rendered_notices
             .iter()
             .map(|content| crate::event::types::ContextMessage {
@@ -457,9 +455,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             history: Some(crate::event::types::RequestHistory {
                 first: existing_events.first().map(|event| event.id),
                 last: existing_events.last().map(|event| event.id),
-                message_count: Some(
-                    1 + assembly.prelude_messages.len() + assembly.history.len(),
-                ),
+                message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
             }),
             tools: Some(crate::event::types::RequestTools {
                 hash: Some(resolved.registry_hash.clone()),

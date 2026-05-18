@@ -301,7 +301,9 @@ fn model_request_context_survives_roundtrip() {
                 prelude: vec![
                     ContextMessage {
                         role: "user".to_string(),
-                        content: "<kuku_execution_context>workspace: /test</kuku_execution_context>".to_string(),
+                        content:
+                            "<kuku_execution_context>workspace: /test</kuku_execution_context>"
+                                .to_string(),
                     },
                     ContextMessage {
                         role: "user".to_string(),
