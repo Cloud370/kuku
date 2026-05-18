@@ -1,1 +1,2 @@
-// Placeholder — implemented in Task 4.
+pub mod claude_code;
+pub mod opencode;
