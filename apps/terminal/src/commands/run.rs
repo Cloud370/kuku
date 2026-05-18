@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
+use kuku::subagent::registry::SubagentRegistry;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
@@ -78,6 +79,16 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut q = query(&prompt).config_path(config_path);
     if args.no_agents {
         q = q.no_agents();
+    } else {
+        let workspace = kuku::session::current_workspace()?;
+        let registry = SubagentRegistry::builder()
+            .builtins()
+            .load_claude_user_agents()?
+            .load_claude_project_agents(&workspace)?
+            .load_opencode_user_agents()?
+            .load_opencode_project_agents(&workspace)?
+            .build();
+        q = q.subagents(registry);
     }
     if let Some(ref dir) = args.prompts_dir {
         q = q.prompts_dir(std::path::PathBuf::from(dir));
