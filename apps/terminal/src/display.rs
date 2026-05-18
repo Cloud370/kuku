@@ -302,14 +302,51 @@ fn fmt_tokens(n: u64) -> String {
 // ── Event rendering (ported from old view/) ──
 
 /// Format a stored event as a single summary line.
-pub fn render_event_brief(event: &StoredEvent, verbose: bool) -> String {
+pub fn render_event_brief(event: &StoredEvent, verbose: u8) -> String {
     let mut line = format!("evt:{} | {}", event.id, event_type_name(&event.payload));
-    let details = event_details(&event.payload, verbose);
+    let details = event_details(&event.payload, verbose > 0);
     if !details.is_empty() {
         line.push_str(" | ");
         line.push_str(&details);
     }
+    if verbose >= 2 {
+        if let EventPayload::ModelRequest {
+            context: Some(ctx), ..
+        } = &event.payload
+        {
+            line.push('\n');
+            line.push_str(&render_context(ctx));
+        }
+    }
     line
+}
+
+fn render_context(ctx: &kuku::event::types::RequestContext) -> String {
+    let mut out = String::new();
+    out.push_str("    -- context -------------------------\n");
+
+    out.push_str("    [system]\n");
+    for line in ctx.system.lines() {
+        out.push_str(&format!("    {line}\n"));
+    }
+
+    out.push_str("\n    [prelude]\n");
+    for msg in &ctx.prelude {
+        for line in msg.content.lines() {
+            out.push_str(&format!("    {line}\n"));
+        }
+    }
+
+    if !ctx.notices.is_empty() {
+        out.push_str("\n    [notices]\n");
+        for msg in &ctx.notices {
+            for line in msg.content.lines() {
+                out.push_str(&format!("    {line}\n"));
+            }
+        }
+    }
+
+    out
 }
 
 fn event_type_name(payload: &EventPayload) -> &'static str {

@@ -118,9 +118,9 @@ pub struct EventsArgs {
     /// Session ID
     pub session_id: String,
 
-    /// Verbose event output
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    /// Verbose output (-v for metadata, -vv for full context)
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    pub verbose: u8,
 }
 
 // ── List ──
