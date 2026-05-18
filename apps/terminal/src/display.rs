@@ -138,7 +138,13 @@ impl Display {
     /// Render a tool call line.
     pub fn tool_call(&self, tool: &str, summary: &str, _tool_call_id: &str) -> String {
         match self.mode {
-            RenderMode::Pretty => format!("{} {} \u{b7} {}", TOOL_PREFIX, tool, summary),
+            RenderMode::Pretty => {
+                if tool == "agent" {
+                    format!("{} agent \u{b7} {}", TOOL_PREFIX, summary)
+                } else {
+                    format!("{} {} \u{b7} {}", TOOL_PREFIX, tool, summary)
+                }
+            }
             RenderMode::Raw => format!("call {} \u{b7} {}", tool, summary),
         }
     }

@@ -131,6 +131,10 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
 
     {
         if let Some(queued_tool_call) = pending.queued_tool_calls.pop_front() {
+            // Agent tool: handled by subagent spawn, not general dispatch
+            if queued_tool_call.tool_call.name == "agent" {
+                return Box::pin(handle_agent_tool_call(pending, queued_tool_call)).await;
+            }
             if let Some(definition) =
                 find_tool_definition(&pending, &queued_tool_call.tool_call.name)
             {
@@ -611,4 +615,123 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         tool_count,
     });
     Ok(())
+}
+
+async fn handle_agent_tool_call(
+    mut pending: PendingRun,
+    queued_tool_call: QueuedToolCall,
+) -> Result<PendingStep> {
+    let name = queued_tool_call
+        .tool_call
+        .args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let prompt = queued_tool_call
+        .tool_call
+        .args
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let definition = pending
+        .subagent_registry
+        .as_ref()
+        .and_then(|reg| reg.get(name))
+        .cloned()
+        .ok_or_else(|| {
+            crate::error::Error::Provider(format!("subagent '{name}' not found in registry"))
+        })?;
+
+    // Check session limit
+    if pending.child_session_count >= 20 {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ToolResult {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            tool_call_id: queued_tool_call.tool_call.id.clone(),
+            status: "blocked".to_string(),
+            summary: "blocked: maximum subagent sessions (20) reached".to_string(),
+            model_content: String::new(),
+            truncated: false,
+            structured: None,
+        })?;
+        return Ok(PendingStep::ToolResultReady {
+            pending: Box::new(pending),
+            ui_event: UiEvent::ToolResult {
+                tool_call_id: queued_tool_call.tool_call.id.clone(),
+                status: "blocked".to_string(),
+                summary: "blocked: maximum subagent sessions (20) reached".to_string(),
+                structured: None,
+            },
+        });
+    }
+
+    let child_session_id = format!(
+        "child_{}_{}",
+        pending.session_id, pending.child_session_count
+    );
+
+    // Spawn child session
+    pending.child_session_count += 1;
+    let result = crate::subagent::session::spawn_child_session(
+        pending.events_path.parent().unwrap(),
+        &child_session_id,
+        &definition,
+        prompt,
+        &pending.workspace,
+        &pending.kuku_home,
+        pending.config.clone(),
+        pending.prompts_dir.as_deref(),
+    )
+    .await?;
+
+    let summary = match result.status {
+        crate::subagent::session::ChildSessionStatus::Completed => {
+            format!("{} completed in {} turns", name, result.turns_completed)
+        }
+        crate::subagent::session::ChildSessionStatus::TurnLimitReached => {
+            format!(
+                "{} reached turn limit ({})",
+                name, result.turns_completed
+            )
+        }
+        crate::subagent::session::ChildSessionStatus::Error(ref e) => {
+            format!("{} error: {e}", name)
+        }
+    };
+
+    let status = match result.status {
+        crate::subagent::session::ChildSessionStatus::Completed => "ok".to_string(),
+        crate::subagent::session::ChildSessionStatus::TurnLimitReached => "ok".to_string(),
+        _ => "error".to_string(),
+    };
+
+    let structured = serde_json::json!({
+        "kind": "subagent_result",
+        "child_session_id": result.child_session_id,
+        "turns_completed": result.turns_completed,
+    });
+
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        tool_call_id: queued_tool_call.tool_call.id.clone(),
+        status: status.clone(),
+        summary: summary.clone(),
+        model_content: result.output_text.clone(),
+        truncated: false,
+        structured: Some(structured.clone()),
+    })?;
+
+    Ok(PendingStep::ToolResultReady {
+        pending: Box::new(pending),
+        ui_event: UiEvent::ToolResult {
+            tool_call_id: queued_tool_call.tool_call.id.clone(),
+            status,
+            summary,
+            structured: Some(structured),
+        },
+    })
 }
