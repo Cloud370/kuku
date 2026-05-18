@@ -98,16 +98,21 @@ pub(super) fn display_summary(
     let raw = match tool {
         "find_files" => {
             let path = args.get("path").and_then(|v| v.as_str());
-            let include = args.get("include").and_then(|v| v.as_str());
-            match (path, include) {
-                (Some(p), Some(inc)) => format!("path: {:?}, include: {:?}", p, inc),
+            let pattern = args.get("pattern").and_then(|v| v.as_str());
+            match (path, pattern) {
+                (Some(p), Some(pat)) => format!("path: {:?}, pattern: {:?}", p, pat),
                 (Some(p), None) => format!("path: {:?}", p),
-                (None, Some(inc)) => format!("path: \"\", include: {:?}", inc),
+                (None, Some(pat)) => format!("path: \"\", pattern: {:?}", pat),
                 (None, None) => return tool.to_string(),
             }
         }
-        "read_file" | "edit_file" | "write_file" => args
+        "read_file" => args
             .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(tool)
+            .to_string(),
+        "edit_file" | "write_file" => args
+            .get("brief")
             .and_then(|v| v.as_str())
             .unwrap_or(tool)
             .to_string(),
@@ -120,7 +125,7 @@ pub(super) fn display_summary(
             }
         }
         "run_command" => args
-            .get("command")
+            .get("brief")
             .and_then(|v| v.as_str())
             .unwrap_or(tool)
             .to_string(),
@@ -426,10 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_with_include() {
-        let args = serde_json::json!({"path": ".", "include": "*.rs"});
+    fn display_summary_find_files_with_pattern() {
+        let args = serde_json::json!({"path": ".", "pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
-        assert_eq!(s, "path: \".\", include: \"*.rs\"");
+        assert_eq!(s, "path: \".\", pattern: \"*.rs\"");
     }
 
     #[test]
@@ -448,19 +453,17 @@ mod tests {
 
     #[test]
     fn display_summary_run_command() {
-        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60});
+        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60, "brief": "build release"});
         let s = display_summary("run_command", &args, None);
-        assert_eq!(s, "cargo build --release");
+        assert_eq!(s, "build release");
     }
 
     #[test]
     fn display_summary_run_command_truncated() {
-        let long_cmd =
-            "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu";
-        let args = serde_json::json!({"command": long_cmd, "timeout": 60});
+        let args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
         let s = display_summary("run_command", &args, Some(30));
         assert!(s.ends_with("..."), "should end with ...");
-        let cjk_args = serde_json::json!({"command": "构建项目/src/文件.txt", "timeout": 60});
+        let cjk_args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "构建项目/src/文件.txt"});
         let s2 = display_summary("run_command", &cjk_args, Some(5));
         assert!(s2.ends_with("..."), "CJK truncation should not panic: {s2}");
     }
@@ -482,16 +485,16 @@ mod tests {
 
     #[test]
     fn display_summary_edit_file() {
-        let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new"});
+        let args = serde_json::json!({"path": "src/main.rs", "old_text": "old", "new_text": "new", "brief": "rename main"});
         let s = display_summary("edit_file", &args, None);
-        assert_eq!(s, "src/main.rs");
+        assert_eq!(s, "rename main");
     }
 
     #[test]
     fn display_summary_write_file() {
-        let args = serde_json::json!({"path": "src/lib.rs", "content": "fn main() {}"});
+        let args = serde_json::json!({"path": "src/lib.rs", "content": "fn main() {}", "brief": "create lib"});
         let s = display_summary("write_file", &args, None);
-        assert_eq!(s, "src/lib.rs");
+        assert_eq!(s, "create lib");
     }
 
     #[test]
@@ -509,11 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_only_include() {
-        let args = serde_json::json!({"include": "*.rs"});
+    fn display_summary_find_files_only_pattern() {
+        let args = serde_json::json!({"pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
         assert_eq!(
-            s, "path: \"\", include: \"*.rs\"",
+            s, "path: \"\", pattern: \"*.rs\"",
             "missing path defaults to empty"
         );
     }

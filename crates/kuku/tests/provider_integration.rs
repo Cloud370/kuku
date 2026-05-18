@@ -389,7 +389,7 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test --version", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test --version", "timeout": 60, "brief": "check test version"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -470,7 +470,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -549,7 +549,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -611,7 +611,7 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}

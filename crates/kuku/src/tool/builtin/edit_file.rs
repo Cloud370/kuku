@@ -13,6 +13,7 @@ struct EditRequest {
     old_text: String,
     new_text: String,
     replace_all: bool,
+    _brief: String,
 }
 
 pub(crate) fn edit_file(
@@ -160,6 +161,18 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             "old_text must not be empty",
         ));
     }
+    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing brief",
+            "edit_file requires brief",
+        ));
+    };
+    if brief.trim().is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: brief is empty",
+            "brief must not be empty",
+        ));
+    }
     Ok(EditRequest {
         path: path.to_string(),
         old_text: old_text.to_string(),
@@ -168,6 +181,7 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        _brief: brief.to_string(),
     })
 }
 
@@ -182,7 +196,7 @@ mod tests {
         std::fs::write(dir.path().join("README.md"), "alpha\nbeta\n").unwrap();
 
         let missing = edit_file(
-            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega"}),
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega", "brief": "rename alpha"}),
             dir.path(),
             &[],
         );
@@ -201,7 +215,7 @@ mod tests {
         );
         std::fs::write(dir.path().join("README.md"), "changed\nbeta\n").unwrap();
         let stale = edit_file(
-            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma"}),
+            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma", "brief": "change beta"}),
             dir.path(),
             &[snapshot],
         );
@@ -224,7 +238,7 @@ mod tests {
         );
 
         let ambiguous = edit_file(
-            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega"}),
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega", "brief": "rename alpha"}),
             dir.path(),
             std::slice::from_ref(&snapshot),
         );
@@ -232,7 +246,7 @@ mod tests {
         assert!(ambiguous.model_content.contains("not unique"));
 
         let unique = edit_file(
-            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma"}),
+            &serde_json::json!({"path": "README.md", "old_text": "beta", "new_text": "gamma", "brief": "change beta"}),
             dir.path(),
             std::slice::from_ref(&snapshot),
         );
@@ -268,7 +282,7 @@ mod tests {
             "1\talpha\n2\tgamma\n3\talpha",
         );
         let all = edit_file(
-            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega", "replace_all": true}),
+            &serde_json::json!({"path": "README.md", "old_text": "alpha", "new_text": "omega", "replace_all": true, "brief": "replace all alpha"}),
             dir.path(),
             &[second_snapshot],
         );
@@ -286,7 +300,7 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "TOKEN=secret").unwrap();
 
         let edit = edit_file(
-            &serde_json::json!({"path": ".env", "old_text": "TOKEN", "new_text": "KEY"}),
+            &serde_json::json!({"path": ".env", "old_text": "TOKEN", "new_text": "KEY", "brief": "rename token"}),
             dir.path(),
             &[],
         );

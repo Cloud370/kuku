@@ -271,6 +271,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                             "{}",
                             display.permission_decision("allow", &request.tool, "posture")
                         );
+                        println!("{}", display.tool_running());
                     }
                 } else {
                     let prompt_line = display.permission_ask(&request.tool, &request.summary);
@@ -292,6 +293,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         "{}",
                         display.permission_decision(decision_str, &request.tool, rule)
                     );
+                    println!("{}", display.tool_running());
                 }
             }
             Some(UiEvent::Done { usage, turn, .. }) => {

@@ -19,17 +19,18 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
     vec![
         tool(
             "find_files",
-            "Find files and browse the file tree. Returns workspace-relative paths sorted lexicographically.",
+            "Browse the file tree — prefer this over shell commands for listing files. Directories shown with trailing /. Use pattern to filter, max_depth to limit recursion. Excludes build/dependency directories by default.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
-                    "include": {"type": "string", "description": "File-name glob filter, e.g. *.md or docs/**/*.md."}
+                    "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
+                    "max_depth": {"type": "integer", "description": "Maximum recursion depth (default: unlimited)."}
                 }
             }),
             true,
             true,
-            20_000,
+            8_000,
             "read",
         ),
         tool(
@@ -76,9 +77,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."}
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
+                    "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
-                "required": ["path", "old_text", "new_text"]
+                "required": ["path", "old_text", "new_text", "brief"]
             }),
             false,
             false,
@@ -92,9 +94,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
-                    "content": {"type": "string", "description": "Complete file content."}
+                    "content": {"type": "string", "description": "Complete file content."},
+                    "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
-                "required": ["path", "content"]
+                "required": ["path", "content", "brief"]
             }),
             false,
             false,
@@ -141,9 +144,10 @@ pub(crate) fn builtin_registry() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command string to execute."},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds."}
+                    "timeout": {"type": "integer", "description": "Timeout in seconds."},
+                    "brief": {"type": "string", "description": "What this command does, in 3-5 words."}
                 },
-                "required": ["command", "timeout"]
+                "required": ["command", "timeout", "brief"]
             }),
             false,
             false,
@@ -218,7 +222,7 @@ mod tests {
         assert_eq!(registry[0].risk, "read");
         assert!(registry[0].read_only);
         assert!(registry[0].concurrency_safe);
-        assert_eq!(registry[0].max_result_chars, 20_000);
+        assert_eq!(registry[0].max_result_chars, 8_000);
         assert_eq!(registry_hash(&registry), registry_hash(&builtin_registry()));
 
         let remember = registry

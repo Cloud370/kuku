@@ -41,6 +41,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         ..
     } = state;
 
+    if let Some(ref u) = usage {
+        pending.cumulative_input_tokens += u.input_tokens.unwrap_or(0);
+        pending.cumulative_output_tokens += u.output_tokens.unwrap_or(0);
+    }
+
     let has_tool_calls = !tool_calls.is_empty();
     let final_stop_reason = stop_reason.unwrap_or_else(|| {
         if has_tool_calls {
@@ -72,12 +77,16 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 turn: pending.turn,
                 ts: now_timestamp()?,
             })?;
+            let total_usage = Some(crate::provider::types::ProviderUsage {
+                input_tokens: Some(pending.cumulative_input_tokens),
+                output_tokens: Some(pending.cumulative_output_tokens),
+            });
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
                     session_id: pending.session_id.clone(),
                     text: accumulated_text,
                 },
-                usage.clone(),
+                total_usage,
                 pending.turn,
             ));
         }

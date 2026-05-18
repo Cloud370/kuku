@@ -13,6 +13,7 @@ use super::common::{
 struct WriteRequest {
     path: String,
     content: String,
+    _brief: String,
 }
 
 pub(crate) fn write_file(
@@ -130,9 +131,22 @@ fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
             "write_file requires content",
         ));
     };
+    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing brief",
+            "write_file requires brief",
+        ));
+    };
+    if brief.trim().is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: brief is empty",
+            "brief must not be empty",
+        ));
+    }
     Ok(WriteRequest {
         path: path.to_string(),
         content: content.to_string(),
+        _brief: brief.to_string(),
     })
 }
 
@@ -145,7 +159,7 @@ mod tests {
     fn write_file_creates_new_file_without_prior_read() {
         let dir = workspace();
         let result = write_file(
-            &serde_json::json!({"path": "docs/new.md", "content": "hello\nworld\n"}),
+            &serde_json::json!({"path": "docs/new.md", "content": "hello\nworld\n", "brief": "create new docs page"}),
             dir.path(),
             &[],
         );
@@ -177,7 +191,7 @@ mod tests {
     fn write_file_normalizes_new_file_paths_before_parent_check() {
         let dir = workspace();
         let result = write_file(
-            &serde_json::json!({"path": "missing/../docs/normalized.md", "content": "normalized\n"}),
+            &serde_json::json!({"path": "missing/../docs/normalized.md", "content": "normalized\n", "brief": "create normalized file"}),
             dir.path(),
             &[],
         );
@@ -201,7 +215,7 @@ mod tests {
         let partial = read_snapshot_event(17, dir.path(), "README.md", original, false, "1\talpha");
 
         let partial_result = write_file(
-            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            &serde_json::json!({"path": "README.md", "content": "replacement\n", "brief": "overwrite readme"}),
             dir.path(),
             &[partial],
         );
@@ -220,7 +234,7 @@ mod tests {
         );
         std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
         let stale = write_file(
-            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            &serde_json::json!({"path": "README.md", "content": "replacement\n", "brief": "overwrite readme"}),
             dir.path(),
             std::slice::from_ref(&full),
         );
@@ -229,7 +243,7 @@ mod tests {
 
         std::fs::write(dir.path().join("README.md"), original).unwrap();
         let ok = write_file(
-            &serde_json::json!({"path": "README.md", "content": "replacement\n"}),
+            &serde_json::json!({"path": "README.md", "content": "replacement\n", "brief": "overwrite readme"}),
             dir.path(),
             &[full],
         );
@@ -259,7 +273,7 @@ mod tests {
     fn write_file_blocks_sensitive_paths() {
         let dir = workspace();
         let write = write_file(
-            &serde_json::json!({"path": ".env.local", "content": "TOKEN=secret"}),
+            &serde_json::json!({"path": ".env.local", "content": "TOKEN=secret", "brief": "write secret"}),
             dir.path(),
             &[],
         );

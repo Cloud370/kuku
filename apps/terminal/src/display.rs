@@ -143,6 +143,14 @@ impl Display {
         }
     }
 
+    /// Render a running indicator shown while a tool executes.
+    pub fn tool_running(&self) -> String {
+        match self.mode {
+            RenderMode::Pretty => "  ...".to_string(),
+            RenderMode::Raw => "run ...".to_string(),
+        }
+    }
+
     /// Render a tool result line.
     pub fn tool_result(&self, status: &str, summary: &str, _tool_call_id: &str) -> String {
         match self.mode {
@@ -716,6 +724,14 @@ mod tests {
     fn raw_thinking_start() {
         let d = Display::new_raw(false, "high");
         assert_eq!(d.thinking_start(), "thinking [high]");
+    }
+
+    #[test]
+    fn tool_running_pretty_and_raw() {
+        let pretty = Display::new(false, "medium");
+        assert_eq!(pretty.tool_running(), "  ...");
+        let raw = Display::new_raw(false, "medium");
+        assert_eq!(raw.tool_running(), "run ...");
     }
 
     #[test]
