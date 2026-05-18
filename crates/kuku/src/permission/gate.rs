@@ -59,7 +59,15 @@ pub fn recover_session_grants(events: &[StoredEvent]) -> Vec<SessionGrant> {
         .collect()
 }
 
-/// Evaluate a tool call against hard guards, policy, session grants, and default posture.
+/// Evaluate a tool call against hard guards, policy, session grants, and simplified defaults.
+///
+/// Simplified model:
+/// - Known operations (read tools, edit tools, memory tools, agent tool) → allow by default
+/// - Commands (run_command) → ask by default
+/// - Hard guard violations → deny (overrides everything)
+/// - Policy deny → deny (overrides defaults)
+/// - Policy allow → allow (overrides defaults for commands)
+/// - Session grants → allow (override defaults for commands in current session)
 pub fn decide_tool_call(
     tool: &str,
     risk: &str,
@@ -85,15 +93,6 @@ pub fn decide_tool_call(
         };
     }
 
-    if risk == "read" {
-        return GateDecision {
-            kind: GateDecisionKind::Allow,
-            scope: GateScope::Once,
-            source: GateSource::TrustPosture,
-            rule: "read".to_string(),
-        };
-    }
-
     if session_grants
         .iter()
         .any(|grant| grant.tool == tool && pattern_matches(&grant.pattern, candidate))
@@ -115,11 +114,19 @@ pub fn decide_tool_call(
         };
     }
 
-    GateDecision {
-        kind: GateDecisionKind::Ask,
-        scope: GateScope::Once,
-        source: GateSource::DefaultAsk,
-        rule: candidate.to_string(),
+    match tool {
+        "run_command" => GateDecision {
+            kind: GateDecisionKind::Ask,
+            scope: GateScope::Once,
+            source: GateSource::DefaultAsk,
+            rule: candidate.to_string(),
+        },
+        _ => GateDecision {
+            kind: GateDecisionKind::Allow,
+            scope: GateScope::Once,
+            source: GateSource::TrustPosture,
+            rule: tool.to_string(),
+        },
     }
 }
 
@@ -235,4 +242,87 @@ fn pattern_matches(pattern: &str, candidate: &str) -> bool {
         return candidate.starts_with(prefix);
     }
     candidate == pattern
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_policy() -> crate::permission::PermissionPolicy {
+        crate::permission::parse_policy("# policy\n\n## allow\n\n## deny\n").unwrap()
+    }
+
+    #[test]
+    fn simplified_model_allow_known_tools_by_default() {
+        let policy = empty_policy();
+        let grants = vec![];
+
+        for (tool, candidate) in [
+            ("find_files", "."),
+            ("read_file", "README.md"),
+            ("search_text", "TODO"),
+        ] {
+            let decision = decide_tool_call(tool, "read", candidate, &policy, &grants);
+            assert_eq!(
+                decision.kind,
+                GateDecisionKind::Allow,
+                "read tool {tool} should allow"
+            );
+        }
+
+        for (tool, candidate) in [
+            ("edit_file", "src/main.rs"),
+            ("write_file", "src/lib.rs"),
+            ("memory.remember", "memory.md"),
+            ("memory.forget", "memory.md"),
+        ] {
+            let decision = decide_tool_call(tool, "edit", candidate, &policy, &grants);
+            assert_eq!(
+                decision.kind,
+                GateDecisionKind::Allow,
+                "edit tool {tool} should allow"
+            );
+        }
+    }
+
+    #[test]
+    fn simplified_model_ask_for_commands() {
+        let policy = empty_policy();
+        let grants = vec![];
+        let decision = decide_tool_call("run_command", "command", "cargo test", &policy, &grants);
+        assert_eq!(decision.kind, GateDecisionKind::Ask);
+        assert!(matches!(decision.source, GateSource::DefaultAsk));
+    }
+
+    #[test]
+    fn simplified_model_hard_guard_deny_overrides_allow() {
+        let policy = empty_policy();
+        let grants = vec![];
+        let decision = decide_tool_call("edit_file", "edit", ".git/config", &policy, &grants);
+        assert_eq!(decision.kind, GateDecisionKind::Deny);
+        assert!(matches!(decision.source, GateSource::HardGuard));
+    }
+
+    #[test]
+    fn simplified_model_policy_deny_overrides_default_allow() {
+        let policy = crate::permission::parse_policy(
+            "# policy\n\n## allow\n\n## deny\n- edit_file(docs/secret.md)\n",
+        )
+        .unwrap();
+        let grants = vec![];
+        let decision = decide_tool_call("edit_file", "edit", "docs/secret.md", &policy, &grants);
+        assert_eq!(decision.kind, GateDecisionKind::Deny);
+    }
+
+    #[test]
+    fn simplified_model_policy_allow_allows_commands() {
+        let policy = crate::permission::parse_policy(
+            "# policy\n\n## allow\n- run_command(cargo test *)\n\n## deny\n",
+        )
+        .unwrap();
+        let grants = vec![];
+        let decision =
+            decide_tool_call("run_command", "command", "cargo test --lib", &policy, &grants);
+        assert_eq!(decision.kind, GateDecisionKind::Allow);
+    }
 }
