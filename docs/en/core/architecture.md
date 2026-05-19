@@ -4,6 +4,8 @@
 
 One crate. `kuku` is the SDK. Host apps (CLI, TUI, WebUI) live in `apps/` but are not part of the SDK.
 
+SDK owns runtime facts, session state, context rebuild, provider adapters, tool dispatch, permission decisions, and event persistence. Host apps own presentation, command routing, layout, and user interaction.
+
 ```text
 crates/kuku/src/
 ├── lib.rs              pub mod declarations, re-exports
@@ -44,6 +46,8 @@ Each module has a clear boundary of what it may and may not depend on.
 
 All kuku data lives under `$KUKU_HOME`. Zero pollution of the working directory.
 
+`$KUKU_HOME` comes from the environment or defaults to `~/.kuku`.
+
 ```text
 $KUKU_HOME/
 ├── config.toml              global configuration
@@ -57,7 +61,9 @@ $KUKU_HOME/
 │       └── subs/             child sessions
 ```
 
-Workspace paths are canonicalized and mirrored as-is — no hashing, no encoding. `tree $KUKU_HOME/p/` is the index.
+Workspace paths are canonicalized and mirrored under `p/` as path components, with the root or platform prefix removed. No hashing, no encoding. `tree $KUKU_HOME/p/` is the index.
+
+`policy.md` is local permission state for the current project path. It is read by the permission gate, not injected into ordinary model context.
 
 ## Public API
 
@@ -99,7 +105,7 @@ last user turn             runtime_context (catalogs, notices) + human input
 
 ## Project instructions
 
-`AGENTS.md` is the primary source. `CLAUDE.md` is read as a compatibility fallback. No kuku-specific instruction file is required.
+`AGENTS.md` is the primary project instruction source. `CLAUDE.md` is compatibility input. No kuku-specific instruction file is required.
 
 Instructions are soft constraints — they guide the model, but do not grant hard permission. Hard permission comes from the `permission gate`.
 

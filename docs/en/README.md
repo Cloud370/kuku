@@ -12,6 +12,8 @@ This is the canonical public docs index. The project homepage is [README.md](../
 
 How kuku works.
 
+SDK owns runtime facts and semantics. Host apps own input, output, layout, and interaction.
+
 | File | What it covers | Status |
 |------|----------------|--------|
 | [direction.md](core/direction.md) | Why kuku exists, design philosophy | implemented |

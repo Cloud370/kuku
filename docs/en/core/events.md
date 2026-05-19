@@ -37,6 +37,8 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `permission.decision` | Gate outcome: allow, deny, or deferred to host. | no | `permission.request` |
 | `turn.end` | A turn ends. | no | `turn.start` |
 
+`model.request` provenance records the sources needed to inspect a request: instruction and memory hashes, prompt asset hashes, history range, tool/subagent registry snapshots, resolved provider/model, params, and context budget. It is not a stored provider raw request body.
+
 ## Context rebuild
 
 Events marked `contributes` are folded into `messages[]` during context rebuild. The rebuild processes events in file order, grouping by `request_id`:

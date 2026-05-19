@@ -12,6 +12,8 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 
 Full `$KUKU_HOME` layout is in [architecture.md](architecture.md).
 
+Inspection, transcript, and display views are derived from `events.jsonl`; they are not separate session state.
+
 ## events.jsonl
 
 A single append-only file. One JSON line per event. Every fact the runtime observes — model requests, tool calls, permission decisions — is a line in this file.

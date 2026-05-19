@@ -47,6 +47,13 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `provider format` | One of `anthropic`, `openai-chat`, `openai-responses`. Each defines how requests are built and responses parsed. |
 | `streaming` | Real-time event flow: provider SSE stream → adapter normalizes → `UiEvent` yields to host. Streaming delta is not persisted until the response completes. |
 
+## SDK vs Host
+
+| Canonical Name | Definition |
+|---------------|------------|
+| `SDK` | Runtime semantics and facts: sessions, events, context rebuild, provider adapters, tool dispatch, permission decisions, and persistence. |
+| `host` | Presentation and interaction layer: CLI, TUI, WebUI, command routing, layout, input, and output rendering. |
+
 ## Tool
 
 | Canonical Name | Definition |

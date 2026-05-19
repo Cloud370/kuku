@@ -94,4 +94,6 @@ Memory files can change between turns — edited by the agent, the user, or an e
 
 When drift is detected, a `<kuku_system_notice>` is injected into `runtime_context`. The notice signals that something changed — it does not re-inject the file content. The model should re-read the file if it needs the current state.
 
+Tracked files are project instructions, global/project memory, and successful full-file `read_file` snapshots. `find_files`, `search_text`, and partial reads do not create drift baselines.
+
 A successful full-file `read_file` or tool-based write updates the acknowledged baseline for that file, clearing the drift flag for subsequent turns. Partial reads (with `offset`/`limit`) do not update the baseline.
