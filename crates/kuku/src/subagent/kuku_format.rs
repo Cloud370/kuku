@@ -15,10 +15,10 @@ pub(crate) fn load_from_dir(
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("md") {
             let content = std::fs::read_to_string(&path)?;
-            match parse_kuku_agent(&content, &path, source) {
+            match parse_kuku_agent(&content, &path, &source) {
                 Ok(def) => defs.push(def),
                 Err(e) => {
-                    tracing::warn!("failed to parse agent {}: {e}", path.display());
+                    eprintln!("warning: failed to parse agent {}: {e}", path.display());
                 }
             }
         }
@@ -29,26 +29,20 @@ pub(crate) fn load_from_dir(
 fn parse_kuku_agent(
     content: &str,
     path: &Path,
-    source: DefinitionSource,
+    source: &DefinitionSource,
 ) -> Result<SubagentDefinition> {
     let (frontmatter, body) = split_yaml_frontmatter(content);
     let mapping = frontmatter.ok_or_else(|| {
-        Error::InvalidArgument(format!(
-            "missing YAML frontmatter in {}",
-            path.display()
-        ))
+        Error::InvalidArgument(format!("missing YAML frontmatter in {}", path.display()))
     })?;
     let value = serde_yaml::Value::Mapping(mapping);
 
-    let name = value["name"]
-        .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unnamed")
-                .to_string()
-        });
+    let name = value["name"].as_str().map(String::from).unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unnamed")
+            .to_string()
+    });
 
     let description = value["description"].as_str().unwrap_or("").to_string();
     let model = value["model"].as_str().unwrap_or("balanced");
@@ -76,7 +70,7 @@ fn parse_kuku_agent(
         tool_profile,
         tools,
         max_turns,
-        source,
+        source: source.clone(),
         hash: String::new(),
         source_path: Some(path.display().to_string()),
         metadata: serde_json::Value::Null,
@@ -110,7 +104,10 @@ fn infer_tool_profile_from_tools(tools: &Option<Vec<String>>) -> ToolProfile {
             let has_write = list.iter().any(|t| {
                 matches!(
                     t.as_str(),
-                    "edit_file" | "write_file" | "run_command" | "memory.remember"
+                    "edit_file"
+                        | "write_file"
+                        | "run_command"
+                        | "memory.remember"
                         | "memory.forget"
                 )
             });
@@ -131,7 +128,7 @@ mod tests {
     fn parse_minimal_agent_tools_absent_is_inherit() {
         let content = "---\nname: test\n---\n\nDo your thing.\n";
         let def =
-            parse_kuku_agent(content, Path::new("test.md"), DefinitionSource::KukuUser).unwrap();
+            parse_kuku_agent(content, Path::new("test.md"), &DefinitionSource::KukuUser).unwrap();
         assert_eq!(def.tools, None);
         assert_eq!(def.tool_profile, ToolProfile::Read);
     }
@@ -140,7 +137,7 @@ mod tests {
     fn parse_agent_empty_tools_is_no_tools() {
         let content = "---\nname: analyst\ntools: []\n---\n\nAnalysis only.\n";
         let def =
-            parse_kuku_agent(content, Path::new("a.md"), DefinitionSource::KukuUser).unwrap();
+            parse_kuku_agent(content, Path::new("a.md"), &DefinitionSource::KukuUser).unwrap();
         assert_eq!(def.tools, Some(vec![]));
         assert_eq!(def.tool_profile, ToolProfile::None);
     }
@@ -148,12 +145,8 @@ mod tests {
     #[test]
     fn parse_agent_explicit_tools() {
         let content = "---\nname: reader\ntools: [find_files, read_file]\n---\n\nRead only.\n";
-        let def = parse_kuku_agent(
-            content,
-            Path::new("r.md"),
-            DefinitionSource::KukuProject,
-        )
-        .unwrap();
+        let def =
+            parse_kuku_agent(content, Path::new("r.md"), &DefinitionSource::KukuProject).unwrap();
         assert_eq!(
             def.tools,
             Some(vec!["find_files".into(), "read_file".into()])
@@ -163,10 +156,9 @@ mod tests {
 
     #[test]
     fn parse_agent_with_write_tools_infers_read_write() {
-        let content =
-            "---\nname: writer\ntools: [find_files, edit_file]\n---\n\nWrite stuff.\n";
+        let content = "---\nname: writer\ntools: [find_files, edit_file]\n---\n\nWrite stuff.\n";
         let def =
-            parse_kuku_agent(content, Path::new("w.md"), DefinitionSource::KukuUser).unwrap();
+            parse_kuku_agent(content, Path::new("w.md"), &DefinitionSource::KukuUser).unwrap();
         assert_eq!(def.tool_profile, ToolProfile::ReadWrite);
     }
 
@@ -176,7 +168,7 @@ mod tests {
         let def = parse_kuku_agent(
             content,
             Path::new("my-agent.md"),
-            DefinitionSource::KukuUser,
+            &DefinitionSource::KukuUser,
         )
         .unwrap();
         assert_eq!(def.name, "my-agent");

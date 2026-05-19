@@ -80,11 +80,7 @@ pub fn project_memory_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf
 }
 
 /// Resolve the lock file path for a session.
-pub(crate) fn session_lock_path(
-    kuku_home: &Path,
-    workspace: &Path,
-    session_id: &str,
-) -> PathBuf {
+pub(crate) fn session_lock_path(kuku_home: &Path, workspace: &Path, session_id: &str) -> PathBuf {
     let Ok(mut path) = project_home(kuku_home, workspace) else {
         return PathBuf::new();
     };

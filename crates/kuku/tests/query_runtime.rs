@@ -337,6 +337,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
         _ => unreachable!(),
     }
+    drop(run);
 
     let server = MockServer::start();
 

@@ -134,7 +134,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
         {
             let notified = pending.cancel_token.notified();
             tokio::pin!(notified);
-            if notified.enable().is_some() {
+            if notified.enable() {
                 let mut store = EventStore::open(&pending.events_path)?;
                 store.append(EventPayload::TurnEnd {
                     turn: pending.turn,
@@ -173,11 +173,13 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
             let mut ui_events = Vec::new();
 
             for queued in regular_calls {
-                let definition =
-                    find_tool_definition(&pending, &queued.tool_call.name)
-                        .ok_or_else(|| crate::error::Error::InvalidArgument(
-                            format!("unknown tool: {}", queued.tool_call.name),
-                        ))?;
+                let definition = find_tool_definition(&pending, &queued.tool_call.name)
+                    .ok_or_else(|| {
+                        crate::error::Error::InvalidArgument(format!(
+                            "unknown tool: {}",
+                            queued.tool_call.name
+                        ))
+                    })?;
                 let candidate = permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
@@ -273,8 +275,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                                 &queued.tool_call.args,
                             ),
                         )?;
-                        let result =
-                            execute_tool_call(&mut pending, &queued.tool_call).await?;
+                        let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
                         ui_events.push(UiEvent::ToolResult {
                             tool_call_id: queued.tool_call.id.clone(),
                             status: result.status,
@@ -742,6 +743,7 @@ async fn handle_agent_tool_call(
         &pending.kuku_home,
         pending.config.clone(),
         pending.prompts_dir.as_deref(),
+        super::types::PermissionMode::Interactive,
     )
     .await?;
 

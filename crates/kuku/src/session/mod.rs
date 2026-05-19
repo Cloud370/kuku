@@ -25,10 +25,7 @@ pub(crate) fn acquire_lock(lock_path: &Path) -> Result<()> {
         if let Ok(pid) = pid_str.parse::<i32>() {
             if process_alive(pid) {
                 return Err(Error::SessionLocked {
-                    session: lock_path
-                        .parent()
-                        .unwrap_or(lock_path)
-                        .to_path_buf(),
+                    session: lock_path.parent().unwrap_or(lock_path).to_path_buf(),
                     holder_pid: pid,
                 });
             }

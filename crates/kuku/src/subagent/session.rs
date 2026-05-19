@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::query::types::PermissionMode;
+use crate::query::PermissionMode;
 
 use super::definition::SubagentDefinition;
 
@@ -95,20 +95,18 @@ pub async fn spawn_child_session(
             Some(crate::UiEvent::TextDelta { text }) => {
                 cumulative_text.push_str(&text);
             }
-            Some(crate::UiEvent::PermissionRequested { request }) => {
-                match parent_mode {
-                    PermissionMode::AutoAllow => {
-                        run.decide(request.id, crate::query::PermissionChoice::Once)
-                            .await?;
-                    }
-                    PermissionMode::Interactive => {
-                        return Err(crate::error::Error::ChildPermissionRequested {
-                            tool: request.tool,
-                            candidate: request.summary,
-                        });
-                    }
+            Some(crate::UiEvent::PermissionRequested { request }) => match parent_mode {
+                PermissionMode::AutoAllow => {
+                    run.decide(request.id, crate::query::PermissionChoice::Once)
+                        .await?;
                 }
-            }
+                PermissionMode::Interactive => {
+                    return Err(crate::error::Error::ChildPermissionRequested {
+                        tool: request.tool,
+                        candidate: request.summary,
+                    });
+                }
+            },
             None => {
                 return Ok(ChildSessionResult {
                     child_session_id: child_session_id.to_string(),

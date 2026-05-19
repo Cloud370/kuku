@@ -145,8 +145,7 @@ impl SubagentRegistryBuilder {
     pub fn load_kuku_project_agents(mut self, workspace: &Path) -> Result<Self> {
         let dir = workspace.join(".kuku").join("agents");
         if dir.exists() {
-            let loaded =
-                super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuProject)?;
+            let loaded = super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuProject)?;
             for def in loaded {
                 self.add(def);
             }

@@ -369,6 +369,7 @@ fn event_type_name(payload: &EventPayload) -> &'static str {
         EventPayload::ToolResult { .. } => "tool.result",
         EventPayload::PolicyLoaded { .. } => "policy.loaded",
         EventPayload::TurnEnd { .. } => "turn.end",
+        EventPayload::Unknown(_) => "unknown",
     }
 }
 

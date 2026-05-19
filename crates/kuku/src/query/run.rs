@@ -55,10 +55,6 @@ impl Run {
                     PendingStep::Streaming(streaming) => {
                         self.state = RunState::Streaming(streaming);
                     }
-                    PendingStep::ToolCallReady { pending, ui_event } => {
-                        self.state = RunState::Pending(pending);
-                        return Ok(Some(ui_event));
-                    }
                     PendingStep::ToolResultReady { pending, ui_event } => {
                         self.state = RunState::Pending(pending);
                         return Ok(Some(ui_event));
@@ -318,6 +314,14 @@ mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
 
+    fn test_config() -> crate::config::Config {
+        crate::config::Config {
+            tiers: std::collections::BTreeMap::new(),
+            providers: std::collections::BTreeMap::new(),
+            default_tier: "balanced".to_string(),
+        }
+    }
+
     fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
         Run {
             session_id: "test".to_string(),
@@ -359,7 +363,10 @@ mod tests {
 
         let events = EventStore::replay(&events_path).unwrap();
         let last = events.last().unwrap();
-        assert!(matches!(&last.payload, EventPayload::TurnEnd { turn: 1, .. }));
+        assert!(matches!(
+            &last.payload,
+            EventPayload::TurnEnd { turn: 1, .. }
+        ));
     }
 
     #[tokio::test]
@@ -367,7 +374,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.jsonl");
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
-        let mut run = Run {
+        let run = Run {
             session_id: "test".to_string(),
             state: RunState::Cancelled {
                 events_path: events_path.clone(),
@@ -388,7 +395,11 @@ mod tests {
         std::fs::write(&events_path, "").unwrap();
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
 
-        cancel_token.notify_waiters();
+        let token_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            token_clone.notify_waiters();
+        });
 
         let pending = PendingRun {
             session_id: "test".to_string(),
@@ -404,7 +415,7 @@ mod tests {
             resolved: None,
             queued_tool_calls: std::collections::VecDeque::new(),
             saved_tool_call: None,
-            config: std::sync::Arc::new(crate::config::Config::default()),
+            config: std::sync::Arc::new(test_config()),
             prompts_dir: None,
             subagent_registry: None,
             child_session_count: 0,
@@ -412,8 +423,16 @@ mod tests {
             cancel_token: cancel_token.clone(),
         };
 
-        let stream: std::pin::Pin<Box<dyn futures_core::Stream<Item = std::result::Result<crate::provider::chunk::ProviderChunk, crate::provider::types::ProviderFailure>> + Send>> =
-            Box::pin(tokio_stream::pending());
+        let stream: std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = std::result::Result<
+                            crate::provider::chunk::ProviderChunk,
+                            crate::provider::types::ProviderFailure,
+                        >,
+                    > + Send,
+            >,
+        > = Box::pin(tokio_stream::pending());
 
         let mut streaming = StreamingChunkState {
             pending,
@@ -444,7 +463,7 @@ mod tests {
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,
-                config: std::sync::Arc::new(crate::config::Config::default()),
+                config: std::sync::Arc::new(test_config()),
                 prompts_dir: None,
                 subagent_registry: None,
                 child_session_count: 0,
@@ -524,10 +543,7 @@ mod tests {
         let events = EventStore::replay(&events_path).unwrap();
         let history = crate::context::rebuild_history(&events);
         assert_eq!(history.len(), 2);
-        let messages: Vec<_> = history
-            .iter()
-            .map(|m| format!("{:?}", m.role))
-            .collect();
+        let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));
         assert!(messages.contains(&"Assistant".to_string()));
     }

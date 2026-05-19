@@ -60,7 +60,7 @@ pub enum PermissionChoice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Permission mode for child sessions.
-pub(crate) enum PermissionMode {
+pub enum PermissionMode {
     AutoAllow,
     Interactive,
 }
@@ -175,10 +175,6 @@ pub(super) enum PendingStep {
     Pending(Box<PendingRun>),
     NeedPermission(Box<PendingPermission>),
     Streaming(Box<StreamingChunkState>),
-    ToolCallReady {
-        pending: Box<PendingRun>,
-        ui_event: UiEvent,
-    },
     ToolResultReady {
         pending: Box<PendingRun>,
         ui_event: UiEvent,
@@ -187,6 +183,7 @@ pub(super) enum PendingStep {
         pending: Box<PendingRun>,
         ui_events: Vec<UiEvent>,
     },
+    #[allow(clippy::type_complexity)]
     Done(
         RunOutput,
         Option<crate::provider::types::ProviderUsage>,
