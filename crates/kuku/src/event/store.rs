@@ -111,9 +111,20 @@ impl EventStore {
                 continue;
             }
 
-            let event = serde_json::from_slice::<StoredEvent>(line).map_err(|error| {
-                Error::InvalidEventStream(format!("invalid event at line {line_number}: {error}"))
-            })?;
+            let event = match serde_json::from_slice::<StoredEvent>(line) {
+                Ok(event) => event,
+                Err(_) => {
+                    let raw: serde_json::Value = serde_json::from_slice(line).map_err(|error| {
+                        Error::InvalidEventStream(format!(
+                            "invalid event at line {line_number}: {error}"
+                        ))
+                    })?;
+                    StoredEvent {
+                        id: raw["id"].as_u64().unwrap_or(0),
+                        payload: super::types::EventPayload::Unknown(raw),
+                    }
+                }
+            };
 
             if event.id <= previous_id {
                 return Err(Error::InvalidEventStream(format!(
@@ -141,5 +152,25 @@ impl EventStore {
 
     fn is_blank_line(line: &[u8]) -> bool {
         line.iter().all(|byte| byte.is_ascii_whitespace())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::EventPayload;
+
+    #[test]
+    fn unknown_event_type_is_preserved_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let content = concat!(
+            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"a\",\"schema_version\":1,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
+            "{\"id\":2,\"type\":\"future.event\",\"ts\":\"b\",\"turn\":1,\"custom\":\"x\"}\n",
+        );
+        std::fs::write(&path, content).unwrap();
+        let events = EventStore::replay(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[1].payload, EventPayload::Unknown(_)));
     }
 }

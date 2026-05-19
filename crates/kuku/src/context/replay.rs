@@ -96,7 +96,8 @@ pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
             | EventPayload::ModelError { .. }
             | EventPayload::PolicyLoaded { .. }
             | EventPayload::PermissionRequest { .. }
-            | EventPayload::PermissionDecision { .. } => {}
+            | EventPayload::PermissionDecision { .. }
+            | EventPayload::Unknown(_) => {}
         }
     }
 
