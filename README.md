@@ -1,24 +1,25 @@
+[English] | [中文](docs/zh/index.md)
+
 # kuku
 
-kuku is a Rust SDK for file-native agent execution.
+Turn agent runs into files you can open.
 
-The project is intentionally SDK-first: CLI, TUI, WebUI, and package tooling are host applications over the same runtime contract, not separate owners of agent state.
+Every question, every tool call, every answer — one line in one file. `grep` it. `diff` it. Commit it. Nothing hidden, nothing locked inside an app.
 
-## Status
+## What it does
 
-This repository is being initialized from the public implementation contract. The first milestone is the core SDK crate in `crates/kuku`.
+- **File-native agent loop** — everything the agent does is a line in `events.jsonl`
+- **Tools** — read, search, edit, write files. Run commands. Dispatch subagents.
+- **Permissions** — runtime gate. Read tools auto-allowed, commands ask, dangerous ops denied.
+- **Subagents** — delegate work to isolated child sessions with constrained tools
+- **Config** — define model tiers (`strong` / `balanced` / `light`) in `~/.kuku/config.toml`
 
-## Repository layout
+## Documentation
 
-```text
-kuku/
-├── crates/
-│   └── kuku/          # Core SDK/runtime crate
-├── apps/              # Host apps, added when needed
-├── packages/          # Official packages and examples, later
-└── README.md
-```
-
-## Core idea
-
-The runtime writes execution facts to `events.jsonl` in a session directory. Derived views such as final output, request inspection, transcripts, and UI streams are rebuilt from files and events.
+| What | Where |
+|------|-------|
+| All docs | [docs/en/](docs/en/) |
+| Direction & principles | [direction](docs/en/core/direction.md) |
+| Architecture | [architecture](docs/en/core/architecture.md) |
+| Glossary | [glossary](docs/en/glossary.md) |
+| Contributing | [code style](docs/en/contributing/code-style.md) · [modules](docs/en/contributing/modules.md) |
