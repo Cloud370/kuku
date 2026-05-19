@@ -10,6 +10,8 @@ fn build_registry() -> Result<SubagentRegistry, Box<dyn std::error::Error>> {
         .load_claude_project_agents(&workspace)?
         .load_opencode_user_agents()?
         .load_opencode_project_agents(&workspace)?
+        .load_kuku_user_agents()?
+        .load_kuku_project_agents(&workspace)?
         .build();
     Ok(registry)
 }
