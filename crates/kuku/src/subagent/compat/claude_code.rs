@@ -149,7 +149,7 @@ pub(crate) fn infer_profile_from_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subagent::definition::{DefinitionSource, SubagentDefinition, ToolProfile};
+    use crate::subagent::definition::{DefinitionSource, ToolProfile};
 
     #[test]
     fn parse_yaml_frontmatter_basic() {
