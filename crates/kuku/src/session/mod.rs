@@ -8,3 +8,5 @@ pub use paths::{
     current_workspace, global_memory_path, kuku_home, project_home, project_memory_path,
     project_policy_path, session_events_path,
 };
+
+pub(crate) use paths::session_lock_path;

@@ -96,6 +96,8 @@ pub enum UiEvent {
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
+    pub(crate) cancel_token: Arc<tokio::sync::Notify>,
+    pub(crate) lock_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -103,6 +105,7 @@ pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
+    BatchEvents(Box<PendingRun>, VecDeque<UiEvent>),
     Done(
         Option<(
             RunOutput,
@@ -132,6 +135,7 @@ pub(super) struct PendingRun {
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+    pub(super) cancel_token: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug)]
@@ -167,6 +171,10 @@ pub(super) enum PendingStep {
     ToolResultReady {
         pending: Box<PendingRun>,
         ui_event: UiEvent,
+    },
+    BatchReady {
+        pending: Box<PendingRun>,
+        ui_events: Vec<UiEvent>,
     },
     Done(
         RunOutput,

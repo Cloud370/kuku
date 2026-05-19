@@ -79,6 +79,21 @@ pub fn project_memory_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf
     Ok(path)
 }
 
+/// Resolve the lock file path for a session.
+pub(crate) fn session_lock_path(
+    kuku_home: &Path,
+    workspace: &Path,
+    session_id: &str,
+) -> PathBuf {
+    let Ok(mut path) = project_home(kuku_home, workspace) else {
+        return PathBuf::new();
+    };
+    path.push("sessions");
+    path.push(session_id);
+    path.push("lock");
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::kuku_home_with_env;

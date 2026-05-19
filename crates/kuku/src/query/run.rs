@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::error::{Error, Result};
 use crate::permission::append_project_allow_rule;
 use crate::provider::chunk::ProviderChunk;
@@ -41,6 +43,16 @@ impl Run {
                         self.state = RunState::Pending(pending);
                         return Ok(Some(ui_event));
                     }
+                    PendingStep::BatchReady { pending, ui_events } => {
+                        let mut events = VecDeque::from(ui_events);
+                        let first = events.pop_front().unwrap();
+                        if events.is_empty() {
+                            self.state = RunState::Pending(pending);
+                        } else {
+                            self.state = RunState::BatchEvents(pending, events);
+                        }
+                        return Ok(Some(first));
+                    }
                     PendingStep::Done(output, usage, turn) => {
                         self.state = RunState::Done(None);
                         return Ok(Some(UiEvent::Done {
@@ -81,6 +93,15 @@ impl Run {
                     let request = waiting.request.clone();
                     self.state = RunState::WaitingForPermission(waiting);
                     return Ok(Some(UiEvent::PermissionRequested { request }));
+                }
+                RunState::BatchEvents(pending, mut events) => {
+                    let event = events.pop_front().unwrap();
+                    if events.is_empty() {
+                        self.state = RunState::Pending(pending);
+                    } else {
+                        self.state = RunState::BatchEvents(pending, events);
+                    }
+                    return Ok(Some(event));
                 }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
