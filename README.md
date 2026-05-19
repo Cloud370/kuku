@@ -1,4 +1,4 @@
-[English] | [中文](docs/zh/index.md)
+[English]
 
 # kuku
 
@@ -14,11 +14,20 @@ Every question, every tool call, every answer — one line in one file. `grep` i
 - **Subagents** — delegate work to isolated child sessions with constrained tools
 - **Config** — define model tiers (`strong` / `balanced` / `light`) in `~/.kuku/config.toml`
 
+## How to read this repo
+
+- `README.md` is the project homepage: short positioning, quick entry points, and links.
+- `docs/en/README.md` is the canonical public docs index.
+- `docs/en/core/*.md` are the runtime contracts and behavior docs.
+- `docs/en/contributing/*.md` are repository rules and module boundaries.
+- `planned` means documented intent that is not implemented yet.
+- `extension design` means intentionally outside the core runtime.
+
 ## Documentation
 
 | What | Where |
 |------|-------|
-| All docs | [docs/en/](docs/en/) |
+| Public docs | [docs/en/](docs/en/) |
 | Direction & principles | [direction](docs/en/core/direction.md) |
 | Architecture | [architecture](docs/en/core/architecture.md) |
 | Glossary | [glossary](docs/en/glossary.md) |
