@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::error::Result;
 
-use super::definition::{DefinitionSource, OutputContract, SubagentDefinition, ToolProfile};
+use super::definition::{DefinitionSource, SubagentDefinition, ToolProfile};
 
 /// Merged subagent registry with version tracking.
 #[derive(Debug, Clone)]
@@ -126,6 +126,34 @@ impl SubagentRegistryBuilder {
         Ok(self)
     }
 
+    /// Load kuku native agents from user directory (~/.kuku/agents/).
+    pub fn load_kuku_user_agents(mut self) -> Result<Self> {
+        let home = dirs_next().ok_or_else(|| {
+            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
+        })?;
+        let dir = home.join(".kuku").join("agents");
+        if dir.exists() {
+            let loaded = super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuUser)?;
+            for def in loaded {
+                self.add(def);
+            }
+        }
+        Ok(self)
+    }
+
+    /// Load kuku native agents from project directory (<workspace>/.kuku/agents/).
+    pub fn load_kuku_project_agents(mut self, workspace: &Path) -> Result<Self> {
+        let dir = workspace.join(".kuku").join("agents");
+        if dir.exists() {
+            let loaded =
+                super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuProject)?;
+            for def in loaded {
+                self.add(def);
+            }
+        }
+        Ok(self)
+    }
+
     fn add(&mut self, def: SubagentDefinition) {
         self.definitions.insert(def.name.clone(), def);
     }
@@ -153,12 +181,16 @@ fn builtin_review() -> SubagentDefinition {
             "For each finding, cite the specific file path and line number as evidence.\n",
             "Do not make changes — only report what you find.\n",
             "If you find no issues, state that clearly.\n",
+            "When you finish, report your findings with specific file paths and line numbers as evidence.\n",
         ).into(),
         tier: "balanced".into(),
         tool_profile: ToolProfile::Read,
-        permission: super::definition::PermissionPosture::Default,
+        tools: Some(vec![
+            "find_files".into(),
+            "read_file".into(),
+            "search_text".into(),
+        ]),
         max_turns: 4,
-        output_contract: OutputContract::Findings,
         source: DefinitionSource::Builtin,
         hash: String::new(),
         source_path: None,
@@ -180,9 +212,12 @@ fn builtin_explore() -> SubagentDefinition {
         ).into(),
         tier: "light".into(),
         tool_profile: ToolProfile::Read,
-        permission: super::definition::PermissionPosture::Default,
+        tools: Some(vec![
+            "find_files".into(),
+            "read_file".into(),
+            "search_text".into(),
+        ]),
         max_turns: 3,
-        output_contract: OutputContract::Summary,
         source: DefinitionSource::Builtin,
         hash: String::new(),
         source_path: None,

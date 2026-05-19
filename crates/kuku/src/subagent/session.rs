@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::query::types::PermissionMode;
 
 use super::definition::SubagentDefinition;
 
@@ -33,6 +34,7 @@ pub async fn spawn_child_session(
     _kuku_home: &Path,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<&Path>,
+    parent_mode: PermissionMode,
 ) -> Result<ChildSessionResult> {
     let subs_dir = parent_session_dir.join("subs");
     std::fs::create_dir_all(&subs_dir)?;
@@ -42,13 +44,15 @@ pub async fn spawn_child_session(
         "{definition_block}\n\n<kuku_delegated_prompt>\n{delegated_prompt}\n</kuku_delegated_prompt>"
     );
 
-    // Build constrained tool registry
-    let allowed = definition.tool_profile.allowed_tools();
+    // Build constrained tool registry from definition.tools
     let full_registry = crate::tool::builtin_registry(false);
-    let constrained_registry: Vec<crate::tool::ToolDefinition> = full_registry
-        .into_iter()
-        .filter(|t| allowed.contains(&t.name.as_str()))
-        .collect();
+    let constrained_registry: Vec<crate::tool::ToolDefinition> = match &definition.tools {
+        None => full_registry,
+        Some(list) => full_registry
+            .into_iter()
+            .filter(|t| list.contains(&t.name))
+            .collect(),
+    };
 
     // Query builder with overrides
     let mut query = crate::query::Query::new(user_prompt)
@@ -92,9 +96,18 @@ pub async fn spawn_child_session(
                 cumulative_text.push_str(&text);
             }
             Some(crate::UiEvent::PermissionRequested { request }) => {
-                // Child sessions: ask → deny (no interactive handler)
-                run.decide(request.id, crate::query::PermissionChoice::Deny)
-                    .await?;
+                match parent_mode {
+                    PermissionMode::AutoAllow => {
+                        run.decide(request.id, crate::query::PermissionChoice::Once)
+                            .await?;
+                    }
+                    PermissionMode::Interactive => {
+                        return Err(crate::error::Error::ChildPermissionRequested {
+                            tool: request.tool,
+                            candidate: request.summary,
+                        });
+                    }
+                }
             }
             None => {
                 return Ok(ChildSessionResult {

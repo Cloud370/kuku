@@ -44,61 +44,15 @@ impl ToolProfile {
     }
 }
 
-/// Expected output format from a subagent. In v1 this is injected as a hint in the instructions.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum OutputContract {
-    /// Brief summary of work done and conclusions.
-    #[serde(rename = "summary")]
-    #[default]
-    Summary,
-    /// Structured findings with file/line evidence.
-    #[serde(rename = "findings")]
-    Findings,
-    /// An implementation plan or design approach.
-    #[serde(rename = "plan")]
-    Plan,
-    /// Handoff-formatted compressed context (future).
-    #[serde(rename = "handoff")]
-    Handoff,
-}
-
-impl OutputContract {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Summary => "summary",
-            Self::Findings => "findings",
-            Self::Plan => "plan",
-            Self::Handoff => "handoff",
-        }
-    }
-
-    /// v1: returns a hint string injected into the child's instructions.
-    pub fn instruction_hint(&self) -> &'static str {
-        match self {
-            Self::Summary => "Produce a concise summary of your work and conclusions.",
-            Self::Findings => {
-                "Report your findings with specific file paths and line numbers as evidence."
-            }
-            Self::Plan => "Outline an implementation approach with key files and steps.",
-            Self::Handoff => "Compress the relevant context into a handoff-ready summary.",
-        }
-    }
-}
-
-/// Maximum permission posture a subagent definition declares.
-/// v1: reserved field, no runtime behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum PermissionPosture {
-    #[serde(rename = "default")]
-    #[default]
-    Default,
-}
-
 /// Where this subagent definition was loaded from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DefinitionSource {
     #[serde(rename = "builtin")]
     Builtin,
+    #[serde(rename = "kuku:user")]
+    KukuUser,
+    #[serde(rename = "kuku:project")]
+    KukuProject,
     #[serde(rename = "claude_code:user")]
     ClaudeCodeUser,
     #[serde(rename = "claude_code:project")]
@@ -113,6 +67,8 @@ impl DefinitionSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Builtin => "builtin",
+            Self::KukuUser => "kuku:user",
+            Self::KukuProject => "kuku:project",
             Self::ClaudeCodeUser => "claude_code:user",
             Self::ClaudeCodeProject => "claude_code:project",
             Self::OpenCodeUser => "opencode:user",
@@ -135,14 +91,11 @@ pub struct SubagentDefinition {
     pub tier: String,
     /// Tool allowlist preset.
     pub tool_profile: ToolProfile,
-    /// Maximum permission stance (v1: reserved).
+    /// None = inherit parent tools. Some(vec![]) = no tools. Some(["a","b"]) = explicit.
     #[serde(default)]
-    pub permission: PermissionPosture,
+    pub tools: Option<Vec<String>>,
     /// Hard turn limit for the child session.
     pub max_turns: u32,
-    /// Expected output format.
-    #[serde(default)]
-    pub output_contract: OutputContract,
     /// Origin of this definition.
     pub source: DefinitionSource,
     /// Content hash for drift detection and snapshot pinning.
@@ -160,14 +113,14 @@ impl SubagentDefinition {
     pub fn compute_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let canonical = format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{:?}",
             self.name,
             self.description,
             self.instructions,
             self.tier,
             self.tool_profile.as_str(),
             self.max_turns,
-            self.output_contract.as_str()
+            self.tools,
         );
         let digest = Sha256::digest(canonical.as_bytes());
         format!("sha256:{digest:x}")
@@ -210,9 +163,8 @@ mod tests {
             instructions: "Review carefully.".into(),
             tier: "balanced".into(),
             tool_profile: ToolProfile::Read,
-            permission: PermissionPosture::Default,
+            tools: Some(vec!["find_files".into(), "read_file".into()]),
             max_turns: 4,
-            output_contract: OutputContract::Findings,
             source: DefinitionSource::Builtin,
             hash: String::new(),
             source_path: None,
@@ -224,15 +176,8 @@ mod tests {
     }
 
     #[test]
-    fn output_contract_instruction_hints_are_stable() {
-        assert!(OutputContract::Summary
-            .instruction_hint()
-            .contains("concise summary"));
-        assert!(OutputContract::Findings
-            .instruction_hint()
-            .contains("file paths"));
-        assert!(OutputContract::Plan
-            .instruction_hint()
-            .contains("implementation approach"));
+    fn definition_source_kuku_variants() {
+        assert_eq!(DefinitionSource::KukuUser.as_str(), "kuku:user");
+        assert_eq!(DefinitionSource::KukuProject.as_str(), "kuku:project");
     }
 }

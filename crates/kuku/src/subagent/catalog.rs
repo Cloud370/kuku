@@ -31,12 +31,11 @@ pub fn render_agent_catalog(registry: &SubagentRegistry) -> Option<String> {
 /// Render the full agent definition block for a child session's user message.
 pub fn render_agent_definition_block(def: &super::definition::SubagentDefinition) -> String {
     format!(
-        "<kuku_agent_definition name=\"{name}\" source=\"{source}\" hash=\"{hash}\">\n  <kuku_agent_instructions>\n{instructions}\n  </kuku_agent_instructions>\n  <kuku_agent_output_contract>{output_contract}</kuku_agent_output_contract>\n</kuku_agent_definition>",
+        "<kuku_agent_definition name=\"{name}\" source=\"{source}\" hash=\"{hash}\">\n  <kuku_agent_instructions>\n{instructions}\n  </kuku_agent_instructions>\n</kuku_agent_definition>",
         name = def.name,
         source = def.source.as_str(),
         hash = def.hash,
         instructions = def.instructions,
-        output_contract = def.output_contract.instruction_hint(),
     )
 }
 
@@ -79,6 +78,6 @@ mod tests {
         assert!(block.contains("<kuku_agent_instructions>"));
         assert!(block.contains("code and document reviewer"));
         assert!(block.contains(review.instructions.as_str()));
-        assert!(block.contains("kuku_agent_output_contract"));
+        assert!(!block.contains("kuku_agent_output_contract"));
     }
 }

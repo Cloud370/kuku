@@ -58,6 +58,13 @@ pub enum PermissionChoice {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Permission mode for child sessions.
+pub(crate) enum PermissionMode {
+    AutoAllow,
+    Interactive,
+}
+
 /// Host-facing runtime event stream.
 ///
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
