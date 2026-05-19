@@ -12,7 +12,6 @@ pub(crate) struct ToolDefinition {
     pub description: String,
     pub input_schema: Value,
     pub read_only: bool,
-    pub concurrency_safe: bool,
     pub max_result_chars: usize,
     pub risk: String,
 }
@@ -31,7 +30,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 }
             }),
             true,
-            true,
             8_000,
             "read",
         ),
@@ -47,7 +45,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 },
                 "required": ["path"]
             }),
-            true,
             true,
             80_000,
             "read",
@@ -65,7 +62,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 },
                 "required": ["pattern"]
             }),
-            true,
             true,
             80_000,
             "read",
@@ -85,7 +81,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 "required": ["path", "old_text", "new_text", "brief"]
             }),
             false,
-            false,
             20_000,
             "edit",
         ),
@@ -101,7 +96,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 },
                 "required": ["path", "content", "brief"]
             }),
-            false,
             false,
             20_000,
             "edit",
@@ -119,7 +113,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 "required": ["scope", "kind", "text"]
             }),
             false,
-            false,
             20_000,
             "edit",
         ),
@@ -134,7 +127,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 },
                 "required": ["scope", "text"]
             }),
-            false,
             false,
             20_000,
             "edit",
@@ -151,7 +143,6 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
                 },
                 "required": ["command", "timeout", "brief"]
             }),
-            false,
             false,
             80_000,
             "command",
@@ -189,7 +180,6 @@ fn tool(
     description: &str,
     input_schema: Value,
     read_only: bool,
-    concurrency_safe: bool,
     max_result_chars: usize,
     risk: &str,
 ) -> ToolDefinition {
@@ -198,7 +188,6 @@ fn tool(
         description: description.to_string(),
         input_schema,
         read_only,
-        concurrency_safe,
         max_result_chars,
         risk: risk.to_string(),
     }
@@ -227,7 +216,6 @@ mod tests {
         );
         assert_eq!(registry[0].risk, "read");
         assert!(registry[0].read_only);
-        assert!(registry[0].concurrency_safe);
         assert_eq!(registry[0].max_result_chars, 8_000);
         assert_eq!(
             registry_hash(&registry),
@@ -239,7 +227,6 @@ mod tests {
             .find(|tool| tool.name == "memory.remember")
             .expect("memory.remember registered");
         assert!(!remember.read_only);
-        assert!(!remember.concurrency_safe);
         assert_eq!(remember.risk, "edit");
 
         let forget = registry
@@ -247,7 +234,6 @@ mod tests {
             .find(|tool| tool.name == "memory.forget")
             .expect("memory.forget registered");
         assert!(!forget.read_only);
-        assert!(!forget.concurrency_safe);
         assert_eq!(forget.risk, "edit");
     }
 
