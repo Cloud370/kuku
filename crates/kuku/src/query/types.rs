@@ -58,6 +58,13 @@ pub enum PermissionChoice {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Permission mode for child sessions.
+pub enum PermissionMode {
+    AutoAllow,
+    Interactive,
+}
+
 /// Host-facing runtime event stream.
 ///
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
@@ -96,6 +103,8 @@ pub enum UiEvent {
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
+    pub(crate) cancel_token: Arc<tokio::sync::Notify>,
+    pub(crate) lock_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -103,6 +112,11 @@ pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
+    BatchEvents(Box<PendingRun>, VecDeque<UiEvent>),
+    Cancelled {
+        events_path: std::path::PathBuf,
+        turn: u64,
+    },
     Done(
         Option<(
             RunOutput,
@@ -132,6 +146,7 @@ pub(super) struct PendingRun {
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+    pub(super) cancel_token: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug)]
@@ -160,14 +175,15 @@ pub(super) enum PendingStep {
     Pending(Box<PendingRun>),
     NeedPermission(Box<PendingPermission>),
     Streaming(Box<StreamingChunkState>),
-    ToolCallReady {
-        pending: Box<PendingRun>,
-        ui_event: UiEvent,
-    },
     ToolResultReady {
         pending: Box<PendingRun>,
         ui_event: UiEvent,
     },
+    BatchReady {
+        pending: Box<PendingRun>,
+        ui_events: Vec<UiEvent>,
+    },
+    #[allow(clippy::type_complexity)]
     Done(
         RunOutput,
         Option<crate::provider::types::ProviderUsage>,

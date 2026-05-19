@@ -44,7 +44,6 @@ pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
             println!("tier:            {}", def.tier);
             println!("tool_profile:    {}", def.tool_profile.as_str());
             println!("max_turns:       {}", def.max_turns);
-            println!("output_contract: {}", def.output_contract.as_str());
             println!("hash:            {}", def.hash);
             if let Some(ref path) = def.source_path {
                 println!("source_path:     {path}");

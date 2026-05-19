@@ -63,7 +63,6 @@ Every tool declares:
 | `input_schema` | JSON Schema, root must be `object` |
 | `risk` | `read` / `edit` / `command` |
 | `read_only` | Whether the tool never modifies state |
-| `concurrency_safe` | Whether it can run in parallel with other safe tools (planned) |
 | `max_result_chars` | Hard cap on `model_content` length |
 
 ## Result envelope
@@ -72,7 +71,7 @@ All tools return:
 
 | Field | Description |
 |-------|-------------|
-| `status` | `ok` / `error` / `blocked` / `cancelled` (planned) |
+| `status` | `ok` / `error` / `blocked` / `cancelled` |
 | `summary` | English one-liner describing the outcome |
 | `model_content` | Content for the model to continue reasoning |
 | `truncated` | Whether `model_content` was cut at `max_result_chars` |

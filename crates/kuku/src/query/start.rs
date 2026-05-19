@@ -79,6 +79,9 @@ impl Query {
         let prompts_dir = self.prompts_dir.take();
         let subagent_registry = self.subagent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
+        let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+        let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
+        crate::session::acquire_lock(&lock_path)?;
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -100,7 +103,10 @@ impl Query {
                 subagent_registry,
                 child_session_count: 0,
                 tool_registry_override,
+                cancel_token: cancel_token.clone(),
             })),
+            cancel_token,
+            lock_path,
         })
     }
 

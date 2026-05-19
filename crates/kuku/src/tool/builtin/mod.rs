@@ -37,7 +37,6 @@ pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
             "required": ["name", "prompt"]
         }),
         read_only: false,
-        concurrency_safe: true,
         max_result_chars: 20_000,
         risk: "read".to_string(),
     }

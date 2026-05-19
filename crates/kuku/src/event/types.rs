@@ -168,4 +168,9 @@ pub enum EventPayload {
 
     #[serde(rename = "turn.end")]
     TurnEnd { turn: u64, ts: String },
+
+    /// Unknown event type — raw JSON preserved for display, excluded from messages[].
+    /// Not deserialized by serde; created manually in two-step deserialization.
+    #[serde(skip)]
+    Unknown(Value),
 }

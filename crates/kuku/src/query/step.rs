@@ -131,25 +131,63 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
     }
 
     {
-        if let Some(queued_tool_call) = pending.queued_tool_calls.pop_front() {
-            // Agent tool: handled by subagent spawn, not general dispatch
-            if queued_tool_call.tool_call.name == "agent" {
-                return Box::pin(handle_agent_tool_call(pending, queued_tool_call)).await;
+        {
+            let notified = pending.cancel_token.notified();
+            tokio::pin!(notified);
+            if notified.enable() {
+                let mut store = EventStore::open(&pending.events_path)?;
+                store.append(EventPayload::TurnEnd {
+                    turn: pending.turn,
+                    ts: now_timestamp()?,
+                })?;
+                return Ok(PendingStep::Done(
+                    super::types::RunOutput {
+                        session_id: pending.session_id.clone(),
+                        text: String::new(),
+                    },
+                    None,
+                    pending.turn,
+                ));
             }
-            if let Some(definition) =
-                find_tool_definition(&pending, &queued_tool_call.tool_call.name)
-            {
+        }
+
+        if !pending.queued_tool_calls.is_empty() {
+            let all_calls: Vec<_> = pending.queued_tool_calls.drain(..).collect();
+            let (agent_calls, regular_calls): (Vec<_>, Vec<_>) = all_calls
+                .into_iter()
+                .partition(|c| c.tool_call.name == "agent");
+
+            for call in agent_calls {
+                let step = Box::pin(handle_agent_tool_call(pending, call)).await?;
+                match step {
+                    PendingStep::Pending(p) => pending = *p,
+                    other => return Ok(other),
+                }
+            }
+
+            let policy = load_project_policy(&pending.policy_path)?;
+            let prior_events = EventStore::replay(&pending.events_path)?;
+            let session_grants = recover_session_grants(&prior_events);
+
+            let mut dispatch_batch = Vec::new();
+            let mut ui_events = Vec::new();
+
+            for queued in regular_calls {
+                let definition = find_tool_definition(&pending, &queued.tool_call.name)
+                    .ok_or_else(|| {
+                        crate::error::Error::InvalidArgument(format!(
+                            "unknown tool: {}",
+                            queued.tool_call.name
+                        ))
+                    })?;
                 let candidate = permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
-                    &queued_tool_call.tool_call.name,
-                    &queued_tool_call.tool_call.args,
+                    &queued.tool_call.name,
+                    &queued.tool_call.args,
                 );
-                let policy = load_project_policy(&pending.policy_path)?;
-                let prior_events = EventStore::replay(&pending.events_path)?;
-                let session_grants = recover_session_grants(&prior_events);
                 let decision = decide_tool_call(
-                    &queued_tool_call.tool_call.name,
+                    &queued.tool_call.name,
                     &definition.risk,
                     &candidate,
                     &policy,
@@ -158,16 +196,16 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                 match decision.kind {
                     GateDecisionKind::Ask => {
                         let request = PermissionRequest {
-                            id: queued_tool_call.tool_call.id.clone(),
-                            tool_call_id: queued_tool_call.tool_call.id.clone(),
-                            tool: queued_tool_call.tool_call.name.clone(),
+                            id: queued.tool_call.id.clone(),
+                            tool_call_id: queued.tool_call.id.clone(),
+                            tool: queued.tool_call.name.clone(),
                             risk: definition.risk.clone(),
-                            summary: queued_tool_call.display_summary.clone(),
+                            summary: queued.display_summary.clone(),
                         };
                         append_permission_request(&pending.events_path, pending.turn, &request)?;
                         return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
                             pending,
-                            queued_tool_call,
+                            queued_tool_call: queued,
                             request,
                         })));
                     }
@@ -183,85 +221,99 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             append_permission_decision(
                                 &pending.events_path,
                                 pending.turn,
-                                &queued_tool_call.tool_call.id,
+                                &queued.tool_call.id,
                                 choice,
                                 gate_source_name(decision.source),
                                 &permission_rule(
                                     &pending.kuku_home,
                                     &pending.workspace,
-                                    &queued_tool_call.tool_call.name,
-                                    &queued_tool_call.tool_call.args,
+                                    &queued.tool_call.name,
+                                    &queued.tool_call.args,
                                 ),
                             )?;
                         }
-                        pending.saved_tool_call = Some(queued_tool_call);
-                        let saved = pending.saved_tool_call.as_ref().unwrap();
-                        let tc_id = saved.tool_call.id.clone();
-                        let tc_name = saved.tool_call.name.clone();
-                        let tc_summary = saved.display_summary.clone();
-                        return Ok(PendingStep::ToolCallReady {
-                            pending: Box::new(pending),
-                            ui_event: UiEvent::ToolCall {
-                                tool_call_id: tc_id,
-                                tool: tc_name,
-                                summary: tc_summary,
-                            },
+                        ui_events.push(UiEvent::ToolCall {
+                            tool_call_id: queued.tool_call.id.clone(),
+                            tool: queued.tool_call.name.clone(),
+                            summary: queued.display_summary.clone(),
                         });
+                        let result_event_id = EventStore::open(&pending.events_path)?.next_id()
+                            + dispatch_batch.len() as u64;
+                        dispatch_batch.push((
+                            queued.tool_call.index as usize,
+                            queued.tool_call.id.clone(),
+                            queued.tool_call.name.clone(),
+                            queued.tool_call.args.clone(),
+                            pending.workspace.clone(),
+                            pending.kuku_home.clone(),
+                            prior_events.clone(),
+                            result_event_id,
+                        ));
                     }
                     GateDecisionKind::Deny => {
                         append_permission_request(
                             &pending.events_path,
                             pending.turn,
                             &PermissionRequest {
-                                id: queued_tool_call.tool_call.id.clone(),
-                                tool_call_id: queued_tool_call.tool_call.id.clone(),
-                                tool: queued_tool_call.tool_call.name.clone(),
+                                id: queued.tool_call.id.clone(),
+                                tool_call_id: queued.tool_call.id.clone(),
+                                tool: queued.tool_call.name.clone(),
                                 risk: definition.risk.clone(),
-                                summary: queued_tool_call.display_summary.clone(),
+                                summary: queued.display_summary.clone(),
                             },
                         )?;
                         append_permission_decision(
                             &pending.events_path,
                             pending.turn,
-                            &queued_tool_call.tool_call.id,
+                            &queued.tool_call.id,
                             PermissionChoice::Deny,
                             gate_source_name(decision.source),
                             &permission_rule(
                                 &pending.kuku_home,
                                 &pending.workspace,
-                                &queued_tool_call.tool_call.name,
-                                &queued_tool_call.tool_call.args,
+                                &queued.tool_call.name,
+                                &queued.tool_call.args,
                             ),
                         )?;
-                        let tc_id = queued_tool_call.tool_call.id.clone();
-                        let result =
-                            execute_tool_call(&mut pending, &queued_tool_call.tool_call).await?;
-                        return Ok(PendingStep::ToolResultReady {
-                            pending: Box::new(pending),
-                            ui_event: UiEvent::ToolResult {
-                                tool_call_id: tc_id,
-                                status: result.status,
-                                summary: result.summary,
-                                structured: result.structured,
-                            },
+                        let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+                        ui_events.push(UiEvent::ToolResult {
+                            tool_call_id: queued.tool_call.id.clone(),
+                            status: result.status,
+                            summary: result.summary,
+                            structured: result.structured,
                         });
                     }
                 }
             }
 
-            pending.saved_tool_call = Some(queued_tool_call);
-            let saved = pending.saved_tool_call.as_ref().unwrap();
-            let tc_id = saved.tool_call.id.clone();
-            let tc_name = saved.tool_call.name.clone();
-            let tc_summary = saved.display_summary.clone();
-            return Ok(PendingStep::ToolCallReady {
-                pending: Box::new(pending),
-                ui_event: UiEvent::ToolCall {
-                    tool_call_id: tc_id,
-                    tool: tc_name,
-                    summary: tc_summary,
-                },
-            });
+            if !dispatch_batch.is_empty() {
+                let results = crate::tool::dispatch::dispatch_all(
+                    dispatch_batch,
+                    pending.cancel_token.clone(),
+                )
+                .await;
+                for (_index, tc_id, result) in results {
+                    let mut store = EventStore::open(&pending.events_path)?;
+                    store.append(crate::event::EventPayload::ToolResult {
+                        turn: pending.turn,
+                        ts: now_timestamp()?,
+                        tool_call_id: tc_id,
+                        status: result.status.clone(),
+                        summary: result.summary.clone(),
+                        model_content: result.model_content.clone(),
+                        truncated: result.truncated,
+                        structured: result.structured.clone(),
+                    })?;
+                }
+            }
+
+            if !ui_events.is_empty() {
+                return Ok(PendingStep::BatchReady {
+                    pending: Box::new(pending),
+                    ui_events,
+                });
+            }
+            return Ok(PendingStep::Pending(Box::new(pending)));
         }
 
         call_provider_step(pending).await
@@ -691,6 +743,7 @@ async fn handle_agent_tool_call(
         &pending.kuku_home,
         pending.config.clone(),
         pending.prompts_dir.as_deref(),
+        super::types::PermissionMode::Interactive,
     )
     .await?;
 
