@@ -63,6 +63,31 @@ Memory tools write to `events.jsonl` like any other tool. The new memory snapsho
 
 When in doubt, ask the user before writing.
 
+## Writing standards
+
+Memory is agent-maintained, not auto-collected. The agent writes memory through `memory.remember` / `memory.forget`, following the guidance in its system prompt and tool-guidance.
+
+### What deserves memory
+
+Memory should capture behavioral guidance that changes how the agent works across sessions. A statement of fact only belongs in memory when it affects decisions.
+
+| Remember | Don't remember |
+|----------|---------------|
+| "Reply in Chinese" | "User is Chinese" |
+| "Explain React concepts from scratch — user is new to it" | "User knows React basics" |
+| "Pipeline bugs in Linear INGEST" | "We use Linear for bug tracking" |
+
+### Writing rules
+
+- One short sentence per bullet. Distill, don't transcribe.
+- If a bullet overlaps with an existing one, update the old entry — don't add a second.
+- If a bullet no longer applies, remove it.
+- Rules already in `AGENTS.md` / `CLAUDE.md` should not be duplicated in memory.
+
+### User visibility
+
+The user can read `memory.md` at any time. The agent tells the user what it remembered or changed in one short sentence after memory operations. Memory edits are never invisible.
+
 ## Context drift
 
 Memory files can change between turns — edited by the agent, the user, or an external process. kuku detects these changes by comparing file hashes against the last acknowledged snapshot.
