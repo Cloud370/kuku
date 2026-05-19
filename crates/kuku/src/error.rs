@@ -48,6 +48,15 @@ pub enum Error {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("session locked: {session} (holder pid {holder_pid})")]
+    SessionLocked {
+        session: std::path::PathBuf,
+        holder_pid: i32,
+    },
+
+    #[error("child session requested permission: {tool} on {candidate}")]
+    ChildPermissionRequested { tool: String, candidate: String },
 }
 
 /// Convenience alias for `std::result::Result<T, kuku::Error>`.

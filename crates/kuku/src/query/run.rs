@@ -13,6 +13,12 @@ use super::types::{
     PendingRun, PendingStep, PermissionChoice, Run, RunState, StreamingChunkState, UiEvent,
 };
 
+impl Drop for Run {
+    fn drop(&mut self) {
+        crate::session::release_lock(&self.lock_path);
+    }
+}
+
 impl Run {
     /// The session ID for this run.
     pub fn session_id(&self) -> &str {
