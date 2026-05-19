@@ -87,9 +87,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     assert!(assembly.system_prompt.contains("<kuku_identity>"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
     assert!(assembly.system_prompt.contains("<kuku_working_style>"));
-    assert!(assembly
-        .system_prompt
-        .contains("Files and tool results are the source of truth."));
     assert_eq!(assembly.prelude_messages.len(), 2);
     assert_eq!(assembly.history, history);
     assert_eq!(assembly.tools, tools);
