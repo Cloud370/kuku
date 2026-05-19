@@ -19,6 +19,20 @@ impl Run {
         &self.session_id
     }
 
+    /// Cancel the current run. Streaming is aborted, pending permissions are denied,
+    /// and the cancelled model.response enters history.
+    pub fn cancel(&mut self) {
+        let (events_path, turn) = match &self.state {
+            RunState::Pending(p) => (p.events_path.clone(), p.turn),
+            RunState::Streaming(s) => (s.pending.events_path.clone(), s.pending.turn),
+            RunState::WaitingForPermission(w) => (w.pending.events_path.clone(), w.pending.turn),
+            RunState::BatchEvents(p, _) => (p.events_path.clone(), p.turn),
+            RunState::Cancelled { .. } | RunState::Done(_) => return,
+        };
+        self.state = RunState::Cancelled { events_path, turn };
+        self.cancel_token.notify_waiters();
+    }
+
     /// Poll for the next UI event from the running query.
     pub async fn next(&mut self) -> Result<Option<UiEvent>> {
         loop {
@@ -103,6 +117,15 @@ impl Run {
                     }
                     return Ok(Some(event));
                 }
+                RunState::Cancelled { events_path, turn } => {
+                    let mut store = crate::event::EventStore::open(&events_path)?;
+                    store.append(crate::event::EventPayload::TurnEnd {
+                        turn,
+                        ts: super::helpers::now_timestamp()?,
+                    })?;
+                    self.state = RunState::Done(None);
+                    return Ok(None);
+                }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
                     return Ok(Some(UiEvent::Done {
@@ -125,10 +148,16 @@ impl Run {
     ) -> Result<Option<UiEvent>> {
         use tokio_stream::StreamExt;
         loop {
-            let chunk = match streaming.stream.next().await {
-                Some(Ok(chunk)) => chunk,
-                Some(Err(_failure)) => return Ok(None),
-                None => return Ok(None),
+            let chunk = tokio::select! {
+                chunk = streaming.stream.next() => match chunk {
+                    Some(Ok(chunk)) => chunk,
+                    Some(Err(_failure)) => return Ok(None),
+                    None => return Ok(None),
+                },
+                _ = self.cancel_token.notified() => {
+                    streaming.stop_reason = Some("cancelled".to_string());
+                    return Ok(None);
+                }
             };
 
             match chunk {
@@ -276,4 +305,224 @@ pub(super) fn find_tool_definition<'a>(
         .resolved
         .as_ref()
         .and_then(|resolved| resolved.registry.iter().find(|tool| tool.name == name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{EventPayload, EventStore};
+
+    fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::Cancelled {
+                events_path: events_path.clone(),
+                turn,
+            },
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_when_idle_produces_turn_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        {
+            let mut store = EventStore::open(&events_path).unwrap();
+            store
+                .append(EventPayload::SessionMeta {
+                    ts: "2026-05-20T00:00:00Z".to_string(),
+                    schema_version: 1,
+                    session_id: "test".to_string(),
+                    created_at: "2026-05-20T00:00:00Z".to_string(),
+                    kuku_version: "0.1.0".to_string(),
+                })
+                .unwrap();
+            store
+                .append(EventPayload::TurnStart {
+                    turn: 1,
+                    ts: "2026-05-20T00:00:00Z".to_string(),
+                })
+                .unwrap();
+        }
+
+        let mut run = make_cancelled_run(events_path.clone(), 1);
+        let result = run.next().await.unwrap();
+        assert!(result.is_none());
+
+        let events = EventStore::replay(&events_path).unwrap();
+        let last = events.last().unwrap();
+        assert!(matches!(&last.payload, EventPayload::TurnEnd { turn: 1, .. }));
+    }
+
+    #[tokio::test]
+    async fn cancel_sets_token_and_transitions_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mut run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Cancelled {
+                events_path: events_path.clone(),
+                turn: 1,
+            },
+            cancel_token: cancel_token.clone(),
+            lock_path: std::path::PathBuf::new(),
+        };
+
+        cancel_token.notify_waiters();
+        assert!(matches!(&run.state, RunState::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_streaming_aborts_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(&events_path, "").unwrap();
+        let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        cancel_token.notify_waiters();
+
+        let pending = PendingRun {
+            session_id: "test".to_string(),
+            query: crate::query::types::Query::new("test"),
+            events_path: events_path.clone(),
+            kuku_home: dir.path().to_path_buf(),
+            workspace: dir.path().to_path_buf(),
+            policy_path: dir.path().join("policy.md"),
+            turn: 1,
+            request_num: 1,
+            cumulative_input_tokens: 0,
+            cumulative_output_tokens: 0,
+            resolved: None,
+            queued_tool_calls: std::collections::VecDeque::new(),
+            saved_tool_call: None,
+            config: std::sync::Arc::new(crate::config::Config::default()),
+            prompts_dir: None,
+            subagent_registry: None,
+            child_session_count: 0,
+            tool_registry_override: None,
+            cancel_token: cancel_token.clone(),
+        };
+
+        let stream: std::pin::Pin<Box<dyn futures_core::Stream<Item = std::result::Result<crate::provider::chunk::ProviderChunk, crate::provider::types::ProviderFailure>> + Send>> =
+            Box::pin(tokio_stream::pending());
+
+        let mut streaming = StreamingChunkState {
+            pending,
+            request_id: "req_1".to_string(),
+            stream,
+            accumulated_text: "partial".to_string(),
+            accumulated_thinking: String::new(),
+            stop_reason: None,
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+        };
+
+        let run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(PendingRun {
+                session_id: "test".to_string(),
+                query: crate::query::types::Query::new("test"),
+                events_path: events_path.clone(),
+                kuku_home: dir.path().to_path_buf(),
+                workspace: dir.path().to_path_buf(),
+                policy_path: dir.path().join("policy.md"),
+                turn: 1,
+                request_num: 1,
+                cumulative_input_tokens: 0,
+                cumulative_output_tokens: 0,
+                resolved: None,
+                queued_tool_calls: std::collections::VecDeque::new(),
+                saved_tool_call: None,
+                config: std::sync::Arc::new(crate::config::Config::default()),
+                prompts_dir: None,
+                subagent_registry: None,
+                child_session_count: 0,
+                tool_registry_override: None,
+                cancel_token: cancel_token.clone(),
+            })),
+            cancel_token: cancel_token.clone(),
+            lock_path: std::path::PathBuf::new(),
+        };
+
+        let result = run.poll_stream_chunk(&mut streaming).await.unwrap();
+        assert!(result.is_none());
+        assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_tool_result_envelope_has_correct_fields() {
+        let result = crate::tool::ToolResultEnvelope::cancelled("test cancel");
+        assert_eq!(result.status, "cancelled");
+        assert_eq!(result.summary, "test cancel");
+        assert!(result.model_content.is_empty());
+        assert!(!result.truncated);
+        assert_eq!(
+            result.structured,
+            Some(serde_json::json!({"kind": "cancelled"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_after_cancel_includes_turn_end_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        {
+            let mut store = EventStore::open(&events_path).unwrap();
+            store
+                .append(EventPayload::SessionMeta {
+                    ts: "2026-05-20T00:00:00Z".to_string(),
+                    schema_version: 1,
+                    session_id: "test".to_string(),
+                    created_at: "2026-05-20T00:00:00Z".to_string(),
+                    kuku_version: "0.1.0".to_string(),
+                })
+                .unwrap();
+            store
+                .append(EventPayload::TurnStart {
+                    turn: 1,
+                    ts: "2026-05-20T00:00:00Z".to_string(),
+                })
+                .unwrap();
+            store
+                .append(EventPayload::UserInput {
+                    turn: 1,
+                    ts: "2026-05-20T00:00:01Z".to_string(),
+                    text: "hello".to_string(),
+                })
+                .unwrap();
+            store
+                .append(EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: "2026-05-20T00:00:02Z".to_string(),
+                    request_id: "req_1".to_string(),
+                    text: "partial".to_string(),
+                    thinking: None,
+                    stop_reason: "cancelled".to_string(),
+                    tool_call_count: None,
+                    usage: serde_json::json!({}),
+                })
+                .unwrap();
+            store
+                .append(EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: "2026-05-20T00:00:03Z".to_string(),
+                })
+                .unwrap();
+        }
+
+        let events = EventStore::replay(&events_path).unwrap();
+        let history = crate::context::rebuild_history(&events);
+        assert_eq!(history.len(), 2);
+        let messages: Vec<_> = history
+            .iter()
+            .map(|m| format!("{:?}", m.role))
+            .collect();
+        assert!(messages.contains(&"User".to_string()));
+        assert!(messages.contains(&"Assistant".to_string()));
+    }
 }

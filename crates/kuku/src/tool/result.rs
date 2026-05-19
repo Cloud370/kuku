@@ -57,4 +57,14 @@ impl ToolResultEnvelope {
             structured: Some(serde_json::json!({"kind": "blocked"})),
         }
     }
+
+    pub(crate) fn cancelled(summary: impl Into<String>) -> Self {
+        Self {
+            status: "cancelled".to_string(),
+            summary: summary.into(),
+            model_content: String::new(),
+            truncated: false,
+            structured: Some(serde_json::json!({"kind": "cancelled"})),
+        }
+    }
 }

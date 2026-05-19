@@ -131,6 +131,26 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
     }
 
     {
+        {
+            let notified = pending.cancel_token.notified();
+            tokio::pin!(notified);
+            if notified.enable().is_some() {
+                let mut store = EventStore::open(&pending.events_path)?;
+                store.append(EventPayload::TurnEnd {
+                    turn: pending.turn,
+                    ts: now_timestamp()?,
+                })?;
+                return Ok(PendingStep::Done(
+                    super::types::RunOutput {
+                        session_id: pending.session_id.clone(),
+                        text: String::new(),
+                    },
+                    None,
+                    pending.turn,
+                ));
+            }
+        }
+
         if !pending.queued_tool_calls.is_empty() {
             let all_calls: Vec<_> = pending.queued_tool_calls.drain(..).collect();
             let (agent_calls, regular_calls): (Vec<_>, Vec<_>) = all_calls

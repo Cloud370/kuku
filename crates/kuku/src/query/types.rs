@@ -106,6 +106,10 @@ pub(super) enum RunState {
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
     BatchEvents(Box<PendingRun>, VecDeque<UiEvent>),
+    Cancelled {
+        events_path: std::path::PathBuf,
+        turn: u64,
+    },
     Done(
         Option<(
             RunOutput,
