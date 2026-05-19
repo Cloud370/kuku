@@ -26,7 +26,7 @@ Public API and agent loop orchestration. The only module that may depend on ever
 - Append-only. `EventStore::append` assigns `id` and `ts`, serializes one JSON line, flushes.
 - Reader replays in file order. `id` validates monotonicity, not ordering.
 - Trailing partial line → ignored with a diagnostic.
-- Unknown event types → preserved for display, excluded from `messages[]` (planned).
+- Unknown event types → preserved via two-step deserialization for display, excluded from `messages[]`.
 
 No database abstraction, no event bus, no WAL. This module should be small, boring, hard to misuse.
 

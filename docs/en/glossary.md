@@ -17,7 +17,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `model.response` | Event recording a completed provider response: stop reason, usage. Followed by zero or more `tool.call` events; together they form a response group. |
 | `model.error` | Diagnostic event for provider failures (auth, rate limit, network, overflow). Does not become a model message. |
 | `tool.call` | Event recording a single tool use requested by the model within a response group. |
-| `tool.result` | Event recording the outcome of a `tool.call`: status (`ok`, `error`, `blocked`, `cancelled` (planned)), summary, model_content, truncated, structured. |
+| `tool.result` | Event recording the outcome of a `tool.call`: status (`ok`, `error`, `blocked`, `cancelled`), summary, model_content, truncated, structured. |
 | `turn.start` | Event marking the beginning of a turn. |
 | `turn.end` | Event marking the end of a turn. |
 | `response group` | A `model.response` and its immediately following `tool.call[]` events, treated as one assistant message during context rebuild. |
@@ -97,7 +97,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `subagent registry` | Loaded set of `SubagentDefinition`s from builtins + compatibility imports. Content-hashed for drift detection. |
 | `compatibility import` | Read-only conversion of external agent definitions (Claude Code, OpenCode) into `SubagentDefinition`. Never mutates source files. |
 
-## Extension (planned)
+## Extension
 
 | Canonical Name | Definition |
 |---------------|------------|

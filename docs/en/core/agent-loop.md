@@ -27,7 +27,10 @@ A `model.response` and its immediately following `tool.call[]` events form a res
 
 ## Tool execution
 
-Tools execute after all `tool.call` events are written. Concurrency-safe tools may run in parallel (planned); results are always appended in the model's original `tool.call` order.
+All tool calls from one `model.response` run in parallel. The model controls
+ordering: dependent operations go in separate turns, independent operations
+in the same turn. Results are always appended in the model's original
+`tool.call` order.
 
 Tool results go into `events.jsonl` first. The next context rebuild reads them as user `tool_result` blocks.
 
@@ -38,7 +41,7 @@ Tool results go into `events.jsonl` first. The next context rebuild reads them a
 | Provider auth, rate limit, network, overflow | `model.error` |
 | Invalid tool arguments | `tool.result {status:"error"}` |
 | Permission denied | `permission.decision deny` + `tool.result {status:"blocked"}` |
-| User cancels tool | `tool.result {status:"cancelled"}` (planned) |
+| User cancels tool | `tool.result {status:"cancelled"}` |
 
 `model.error` is diagnostic — it does not become a model message. Every `tool.call` must have a paired `tool.result`.
 
@@ -53,3 +56,15 @@ Only appended events are trusted.
 | `tool.call` | A tool was requested, no confirmed result |
 
 Missing `tool.result` events are backfilled as `status:"cancelled"` on resume. Half-finished model responses are not guessed.
+
+## Cancellation
+
+`Run::cancel()` stops the current operation. The cancelled `model.response`
+enters history, so the model sees what was produced before interruption.
+
+| State | Behaviour |
+|-------|-----------|
+| Streaming | Abort via `tokio::select!`, write `model.response` with `stop_reason:"cancelled"` and truncated text |
+| Waiting for permission | Deny all pending, write `tool.result {status:"blocked"}`, then `turn.end` |
+| Executing tools | Running tools write `cancelled`; completed tools kept; `turn.end` |
+| Idle | Direct `turn.end` |

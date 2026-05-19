@@ -45,7 +45,9 @@ The first event in every new session:
 
 ## Writer lock
 
-Only one writer per session at a time. The lock file lives under `<project-home>/runtime/locks/<session-id>.json`, not inside the session directory (planned). Read operations (`show`, `inspect`, `list`) can run concurrently.
+Only one writer per session at a time. A `lock` file (containing `pid` and
+`timestamp`) lives inside the session directory. Read operations (`show`,
+`inspect`, `list`) can run concurrently.
 
 If a stale lock is taken over, a diagnostic event is appended to `events.jsonl`.
 
