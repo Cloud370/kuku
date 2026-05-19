@@ -22,6 +22,13 @@ pub struct ToolRegistryProvenance {
     pub tool_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Snapshot of the subagent registry used for agent catalog rendering.
+pub struct SubagentRegistryProvenance {
+    pub hash: String,
+    pub names: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Inputs for building request provenance metadata.
 pub struct RequestProvenanceInput {
@@ -35,6 +42,7 @@ pub struct RequestProvenanceInput {
     pub prompt_asset_sources: Vec<FileSource>,
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
+    pub subagent_registry: Option<SubagentRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -58,6 +66,8 @@ pub struct RequestProvenance {
     pub prompt_asset_sources: Vec<FileSource>,
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_registry: Option<SubagentRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -81,6 +91,7 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         prompt_asset_sources: input.prompt_asset_sources,
         history_range: input.history_range,
         tool_registry: input.tool_registry,
+        subagent_registry: input.subagent_registry,
         provider_format: input.provider_format,
         provider: input.provider,
         model: input.model,
@@ -98,7 +109,7 @@ mod tests {
 
     use super::{
         build_request_provenance, FileSource, HistoryRange, RequestProvenanceInput,
-        ToolRegistryProvenance,
+        SubagentRegistryProvenance, ToolRegistryProvenance,
     };
 
     fn source(path: &str, hash: &str) -> FileSource {
@@ -143,6 +154,7 @@ mod tests {
             prompt_asset_sources: prompt_sources.clone(),
             history_range: history_range.clone(),
             tool_registry: tool_registry.clone(),
+            subagent_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
@@ -169,6 +181,7 @@ mod tests {
             prompt_asset_sources: actual_prompt_sources,
             history_range: actual_history_range,
             tool_registry: actual_tool_registry,
+            subagent_registry: actual_subagent_registry,
             provider_format,
             provider,
             model,
@@ -189,6 +202,7 @@ mod tests {
         assert_eq!(actual_prompt_sources, prompt_sources);
         assert_eq!(actual_history_range, history_range);
         assert_eq!(actual_tool_registry, tool_registry);
+        assert_eq!(actual_subagent_registry, None);
         assert_eq!(provider_format, "anthropic");
         assert_eq!(provider, "anthropic");
         assert_eq!(model, "claude-sonnet-4-6");
@@ -200,5 +214,79 @@ mod tests {
         assert_eq!(context_budget_tier, "roomy");
         assert_eq!(max_context_tokens, Some(200_000));
         assert_eq!(remaining_input_tokens, Some(170_000));
+    }
+
+    #[test]
+    fn provenance_serializes_subagent_registry_when_present() {
+        let subagent = SubagentRegistryProvenance {
+            hash: "sha256-subagent".to_string(),
+            names: vec!["review".to_string(), "explore".to_string()],
+        };
+        let provenance = build_request_provenance(RequestProvenanceInput {
+            request_id: "req_1".to_string(),
+            tier: "balanced".to_string(),
+            workspace: "/workspace".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-18".to_string(),
+            project_instruction_sources: vec![],
+            memory_sources: vec![],
+            prompt_asset_sources: vec![],
+            history_range: HistoryRange {
+                first_event_id: None,
+                last_event_id: None,
+            },
+            tool_registry: ToolRegistryProvenance {
+                hash: "sha256-tools".to_string(),
+                names: vec![],
+                tool_count: 0,
+            },
+            subagent_registry: Some(subagent),
+            provider_format: "anthropic".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            request_params: json!({}),
+            token_estimate: None,
+            context_budget_tier: "normal".to_string(),
+            max_context_tokens: None,
+            remaining_input_tokens: None,
+        });
+
+        let json = serde_json::to_value(&provenance).unwrap();
+        let sub = &json["subagent_registry"];
+        assert_eq!(sub["hash"], "sha256-subagent");
+        assert_eq!(sub["names"][0], "review");
+        assert_eq!(sub["names"][1], "explore");
+
+        // When subagent_registry is None, it should be absent from JSON.
+        let provenance_none = build_request_provenance(RequestProvenanceInput {
+            request_id: "req_2".to_string(),
+            tier: "strong".to_string(),
+            workspace: "/ws".to_string(),
+            platform: "linux".to_string(),
+            current_date: "2026-05-18".to_string(),
+            project_instruction_sources: vec![],
+            memory_sources: vec![],
+            prompt_asset_sources: vec![],
+            history_range: HistoryRange {
+                first_event_id: None,
+                last_event_id: None,
+            },
+            tool_registry: ToolRegistryProvenance {
+                hash: "".to_string(),
+                names: vec![],
+                tool_count: 0,
+            },
+            subagent_registry: None,
+            provider_format: "anthropic".to_string(),
+            provider: "anthropic".to_string(),
+            model: "model".to_string(),
+            request_params: json!({}),
+            token_estimate: None,
+            context_budget_tier: "normal".to_string(),
+            max_context_tokens: None,
+            remaining_input_tokens: None,
+        });
+        let json_none = serde_json::to_value(&provenance_none).unwrap();
+        assert!(json_none.get("subagent_registry").is_none());
     }
 }

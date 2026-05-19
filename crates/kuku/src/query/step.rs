@@ -2,7 +2,8 @@ use sha2::Digest;
 
 use crate::context::{
     assemble_context, build_request_provenance, rebuild_history, ContextInput, EnvironmentSource,
-    FileSource, HistoryRange, RequestProvenanceInput, ToolRegistryProvenance,
+    FileSource, HistoryRange, RequestProvenanceInput, SubagentRegistryProvenance,
+    ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -474,6 +475,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             names: resolved.tool_names.clone(),
             tool_count: resolved.tool_count,
         },
+        subagent_registry: pending
+            .subagent_registry
+            .as_ref()
+            .map(|r| SubagentRegistryProvenance {
+                hash: r.hash().to_string(),
+                names: r.names().to_vec(),
+            }),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
         provider: resolved.config.kind.as_str().to_string(),
         model: resolved.config.model.clone(),

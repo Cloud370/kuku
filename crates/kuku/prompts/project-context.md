@@ -20,7 +20,5 @@
 
 <kuku_models>
 {{model_tiers_rendered}}
-
-Choose the appropriate tier when dispatching sub-agents.
 </kuku_models>
 </kuku_project_context>

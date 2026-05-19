@@ -21,6 +21,8 @@ pub enum ChildSessionStatus {
     Error(String),
 }
 
+// Each parameter comes from a different source (config, registry, caller, filesystem);
+// bundling them into a struct would obscure which call sites provide which data.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_child_session(
     parent_session_dir: &Path,
@@ -102,7 +104,10 @@ pub async fn spawn_child_session(
                     status: ChildSessionStatus::Error("stream ended unexpectedly".into()),
                 });
             }
-            _ => continue,
+            // Child session does not need to act on these events
+            Some(crate::UiEvent::ThinkingDelta { .. })
+            | Some(crate::UiEvent::ToolCall { .. })
+            | Some(crate::UiEvent::ToolResult { .. }) => continue,
         }
     }
 }
