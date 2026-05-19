@@ -37,7 +37,7 @@ Path derivation only. No conversation state, no event interpretation, no message
 - `$KUKU_HOME` from env or default.
 - Project home: `$KUKU_HOME/p/<canonical-workspace-path>/`.
 - Session directory: `<project-home>/sessions/<id>/`.
-- Writer lock: `<project-home>/runtime/locks/<session-id>.json`.
+- Writer lock: `<project-home>/sessions/<session-id>/lock`.
 
 Full directory layout is in [architecture.md](../core/architecture.md#directory-layout).
 
@@ -72,7 +72,7 @@ Must not: own session state, execute tools, decide permissions, write to events.
 
 Definitions, registry, dispatch, and built-in implementations.
 
-- `ToolDefinition`: name, description, input_schema, risk, read_only, concurrency_safe, max_result_chars.
+- `ToolDefinition`: name, description, input_schema, read_only, max_result_chars, risk.
 - `builtin_registry(agent_enabled)` returns 8 or 9 tools in fixed order.
 - All results use unified `ToolResultEnvelope`: `{status, summary, model_content, truncated, structured}`.
 - Tool schemas are stable and fixed-order. No per-request pruning.

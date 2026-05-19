@@ -88,9 +88,8 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | Canonical Name | Definition |
 |---------------|------------|
 | `subagent` | A tool-backed child session. The main agent dispatches via the stable `agent` tool; runtime spawns an isolated child session under `subs/`. |
-| `SubagentDefinition` | Internal representation of a subagent: name, description, instructions, tier, tool_profile, max_turns, output_contract, source, hash. |
+| `SubagentDefinition` | Internal representation of a subagent: name, description, instructions, tier, tool_profile, tools, max_turns, source, hash. |
 | `tool_profile` | Allowed tool preset for a subagent: `none` / `read` / `read_write`. Mapped to a concrete tool allowlist at spawn time. |
-| `output_contract` | Expected output format from a subagent: `summary` / `findings` / `plan` / `handoff`. Injected as an instruction hint in the child session. |
 | `agent tool` | The single stable tool (`name: "agent"`) for dispatching subagents. Schema is fixed; available agents are declared in the catalog. |
 | `child session` | Isolated session created under `subs/<id>/`. Has its own `events.jsonl`, constrained tool registry, and capped permissions. |
 | `agent catalog` | Short XML block listing available subagents (name, description, tier, tool_profile, hash). Injected into `runtime_context`. Does not include full instructions. |
