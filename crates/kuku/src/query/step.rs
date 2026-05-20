@@ -360,13 +360,16 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             format!("req_{}", pending.request_num),
             "loop_limit",
             "tool loop exceeded maximum provider requests",
-            Some(provider_name),
-            Some(model),
+            Some(provider_name.clone()),
+            Some(model.clone()),
         )?;
         append_turn_end(&pending.events_path, pending.turn)?;
-        return Err(crate::error::Error::Provider(
-            "tool loop exceeded maximum provider requests".to_string(),
-        ));
+        return Err(crate::error::Error::Provider {
+            kind: crate::provider::types::ProviderFailureKind::Unknown,
+            message: "tool loop exceeded maximum provider requests".to_string(),
+            provider: Some(provider_name),
+            model: Some(model),
+        });
     }
 
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
@@ -694,7 +697,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 Some(resolved.config.model.clone()),
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
-            Err(crate::error::Error::Provider(failure.message))
+            Err(crate::error::Error::Provider {
+                kind: failure.kind,
+                message: failure.message,
+                provider: Some(resolved.config.kind.as_str().to_string()),
+                model: Some(resolved.config.model.clone()),
+            })
         }
     }
 }
@@ -784,7 +792,12 @@ async fn handle_agent_tool_call(
         .and_then(|reg| reg.get(name))
         .cloned()
         .ok_or_else(|| {
-            crate::error::Error::Provider(format!("subagent '{name}' not found in registry"))
+            crate::error::Error::Provider {
+                kind: crate::provider::types::ProviderFailureKind::Unknown,
+                message: format!("subagent '{name}' not found in registry"),
+                provider: None,
+                model: None,
+            }
         })?;
 
     // Check session limit

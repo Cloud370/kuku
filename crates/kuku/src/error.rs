@@ -1,3 +1,5 @@
+use crate::provider::types::ProviderFailureKind;
+
 #[derive(Debug, thiserror::Error)]
 /// All error types produced by the kuku SDK.
 pub enum Error {
@@ -25,14 +27,16 @@ pub enum Error {
     #[error("invalid workspace path: {0}")]
     InvalidWorkspacePath(String),
 
-    #[error("provider error: {0}")]
-    Provider(String),
+    #[error("provider error: {message}")]
+    Provider {
+        kind: ProviderFailureKind,
+        message: String,
+        provider: Option<String>,
+        model: Option<String>,
+    },
 
     #[error("missing provider configuration: {0}")]
     MissingProviderConfig(String),
-
-    #[error("ambiguous provider configuration: {0}")]
-    AmbiguousProviderConfig(String),
 
     #[error("permission request not pending: {0}")]
     PermissionRequestNotPending(String),
@@ -62,14 +66,52 @@ pub enum Error {
 /// Convenience alias for `std::result::Result<T, kuku::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    /// Returns the wire error code for this error variant.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::Io(_) | Error::Json(_) | Error::TimeFormat(_) => "internal",
+            Error::MissingHomeDirectory
+            | Error::InvalidKukuHome(_)
+            | Error::InvalidEventStream(_)
+            | Error::InvalidSessionId(_)
+            | Error::InvalidWorkspacePath(_) => "internal",
+            Error::Provider { kind, .. } => match kind {
+                ProviderFailureKind::Authentication => "provider_auth",
+                ProviderFailureKind::RateLimited => "provider_rate_limit",
+                ProviderFailureKind::ContextTooLarge => "provider_overflow",
+                ProviderFailureKind::InvalidRequest => "invalid_request",
+                ProviderFailureKind::ProviderUnavailable => "provider_network",
+                ProviderFailureKind::Transport => "provider_network",
+                ProviderFailureKind::Unknown => "internal",
+            },
+            Error::MissingProviderConfig(_) => "internal",
+            Error::PermissionRequestNotPending(_) => "internal",
+            Error::InvalidPolicy(_) => "internal",
+            Error::PromptRender(_) => "internal",
+            Error::ConfigLoad(_) => "internal",
+            Error::InvalidArgument(_) => "invalid_request",
+            Error::SessionLocked { .. } => "session_locked",
+            Error::ChildPermissionRequested { .. } => "internal",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Error;
+    use crate::provider::types::ProviderFailureKind;
 
     #[test]
     fn provider_error_variant_formats_message() {
         assert_eq!(
-            Error::Provider("gateway timeout".to_string()).to_string(),
+            Error::Provider {
+                kind: ProviderFailureKind::ProviderUnavailable,
+                message: "gateway timeout".to_string(),
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-sonnet-4-6".to_string()),
+            }
+            .to_string(),
             "provider error: gateway timeout"
         );
     }
@@ -79,14 +121,6 @@ mod tests {
         assert_eq!(
             Error::MissingProviderConfig("set KUKU_PROVIDER".to_string()).to_string(),
             "missing provider configuration: set KUKU_PROVIDER"
-        );
-    }
-
-    #[test]
-    fn ambiguous_provider_config_variant_formats_message() {
-        assert_eq!(
-            Error::AmbiguousProviderConfig("select a provider explicitly".to_string()).to_string(),
-            "ambiguous provider configuration: select a provider explicitly"
         );
     }
 

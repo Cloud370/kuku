@@ -740,7 +740,7 @@ async fn http_error_writes_model_error_and_turn_end() {
         .await
         .unwrap_err();
 
-    assert!(matches!(err, Error::Provider(_)));
+    assert!(matches!(err, Error::Provider { .. }));
 
     let events = EventStore::replay(env.events_path(sid)).unwrap();
     assert!(events
