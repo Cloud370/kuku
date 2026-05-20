@@ -49,7 +49,10 @@ async fn full_run_lifecycle() {
 
     let body = resp.text().await.unwrap();
     let lines: Vec<&str> = body.trim().split('\n').collect();
-    assert!(lines.len() >= 2, "expected at least run_start and done events");
+    assert!(
+        lines.len() >= 2,
+        "expected at least run_start and done events"
+    );
 
     let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(first["type"], "run_start");

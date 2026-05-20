@@ -26,7 +26,10 @@ pub async fn create_run(
     Json(body): Json<RunRequest>,
 ) -> Response {
     if !body.workspace.exists() {
-        return Json(json!({"ok": false, "code": "invalid_request", "message": "workspace does not exist"})).into_response();
+        return Json(
+            json!({"ok": false, "code": "invalid_request", "message": "workspace does not exist"}),
+        )
+        .into_response();
     }
 
     let config = state.config.load();

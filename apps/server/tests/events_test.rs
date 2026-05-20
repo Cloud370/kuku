@@ -10,10 +10,7 @@ async fn nonexistent_session_returns_not_found() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!(
-            "{}/sessions/nonexistent/events",
-            server.base_url
-        ))
+        .get(format!("{}/sessions/nonexistent/events", server.base_url))
         .send()
         .await
         .unwrap();

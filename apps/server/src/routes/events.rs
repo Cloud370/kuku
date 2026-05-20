@@ -24,16 +24,24 @@ pub async fn events(
 
     let workspace = match kuku::session::current_workspace() {
         Ok(w) => w,
-        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing workspace"})),
+        Err(_) => {
+            return Json(json!({"ok": false, "code": "internal", "message": "missing workspace"}))
+        }
     };
 
     let events_path = match kuku::session::session_events_path(&home, &workspace, &session_id) {
         Ok(p) => p,
-        Err(_) => return Json(json!({"ok": false, "code": "session_not_found", "message": "session not found"})),
+        Err(_) => {
+            return Json(
+                json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
+            )
+        }
     };
 
     if !events_path.exists() {
-        return Json(json!({"ok": false, "code": "session_not_found", "message": "session not found"}));
+        return Json(
+            json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
+        );
     }
 
     let events = match kuku::event::EventStore::replay(&events_path) {

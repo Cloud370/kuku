@@ -10,10 +10,7 @@ async fn invalid_interaction_id_returns_error() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!(
-            "{}/runs/fake_run/responses",
-            server.base_url
-        ))
+        .post(format!("{}/runs/fake_run/responses", server.base_url))
         .json(&serde_json::json!({
             "interaction_id": "nonexistent",
             "choice": "once",
@@ -35,10 +32,7 @@ async fn invalid_choice_returns_error() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!(
-            "{}/runs/fake_run/responses",
-            server.base_url
-        ))
+        .post(format!("{}/runs/fake_run/responses", server.base_url))
         .json(&serde_json::json!({
             "interaction_id": "any",
             "choice": "invalid_choice",

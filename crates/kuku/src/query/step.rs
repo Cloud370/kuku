@@ -808,13 +808,11 @@ async fn handle_agent_tool_call(
         .as_ref()
         .and_then(|reg| reg.get(name))
         .cloned()
-        .ok_or_else(|| {
-            crate::error::Error::Provider {
-                kind: crate::provider::types::ProviderFailureKind::Unknown,
-                message: format!("subagent '{name}' not found in registry"),
-                provider: None,
-                model: None,
-            }
+        .ok_or_else(|| crate::error::Error::Provider {
+            kind: crate::provider::types::ProviderFailureKind::Unknown,
+            message: format!("subagent '{name}' not found in registry"),
+            provider: None,
+            model: None,
         })?;
 
     // Check session limit

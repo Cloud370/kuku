@@ -146,9 +146,7 @@ impl RunManager {
             .lock()
             .await
             .remove(interaction_id)
-            .ok_or_else(|| {
-                kuku::Error::PermissionRequestNotPending(interaction_id.to_string())
-            })?;
+            .ok_or_else(|| kuku::Error::PermissionRequestNotPending(interaction_id.to_string()))?;
         let _ = tx.send(choice);
         Ok(())
     }

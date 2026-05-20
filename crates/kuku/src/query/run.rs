@@ -455,7 +455,7 @@ mod tests {
                             crate::provider::chunk::ProviderChunk,
                             crate::provider::types::ProviderFailure,
                         >,
-                    > + Send,
+                    > + Send + Sync,
             >,
         > = Box::pin(tokio_stream::pending());
 
