@@ -166,6 +166,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             tool_count: 1,
         },
         subagent_registry: None,
+        skill_registry: None,
         provider_format: "anthropic".to_string(),
         provider: "anthropic".to_string(),
         model: "claude-sonnet-4-6".to_string(),

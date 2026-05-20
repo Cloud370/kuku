@@ -1,3 +1,5 @@
+//! Skill registry with multi-source builder and change detection.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

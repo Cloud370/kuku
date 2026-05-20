@@ -409,13 +409,11 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
                 let (skill_name, rest) = parse_slash_command(&prompt);
                 if let Some(skill) = registry.get(&skill_name) {
                     let skill_dir = skill.source_path.as_deref().unwrap_or_default();
-                    if let Ok(skill_md) = std::fs::read_to_string(
-                        std::path::Path::new(skill_dir).join("SKILL.md"),
-                    ) {
+                    if let Ok(skill_md) =
+                        std::fs::read_to_string(std::path::Path::new(skill_dir).join("SKILL.md"))
+                    {
                         let (_, body) =
-                            kuku::subagent::compat::claude_code::split_yaml_frontmatter(
-                                &skill_md,
-                            );
+                            kuku::subagent::compat::claude_code::split_yaml_frontmatter(&skill_md);
                         prompt = format!("<!-- skill_dir: {skill_dir} -->\n\n{body}\n\n{rest}");
                     }
                 } else {
