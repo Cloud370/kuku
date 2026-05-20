@@ -11,6 +11,7 @@ pub use prompt::{builtin_prompt_catalog, PromptCatalog};
 pub(crate) mod provider;
 pub mod query;
 pub mod session;
+pub(crate) mod skill;
 pub mod subagent;
 pub(crate) mod tool;
 
