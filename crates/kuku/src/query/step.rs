@@ -577,6 +577,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 hash: r.hash().to_string(),
                 names: r.names().to_vec(),
             }),
+        skill_registry: pending.skill_registry.as_ref().map(|reg| {
+            crate::context::provenance::SkillRegistryProvenance {
+                hash: reg.hash().to_string(),
+                names: reg.names().to_vec(),
+            }
+        }),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
         provider: resolved.config.kind.as_str().to_string(),
         model: resolved.config.model.clone(),

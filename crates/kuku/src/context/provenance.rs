@@ -29,6 +29,13 @@ pub struct SubagentRegistryProvenance {
     pub names: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Snapshot of the skill registry used for skill catalog rendering.
+pub struct SkillRegistryProvenance {
+    pub hash: String,
+    pub names: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Inputs for building request provenance metadata.
 pub struct RequestProvenanceInput {
@@ -43,6 +50,7 @@ pub struct RequestProvenanceInput {
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
     pub subagent_registry: Option<SubagentRegistryProvenance>,
+    pub skill_registry: Option<SkillRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -68,6 +76,8 @@ pub struct RequestProvenance {
     pub tool_registry: ToolRegistryProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_registry: Option<SubagentRegistryProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_registry: Option<SkillRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -92,6 +102,7 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         history_range: input.history_range,
         tool_registry: input.tool_registry,
         subagent_registry: input.subagent_registry,
+        skill_registry: input.skill_registry,
         provider_format: input.provider_format,
         provider: input.provider,
         model: input.model,
@@ -155,6 +166,7 @@ mod tests {
             history_range: history_range.clone(),
             tool_registry: tool_registry.clone(),
             subagent_registry: None,
+            skill_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
@@ -182,6 +194,7 @@ mod tests {
             history_range: actual_history_range,
             tool_registry: actual_tool_registry,
             subagent_registry: actual_subagent_registry,
+            skill_registry: _,
             provider_format,
             provider,
             model,
@@ -241,6 +254,7 @@ mod tests {
                 tool_count: 0,
             },
             subagent_registry: Some(subagent),
+            skill_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
@@ -277,6 +291,7 @@ mod tests {
                 tool_count: 0,
             },
             subagent_registry: None,
+            skill_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "model".to_string(),
