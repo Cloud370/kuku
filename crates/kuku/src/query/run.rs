@@ -79,6 +79,10 @@ impl Run {
                     }
                 },
                 RunState::Streaming(mut streaming) => {
+                    if let Some(event) = streaming.lead_events.pop() {
+                        self.state = RunState::Streaming(streaming);
+                        return Ok(Some(event));
+                    }
                     match self.poll_stream_chunk(&mut streaming).await? {
                         Some(event) => {
                             self.state = RunState::Streaming(streaming);
@@ -290,6 +294,7 @@ impl Run {
         let result = execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
         let tool_result_event = Some(UiEvent::ToolResult {
             tool_call_id: waiting.queued_tool_call.tool_call.id.clone(),
+            name: waiting.queued_tool_call.tool_call.name.clone(),
             status: result.status,
             summary: result.summary,
             structured: result.structured,
@@ -448,6 +453,7 @@ mod tests {
             tool_arg_buffers: Vec::new(),
             provider_request_id: None,
             usage: None,
+            lead_events: Vec::new(),
         };
 
         let run = Run {

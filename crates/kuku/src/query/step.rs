@@ -124,6 +124,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
             pending: Box::new(pending),
             ui_event: UiEvent::ToolResult {
                 tool_call_id: saved.tool_call.id.clone(),
+                name: saved.tool_call.name.clone(),
                 status: result.status,
                 summary: result.summary,
                 structured: result.structured,
@@ -185,6 +186,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                 let result = execute_tool_call(&mut pending, &call.tool_call).await?;
                 ui_events.push(UiEvent::ToolResult {
                     tool_call_id: call.tool_call.id.clone(),
+                    name: call.tool_call.name.clone(),
                     status: result.status,
                     summary: result.summary,
                     structured: result.structured,
@@ -297,6 +299,7 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                         let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
                         ui_events.push(UiEvent::ToolResult {
                             tool_call_id: queued.tool_call.id.clone(),
+                            name: queued.tool_call.name.clone(),
                             status: result.status,
                             summary: result.summary,
                             structured: result.structured,
@@ -673,6 +676,15 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         thinking: resolved.config.thinking.clone(),
     };
 
+    let mut lead_events = Vec::new();
+    if pending.request_num == 1 {
+        lead_events.push(UiEvent::TurnStart);
+    }
+    lead_events.push(UiEvent::ModelRequest {
+        model: resolved.config.model.clone(),
+        provider: resolved.config.kind.as_str().to_string(),
+    });
+
     match crate::provider::stream_provider(&resolved.config, &request).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             pending,
@@ -685,8 +697,13 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             tool_arg_buffers: Vec::new(),
             provider_request_id: None,
             usage: None,
+            lead_events,
         }))),
         Err(failure) => {
+            lead_events.push(UiEvent::Error {
+                code: provider_failure_kind(&failure.kind).to_string(),
+                message: failure.message.clone(),
+            });
             append_model_error(
                 &pending.events_path,
                 pending.turn,
@@ -817,6 +834,7 @@ async fn handle_agent_tool_call(
             pending: Box::new(pending),
             ui_event: UiEvent::ToolResult {
                 tool_call_id: queued_tool_call.tool_call.id.clone(),
+                name: queued_tool_call.tool_call.name.clone(),
                 status: "blocked".to_string(),
                 summary: "blocked: maximum subagent sessions (20) reached".to_string(),
                 structured: None,
@@ -884,6 +902,7 @@ async fn handle_agent_tool_call(
         pending: Box::new(pending),
         ui_event: UiEvent::ToolResult {
             tool_call_id: queued_tool_call.tool_call.id.clone(),
+            name: queued_tool_call.tool_call.name.clone(),
             status,
             summary,
             structured: Some(structured),

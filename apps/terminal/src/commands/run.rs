@@ -329,6 +329,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(UiEvent::ToolResult {
                 tool_call_id,
+                name: _,
                 status,
                 summary,
                 structured: _,

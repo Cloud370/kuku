@@ -86,6 +86,7 @@ pub enum UiEvent {
     },
     ToolResult {
         tool_call_id: String,
+        name: String,
         status: String,
         summary: String,
         structured: Option<serde_json::Value>,
@@ -97,6 +98,15 @@ pub enum UiEvent {
         output: RunOutput,
         usage: Option<crate::provider::types::ProviderUsage>,
         turn: u64,
+    },
+    TurnStart,
+    Error {
+        code: String,
+        message: String,
+    },
+    ModelRequest {
+        model: String,
+        provider: String,
     },
 }
 
@@ -208,6 +218,7 @@ pub(super) struct StreamingChunkState {
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
     pub(super) provider_request_id: Option<String>,
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
+    pub(super) lead_events: Vec<UiEvent>,
 }
 
 impl std::fmt::Debug for StreamingChunkState {

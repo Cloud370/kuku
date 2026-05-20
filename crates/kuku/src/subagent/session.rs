@@ -118,7 +118,10 @@ pub async fn spawn_child_session(
             // Child session does not need to act on these events
             Some(crate::UiEvent::ThinkingDelta { .. })
             | Some(crate::UiEvent::ToolCall { .. })
-            | Some(crate::UiEvent::ToolResult { .. }) => continue,
+            | Some(crate::UiEvent::ToolResult { .. })
+            | Some(crate::UiEvent::TurnStart)
+            | Some(crate::UiEvent::Error { .. })
+            | Some(crate::UiEvent::ModelRequest { .. }) => continue,
         }
     }
 }
