@@ -7,10 +7,10 @@ use crate::context::{
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
+use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_block, NoticeAssemblyInput,
 };
-use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };

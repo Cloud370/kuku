@@ -35,9 +35,7 @@ fn handle_use_skill(
     };
 
     let skill_dir = def.source_path.as_deref().ok_or_else(|| {
-        crate::error::Error::InvalidArgument(format!(
-            "skill '{skill_name}' has no source_path"
-        ))
+        crate::error::Error::InvalidArgument(format!("skill '{skill_name}' has no source_path"))
     })?;
 
     let skill_md_path = std::path::Path::new(skill_dir).join("SKILL.md");

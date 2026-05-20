@@ -1,7 +1,13 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    ContextDrift { entries: Vec<ContextDriftEntry> },
-    SkillChanged { updated: Vec<String>, added: Vec<String>, removed: Vec<String> },
+    ContextDrift {
+        entries: Vec<ContextDriftEntry>,
+    },
+    SkillChanged {
+        updated: Vec<String>,
+        added: Vec<String>,
+        removed: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

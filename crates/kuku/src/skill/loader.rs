@@ -28,11 +28,7 @@ pub(crate) fn load_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<Skill
     Ok(defs)
 }
 
-fn parse_skill(
-    content: &str,
-    skill_dir: &Path,
-    source: &SkillSource,
-) -> Result<SkillDefinition> {
+fn parse_skill(content: &str, skill_dir: &Path, source: &SkillSource) -> Result<SkillDefinition> {
     let (frontmatter, body) = split_yaml_frontmatter(content);
     let mapping = frontmatter.ok_or_else(|| {
         Error::InvalidArgument(format!(
@@ -132,10 +128,7 @@ fn is_valid_skill_name(name: &str) -> bool {
     true
 }
 
-fn collect_unknown_metadata(
-    value: &serde_yaml::Value,
-    known_keys: &[&str],
-) -> serde_json::Value {
+fn collect_unknown_metadata(value: &serde_yaml::Value, known_keys: &[&str]) -> serde_json::Value {
     let serde_yaml::Value::Mapping(ref map) = *value else {
         return serde_json::Value::Null;
     };
@@ -269,11 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("bad");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: bad\n---\n\nBody.\n",
-        )
-        .unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: bad\n---\n\nBody.\n").unwrap();
 
         let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
         assert!(defs.is_empty(), "should skip skill with empty description");

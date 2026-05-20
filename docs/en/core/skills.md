@@ -1,6 +1,6 @@
 # Skills
 
-<!-- status: design -->
+<!-- status: implemented -->
 
 A skill is a packaged capability (instructions, scripts, references) that extends the current session. Skills follow the [Agent Skills specification](https://agentskills.io/specification).
 
@@ -15,8 +15,7 @@ A skill is a packaged capability (instructions, scripts, references) that extend
 
 A skill adds knowledge. An agent adds an executor.
 
-## Directory structure (planned)
-
+## Directory structure 
 ```text
 .kuku/skills/
 ├── tdd/
@@ -69,8 +68,7 @@ Run the test suite: `scripts/run-tests.sh`
 | `model` | string | Override model tier for this skill |
 | `metadata` | map | Arbitrary key-value pairs |
 
-## Progressive disclosure (planned)
-
+## Progressive disclosure 
 Three-stage loading to minimize context usage:
 
 | Stage | Content | When loaded |
@@ -81,8 +79,7 @@ Three-stage loading to minimize context usage:
 
 The model sees the catalog at startup. It calls `use_skill` to load full instructions. It uses existing tools (`read_file`, `run_command`) to access resources.
 
-## SkillRegistry (planned)
-
+## SkillRegistry 
 `SkillRegistry` loads skill definitions from multiple sources. Same pattern as `SubagentRegistry`.
 
 ```rust
@@ -102,8 +99,7 @@ Catalog is injected into `runtime_context`:
 </kuku_skills>
 ```
 
-## use_skill tool (planned)
-
+## use_skill tool 
 A built-in tool that loads a skill's full instructions into the current session.
 
 ```json
@@ -138,8 +134,7 @@ Skills use relative paths. The SDK injects the skill's absolute base directory w
 
 The model resolves relative paths against this base directory. No template variables.
 
-## Host integration (planned)
-
+## Host integration 
 Hosts can trigger skills directly via slash commands:
 
 ```text
@@ -156,8 +151,7 @@ The host owns command parsing and UI. The SDK owns skill loading and context inj
 | server | `skills` field in `POST /runs` body |
 | tauri | Slash command UI |
 
-## Relationship to extension system (planned)
-
+## Relationship to extension system 
 Skills are native to the SDK because they are simple (load .md files, inject context). The future extension/package system can bundle skills alongside MCP servers, custom tools, and hooks. The skill format defined here is a subset of the future package format.
 
 ```text

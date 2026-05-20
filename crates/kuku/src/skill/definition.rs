@@ -127,7 +127,10 @@ mod tests {
         assert_eq!(SkillSource::KukuUser.as_str(), "kuku:user");
         assert_eq!(SkillSource::KukuProject.as_str(), "kuku:project");
         assert_eq!(SkillSource::ClaudeCodeUser.as_str(), "claude_code:user");
-        assert_eq!(SkillSource::ClaudeCodeProject.as_str(), "claude_code:project");
+        assert_eq!(
+            SkillSource::ClaudeCodeProject.as_str(),
+            "claude_code:project"
+        );
         assert_eq!(SkillSource::OpenCodeUser.as_str(), "opencode:user");
         assert_eq!(SkillSource::OpenCodeProject.as_str(), "opencode:project");
     }
