@@ -10,7 +10,7 @@
 ## Always
 
 - `MUST` One responsibility per module. If the description needs an "and," split it.
-- `MUST` No file over 800 lines (excluding `#[cfg(test)] mod tests`). The split signal is responsibility, not line count.
+- `MUST` No file over 1000 lines (excluding `#[cfg(test)] mod tests`). The split signal is responsibility, not line count.
 - `MUST` Functions do one thing, 10–60 lines.
 - `MUST` No over-defensive guards. Only protect: core invariants, system boundaries, real user experience. Do not validate for arbitrary user mistakes or imaginary scenarios.
 - `MUST` No comments by default. Well-named identifiers explain WHAT. Add a comment only when the WHY is non-obvious.

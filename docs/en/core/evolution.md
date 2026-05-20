@@ -4,58 +4,6 @@
 
 Planned changes to the SDK public API. Each change is independent and can be implemented in any order.
 
-## InteractionRequest (planned)
-
-Replaces `PermissionRequested` in `UiEvent`. A single mechanism for all host-agent interactions. Until this is implemented, the current API uses `PermissionRequested` and `run.decide()`.
-
-### Current
-
-```rust
-enum UiEvent {
-    PermissionRequested { request: PermissionRequest },
-    // ...
-}
-run.decide(request_id, PermissionChoice);
-```
-
-### Planned
-
-```rust
-enum UiEvent {
-    InteractionRequest { id: String, kind: InteractionKind },
-    // PermissionRequested removed
-}
-
-enum InteractionKind {
-    Permission { tool: String, args: String, risk: String },
-    Ask { question: String, options: Vec<String> },
-    Confirm { message: String },
-}
-
-enum InteractionResponse {
-    Permission(PermissionChoice),
-    Text(String),
-    Confirm(bool),
-    Cancel,
-}
-
-run.respond(id, InteractionResponse);
-run.decide(id, choice);  // preserved as sugar for respond()
-```
-
-Host handles all interaction types through one code path:
-
-```rust
-match event {
-    UiEvent::InteractionRequest { id, kind } => match kind {
-        InteractionKind::Permission { .. } => show_permission_dialog(id),
-        InteractionKind::Ask { .. } => show_ask_dialog(id),
-        InteractionKind::Confirm { .. } => show_confirm_dialog(id),
-    },
-    _ => {}
-}
-```
-
 ## New UiEvent variants (planned)
 
 Additions to the `UiEvent` enum:
@@ -72,7 +20,7 @@ enum UiEvent {
     ThinkingDelta { text: String },
     ToolCall { tool_call_id: String, tool: String, summary: String },
     ToolResult { tool_call_id: String, status: String, summary: String, structured: Option<Value> },
-    InteractionRequest { id: String, kind: InteractionKind },
+    PermissionRequested { request: PermissionRequest },
     TurnStart,
     Error { code: String, message: String },
     ModelRequest { model: String, provider: String },
@@ -97,7 +45,7 @@ Wire events:
 | `thinking` | `ThinkingDelta` | `{ "content": "..." }` |
 | `tool_start` | `ToolCall` | `{ "id", "name", "summary" }` |
 | `tool_end` | `ToolResult` | `{ "id", "name", "status", "summary" }` |
-| `interaction` | `InteractionRequest` | `{ "id", "kind", "payload" }` |
+| `permission` | `PermissionRequested` | `{ "id", "tool", "risk", "summary" }` |
 | `model_request` | `ModelRequest` | `{ "model", "provider" }` |
 | `error` | `Error` | `{ "code", "message" }` |
 | `done` | `Done` | `{ "usage" }` |
@@ -159,7 +107,7 @@ The extension system is SDK core infrastructure. Skills are native to the SDK. M
 | Phase | What | Layer |
 |-------|------|-------|
 | 1 | Skills + SkillRegistry | SDK |
-| 2 | InteractionRequest + new UiEvent variants | SDK |
+| 2 | New UiEvent variants | SDK |
 | 3 | Wire format (`to_wire()`) | SDK |
 | 4 | `apps/server` (HTTP API, NDJSON) | Host |
 | 5 | `apps/web` (frontend SPA) | Host |

@@ -22,7 +22,7 @@ cargo fmt --all                                        # format before commit
 ## Code conventions
 
 - `MUST` / `PREFER` rules in [code-style.md](docs/en/contributing/code-style.md) are the contract.
-- No file over 800 lines. Enums over strings. No wildcard imports. No comments by default.
+- No file over 1000 lines. Enums over strings. No wildcard imports. No comments by default.
 - Module dependencies follow [modules.md](docs/en/contributing/modules.md).
 
 ## Editing tips
