@@ -538,23 +538,25 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     };
     let prelude_snapshot = assembly.snapshot_prelude();
 
-    // Inject runtime_context and skill_body into the last user message
+    // Inject runtime_context and skill_body into the last user message that has text blocks
     if let Some(ref runtime_context) = assembly.runtime_context {
-        if let Some(last_msg) = assembly.history.last_mut() {
-            if last_msg.role == crate::context::Role::User {
-                let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
-                new_blocks.push(crate::context::MessageBlock::Text(runtime_context.clone()));
-                if let Some(ref sb) = pending.skill_body {
-                    new_blocks.push(crate::context::MessageBlock::Text(sb.clone()));
-                }
-                // Preserve existing text blocks (user input + anything else)
-                for block in &last_msg.blocks {
-                    if matches!(block, crate::context::MessageBlock::Text(_)) {
-                        new_blocks.push(block.clone());
-                    }
-                }
-                last_msg.blocks = new_blocks;
+        if let Some(user_msg) = assembly.history.iter_mut().rev().find(|msg| {
+            msg.role == crate::context::Role::User
+                && msg
+                    .blocks
+                    .iter()
+                    .any(|b| matches!(b, crate::context::MessageBlock::Text(_)))
+        }) {
+            let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
+            new_blocks.push(crate::context::MessageBlock::Text(runtime_context.clone()));
+            if let Some(ref sb) = pending.skill_body {
+                new_blocks.push(crate::context::MessageBlock::Text(sb.clone()));
             }
+            // Preserve all existing blocks (text + tool results)
+            for block in &user_msg.blocks {
+                new_blocks.push(block.clone());
+            }
+            user_msg.blocks = new_blocks;
         }
     }
 
