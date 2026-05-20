@@ -28,6 +28,7 @@ pub struct Query {
     pub(super) workspace_path: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
+    pub(super) disable_skills: bool,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
@@ -144,6 +145,8 @@ pub(super) struct PendingRun {
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
+    pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
+    pub(super) skill_content_hash: Option<String>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
@@ -236,6 +239,7 @@ impl Query {
             workspace_path: None,
             prompts_dir: None,
             disable_agents: false,
+            disable_skills: false,
             subagent_registry: None,
             tool_registry_override: None,
         }
@@ -250,6 +254,12 @@ impl Query {
     /// Disable the agent tool (subagent delegation).
     pub fn no_agents(mut self) -> Self {
         self.disable_agents = true;
+        self
+    }
+
+    /// Disable the use_skill tool.
+    pub fn no_skills(mut self) -> Self {
+        self.disable_skills = true;
         self
     }
 

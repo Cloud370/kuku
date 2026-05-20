@@ -79,6 +79,26 @@ impl Query {
         let prompts_dir = self.prompts_dir.take();
         let subagent_registry = self.subagent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
+
+        let skill_registry = if self.disable_skills {
+            (None, None)
+        } else {
+            let builder = crate::skill::registry::SkillRegistry::builder()
+                .load_claude_user_skills()
+                .and_then(|b| b.load_claude_project_skills(&workspace))
+                .and_then(|b| b.load_opencode_user_skills())
+                .and_then(|b| b.load_opencode_project_skills(&workspace))
+                .and_then(|b| b.load_kuku_user_skills())
+                .and_then(|b| b.load_kuku_project_skills(&workspace));
+            match builder {
+                Ok(b) => {
+                    let reg = b.build();
+                    let hash = reg.hash().to_string();
+                    (Some(reg), Some(hash))
+                }
+                Err(_) => (None, None),
+            }
+        };
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
         crate::session::acquire_lock(&lock_path)?;
@@ -101,6 +121,8 @@ impl Query {
                 config,
                 prompts_dir,
                 subagent_registry,
+                skill_registry: skill_registry.0,
+                skill_content_hash: skill_registry.1,
                 child_session_count: 0,
                 tool_registry_override,
                 cancel_token: cancel_token.clone(),
