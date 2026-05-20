@@ -77,6 +77,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut previous_input_tokens: u64 = 0;
 
     let mut q = query(&prompt).config_path(config_path);
+    if args.no_skills {
+        q = q.no_skills();
+    }
     if args.no_agents {
         q = q.no_agents();
     } else {
