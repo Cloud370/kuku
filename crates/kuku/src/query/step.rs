@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
-    build_runtime_notices, compute_context_headroom, render_notice_block, NoticeAssemblyInput,
+    build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
@@ -409,6 +409,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     // Build runtime_blocks: agent catalog + notices
     let mut runtime_blocks_parts: Vec<String> = Vec::new();
+    let mut notice_bodies: Vec<String> = Vec::new();
     let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
 
     // Agent catalog
@@ -441,14 +442,17 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 {
                     pending.skill_registry = Some(new_reg);
                     pending.skill_content_hash = Some(new_hash);
-                    runtime_blocks_parts.push(render_notice_block(&Notice {
+                    let notice = Notice {
                         kind: NoticeKind::SkillChanged {
                             updated: changes.updated,
                             added: changes.added,
                             removed: changes.removed,
                         },
                         severity: NoticeSeverity::Info,
-                    }));
+                    };
+                    if let Some(body) = render_notice_body(&notice) {
+                        notice_bodies.push(body);
+                    }
                 } else {
                     pending.skill_content_hash = Some(new_hash);
                 }
@@ -470,15 +474,27 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             context_budget_tier: context_headroom.tier,
         });
         for notice in &notices {
-            runtime_blocks_parts.push(render_notice_block(notice));
+            if let Some(body) = render_notice_body(notice) {
+                notice_bodies.push(body);
+            }
         }
         notice_snapshots = notices
             .iter()
-            .map(|n| crate::event::types::ContextMessage {
-                role: "user".to_string(),
-                content: render_notice_block(n),
+            .filter_map(|n| {
+                render_notice_body(n).map(|content| crate::event::types::ContextMessage {
+                    role: "user".to_string(),
+                    content,
+                })
             })
             .collect();
+    }
+
+    // Merge all notice bodies into a single <kuku_system_notice>
+    if !notice_bodies.is_empty() {
+        let merged = notice_bodies.join("\n\n");
+        runtime_blocks_parts.push(format!(
+            "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
+        ));
     }
 
     let runtime_blocks = if runtime_blocks_parts.is_empty() {
@@ -522,23 +538,22 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     };
     let prelude_snapshot = assembly.snapshot_prelude();
 
-    // Inject runtime_context into the last user message (before human input)
+    // Inject runtime_context and skill_body into the last user message
     if let Some(ref runtime_context) = assembly.runtime_context {
         if let Some(last_msg) = assembly.history.last_mut() {
             if last_msg.role == crate::context::Role::User {
-                let human_text: String = last_msg
-                    .blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        crate::context::MessageBlock::Text(t) => Some(t.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                last_msg.blocks = vec![
-                    crate::context::MessageBlock::Text(runtime_context.clone()),
-                    crate::context::MessageBlock::Text(human_text),
-                ];
+                let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
+                new_blocks.push(crate::context::MessageBlock::Text(runtime_context.clone()));
+                if let Some(ref sb) = pending.skill_body {
+                    new_blocks.push(crate::context::MessageBlock::Text(sb.clone()));
+                }
+                // Preserve existing text blocks (user input + anything else)
+                for block in &last_msg.blocks {
+                    if matches!(block, crate::context::MessageBlock::Text(_)) {
+                        new_blocks.push(block.clone());
+                    }
+                }
+                last_msg.blocks = new_blocks;
             }
         }
     }

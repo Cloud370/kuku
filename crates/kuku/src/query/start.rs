@@ -77,6 +77,7 @@ impl Query {
         })?;
 
         let prompts_dir = self.prompts_dir.take();
+        let skill_body = self.skill_body.take();
         let subagent_registry = self.subagent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
@@ -121,6 +122,7 @@ impl Query {
                 config,
                 prompts_dir,
                 subagent_registry,
+                skill_body,
                 skill_registry: skill_registry.0,
                 skill_content_hash: skill_registry.1,
                 child_session_count: 0,

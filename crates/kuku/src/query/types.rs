@@ -29,6 +29,7 @@ pub struct Query {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
+    pub(super) skill_body: Option<String>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
@@ -147,6 +148,7 @@ pub(super) struct PendingRun {
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) skill_content_hash: Option<String>,
+    pub(super) skill_body: Option<String>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
@@ -240,6 +242,7 @@ impl Query {
             prompts_dir: None,
             disable_agents: false,
             disable_skills: false,
+            skill_body: None,
             subagent_registry: None,
             tool_registry_override: None,
         }
@@ -260,6 +263,12 @@ impl Query {
     /// Disable the use_skill tool.
     pub fn no_skills(mut self) -> Self {
         self.disable_skills = true;
+        self
+    }
+
+    /// Attach a skill body to be injected as a separate block before user input.
+    pub fn skill_body(mut self, body: String) -> Self {
+        self.skill_body = Some(body);
         self
     }
 

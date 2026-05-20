@@ -9,32 +9,47 @@ pub fn render_agent_catalog(registry: &SubagentRegistry) -> Option<String> {
 
     let mut entries = String::new();
     for def in registry.definitions() {
+        let path = def
+            .source_path
+            .as_deref()
+            .unwrap_or(match def.source.as_str() {
+                "builtin" => "(builtin)",
+                s => s,
+            });
         entries.push_str(&format!(
-            "  <agent name=\"{name}\" source=\"{source}\" tier=\"{tier}\" tools=\"{tools}\" max_turns=\"{max_turns}\" hash=\"{hash}\">\n    <description>{description}</description>\n  </agent>\n",
-            name = def.name,
-            source = def.source.as_str(),
-            tier = def.tier,
-            tools = def.tool_profile.as_str(),
-            max_turns = def.max_turns,
-            hash = def.hash,
-            description = def.description,
+            "- {} — {} ({}, {}, {} turns)\n",
+            def.name,
+            def.description,
+            path,
+            def.tool_profile.as_str(),
+            def.max_turns,
         ));
     }
 
     Some(format!(
-        "<kuku_agent_catalog version=\"{version}\">\n{entries}</kuku_agent_catalog>",
-        version = registry.hash(),
+        "<kuku_agent_catalog>\nAvailable agents:\n{entries}</kuku_agent_catalog>",
         entries = entries,
     ))
 }
 
 /// Render the full agent definition block for a child session's user message.
 pub fn render_agent_definition_block(def: &super::definition::SubagentDefinition) -> String {
+    let path = def
+        .source_path
+        .as_deref()
+        .unwrap_or_else(|| match def.source.as_str() {
+            "builtin" => "(builtin)",
+            "claude_code:user" => "~/.claude/agents/",
+            "claude_code:project" => ".claude/agents/",
+            "kuku:user" => "~/.kuku/agents/",
+            "kuku:project" => ".kuku/agents/",
+            "opencode:user" => "~/.config/opencode/agents/",
+            "opencode:project" => ".opencode/agents/",
+            s => s,
+        });
     format!(
-        "<kuku_agent_definition name=\"{name}\" source=\"{source}\" hash=\"{hash}\">\n  <kuku_agent_instructions>\n{instructions}\n  </kuku_agent_instructions>\n</kuku_agent_definition>",
-        name = def.name,
-        source = def.source.as_str(),
-        hash = def.hash,
+        "<!-- loaded: {path} -->\n\n{instructions}",
+        path = path,
         instructions = def.instructions,
     )
 }
@@ -49,14 +64,15 @@ mod tests {
         let registry = SubagentRegistry::builder().builtins().build();
         let catalog = render_agent_catalog(&registry).expect("catalog should render");
         assert!(catalog.contains("<kuku_agent_catalog"));
-        assert!(catalog.contains("name=\"review\""));
-        assert!(catalog.contains("name=\"explore\""));
-        assert!(catalog.contains("source=\"builtin\""));
-        assert!(catalog.contains("tools=\"read\""));
+        assert!(catalog.contains("Available agents:"));
+        assert!(catalog.contains("- review —"));
+        assert!(catalog.contains("- explore —"));
+        assert!(catalog.contains("(builtin"));
         assert!(
             !catalog.contains("instructions"),
             "catalog must NOT include full instructions"
         );
+        assert!(!catalog.contains("<agent "), "no XML agent tags");
     }
 
     #[test]
@@ -66,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn definition_block_includes_full_instructions() {
+    fn definition_block_uses_loaded_comment_format() {
         let review = SubagentRegistry::builder()
             .builtins()
             .build()
@@ -74,10 +90,9 @@ mod tests {
             .cloned()
             .unwrap();
         let block = render_agent_definition_block(&review);
-        assert!(block.contains("<kuku_agent_definition"));
-        assert!(block.contains("<kuku_agent_instructions>"));
-        assert!(block.contains("code and document reviewer"));
+        assert!(block.contains("<!-- loaded: "));
         assert!(block.contains(review.instructions.as_str()));
-        assert!(!block.contains("kuku_agent_output_contract"));
+        assert!(!block.contains("kuku_agent_definition"));
+        assert!(!block.contains("kuku_agent_instructions"));
     }
 }

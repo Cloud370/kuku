@@ -35,6 +35,37 @@ fn close_thinking(
     }
 }
 
+fn build_skill_body(
+    skill_name: &str,
+    registry: &kuku::skill::registry::SkillRegistry,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Some(def) = registry.get(skill_name) else {
+        return Ok(None);
+    };
+    let dir = def
+        .source_path
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "{}/{}",
+                match def.source {
+                    kuku::skill::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills",
+                    kuku::skill::definition::SkillSource::ClaudeCodeProject => ".claude/skills",
+                    kuku::skill::definition::SkillSource::OpenCodeUser =>
+                        "~/.config/opencode/skills",
+                    kuku::skill::definition::SkillSource::OpenCodeProject => ".opencode/skills",
+                    kuku::skill::definition::SkillSource::KukuUser => "~/.kuku/skills",
+                    kuku::skill::definition::SkillSource::KukuProject => ".kuku/skills",
+                },
+                skill_name,
+            )
+        });
+    let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
+    let (_, body) = kuku::subagent::compat::claude_code::split_yaml_frontmatter(&content);
+    Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))
+}
+
 /// Non-interactive run: `kuku run "prompt" [flags]`
 pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let prompt = args.prompt.join(" ");
@@ -76,7 +107,51 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut previous_input_tokens: u64 = 0;
 
-    let mut q = query(&prompt).config_path(config_path);
+    // Parse slash command (unless skill_body already provided by caller)
+    let (user_prompt, skill_body) = if let Some(body) = args.skill_body {
+        (prompt, Some(body))
+    } else if prompt.starts_with('/') && !args.no_skills {
+        let workspace = kuku::session::current_workspace()?;
+        let registry = kuku::skill::registry::SkillRegistry::builder()
+            .load_claude_user_skills()
+            .and_then(|b| b.load_claude_project_skills(&workspace))
+            .and_then(|b| b.load_opencode_user_skills())
+            .and_then(|b| b.load_opencode_project_skills(&workspace))
+            .and_then(|b| b.load_kuku_user_skills())
+            .and_then(|b| b.load_kuku_project_skills(&workspace))
+            .map(|b| b.build())
+            .ok();
+        match registry {
+            Some(ref reg) => {
+                let (skill_name, rest) = parse_slash_command(&prompt);
+                match build_skill_body(&skill_name, reg) {
+                    Ok(Some(body)) => (
+                        if rest.is_empty() { String::new() } else { rest },
+                        Some(body),
+                    ),
+                    Ok(None) => {
+                        eprintln!("Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills.");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Error loading skill '{skill_name}': {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => (prompt, None),
+        }
+    } else if prompt.starts_with('/') && args.no_skills {
+        eprintln!("warning: slash command used with --no-skills; skill injection skipped");
+        (prompt, None)
+    } else {
+        (prompt, None)
+    };
+
+    let mut q = query(&user_prompt).config_path(config_path);
+    if let Some(body) = skill_body {
+        q = q.skill_body(body);
+    }
     if args.no_skills {
         q = q.no_skills();
     }
@@ -396,7 +471,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         if io::stdin().read_line(&mut input)? == 0 {
             break;
         }
-        let mut prompt = input.trim().to_string();
+        let prompt = input.trim().to_string();
         if prompt.is_empty() {
             continue;
         }
@@ -404,29 +479,34 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             break;
         }
 
-        if prompt.starts_with('/') {
+        let (user_prompt, skill_body) = if prompt.starts_with('/') {
             if let Some(ref registry) = skill_registry {
                 let (skill_name, rest) = parse_slash_command(&prompt);
-                if let Some(skill) = registry.get(&skill_name) {
-                    let skill_dir = skill.source_path.as_deref().unwrap_or_default();
-                    if let Ok(skill_md) =
-                        std::fs::read_to_string(std::path::Path::new(skill_dir).join("SKILL.md"))
-                    {
-                        let (_, body) =
-                            kuku::subagent::compat::claude_code::split_yaml_frontmatter(&skill_md);
-                        prompt = format!("<!-- skill_dir: {skill_dir} -->\n\n{body}\n\n{rest}");
+                match build_skill_body(&skill_name, registry) {
+                    Ok(Some(body)) => (
+                        if rest.is_empty() { String::new() } else { rest },
+                        Some(body),
+                    ),
+                    Ok(None) => {
+                        eprintln!(
+                            "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
+                        );
+                        continue;
                     }
-                } else {
-                    eprintln!(
-                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
-                    );
-                    continue;
+                    Err(e) => {
+                        eprintln!("Error loading skill '{skill_name}': {e}");
+                        continue;
+                    }
                 }
+            } else {
+                (prompt, None)
             }
-        }
+        } else {
+            (prompt, None)
+        };
 
         let args = RunArgs {
-            prompt: vec![prompt],
+            prompt: vec![user_prompt],
             auto_yes: false,
             model: None,
             session: None,
@@ -439,6 +519,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             prompts_dir: None,
             no_agents: false,
             no_skills: false,
+            skill_body,
         };
         if let Err(e) = run(args).await {
             eprintln!("error: {e}");

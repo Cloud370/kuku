@@ -14,6 +14,8 @@ fn catalog_does_not_leak_full_instructions() {
         !catalog.contains("code explorer"),
         "catalog leaks explore instructions"
     );
-    assert!(catalog.contains("name=\"review\""));
-    assert!(catalog.contains("name=\"explore\""));
+    assert!(catalog.contains("<kuku_agent_catalog>"));
+    assert!(catalog.contains("- review —"));
+    assert!(catalog.contains("- explore —"));
+    assert!(catalog.contains("Available agents:"));
 }

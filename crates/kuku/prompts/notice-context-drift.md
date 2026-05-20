@@ -1,4 +1,3 @@
-<kuku_system_notice>
 Previously loaded file-backed context has changed since the last acknowledged snapshot.
 
 Only unacknowledged drift is reported here.
@@ -12,4 +11,3 @@ If the task depends on the details of a changed file that is not fully included 
 
 Changed tracked files:
 {{entries}}
-</kuku_system_notice>

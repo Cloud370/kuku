@@ -10,7 +10,11 @@ const NOTICE_SKILL_CHANGED_TEMPLATE: &str = include_str!(concat!(
     "/prompts/notice-skill-changed.md"
 ));
 
-pub(crate) fn render_notice_block(notice: &Notice) -> String {
+const NOTICE_IGNORE_HINT: &str =
+    "\nIf not relevant to your current task, ignore. Do not mention to the user.\n";
+
+/// Render the inner body of a notice (no outer `<kuku_system_notice>` wrapper).
+pub(crate) fn render_notice_body(notice: &Notice) -> Option<String> {
     match &notice.kind {
         NoticeKind::ContextDrift { entries } => {
             let rendered_entries: String = entries
@@ -18,24 +22,36 @@ pub(crate) fn render_notice_block(notice: &Notice) -> String {
                 .map(render_context_drift_entry)
                 .collect::<Vec<_>>()
                 .join("\n");
-            NOTICE_CONTEXT_DRIFT_TEMPLATE.replace("{{entries}}", &rendered_entries)
+            let body = NOTICE_CONTEXT_DRIFT_TEMPLATE.replace("{{entries}}", &rendered_entries);
+            Some(format!("{body}{NOTICE_IGNORE_HINT}"))
         }
         NoticeKind::SkillChanged {
             updated,
             added,
             removed,
         } => {
-            let mut parts = Vec::new();
-            for name in added {
-                parts.push(format!("{name} (added)"));
+            let mut lines = Vec::new();
+            for entry in added {
+                lines.push(format!(
+                    "- {} (added) — {} ({})",
+                    entry.name, entry.description, entry.path
+                ));
             }
-            for name in updated {
-                parts.push(format!("{name} (updated)"));
+            for entry in removed {
+                lines.push(format!("- {} (removed)", entry));
             }
-            for name in removed {
-                parts.push(format!("{name} (removed)"));
+            for entry in updated {
+                lines.push(format!(
+                    "- {} (updated) — {} ({})",
+                    entry.name, entry.description, entry.path
+                ));
             }
-            NOTICE_SKILL_CHANGED_TEMPLATE.replace("{{summary}}", &parts.join(", "))
+            if lines.is_empty() {
+                return None;
+            }
+            let body =
+                NOTICE_SKILL_CHANGED_TEMPLATE.replace("{{skill_changes}}", &lines.join("\n"));
+            Some(format!("{body}{NOTICE_IGNORE_HINT}"))
         }
     }
 }
@@ -45,16 +61,18 @@ fn render_context_drift_entry(entry: &super::types::ContextDriftEntry) -> String
         ContextDriftStatus::Updated => "updated",
         ContextDriftStatus::Deleted => "deleted",
     };
-    format!("- {} ({status})", entry.path)
+    format!("- {} ({})", entry.path, status)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notice::types::{ContextDriftEntry, ContextDriftStatus, NoticeSeverity};
+    use crate::notice::types::{
+        ContextDriftEntry, ContextDriftStatus, NoticeSeverity, SkillChangeEntry,
+    };
 
     #[test]
-    fn renders_summary_only_context_drift_notice() {
+    fn renders_context_drift_body() {
         let notice = Notice {
             kind: NoticeKind::ContextDrift {
                 entries: vec![
@@ -71,28 +89,65 @@ mod tests {
             severity: NoticeSeverity::Info,
         };
 
-        let rendered = render_notice_block(&notice);
+        let rendered = render_notice_body(&notice).expect("should render");
         assert!(rendered.contains("Only unacknowledged drift is reported here."));
         assert!(rendered.contains("successful full-file reads or writes"));
         assert!(rendered.contains("- AGENTS.md (updated)"));
         assert!(rendered.contains("- notes.md (deleted)"));
+        assert!(rendered.contains("If not relevant"));
         assert!(!rendered.contains("line 17"));
         assert!(!rendered.contains("current preview:"));
+        assert!(!rendered.contains("<kuku_system_notice>"));
     }
 
     #[test]
-    fn renders_skill_changed_notice() {
+    fn renders_skill_changed_body() {
         let notice = Notice {
             kind: NoticeKind::SkillChanged {
-                updated: vec!["tdd".to_string()],
-                added: vec!["review".to_string()],
+                updated: vec![],
+                added: vec![SkillChangeEntry {
+                    name: "review".to_string(),
+                    description: "Code review".to_string(),
+                    path: "~/.claude/skills/review".to_string(),
+                }],
                 removed: vec![],
             },
             severity: NoticeSeverity::Info,
         };
-        let rendered = render_notice_block(&notice);
-        assert!(rendered.contains("tdd (updated)"));
-        assert!(rendered.contains("review (added)"));
-        assert!(!rendered.contains("removed"));
+        let rendered = render_notice_body(&notice).expect("should render");
+        assert!(rendered.contains("- review (added) — Code review (~/.claude/skills/review)"));
+        assert!(rendered.contains("If not relevant"));
+        assert!(!rendered.contains("<kuku_system_notice>"));
+    }
+
+    #[test]
+    fn renders_removed_skill_without_desc_or_path() {
+        let notice = Notice {
+            kind: NoticeKind::SkillChanged {
+                updated: vec![],
+                added: vec![],
+                removed: vec!["old-skill".to_string()],
+            },
+            severity: NoticeSeverity::Info,
+        };
+        let rendered = render_notice_body(&notice).expect("should render");
+        assert!(rendered.contains("- old-skill (removed)"));
+        assert!(
+            !rendered.contains(" — "),
+            "removed should have no desc/path dash"
+        );
+    }
+
+    #[test]
+    fn skill_changed_returns_none_when_all_empty() {
+        let notice = Notice {
+            kind: NoticeKind::SkillChanged {
+                updated: vec![],
+                added: vec![],
+                removed: vec![],
+            },
+            severity: NoticeSeverity::Info,
+        };
+        assert!(render_notice_body(&notice).is_none());
     }
 }

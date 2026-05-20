@@ -145,31 +145,53 @@ impl SkillRegistryBuilder {
 }
 
 pub struct SkillChanges {
-    pub added: Vec<String>,
-    pub updated: Vec<String>,
+    pub added: Vec<crate::notice::types::SkillChangeEntry>,
+    pub updated: Vec<crate::notice::types::SkillChangeEntry>,
     pub removed: Vec<String>,
 }
 
 pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<SkillChanges> {
+    use crate::notice::types::SkillChangeEntry;
+
     let old_names: std::collections::HashSet<&str> =
         old.names().iter().map(|s| s.as_str()).collect();
     let new_names: std::collections::HashSet<&str> =
         new.names().iter().map(|s| s.as_str()).collect();
-    let added: Vec<String> = new_names
+
+    let added: Vec<SkillChangeEntry> = new_names
         .difference(&old_names)
-        .map(|s| s.to_string())
+        .filter_map(|&name| {
+            new.get(name).map(|def| SkillChangeEntry {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                path: def
+                    .source_path
+                    .clone()
+                    .unwrap_or_else(|| default_path_for_source(&def.source)),
+            })
+        })
         .collect();
     let removed: Vec<String> = old_names
         .difference(&new_names)
         .map(|s| s.to_string())
         .collect();
-    let updated: Vec<String> = new_names
+    let updated: Vec<SkillChangeEntry> = new_names
         .intersection(&old_names)
         .filter(|name| {
             new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
         })
-        .map(|s| s.to_string())
+        .filter_map(|&name| {
+            new.get(name).map(|def| SkillChangeEntry {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                path: def
+                    .source_path
+                    .clone()
+                    .unwrap_or_else(|| default_path_for_source(&def.source)),
+            })
+        })
         .collect();
+
     if added.is_empty() && updated.is_empty() && removed.is_empty() {
         None
     } else {
@@ -178,6 +200,17 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
             updated,
             removed,
         })
+    }
+}
+
+fn default_path_for_source(source: &super::definition::SkillSource) -> String {
+    match source {
+        super::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills/".to_string(),
+        super::definition::SkillSource::ClaudeCodeProject => ".claude/skills/".to_string(),
+        super::definition::SkillSource::OpenCodeUser => "~/.config/opencode/skills/".to_string(),
+        super::definition::SkillSource::OpenCodeProject => ".opencode/skills/".to_string(),
+        super::definition::SkillSource::KukuUser => "~/.kuku/skills/".to_string(),
+        super::definition::SkillSource::KukuProject => ".kuku/skills/".to_string(),
     }
 }
 
@@ -310,8 +343,14 @@ mod tests {
             .unwrap()
             .build();
         let changes = detect_skill_changes(&old, &new).unwrap();
-        assert_eq!(changes.added, vec!["fresh"]);
-        assert_eq!(changes.removed, vec!["tdd"]);
-        assert_eq!(changes.updated, vec!["shared"]);
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.added[0].name, "fresh");
+        assert_eq!(changes.added[0].description, "new");
+        assert!(changes.added[0].path.ends_with(".kuku/skills/fresh"));
+        assert_eq!(changes.removed, vec!["tdd".to_string()]);
+        assert_eq!(changes.updated.len(), 1);
+        assert_eq!(changes.updated[0].name, "shared");
+        assert_eq!(changes.updated[0].description, "v2");
+        assert!(changes.updated[0].path.ends_with(".kuku/skills/shared"));
     }
 }

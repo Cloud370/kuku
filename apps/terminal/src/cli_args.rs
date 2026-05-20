@@ -111,6 +111,10 @@ pub struct RunArgs {
     /// Disable the use_skill tool
     #[arg(long = "no-skills")]
     pub no_skills: bool,
+
+    /// Internal: pre-parsed skill body from interactive slash command
+    #[arg(skip)]
+    pub skill_body: Option<String>,
 }
 
 // ── Agents ──

@@ -236,7 +236,7 @@ fn content_hash_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notice::render::render_notice_block;
+    use crate::notice::render::render_notice_body;
 
     fn make_entry(index: usize) -> ContextDriftEntry {
         ContextDriftEntry {
@@ -257,7 +257,7 @@ mod tests {
             kind: NoticeKind::ContextDrift { entries: truncated },
             severity: NoticeSeverity::Info,
         };
-        let rendered = render_notice_block(&notice);
+        let rendered = render_notice_body(&notice).expect("should render");
 
         assert!(rendered.contains("Changed tracked files:"));
         assert!(rendered.contains("file-0.md"));
