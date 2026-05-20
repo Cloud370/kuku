@@ -1,0 +1,58 @@
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
+use axum::Json;
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::AppState;
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    pub after: Option<u64>,
+}
+
+pub async fn events(
+    State(_state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Query(params): Query<EventsQuery>,
+) -> Json<serde_json::Value> {
+    let home = match kuku::session::kuku_home() {
+        Ok(h) => h,
+        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
+    };
+
+    let workspace = match kuku::session::current_workspace() {
+        Ok(w) => w,
+        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing workspace"})),
+    };
+
+    let events_path = match kuku::session::session_events_path(&home, &workspace, &session_id) {
+        Ok(p) => p,
+        Err(_) => return Json(json!({"ok": false, "code": "session_not_found", "message": "session not found"})),
+    };
+
+    if !events_path.exists() {
+        return Json(json!({"ok": false, "code": "session_not_found", "message": "session not found"}));
+    }
+
+    let events = match kuku::event::EventStore::replay(&events_path) {
+        Ok(e) => e,
+        Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
+    };
+
+    let after = params.after.unwrap_or(0);
+    let filtered: Vec<_> = events
+        .iter()
+        .rev()
+        .filter(|e| e.id > after)
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "payload": serde_json::to_value(&e.payload).unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Json(json!(filtered))
+}

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::permission::append_project_allow_rule;
@@ -23,6 +24,22 @@ impl Run {
     /// The session ID for this run.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// The workspace directory for this run.
+    pub fn workspace(&self) -> &std::path::Path {
+        match &self.state {
+            RunState::Pending(p) => &p.workspace,
+            RunState::Streaming(s) => &s.pending.workspace,
+            RunState::WaitingForPermission(w) => &w.pending.workspace,
+            RunState::BatchEvents(p, _) => &p.workspace,
+            RunState::Cancelled { .. } | RunState::Done(_) => std::path::Path::new(""),
+        }
+    }
+
+    /// A token that is notified when the run is cancelled.
+    pub fn cancel_token(&self) -> Arc<tokio::sync::Notify> {
+        self.cancel_token.clone()
     }
 
     /// Cancel the current run. Streaming is aborted, pending permissions are denied,
