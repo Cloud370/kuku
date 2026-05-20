@@ -375,29 +375,117 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         std::process::exit(1);
     }
 
-    print!("> ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let prompt = input.trim().to_string();
-    if prompt.is_empty() {
-        return Ok(());
+    let workspace = kuku::session::current_workspace()?;
+    let skill_registry = kuku::skill::registry::SkillRegistry::builder()
+        .load_claude_user_skills()
+        .and_then(|b| b.load_claude_project_skills(&workspace))
+        .and_then(|b| b.load_opencode_user_skills())
+        .and_then(|b| b.load_opencode_project_skills(&workspace))
+        .and_then(|b| b.load_kuku_user_skills())
+        .and_then(|b| b.load_kuku_project_skills(&workspace))
+        .map(|b| b.build())
+        .ok();
+
+    loop {
+        print!("> ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input)? == 0 {
+            break;
+        }
+        let mut prompt = input.trim().to_string();
+        if prompt.is_empty() {
+            continue;
+        }
+        if prompt == "exit" || prompt == "quit" {
+            break;
+        }
+
+        if prompt.starts_with('/') {
+            if let Some(ref registry) = skill_registry {
+                let (skill_name, rest) = parse_slash_command(&prompt);
+                if let Some(skill) = registry.get(&skill_name) {
+                    let skill_dir = skill.source_path.as_deref().unwrap_or_default();
+                    if let Ok(skill_md) = std::fs::read_to_string(
+                        std::path::Path::new(skill_dir).join("SKILL.md"),
+                    ) {
+                        let (_, body) =
+                            kuku::subagent::compat::claude_code::split_yaml_frontmatter(
+                                &skill_md,
+                            );
+                        prompt = format!("<!-- skill_dir: {skill_dir} -->\n\n{body}\n\n{rest}");
+                    }
+                } else {
+                    eprintln!(
+                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
+                    );
+                    continue;
+                }
+            }
+        }
+
+        let args = RunArgs {
+            prompt: vec![prompt],
+            auto_yes: false,
+            model: None,
+            session: None,
+            cont: false,
+            json: false,
+            stream_json: false,
+            show_thinking: false,
+            raw: false,
+            config: config.clone(),
+            prompts_dir: None,
+            no_agents: false,
+            no_skills: false,
+        };
+        if let Err(e) = run(args).await {
+            eprintln!("error: {e}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_slash_command(input: &str) -> (String, String) {
+    let without_slash = input[1..].trim_start();
+    match without_slash.find(char::is_whitespace) {
+        Some(pos) => (
+            without_slash[..pos].to_string(),
+            without_slash[pos..].trim().to_string(),
+        ),
+        None => (without_slash.to_string(), String::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_slash_command;
+
+    #[test]
+    fn slash_command_with_prompt() {
+        let (name, rest) = parse_slash_command("/tdd implement login");
+        assert_eq!(name, "tdd");
+        assert_eq!(rest, "implement login");
     }
 
-    let args = RunArgs {
-        prompt: vec![prompt],
-        auto_yes: false,
-        model: None,
-        session: None,
-        cont: false,
-        json: false,
-        stream_json: false,
-        show_thinking: false,
-        raw: false,
-        config,
-        prompts_dir: None,
-        no_agents: false,
-        no_skills: false,
-    };
-    run(args).await
+    #[test]
+    fn slash_command_without_prompt() {
+        let (name, rest) = parse_slash_command("/review");
+        assert_eq!(name, "review");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn slash_command_with_multiple_words() {
+        let (name, rest) = parse_slash_command("/code-review check auth module");
+        assert_eq!(name, "code-review");
+        assert_eq!(rest, "check auth module");
+    }
+
+    #[test]
+    fn slash_command_trims_leading_whitespace() {
+        let (name, rest) = parse_slash_command("/  tdd implement login");
+        assert_eq!(name, "tdd");
+        assert_eq!(rest, "implement login");
+    }
 }

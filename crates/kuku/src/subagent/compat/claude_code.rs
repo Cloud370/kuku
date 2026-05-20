@@ -108,7 +108,7 @@ fn parse_claude_code_agent(
     Ok(Some(def))
 }
 
-pub(crate) fn split_yaml_frontmatter(content: &str) -> (Option<serde_yaml::Mapping>, &str) {
+pub fn split_yaml_frontmatter(content: &str) -> (Option<serde_yaml::Mapping>, &str) {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return (None, content);
