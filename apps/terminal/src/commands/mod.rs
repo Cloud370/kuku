@@ -8,3 +8,4 @@ pub mod list;
 pub mod prompts;
 pub mod run;
 pub mod show;
+pub mod skills;

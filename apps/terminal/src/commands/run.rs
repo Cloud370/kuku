@@ -397,6 +397,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         config,
         prompts_dir: None,
         no_agents: false,
+        no_skills: false,
     };
     run(args).await
 }

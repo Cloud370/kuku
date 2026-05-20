@@ -30,6 +30,8 @@ pub enum Command {
     Prompts(PromptsArgs),
     /// List or inspect available subagent definitions
     Agents(AgentsArgs),
+    /// List or inspect available skill definitions
+    Skills(SkillsArgs),
 }
 
 // ── Prompts ──
@@ -105,6 +107,10 @@ pub struct RunArgs {
     /// Disable the agent tool (subagent delegation)
     #[arg(long = "no-agents")]
     pub no_agents: bool,
+
+    /// Disable the use_skill tool
+    #[arg(long = "no-skills")]
+    pub no_skills: bool,
 }
 
 // ── Agents ──
@@ -122,6 +128,25 @@ pub enum AgentsSubcommand {
     /// Show full details for a specific subagent
     Show {
         /// Subagent name
+        name: String,
+    },
+}
+
+// ── Skills ──
+
+#[derive(Args)]
+pub struct SkillsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<SkillsSubcommand>,
+}
+
+#[derive(Subcommand)]
+pub enum SkillsSubcommand {
+    /// List all available skill definitions
+    List,
+    /// Show full details for a specific skill
+    Show {
+        /// Skill name
         name: String,
     },
 }
