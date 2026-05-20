@@ -13,6 +13,7 @@ pub mod query;
 pub mod session;
 pub mod skill;
 pub mod subagent;
+pub mod wire;
 pub(crate) mod tool;
 
 pub use error::{Error, Result};
