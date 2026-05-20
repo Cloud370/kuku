@@ -103,7 +103,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `package` | Extension container: manifest, capabilities, resources. Not part of core runtime. |
 | `hook` | Extension point allowing packages to intercept runtime events. |
 | `MCP` | Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. |
-| `skill` | A packaged capability (instructions, tools, prompts) loaded at session start or on demand. Discovered through a catalog, injected into `runtime_context`. |
+| `skill` | A packaged capability (instructions, scripts, references) that extends the current session. Follows the Agent Skills specification. Discovered through a catalog, loaded on demand via `use_skill`. See [skills.md](core/skills.md). |
 | `plugin` | Synonym for `package`. A plugin is a package that may include hooks, skills, tools, or MCP servers. |
 | `host overlay` | Host-specific prompt layer (CLI, TUI, WebUI). Complements but does not redefine the system prompt. |
 
@@ -113,7 +113,13 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 |---------------|------------|
 | `Query` | Typed builder returned by `kuku::query(prompt)`. Configure workspace, tier, config, session, and subagents via chained methods. Call `.run()` or `.start()`. |
 | `Run` | Handle to an active query. Stream `UiEvent` via `.next()`, respond to permissions via `.decide()`, read `.session_id()`. |
-| `UiEvent` | Event streamed from SDK to host: `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `PermissionRequested`, `Done`. Not persisted — `events.jsonl` holds the canonical facts. |
+| `UiEvent` | Event streamed from SDK to host. Current: `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `PermissionRequested`, `Done`. Planned additions: `InteractionRequest` (replaces `PermissionRequested`), `TurnStart`, `Error`, `ModelRequest`. Not persisted — `events.jsonl` holds the canonical facts. |
 | `RunOutput` | Final result from `.run()` or `UiEvent::Done`: `session_id`, `text`, `usage`, `turn`. |
 | `PermissionChoice` | Host's response to a permission request: `Once`, `Session`, `Project`, `Deny`. |
 | `Error` | Typed error enum (`kuku::error::Error`) covering provider failures, invalid arguments, I/O errors, and prompt rendering failures. |
+| `InteractionRequest` | Unified host-agent interaction: replaces `PermissionRequested`. Covers permission, ask, confirm, and future interaction types. Host responds via `run.respond()`. |
+| `wire event` | Client-friendly JSON representation of a `UiEvent`, streamed via NDJSON. Produced by SDK's `to_wire()` function. |
+| `ExternalToolSource` | Trait for external tool providers. Implementations include future MCP client. Tools registered through this trait go through the standard permission gate. |
+| `skill registry` | Loaded set of skill definitions from user and project directories. Metadata injected into `runtime_context` at startup; full content loaded on demand. |
+| `progressive disclosure` | Three-stage skill loading: metadata at startup, instructions on trigger, resources on demand. Minimizes context usage. |
+| `NDJSON streaming` | Newline-delimited JSON over HTTP. Used by `apps/server` to stream run events in real time. No SSE, no WebSocket. |

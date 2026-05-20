@@ -27,4 +27,12 @@ TUI, WebUI — host apps that present SDK facts.
 
 `subagent` is in the SDK but is a tool-backed mechanism — a child `session`, not a separate platform.
 
+## What comes next
+
+Skills are native to the SDK (load .md files, inject context). Everything else that extends the agent — MCP, hooks, custom tools — enters through the extension/package system, not the core.
+
+Host apps are independent binaries. `terminal` exists today. `server` (HTTP API with NDJSON streaming) and `web` (frontend SPA) are planned. `tauri` (desktop) follows. Each host calls the SDK directly; no host embeds another.
+
+Detailed design: [apps.md](apps.md) · [skills.md](skills.md) · [evolution.md](evolution.md).
+
 See [architecture.md](architecture.md) for how the pieces fit together, [agent-loop.md](agent-loop.md) for how turns execute.
