@@ -61,6 +61,23 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     std::fs::create_dir_all(env.workspace.path().join("src")).unwrap();
     std::fs::write(env.workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
 
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains("README.md")
+            .body_contains("src/main.rs");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -85,23 +102,6 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains("README.md")
-            .body_contains("src/main.rs");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
 
     let output = query("find files")
         .provider(Provider::Anthropic)
@@ -109,7 +109,6 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
         .base_url(server.base_url())
         .api_key("test-key")
         .config(test_config())
-        .no_skills()
         .run()
         .await
         .unwrap();
@@ -124,7 +123,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
         EventPayload::ModelRequest {
             ref tools,
             ..
-        } if tools.as_ref().is_some_and(|t| t.count == Some(10))
+        } if tools.as_ref().is_some_and(|t| t.count == Some(9))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string())))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string())))
@@ -255,6 +254,24 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
     std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
     std::fs::write(env.workspace.path().join("docs/tools.md"), "TODO docs\n").unwrap();
 
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains("1\\t# Project")
+            .body_contains("README.md:2: TODO root")
+            .body_contains("docs/tools.md:1: TODO docs");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Read and search complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -279,24 +296,6 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains("1\\t# Project")
-            .body_contains("README.md:2: TODO root")
-            .body_contains("docs/tools.md:1: TODO docs");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Read and search complete."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
 
     let output = query("read and search")
         .provider(Provider::Anthropic)
@@ -304,7 +303,6 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
         .base_url(server.base_url())
         .api_key("test-key")
         .config(test_config())
-        .no_skills()
         .run()
         .await
         .unwrap();
@@ -362,6 +360,22 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
     server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("cargo test");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
             .body_contains(r#""tools""#)
             .body_contains("<kuku_execution_context>")
             .body_contains("<kuku_project_instructions>")
@@ -382,22 +396,6 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#)
-            .body_contains("cargo test");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
 
     let mut run = query("run tests")
         .provider(Provider::Anthropic)
@@ -405,7 +403,6 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
         .base_url(server.base_url())
         .api_key("test-key")
         .config(test_config())
-        .no_skills()
         .start()
         .await
         .unwrap();
@@ -580,6 +577,24 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
+    let final_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result"#)
+            .body_contains(
+                "run_command was not executed because the permission gate denied this tool call",
+            );
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command was blocked."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
     let tool_request = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
@@ -603,24 +618,6 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains(
-                "run_command was not executed because the permission gate denied this tool call",
-            );
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Command was blocked."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
 
     let output = query("run tests")
         .provider(Provider::Anthropic)
@@ -628,7 +625,6 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
         .base_url(server.base_url())
         .api_key("test-key")
         .config(test_config())
-        .no_skills()
         .run()
         .await
         .unwrap();
