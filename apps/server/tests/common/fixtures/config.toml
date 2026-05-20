@@ -1,0 +1,14 @@
+default_tier = "balanced"
+
+[tiers.balanced]
+provider = "test-anthropic"
+model = "claude-sonnet-4-6"
+think = "off"
+max_output_tokens = 4096
+
+[providers.test-anthropic]
+kind = "anthropic"
+base_url = "http://127.0.0.1:MOCK_PORT"
+api_key = "test-key"
+max_context_tokens = 200000
+max_output_tokens = 8192

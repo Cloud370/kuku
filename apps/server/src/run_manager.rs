@@ -70,10 +70,7 @@ impl RunManager {
 
         let permissions = self.permissions.clone();
 
-        let rt = tokio::runtime::Handle::current();
-        std::thread::spawn(move || {
-            rt.block_on(Self::run_loop(run, event_tx, permissions, permit));
-        });
+        tokio::spawn(Self::run_loop(run, event_tx, permissions, permit));
 
         Ok((run_id, event_rx))
     }
@@ -105,7 +102,6 @@ impl RunManager {
                         }
                         continue;
                     }
-
                     let is_done = matches!(event, kuku::UiEvent::Done { .. });
                     if let Some(line) = crate::wire::serialize_event(&event) {
                         if event_tx.send(line).await.is_err() {

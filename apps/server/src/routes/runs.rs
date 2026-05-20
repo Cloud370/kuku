@@ -42,7 +42,7 @@ pub async fn create_run(
         query = query.tier(tier);
     }
 
-    let (run_id, event_rx) = {
+    let (run_id, mut event_rx) = {
         let mut mgr = state.run_manager.lock().await;
         match mgr.spawn_run(query).await {
             Ok(pair) => pair,
@@ -54,12 +54,11 @@ pub async fn create_run(
     };
 
     let run_start = crate::wire::run_start(&run_id);
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
 
     tokio::spawn(async move {
-        let _ = tx.send(Ok::<_, std::convert::Infallible>(run_start)).await;
-        let mut rx = event_rx;
-        while let Some(line) = rx.recv().await {
+        let _ = tx.send(Ok(run_start)).await;
+        while let Some(line) = event_rx.recv().await {
             if tx.send(Ok(line)).await.is_err() {
                 break;
             }

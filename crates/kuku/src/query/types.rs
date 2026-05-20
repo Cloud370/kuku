@@ -210,7 +210,7 @@ pub(super) struct StreamingChunkState {
     pub(super) pending: PendingRun,
     pub(super) request_id: String,
     pub(super) stream:
-        Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
+        Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send + Sync>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
     pub(super) stop_reason: Option<String>,
