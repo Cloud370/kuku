@@ -6,6 +6,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::Mutex;
 
+#[allow(dead_code)]
 pub struct TestServer {
     pub addr: SocketAddr,
     pub base_url: String,

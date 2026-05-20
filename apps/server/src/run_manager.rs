@@ -8,6 +8,8 @@ pub struct RunHandle {
     pub event_tx: mpsc::Sender<String>,
     cancel_token: Arc<tokio::sync::Notify>,
     pub workspace: PathBuf,
+    #[allow(dead_code)]
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 type PermissionMap = Arc<Mutex<HashMap<String, oneshot::Sender<kuku::PermissionChoice>>>>;
@@ -38,6 +40,16 @@ impl RunManager {
             .await
             .map_err(|_| kuku::Error::ConfigLoad("semaphore closed".to_string()))?;
 
+        if let Some(sid) = query.session_id() {
+            if self.runs.contains_key(sid) {
+                drop(permit);
+                return Err(kuku::Error::SessionLocked {
+                    session: PathBuf::from(sid),
+                    holder_pid: 0,
+                });
+            }
+        }
+
         let run = match query.start().await {
             Ok(run) => run,
             Err(e) => {
@@ -48,29 +60,21 @@ impl RunManager {
 
         let run_id = run.session_id().to_string();
 
-        if self.runs.contains_key(&run_id) {
-            drop(run);
-            drop(permit);
-            return Err(kuku::Error::SessionLocked {
-                session: PathBuf::from(&run_id),
-                holder_pid: 0,
-            });
-        }
-
         let (event_tx, event_rx) = mpsc::channel(256);
         let cancel_token = run.cancel_token();
         let workspace = run.workspace().to_path_buf();
 
+        let permissions = self.permissions.clone();
+        let event_tx_clone = event_tx.clone();
+        let join_handle = tokio::spawn(Self::run_loop(run, event_tx_clone, permissions, permit));
+
         let handle = RunHandle {
-            event_tx: event_tx.clone(),
+            event_tx,
             cancel_token: cancel_token.clone(),
             workspace,
+            join_handle,
         };
         self.runs.insert(run_id.clone(), handle);
-
-        let permissions = self.permissions.clone();
-
-        tokio::spawn(Self::run_loop(run, event_tx, permissions, permit));
 
         Ok((run_id, event_rx))
     }

@@ -10,6 +10,7 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct EventsQuery {
     pub after: Option<u64>,
+    pub workspace: Option<String>,
 }
 
 pub async fn events(
@@ -22,11 +23,16 @@ pub async fn events(
         Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
     };
 
-    let workspace = match kuku::session::current_workspace() {
-        Ok(w) => w,
-        Err(_) => {
-            return Json(json!({"ok": false, "code": "internal", "message": "missing workspace"}))
-        }
+    let workspace = match params.workspace {
+        Some(ws) => std::path::PathBuf::from(ws),
+        None => match kuku::session::current_workspace() {
+            Ok(w) => w,
+            Err(_) => {
+                return Json(
+                    json!({"ok": false, "code": "invalid_request", "message": "workspace parameter required"}),
+                )
+            }
+        },
     };
 
     let events_path = match kuku::session::session_events_path(&home, &workspace, &session_id) {

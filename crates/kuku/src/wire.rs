@@ -4,8 +4,8 @@ use crate::query::UiEvent;
 
 /// Converts a UiEvent to its wire format representation.
 ///
-/// Returns `None` for events that have no wire representation (e.g. `Done` is
-/// synthesized separately by the server).
+/// All variants produce a `Some` value. `run_start` is not a UiEvent variant —
+/// the server synthesizes it separately.
 pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
     match event {
         UiEvent::TextDelta { text } => Some(json!({

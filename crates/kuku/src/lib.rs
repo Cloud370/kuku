@@ -17,6 +17,7 @@ pub(crate) mod tool;
 pub mod wire;
 
 pub use error::{Error, Result};
+pub use provider::types::ProviderFailureKind;
 pub use provider::{Provider, ProviderUsage};
 pub use query::{query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, UiEvent};
 pub use session::{list_sessions, SessionSummary};
