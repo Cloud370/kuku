@@ -16,7 +16,7 @@ pub(crate) struct ToolDefinition {
     pub risk: String,
 }
 
-pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
+pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec<ToolDefinition> {
     let mut tools = vec![
         tool(
             "find_files",
@@ -151,6 +151,9 @@ pub(crate) fn builtin_registry(agent_enabled: bool) -> Vec<ToolDefinition> {
     if agent_enabled {
         tools.push(builtin::agent_definition());
     }
+    if skills_enabled {
+        tools.push(builtin::use_skill_definition());
+    }
     tools
 }
 
@@ -199,7 +202,7 @@ mod tests {
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {
-        let registry = builtin_registry(false);
+        let registry = builtin_registry(false, false);
 
         assert_eq!(
             tool_names(&registry),
@@ -219,7 +222,7 @@ mod tests {
         assert_eq!(registry[0].max_result_chars, 8_000);
         assert_eq!(
             registry_hash(&registry),
-            registry_hash(&builtin_registry(false))
+            registry_hash(&builtin_registry(false, false))
         );
 
         let remember = registry
@@ -239,7 +242,7 @@ mod tests {
 
     #[test]
     fn builtin_registry_includes_agent_when_enabled() {
-        let registry = builtin_registry(true);
+        let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
         assert_eq!(names.len(), 9);
@@ -248,9 +251,25 @@ mod tests {
 
     #[test]
     fn builtin_registry_excludes_agent_when_disabled() {
-        let registry = builtin_registry(false);
+        let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
         assert_eq!(names.len(), 8);
+    }
+
+    #[test]
+    fn builtin_registry_includes_use_skill_when_enabled() {
+        let registry = builtin_registry(false, true);
+        let names = tool_names(&registry);
+        assert!(names.contains(&"use_skill".to_string()));
+        assert_eq!(names.len(), 9);
+        assert_eq!(names.last().unwrap(), "use_skill");
+    }
+
+    #[test]
+    fn builtin_registry_excludes_use_skill_when_disabled() {
+        let registry = builtin_registry(false, false);
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"use_skill".to_string()));
     }
 }

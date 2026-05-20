@@ -41,3 +41,23 @@ pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
         risk: "read".to_string(),
     }
 }
+
+pub(crate) fn use_skill_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        name: "use_skill".to_string(),
+        description: "Load a skill's full instructions into the current session. Use this when you want to follow a skill's workflow.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Name of the skill to load (from the available skill catalog)"
+                }
+            },
+            "required": ["skill_name"]
+        }),
+        read_only: true,
+        max_result_chars: 80_000,
+        risk: "read".to_string(),
+    }
+}

@@ -652,7 +652,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     let registry = if let Some(ref overridden) = pending.tool_registry_override {
         overridden.clone()
     } else {
-        tool::builtin_registry(!pending.query.disable_agents)
+        tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
     };
     let registry_hash = tool::registry_hash(&registry);
     let tool_names = tool::tool_names(&registry);

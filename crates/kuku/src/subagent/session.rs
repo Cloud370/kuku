@@ -45,7 +45,7 @@ pub async fn spawn_child_session(
     );
 
     // Build constrained tool registry from definition.tools
-    let full_registry = crate::tool::builtin_registry(false);
+    let full_registry = crate::tool::builtin_registry(false, false);
     let constrained_registry: Vec<crate::tool::ToolDefinition> = match &definition.tools {
         None => full_registry,
         Some(list) => full_registry

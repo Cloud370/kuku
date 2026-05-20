@@ -12,10 +12,69 @@ use super::types::{PendingRun, PermissionChoice, PermissionRequest};
 
 // ---------- Tool execution ----------
 
+fn handle_use_skill(
+    pending: &PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Result<crate::tool::ToolResultEnvelope> {
+    let skill_name = tool_call
+        .args
+        .get("skill_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let definition = pending
+        .skill_registry
+        .as_ref()
+        .and_then(|reg| reg.get(skill_name))
+        .cloned();
+
+    let Some(def) = definition else {
+        return Ok(crate::tool::ToolResultEnvelope::error(
+            format!("skill '{skill_name}' not found"),
+            format!("no skill named '{skill_name}' in the registry"),
+        ));
+    };
+
+    let skill_dir = def.source_path.as_deref().ok_or_else(|| {
+        crate::error::Error::InvalidArgument(format!(
+            "skill '{skill_name}' has no source_path"
+        ))
+    })?;
+
+    let skill_md_path = std::path::Path::new(skill_dir).join("SKILL.md");
+    let content = std::fs::read_to_string(&skill_md_path)?;
+    let (_, body) = crate::subagent::compat::claude_code::split_yaml_frontmatter(&content);
+
+    let result = format!("<!-- skill_dir: {skill_dir} -->\n\n{body}");
+
+    Ok(crate::tool::ToolResultEnvelope {
+        status: "ok".to_string(),
+        summary: format!("loaded skill: {skill_name}"),
+        model_content: result,
+        truncated: false,
+        structured: None,
+    })
+}
+
 pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
+    if tool_call.name == "use_skill" {
+        let result = handle_use_skill(pending, tool_call)?;
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ToolResult {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call.id.clone(),
+            status: result.status.clone(),
+            summary: result.summary.clone(),
+            model_content: result.model_content.clone(),
+            truncated: result.truncated,
+            structured: result.structured.clone(),
+        })?;
+        return Ok(result);
+    }
+
     let prior_events = EventStore::replay(&pending.events_path)?;
     let result_event_id = EventStore::open(&pending.events_path)?.next_id();
     let result = crate::tool::dispatch(
@@ -133,6 +192,11 @@ pub(super) fn display_summary(
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("agent")
+            .to_string(),
+        "use_skill" => args
+            .get("skill_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
             .to_string(),
         "memory.remember" | "memory.forget" => args
             .get("text")
