@@ -154,9 +154,12 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
 
         if !pending.queued_tool_calls.is_empty() {
             let all_calls: Vec<_> = pending.queued_tool_calls.drain(..).collect();
-            let (agent_calls, regular_calls): (Vec<_>, Vec<_>) = all_calls
+            let (agent_calls, rest_calls): (Vec<_>, Vec<_>) = all_calls
                 .into_iter()
                 .partition(|c| c.tool_call.name == "agent");
+            let (skill_calls, regular_calls): (Vec<_>, Vec<_>) = rest_calls
+                .into_iter()
+                .partition(|c| c.tool_call.name == "use_skill");
 
             for call in agent_calls {
                 let step = Box::pin(handle_agent_tool_call(pending, call)).await?;
@@ -172,6 +175,21 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
 
             let mut dispatch_batch = Vec::new();
             let mut ui_events = Vec::new();
+
+            for call in skill_calls {
+                ui_events.push(UiEvent::ToolCall {
+                    tool_call_id: call.tool_call.id.clone(),
+                    tool: call.tool_call.name.clone(),
+                    summary: call.display_summary.clone(),
+                });
+                let result = execute_tool_call(&mut pending, &call.tool_call).await?;
+                ui_events.push(UiEvent::ToolResult {
+                    tool_call_id: call.tool_call.id.clone(),
+                    status: result.status,
+                    summary: result.summary,
+                    structured: result.structured,
+                });
+            }
 
             for queued in regular_calls {
                 let definition = find_tool_definition(&pending, &queued.tool_call.name)
