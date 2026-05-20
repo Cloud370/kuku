@@ -1,10 +1,92 @@
 mod common;
 
+use std::time::Duration;
+
 use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
+use httpmock::When;
 use kuku::event::{EventPayload, EventStore};
-use kuku::{query, Error, Provider};
+use kuku::query::Run;
+use kuku::{query, Error, Provider, UiEvent};
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when the request is the *first* API call of a turn — the
+/// one that carries the user's query and has no tool results yet.
+///
+/// It locates the final `"role":"user"}` message that ends the `"messages"`
+/// array (using `rposition`) and checks whether that message contains a
+/// `"tool_use_id"` field, which only appears in `tool_result` content blocks
+/// sent back after tool execution.  A function pointer is required because
+/// httpmock 0.7 `matches()` accepts `fn(&HttpMockRequest) -> bool`, not
+/// closures with captures.
+// Byte-window lengths for JSON-pattern matching in request bodies.
+const TOOL_USE_LEN: usize = b"\"type\":\"tool_use\"".len(); // 17
+const TOOL_RESULT_LEN: usize = b"\"type\":\"tool_result\"".len(); // 20
+
+/// Returns `true` when the request body has neither a `tool_use` nor a
+/// `tool_result` content block — i.e. it is the very first API call of a turn.
+/// The second call already carries the assistant's `"type":"tool_use"` block
+/// (before the tool has executed), and the third carries `"type":"tool_result"`.
+fn is_initial_request(req: &HttpMockRequest) -> bool {
+    let Some(body) = req.body.as_ref() else {
+        return false;
+    };
+    let has_tool_use = body
+        .windows(TOOL_USE_LEN)
+        .any(|w| w == b"\"type\":\"tool_use\"");
+    let has_tool_result = body
+        .windows(TOOL_RESULT_LEN)
+        .any(|w| w == b"\"type\":\"tool_result\"");
+    !has_tool_use && !has_tool_result
+}
+
+/// Register the common body conditions that always accompany a tool-use
+/// request.  Returns the updated `When` for further chaining.
+fn context_conditions(when: When, query_text: &str) -> When {
+    when.body_contains(r#""tools""#)
+        .body_contains("<kuku_execution_context>")
+        .body_contains("<kuku_project_instructions>")
+        .body_contains("<kuku_memory>")
+        .body_contains("<kuku_tool_guidance>")
+        .body_contains(query_text)
+        .matches(is_initial_request)
+}
+
+/// Shorthand for the common Anthropic query builder.
+fn anthro(query_text: &str, server: &MockServer) -> query::Query {
+    query(query_text)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+}
+
+async fn next_matching(
+    run: &mut Run,
+    deadline: tokio::time::Instant,
+    pred: impl Fn(&UiEvent) -> bool,
+) -> UiEvent {
+    loop {
+        let remaining = deadline.duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, run.next()).await {
+            Ok(Ok(Some(event))) if pred(&event) => return event,
+            Ok(Ok(Some(_))) => continue,
+            Ok(Ok(None)) => panic!("stream ended before matching event"),
+            Ok(Err(e)) => panic!("run error: {e}"),
+            Err(_) => panic!("timed out waiting for matching UiEvent"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// simple success — no tools
+// ---------------------------------------------------------------------------
+
 #[tokio::test(flavor = "current_thread")]
 async fn anthropic_success_returns_text_and_writes_events() {
     let env = TestEnv::new();
@@ -27,15 +109,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
             })));
     });
 
-    let output = query("say hello")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+    let output = anthro("say hello", &server).run().await.unwrap();
 
     mock.assert();
     assert_eq!(output.text, "Hello from Claude!");
@@ -53,41 +127,22 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert!(matches!(events[5].payload, EventPayload::TurnEnd { .. }));
 }
 
+// ---------------------------------------------------------------------------
+// tool loop — auto-execute (no permission gate)
+// ---------------------------------------------------------------------------
+
 #[tokio::test(flavor = "current_thread")]
-async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response() {
+async fn executes_find_files_and_continues_to_final_response() {
     let env = TestEnv::new();
     let server = MockServer::start();
     std::fs::write(env.workspace.path().join("README.md"), "# Project").unwrap();
     std::fs::create_dir_all(env.workspace.path().join("src")).unwrap();
     std::fs::write(env.workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains("README.md")
-            .body_contains("src/main.rs");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("Workspace root:")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("find files");
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "find files")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool")
             .body(anthropic_sse_response(serde_json::json!({
@@ -102,19 +157,24 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
+    let catch_all = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
 
-    let output = query("find files")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+    let output = anthro("find files", &server).run().await.unwrap();
 
-    tool_request.assert();
-    final_request.assert();
+    tool_mock.assert();
+    catch_all.assert();
     assert_eq!(output.text, "I found README.md and src/main.rs.");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
@@ -123,7 +183,7 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
         EventPayload::ModelRequest {
             ref tools,
             ..
-        } if tools.as_ref().is_some_and(|t| t.count == Some(9))
+        } if tools.as_ref().is_some_and(|t| t.count == Some(10))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string())))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string())))
@@ -149,25 +209,29 @@ async fn anthropic_tool_loop_executes_find_files_and_continues_to_final_response
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::ModelRequest { .. }))
+            .filter(|e| matches!(e.payload, EventPayload::ModelRequest { .. }))
             .count(),
         2
     );
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::PermissionRequest { .. }))
+            .filter(|e| matches!(e.payload, EventPayload::PermissionRequest { .. }))
             .count(),
         0
     );
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::PermissionDecision { .. }))
+            .filter(|e| matches!(e.payload, EventPayload::PermissionDecision { .. }))
             .count(),
         0
     );
 }
+
+// ---------------------------------------------------------------------------
+// drift detection
+// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn second_turn_request_places_drift_notice_between_context_and_tool_guidance() {
@@ -242,8 +306,12 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
     second_request.assert_hits(1);
 }
 
+// ---------------------------------------------------------------------------
+// tool loop — multi-tool auto-execute
+// ---------------------------------------------------------------------------
+
 #[tokio::test(flavor = "current_thread")]
-async fn anthropic_tool_loop_executes_read_file_and_search_text() {
+async fn executes_read_file_and_search_text() {
     let env = TestEnv::new();
     let server = MockServer::start();
     std::fs::write(
@@ -254,33 +322,10 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
     std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
     std::fs::write(env.workspace.path().join("docs/tools.md"), "TODO docs\n").unwrap();
 
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains("1\\t# Project")
-            .body_contains("README.md:2: TODO root")
-            .body_contains("docs/tools.md:1: TODO docs");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Read and search complete."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("read and search");
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "read and search")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool")
             .body(anthropic_sse_response(serde_json::json!({
@@ -296,19 +341,24 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
+    let catch_all = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Read and search complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
 
-    let output = query("read and search")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+    let output = anthro("read and search", &server).run().await.unwrap();
 
-    tool_request.assert();
-    final_request.assert();
+    tool_mock.assert();
+    catch_all.assert();
     assert_eq!(output.text, "Read and search complete.");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
@@ -339,49 +389,32 @@ async fn anthropic_tool_loop_executes_read_file_and_search_text() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::PermissionRequest { .. }))
+            .filter(|e| matches!(e.payload, EventPayload::PermissionRequest { .. }))
             .count(),
         0
     );
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::PermissionDecision { .. }))
+            .filter(|e| matches!(e.payload, EventPayload::PermissionDecision { .. }))
             .count(),
         0
     );
 }
 
+// ---------------------------------------------------------------------------
+// permission — allow (streaming)
+// ---------------------------------------------------------------------------
+
 #[tokio::test(flavor = "current_thread")]
-async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
+async fn can_allow_run_command_once_via_run_decide() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#)
-            .body_contains("cargo test");
-        then.status(200)
-            .header("request-id", "req_final")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools""#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "run tests")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool")
             .body(anthropic_sse_response(serde_json::json!({
@@ -396,73 +429,70 @@ async fn anthropic_tool_loop_can_allow_run_command_once_via_run_decide() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
+    let catch_all = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
 
-    let mut run = query("run tests")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
+    let mut run = anthro("run tests", &server).start().await.unwrap();
 
-    let mut event = run.next().await.unwrap().unwrap();
-    while !matches!(event, kuku::UiEvent::PermissionRequested { .. }) {
-        event = run.next().await.unwrap().unwrap();
-    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let event = next_matching(&mut run, deadline, |e| {
+        matches!(e, UiEvent::PermissionRequested { .. })
+    })
+    .await;
     let request = match event {
-        kuku::UiEvent::PermissionRequested { request } => request,
+        UiEvent::PermissionRequested { request } => request,
         _ => unreachable!(),
     };
 
-    run.decide(&request.id, kuku::query::PermissionChoice::Once)
+    run.decide(&request.id, kuku::query::PermissionChoice::Session)
         .await
         .unwrap();
 
-    let mut event = run.next().await.unwrap().unwrap();
-    while !matches!(event, kuku::UiEvent::Done { .. }) {
-        event = run.next().await.unwrap().unwrap();
-    }
+    let event = next_matching(&mut run, deadline, |e| matches!(e, UiEvent::Done { .. })).await;
     match event {
-        kuku::UiEvent::Done { output, .. } => assert_eq!(output.text, "Command completed."),
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "Command completed."),
         _ => unreachable!(),
     }
 
+    tool_mock.assert();
+    catch_all.assert();
+
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "once")));
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionDecision { ref decision, ref scope, .. }
+            if decision == "allow" && scope == "session"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref status, .. } if status == "ok"
+    )));
 }
+
+// ---------------------------------------------------------------------------
+// permission — project scope persistence
+// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .header("request-id", "req_final_1")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "First command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools""#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
+    let tool_mock_1 = server.mock(|when, then| {
+        context_conditions(when, "run tests")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool")
             .body(anthropic_sse_response(serde_json::json!({
@@ -477,37 +507,44 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
+    let catch_all_1 = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final_1")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "First command completed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
 
-    let mut run = query("run tests")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
+    let mut run = anthro("run tests", &server).start().await.unwrap();
 
-    let mut event = run.next().await.unwrap().unwrap();
-    while !matches!(event, kuku::UiEvent::PermissionRequested { .. }) {
-        event = run.next().await.unwrap().unwrap();
-    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let event = next_matching(&mut run, deadline, |e| {
+        matches!(e, UiEvent::PermissionRequested { .. })
+    })
+    .await;
     let request = match event {
-        kuku::UiEvent::PermissionRequested { request } => request,
+        UiEvent::PermissionRequested { request } => request,
         _ => unreachable!(),
     };
     run.decide(&request.id, kuku::query::PermissionChoice::Project)
         .await
         .unwrap();
-    let mut event = run.next().await.unwrap().unwrap();
-    while !matches!(event, kuku::UiEvent::Done { .. }) {
-        event = run.next().await.unwrap().unwrap();
-    }
+    let event = next_matching(&mut run, deadline, |e| matches!(e, UiEvent::Done { .. })).await;
     match event {
-        kuku::UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
         _ => unreachable!(),
     }
 
+    tool_mock_1.assert();
+    catch_all_1.assert();
+
+    // Policy file persisted on disk.
     let policy_path = kuku::session::project_policy_path(
         env.home.path(),
         &std::fs::canonicalize(env.workspace.path()).unwrap(),
@@ -516,32 +553,13 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     let policy_text = std::fs::read_to_string(&policy_path).unwrap();
     assert!(policy_text.contains("run_command(cargo test)"));
 
-    let server = MockServer::start();
+    // Second run — permission auto-allowed from persisted policy.
+    let server2 = MockServer::start();
 
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .header("request-id", "req_final_2")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Second command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-    server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools""#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
+    let tool_mock_2 = server2.mock(|when, then| {
+        context_conditions(when, "run tests")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool_2")
             .body(anthropic_sse_response(serde_json::json!({
@@ -556,54 +574,46 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
-
-    let output = query("run tests")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
-
-    assert_eq!(output.text, "Second command completed.");
-    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "project")));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
-    let env = TestEnv::new();
-    let server = MockServer::start();
-
-    let final_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result"#)
-            .body_contains(
-                "run_command was not executed because the permission gate denied this tool call",
-            );
+    let catch_all_2 = server2.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
         then.status(200)
-            .header("request-id", "req_final")
+            .header("request-id", "req_final_2")
             .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final",
+                "id": "msg_final_2",
                 "type": "message",
                 "role": "assistant",
-                "content": [{"type": "text", "text": "Command was blocked."}],
+                "content": [{"type": "text", "text": "Second command completed."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
             })));
     });
-    let tool_request = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/messages")
-            .body_contains(r#""tools"#)
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
+
+    let output = anthro("run tests", &server2).run().await.unwrap();
+
+    tool_mock_2.assert();
+    catch_all_2.assert();
+    assert_eq!(output.text, "Second command completed.");
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionDecision { ref decision, ref scope, .. }
+            if decision == "allow" && scope == "project"
+    )));
+}
+
+// ---------------------------------------------------------------------------
+// permission — denied (auto-deny when no prior grant)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn records_denied_run_command_and_continues() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "run tests")
+            .method(POST)
+            .path("/v1/messages");
         then.status(200)
             .header("request-id", "req_tool")
             .body(anthropic_sse_response(serde_json::json!({
@@ -618,19 +628,24 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
+    let catch_all = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command was blocked."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
 
-    let output = query("run tests")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+    let output = anthro("run tests", &server).run().await.unwrap();
 
-    tool_request.assert();
-    final_request.assert();
+    tool_mock.assert();
+    catch_all.assert();
     assert_eq!(output.text, "Command was blocked.");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
@@ -656,6 +671,10 @@ async fn anthropic_tool_loop_records_denied_run_command_and_continues() {
                 && model_content.contains("run_command was not executed because the permission gate denied this tool call")
     )));
 }
+
+// ---------------------------------------------------------------------------
+// openai
+// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn openai_success_returns_text_and_writes_events() {
@@ -692,6 +711,10 @@ async fn openai_success_returns_text_and_writes_events() {
         EventPayload::ModelResponse { ref stop_reason, .. } if stop_reason == "end_turn"
     )));
 }
+
+// ---------------------------------------------------------------------------
+// error handling
+// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn http_error_writes_model_error_and_turn_end() {
@@ -736,10 +759,13 @@ async fn missing_config_fails_before_writing_session_events() {
     let err = query("test").session(sid).run().await.unwrap_err();
     assert!(matches!(err, Error::MissingProviderConfig(_)));
 
-    // Config error happens before any session events are written.
     let events = EventStore::replay(env.events_path(sid)).unwrap();
     assert!(events.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// security
+// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn api_key_is_not_written_to_events() {
