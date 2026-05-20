@@ -10,6 +10,7 @@ use crate::event::{EventPayload, EventStore};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_block, NoticeAssemblyInput,
 };
+use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
@@ -396,6 +397,48 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     if let Some(ref subagent_registry) = pending.subagent_registry {
         if let Some(catalog_text) =
             crate::subagent::catalog::render_agent_catalog(subagent_registry)
+        {
+            runtime_blocks_parts.push(catalog_text);
+        }
+    }
+
+    // Skill catalog (with hot-reload)
+    if let Some(ref skill_registry) = pending.skill_registry {
+        let new_registry = {
+            let builder = crate::skill::registry::SkillRegistry::builder()
+                .load_claude_user_skills()
+                .and_then(|b| b.load_claude_project_skills(&pending.workspace))
+                .and_then(|b| b.load_opencode_user_skills())
+                .and_then(|b| b.load_opencode_project_skills(&pending.workspace))
+                .and_then(|b| b.load_kuku_user_skills())
+                .and_then(|b| b.load_kuku_project_skills(&pending.workspace));
+            builder.map(|b| b.build()).ok()
+        };
+
+        if let Some(new_reg) = new_registry {
+            let new_hash = new_reg.hash().to_string();
+            if pending.skill_content_hash.as_deref() != Some(&new_hash) {
+                if let Some(changes) =
+                    crate::skill::registry::detect_skill_changes(skill_registry, &new_reg)
+                {
+                    pending.skill_registry = Some(new_reg);
+                    pending.skill_content_hash = Some(new_hash);
+                    runtime_blocks_parts.push(render_notice_block(&Notice {
+                        kind: NoticeKind::SkillChanged {
+                            updated: changes.updated,
+                            added: changes.added,
+                            removed: changes.removed,
+                        },
+                        severity: NoticeSeverity::Info,
+                    }));
+                } else {
+                    pending.skill_content_hash = Some(new_hash);
+                }
+            }
+        }
+
+        if let Some(catalog_text) =
+            crate::skill::catalog::render_skill_catalog(pending.skill_registry.as_ref().unwrap())
         {
             runtime_blocks_parts.push(catalog_text);
         }

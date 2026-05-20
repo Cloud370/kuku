@@ -5,6 +5,11 @@ const NOTICE_CONTEXT_DRIFT_TEMPLATE: &str = include_str!(concat!(
     "/prompts/notice-context-drift.md"
 ));
 
+const NOTICE_SKILL_CHANGED_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/prompts/notice-skill-changed.md"
+));
+
 pub(crate) fn render_notice_block(notice: &Notice) -> String {
     match &notice.kind {
         NoticeKind::ContextDrift { entries } => {
@@ -14,6 +19,23 @@ pub(crate) fn render_notice_block(notice: &Notice) -> String {
                 .collect::<Vec<_>>()
                 .join("\n");
             NOTICE_CONTEXT_DRIFT_TEMPLATE.replace("{{entries}}", &rendered_entries)
+        }
+        NoticeKind::SkillChanged {
+            updated,
+            added,
+            removed,
+        } => {
+            let mut parts = Vec::new();
+            for name in added {
+                parts.push(format!("{name} (added)"));
+            }
+            for name in updated {
+                parts.push(format!("{name} (updated)"));
+            }
+            for name in removed {
+                parts.push(format!("{name} (removed)"));
+            }
+            NOTICE_SKILL_CHANGED_TEMPLATE.replace("{{summary}}", &parts.join(", "))
         }
     }
 }
@@ -56,5 +78,21 @@ mod tests {
         assert!(rendered.contains("- notes.md (deleted)"));
         assert!(!rendered.contains("line 17"));
         assert!(!rendered.contains("current preview:"));
+    }
+
+    #[test]
+    fn renders_skill_changed_notice() {
+        let notice = Notice {
+            kind: NoticeKind::SkillChanged {
+                updated: vec!["tdd".to_string()],
+                added: vec!["review".to_string()],
+                removed: vec![],
+            },
+            severity: NoticeSeverity::Info,
+        };
+        let rendered = render_notice_block(&notice);
+        assert!(rendered.contains("tdd (updated)"));
+        assert!(rendered.contains("review (added)"));
+        assert!(!rendered.contains("removed"));
     }
 }
