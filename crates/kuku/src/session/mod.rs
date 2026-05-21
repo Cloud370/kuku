@@ -60,8 +60,20 @@ fn process_alive(pid: i32) -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = pid;
-        false
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+            fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+            if handle.is_null() {
+                false
+            } else {
+                CloseHandle(handle);
+                true
+            }
+        }
     }
 }
 
