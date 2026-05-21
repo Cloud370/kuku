@@ -7,12 +7,12 @@ fn builtin_registry_is_loadable_and_queryable() {
 
     let review = registry.get("review").expect("review should exist");
     assert_eq!(review.tier, "balanced");
-    assert_eq!(review.max_turns, 4);
+    assert_eq!(review.max_turns, 10);
     assert_eq!(review.tool_profile.as_str(), "read");
 
     let explore = registry.get("explore").expect("explore should exist");
     assert_eq!(explore.tier, "light");
-    assert_eq!(explore.max_turns, 3);
+    assert_eq!(explore.max_turns, 10);
 }
 
 #[test]

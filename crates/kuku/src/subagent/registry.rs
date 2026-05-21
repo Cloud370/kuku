@@ -189,7 +189,7 @@ fn builtin_review() -> SubagentDefinition {
             "read_file".into(),
             "search_text".into(),
         ]),
-        max_turns: 4,
+        max_turns: 10,
         source: DefinitionSource::Builtin,
         hash: String::new(),
         source_path: None,
@@ -216,7 +216,7 @@ fn builtin_explore() -> SubagentDefinition {
             "read_file".into(),
             "search_text".into(),
         ]),
-        max_turns: 3,
+        max_turns: 10,
         source: DefinitionSource::Builtin,
         hash: String::new(),
         source_path: None,
@@ -258,11 +258,11 @@ mod tests {
         let review = registry.get("review").unwrap();
         assert_eq!(review.tier, "balanced");
         assert_eq!(review.tool_profile, ToolProfile::Read);
-        assert_eq!(review.max_turns, 4);
+        assert_eq!(review.max_turns, 10);
 
         let explore = registry.get("explore").unwrap();
         assert_eq!(explore.tier, "light");
-        assert_eq!(explore.max_turns, 3);
+        assert_eq!(explore.max_turns, 10);
     }
 
     #[test]
