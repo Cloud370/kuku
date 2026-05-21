@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kuku", "apps/terminal"]
+members = ["crates/kuku", "apps/terminal", "apps/server"]
 resolver = "2"
 
 [profile.release]

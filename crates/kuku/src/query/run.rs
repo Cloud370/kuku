@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::permission::append_project_allow_rule;
@@ -23,6 +24,22 @@ impl Run {
     /// The session ID for this run.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// The workspace directory for this run.
+    pub fn workspace(&self) -> &std::path::Path {
+        match &self.state {
+            RunState::Pending(p) => &p.workspace,
+            RunState::Streaming(s) => &s.pending.workspace,
+            RunState::WaitingForPermission(w) => &w.pending.workspace,
+            RunState::BatchEvents(p, _) => &p.workspace,
+            RunState::Cancelled { .. } | RunState::Done(_) => std::path::Path::new(""),
+        }
+    }
+
+    /// A token that is notified when the run is cancelled.
+    pub fn cancel_token(&self) -> Arc<tokio::sync::Notify> {
+        self.cancel_token.clone()
     }
 
     /// Cancel the current run. Streaming is aborted, pending permissions are denied,
@@ -79,6 +96,10 @@ impl Run {
                     }
                 },
                 RunState::Streaming(mut streaming) => {
+                    if let Some(event) = streaming.lead_events.pop() {
+                        self.state = RunState::Streaming(streaming);
+                        return Ok(Some(event));
+                    }
                     match self.poll_stream_chunk(&mut streaming).await? {
                         Some(event) => {
                             self.state = RunState::Streaming(streaming);
@@ -290,6 +311,7 @@ impl Run {
         let result = execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
         let tool_result_event = Some(UiEvent::ToolResult {
             tool_call_id: waiting.queued_tool_call.tool_call.id.clone(),
+            name: waiting.queued_tool_call.tool_call.name.clone(),
             status: result.status,
             summary: result.summary,
             structured: result.structured,
@@ -433,7 +455,8 @@ mod tests {
                             crate::provider::chunk::ProviderChunk,
                             crate::provider::types::ProviderFailure,
                         >,
-                    > + Send,
+                    > + Send
+                    + Sync,
             >,
         > = Box::pin(tokio_stream::pending());
 
@@ -448,6 +471,7 @@ mod tests {
             tool_arg_buffers: Vec::new(),
             provider_request_id: None,
             usage: None,
+            lead_events: Vec::new(),
         };
 
         let run = Run {

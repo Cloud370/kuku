@@ -101,7 +101,7 @@ pub(crate) struct ProviderToolCall {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderFailureKind {
+pub enum ProviderFailureKind {
     Authentication,
     RateLimited,
     ContextTooLarge,

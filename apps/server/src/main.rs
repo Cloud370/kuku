@@ -1,0 +1,116 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use clap::Parser;
+use kuku_server::run_manager::RunManager;
+use tokio::sync::Mutex;
+
+#[derive(Parser)]
+#[command(name = "kuku-server", about = "HTTP API host for kuku SDK")]
+struct Args {
+    #[arg(long, default_value = "127.0.0.1:17777")]
+    listen: String,
+
+    #[arg(long)]
+    config: Option<String>,
+
+    #[arg(long)]
+    password: Option<String>,
+
+    #[arg(long, default_value = "16")]
+    max_concurrent_runs: usize,
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let listen_addr: SocketAddr = match args.listen.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: invalid listen address: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !listen_addr.ip().is_loopback() && args.password.is_none() {
+        eprintln!("error: --password is required for non-loopback addresses");
+        std::process::exit(1);
+    }
+
+    let config_path = args
+        .config
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/"))
+                .join(".kuku")
+                .join("config.toml")
+        });
+
+    if !config_path.exists() {
+        eprintln!("error: config file not found: {}", config_path.display());
+        std::process::exit(1);
+    }
+
+    let config = match kuku::config::load_config(&config_path).and_then(|f| f.resolve()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to load config: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let config_store = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(config));
+    let _watcher = kuku_server::config_watcher::ConfigWatcher::start(
+        config_path.clone(),
+        config_store.clone(),
+    );
+
+    let state = Arc::new(kuku_server::AppState {
+        run_manager: Mutex::new(RunManager::new(args.max_concurrent_runs)),
+        config: config_store,
+        password: args.password,
+    });
+
+    let app = kuku_server::build_app(state.clone());
+
+    let listener = tokio::net::TcpListener::bind(listen_addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to bind {listen_addr}: {e}");
+            std::process::exit(1);
+        });
+
+    tracing::info!("listening on {listen_addr}");
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(state.clone()))
+    .await
+    .unwrap();
+}
+
+async fn shutdown_signal(state: Arc<kuku_server::AppState>) {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutting down");
+
+    let run_ids = {
+        let mgr = state.run_manager.lock().await;
+        mgr.active_run_ids()
+    };
+
+    for run_id in run_ids {
+        let mut mgr = state.run_manager.lock().await;
+        mgr.cancel(&run_id);
+    }
+}
