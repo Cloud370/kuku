@@ -174,7 +174,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         q = q.prompts_dir(std::path::PathBuf::from(dir));
     }
     if let Some(model) = &args.model {
-        q = q.model(model.clone());
+        if cfg.tier(model).is_some() {
+            q = q.tier(model.clone());
+        } else {
+            q = q.model(model.clone());
+        }
     }
     if let Some(session) = &args.session {
         q = q.session(session.clone());
