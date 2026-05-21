@@ -425,10 +425,8 @@ mod tests {
 
     #[cfg(windows)]
     fn noisy_timeout_command() -> String {
-        format!(
-            "echo {} & ping -n 4 127.0.0.1 > NUL",
-            "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
-        )
+        let repeat = (RUN_COMMAND_MAX_CHARS + 100) / 16 + 1;
+        format!("for /L %i in (1,1,{repeat}) do @echo xxxxxxxxxxxxxxxx & ping -n 4 127.0.0.1 > NUL")
     }
 
     #[tokio::test(flavor = "current_thread")]
