@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 
 pub struct RunHandle {
-    pub event_tx: mpsc::Sender<String>,
     cancel_token: Arc<tokio::sync::Notify>,
     pub workspace: PathBuf,
     #[allow(dead_code)]
@@ -69,7 +68,6 @@ impl RunManager {
         let join_handle = tokio::spawn(Self::run_loop(run, event_tx_clone, permissions, permit));
 
         let handle = RunHandle {
-            event_tx,
             cancel_token: cancel_token.clone(),
             workspace,
             join_handle,

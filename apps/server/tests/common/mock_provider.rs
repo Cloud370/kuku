@@ -2,8 +2,8 @@ use httpmock::prelude::*;
 use httpmock::MockServer;
 use serde_json::Value;
 
-pub fn start_mock_provider() -> MockServer {
-    MockServer::start()
+pub async fn start_mock_provider() -> MockServer {
+    MockServer::start_async().await
 }
 
 pub fn mock_text_response(server: &MockServer, text: &str) {

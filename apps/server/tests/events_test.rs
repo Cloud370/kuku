@@ -4,7 +4,7 @@ use common::mock_provider;
 
 #[tokio::test]
 async fn nonexistent_session_returns_not_found() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
@@ -23,7 +23,7 @@ async fn nonexistent_session_returns_not_found() {
 
 #[tokio::test]
 async fn health_passes_even_with_password_set() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server =
         common::TestServer::start_with_password(config, Some("testpass".to_string())).await;

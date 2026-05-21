@@ -3,9 +3,8 @@ mod common;
 use common::mock_provider;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore]
 async fn full_run_lifecycle() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     mock_provider::mock_text_response(&mock, "Hello from server!");
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
@@ -64,7 +63,7 @@ async fn full_run_lifecycle() {
 
 #[tokio::test]
 async fn cancel_nonexistent_run_returns_not_found() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
@@ -83,7 +82,7 @@ async fn cancel_nonexistent_run_returns_not_found() {
 
 #[tokio::test]
 async fn invalid_workspace_returns_error() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 

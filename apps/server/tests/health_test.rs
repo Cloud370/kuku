@@ -4,7 +4,7 @@ use common::mock_provider;
 
 #[tokio::test]
 async fn health_returns_ok_and_version() {
-    let mock = mock_provider::start_mock_provider();
+    let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
