@@ -109,7 +109,7 @@ The extension system is SDK core infrastructure. Skills are native to the SDK. M
 | 1 | Skills + SkillRegistry | SDK | ✅ |
 | 2 | New UiEvent variants | SDK |
 | 3 | Wire format (`to_wire()`) | SDK | ✅ |
-| 4 | `apps/server` (HTTP API, NDJSON) | Host | ✅ |
+| 4 | `kuku-server` (HTTP API, NDJSON) | Host | ✅ |
 | 5 | `apps/web` (frontend SPA) | Host |
 | 6 | Extension system + ExternalToolSource | SDK |
 | 7 | MCP extension package | Extension |

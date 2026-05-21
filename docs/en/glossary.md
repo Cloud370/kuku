@@ -126,4 +126,4 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `ExternalToolSource` | Trait for external tool providers. Implementations include future MCP client. Tools registered through this trait go through the standard permission gate. |
 | `skill registry` | Loaded set of skill definitions from user and project directories. Metadata injected into `runtime_context` at startup; full content loaded on demand. |
 | `progressive disclosure` | Three-stage skill loading: metadata at startup, instructions on trigger, resources on demand. Minimizes context usage. |
-| `NDJSON streaming` | Newline-delimited JSON over HTTP. Used by `apps/server` to stream run events in real time. No SSE, no WebSocket. |
+| `NDJSON streaming` | Newline-delimited JSON over HTTP. Used by `kuku-server` to stream run events in real time. No SSE, no WebSocket. |

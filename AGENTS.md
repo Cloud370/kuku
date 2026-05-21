@@ -4,7 +4,7 @@ Agent instructions for working in this repository.
 
 ## What this is
 
-kuku — a Rust SDK for file-native agent execution. One crate (`crates/kuku/`), one CLI binary (`apps/terminal/`).
+kuku — a Rust SDK for file-native agent execution. SDK (`crates/kuku/`), CLI (`crates/kuku-cli/`), server (`crates/kuku-server/`), unified binary (`apps/kuku/`).
 
 ## Project map
 
@@ -14,7 +14,7 @@ Full document map: [docs/en/README.md](docs/en/README.md). Key: [direction](docs
 
 ```bash
 cargo check                                            # fast compile check
-cargo test -p kuku -p kuku-terminal                    # all tests
+cargo test -p kuku -p kuku-cli -p kuku-server                    # all tests
 cargo clippy -- -D warnings                            # zero warnings required
 cargo fmt --all                                        # format before commit
 ```
@@ -30,13 +30,13 @@ cargo fmt --all                                        # format before commit
 - **Don't run `cargo fmt` mid-edit.** It shifts line numbers and invalidates previously read files, wasting context on re-reads. Run it once at the end.
 - **`cargo check` is fine mid-edit.** It validates without modifying files. Never `cargo fix`.
 - **Pipe long output through `head` or `tail`.** `cargo test | tail -30` shows failures without burning context on passing tests. Same for `grep -rn` in large repos.
-- **Verify once at the end.** `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-terminal`, then commit.
+- **Verify once at the end.** `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server`, then commit.
 
 ## Workflow
 
 1. Read relevant docs and code to understand the change.
 2. Edit. Run `cargo check` as needed. Do not `cargo fmt`.
-3. Verify: `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-terminal`.
+3. Verify: `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server`.
 4. Commit: conventional commits, one per logical chunk. No amend on pushed commits.
 
 ## Cross-platform
