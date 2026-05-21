@@ -210,14 +210,8 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 .and_then(Value::as_u64)
                                 .unwrap_or(0),
                             output_tokens: 0,
-                            cache_read_input_tokens: usage
-                                .get("cache_read_input_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
-                            cache_creation_input_tokens: usage
-                                .get("cache_creation_input_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
+                            cache_read_input_tokens: 0,
+                            cache_creation_input_tokens: 0,
                         });
                     }
                 }
@@ -319,8 +313,14 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                             .get("output_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
-                        cache_read_input_tokens: 0,
-                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: usage
+                            .get("cache_read_input_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        cache_creation_input_tokens: usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
                     });
                 }
             }

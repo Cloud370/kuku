@@ -266,7 +266,11 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
                             .get("completion_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
-                        cache_read_input_tokens: 0,
+                        cache_read_input_tokens: usage
+                            .get("prompt_tokens_details")
+                            .and_then(|d| d.get("cached_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
                         cache_creation_input_tokens: 0,
                     });
                 }
