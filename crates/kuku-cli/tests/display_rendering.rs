@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use kuku_terminal::display::{Display, OutputLine};
+use kuku_cli::display::{Display, OutputLine};
 
 #[test]
 fn thinking_default_hides_text() {

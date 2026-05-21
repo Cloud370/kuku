@@ -6,18 +6,18 @@ license = "MIT OR Apache-2.0"
 description = "File-native agent runtime SDK"
 
 [dependencies]
-home = "0.5.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-thiserror = "1"
+home = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+futures-core = { workspace = true }
+tokio-stream = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std", "formatting"] }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 regex = "1"
-futures-core = "0.3"
-tokio-stream = "0.1"
 toml = "0.8"
 toml_edit = "0.25"
 tempfile = "3"

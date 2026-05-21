@@ -32,6 +32,9 @@ pub enum Command {
     Agents(AgentsArgs),
     /// List or inspect available skill definitions
     Skills(SkillsArgs),
+    /// Start the HTTP API server
+    #[cfg(feature = "server")]
+    Server(kuku_server::server_args::ServerArgs),
 }
 
 // ── Prompts ──

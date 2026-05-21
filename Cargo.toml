@@ -1,6 +1,25 @@
 [workspace]
-members = ["crates/kuku", "crates/kuku-cli", "crates/kuku-server"]
+members = ["crates/kuku", "crates/kuku-cli", "crates/kuku-server", "apps/kuku"]
 resolver = "2"
+
+[workspace.dependencies]
+kuku = { path = "crates/kuku" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = "1"
+tokio-stream = "0.1"
+futures-core = "0.3"
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "1"
+arc-swap = "1"
+home = "0.5.12"
 
 [profile.release]
 strip = true
+lto = "thin"
+codegen-units = 4
