@@ -31,7 +31,7 @@ TUI, WebUI — host apps that present SDK facts.
 
 Skills are native to the SDK (load .md files, inject context). Everything else that extends the agent — MCP, hooks, custom tools — enters through the extension/package system, not the core.
 
-Host apps are independent binaries. `terminal` exists today. `server` (HTTP API with NDJSON streaming) and `web` (frontend SPA) are planned. `tauri` (desktop) follows. Each host calls the SDK directly; no host embeds another.
+Host apps share a unified CLI binary (`kuku`). The CLI dispatches to `kuku-cli` (commands) and `kuku-server` (HTTP API with NDJSON streaming). `web` (frontend SPA) and `tauri` (desktop shell, embedding `kuku-server`) are planned. Each host calls the SDK directly; no host embeds another host.
 
 Detailed design: [apps.md](apps.md) · [skills.md](skills.md) · [evolution.md](evolution.md).
 

@@ -3,27 +3,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use kuku_server::run_manager::RunManager;
+use kuku_server::server_args::ServerArgs;
 use tokio::sync::Mutex;
-
-#[derive(Parser)]
-#[command(name = "kuku-server", about = "HTTP API host for kuku SDK")]
-struct Args {
-    #[arg(long, default_value = "127.0.0.1:17777")]
-    listen: String,
-
-    #[arg(long)]
-    config: Option<String>,
-
-    #[arg(long)]
-    password: Option<String>,
-
-    #[arg(long, default_value = "16")]
-    max_concurrent_runs: usize,
-}
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let args = ServerArgs::parse();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -49,7 +34,7 @@ async fn main() {
         .config
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            dirs::home_dir()
+            home::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/"))
                 .join(".kuku")
                 .join("config.toml")
@@ -95,22 +80,7 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(state.clone()))
+    .with_graceful_shutdown(kuku_server::shutdown_signal(state.clone()))
     .await
     .unwrap();
-}
-
-async fn shutdown_signal(state: Arc<kuku_server::AppState>) {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
-
-    let run_ids = {
-        let mgr = state.run_manager.lock().await;
-        mgr.active_run_ids()
-    };
-
-    for run_id in run_ids {
-        let mut mgr = state.run_manager.lock().await;
-        mgr.cancel(&run_id);
-    }
 }

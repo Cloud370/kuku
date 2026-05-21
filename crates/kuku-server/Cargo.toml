@@ -1,0 +1,31 @@
+[package]
+name = "kuku-server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "kuku_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kuku-server"
+path = "src/bin/kuku-server.rs"
+
+[dependencies]
+kuku = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+arc-swap = { workspace = true }
+clap = { workspace = true }
+tokio-stream = { workspace = true }
+home = { workspace = true }
+
+[dev-dependencies]
+httpmock = "0.7"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tempfile = "3"

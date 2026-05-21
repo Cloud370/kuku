@@ -1,38 +1,53 @@
 # Host Apps
 
-<!-- status: design -->
+<!-- status: partial -->
 
-Host apps present SDK facts to users. Each host is an independent binary that depends on `kuku` as a library. No host embeds another host.
+Host apps present SDK facts to users. Each host depends on `kuku` as a library. No host embeds another host.
 
-## Host structure (planned)
+## Crate layout
 
 ```text
+crates/
+├── kuku/              # SDK
+├── kuku-cli/          # CLI command implementations (lib + standalone bin)
+└── kuku-server/       # HTTP server library (lib + standalone bin)
+
 apps/
-├── terminal/     bin crate — interactive CLI, stdin/stdout
-├── server/       bin crate — HTTP API, NDJSON streaming
-└── web/          frontend SPA — consumes server API
+├── kuku/              # Unified release binary (package: kuku-app, bin: kuku)
+└── tauri/             # FUTURE — desktop shell (depends on kuku-server)
 ```
 
-Future hosts: `apps/tauri/` (desktop app, direct SDK dependency, localhost HTTP).
+`kuku-cli` and `kuku-server` are independent — neither depends on the other. Both retain their own `[[bin]]` targets for dev-time standalone use. Only `apps/kuku` produces the release artifact.
 
-Each host calls the SDK directly. No shared host-layer crate.
-
-## Server (planned)
-
-`apps/server` is a long-lived HTTP process. It holds active `Run` instances in memory. No state beyond what the SDK persists to `events.jsonl`.
+## Unified CLI
 
 ```text
-POST   /runs                       start a run (NDJSON stream in response body)
-POST   /runs/:id/responses         respond to an interaction request
+kuku run "check this"                  # agent task
+kuku show <session-id>                 # show output
+kuku events <session-id>               # show events
+kuku list                              # list sessions
+kuku config show                       # show config
+kuku config set model.balanced.think high
+kuku init                              # initialize directory structure
+kuku prompts show / export <dir>       # prompt assets
+kuku agents list / show <name>         # subagent definitions
+kuku skills list / show <name>         # skill definitions
+kuku server --listen 0.0.0.0:17777     # start HTTP API
+kuku server --password <pw>            # with auth
+```
+
+No subcommand → interactive mode.
+
+## Server
+
+`crates/kuku-server` is a long-lived HTTP process. It holds active `Run` instances in memory. No state beyond what the SDK persists to `events.jsonl`.
+
+```text
+GET    /health                    health check
+POST   /runs                      start a run (NDJSON stream in response body)
 DELETE /runs/:id                   cancel a run
-GET    /sessions                   list sessions
-GET    /sessions/:id               session metadata
-GET    /sessions/:id/events        historical events (JSON array)
-GET    /sessions/:id/events?after=N  events after id N (reconnect backfill)
-GET    /sessions/:id/diff          session file changes (git diff)
-GET    /workspace/files            file tree and content (read-only)
-GET    /agents                     available agent list
-GET    /config                     resolved config (redacted)
+POST   /runs/:id/responses        respond to an interaction request
+GET    /sessions/:id/events       historical events (JSON array)
 ```
 
 ### Workspace
@@ -49,7 +64,7 @@ POST /runs
 
 Multiple workspaces are supported from day one. No restart required to switch.
 
-### NDJSON streaming (planned)
+### NDJSON streaming
 
 `POST /runs` streams events as newline-delimited JSON in the response body. No SSE, no WebSocket. Standard HTTP with `Transfer-Encoding: chunked`.
 
@@ -79,11 +94,11 @@ If the connection drops, the client backfills via HTTP then re-subscribes:
 
 TextDeltas from the interrupted stream are not replayed. Only structured events (tool calls, permissions) are backfilled.
 
-### Authentication (planned)
+### Authentication
 
 By default, localhost only (`127.0.0.1`). No authentication.
 
-With `--passwd`, non-localhost connections require a password:
+With `--password`, non-localhost connections require a password:
 
 ```text
 Client request (no auth)
@@ -92,7 +107,7 @@ Client request (no auth)
   → Client retries with Authorization header
 ```
 
-Localhost connections bypass `--passwd`.
+Localhost connections bypass `--password`.
 
 ### Error model
 
@@ -127,7 +142,7 @@ Only infrastructure failures (server down, route not found) use HTTP status code
 
 ## WebUI (planned)
 
-`apps/web` is a frontend SPA. It talks to `apps/server` via `fetch` (POST for runs, GET for history). The same SPA works behind `apps/tauri` via localhost HTTP.
+`apps/web` is a frontend SPA. It talks to `kuku-server` via `fetch` (POST for runs, GET for history). The same SPA works behind `apps/tauri` via localhost HTTP.
 
 Key interactions:
 
@@ -135,13 +150,19 @@ Key interactions:
 - **Permission**: interaction event in stream → modal dialog → `POST /runs/:id/responses`
 - **Cancel**: `DELETE /runs/:id`
 - **History**: `GET /sessions/:id/events`
-- **File viewer**: `GET /workspace/files` (read-only)
-- **Diff viewer**: `GET /sessions/:id/diff`
 
 ## Tauri (planned)
 
-`apps/tauri` is a desktop app. The Tauri backend depends on `kuku` directly (no sidecar). The webview loads the same SPA as `apps/web`, talking to localhost HTTP.
+`apps/tauri` is a desktop shell. The Tauri backend depends on `kuku-server` as a library (embedded HTTP), not on `kuku` SDK directly. The webview loads the same SPA as `apps/web`, talking to localhost HTTP.
 
-## Wire events (planned)
+```text
+Tauri app startup:
+  1. kuku_server::start_server(config, password, max_concurrent_runs) → localhost:{port}
+  2. webview.load_url("http://localhost:{port}/")
+```
 
-All SDK events are converted to wire format and streamed via NDJSON. The client ignores events it does not need. Wire format is defined in [evolution.md](evolution.md#wire-format-planned). Event types use underscore notation to distinguish from persisted events (dot notation) and Rust variants (PascalCase).
+No IPC, no process management — just embedded HTTP server + webview. Distributed independently (.dmg / .msi / .AppImage), not bundled with CLI.
+
+## Wire events
+
+All SDK events are converted to wire format and streamed via NDJSON. The client ignores events it does not need. Wire format is defined in [evolution.md](evolution.md#wire-format). Event types use underscore notation to distinguish from persisted events (dot notation) and Rust variants (PascalCase).

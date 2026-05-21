@@ -2,6 +2,7 @@ pub mod config_watcher;
 pub mod error_mapping;
 pub mod routes;
 pub mod run_manager;
+pub mod server_args;
 pub mod wire;
 
 use std::net::SocketAddr;
@@ -108,4 +109,19 @@ pub async fn start_server(
     });
 
     (addr, handle)
+}
+
+pub async fn shutdown_signal(state: Arc<AppState>) {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutting down");
+
+    let run_ids = {
+        let mgr = state.run_manager.lock().await;
+        mgr.active_run_ids()
+    };
+
+    for run_id in run_ids {
+        let mut mgr = state.run_manager.lock().await;
+        mgr.cancel(&run_id);
+    }
 }

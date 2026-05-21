@@ -1,0 +1,23 @@
+[package]
+name = "kuku-cli"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "kuku_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kuku-cli"
+path = "src/bin/kuku-cli.rs"
+
+[features]
+server = ["kuku-server"]
+
+[dependencies]
+kuku = { workspace = true }
+kuku-server = { path = "../kuku-server", optional = true }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
