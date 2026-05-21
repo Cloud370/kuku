@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub mod mock_provider;
 
 use std::net::SocketAddr;
