@@ -8,7 +8,7 @@ name = "kuku-server"
 path = "src/main.rs"
 
 [dependencies]
-kuku = { path = "../../crates/kuku" }
+kuku = { path = "../kuku" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }

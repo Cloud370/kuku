@@ -12,7 +12,7 @@ name = "kuku_terminal"
 path = "src/lib.rs"
 
 [dependencies]
-kuku = { path = "../../crates/kuku" }
+kuku = { path = "../kuku" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
