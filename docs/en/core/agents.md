@@ -36,8 +36,8 @@ user agents with the same name.
 - `edit_file` — precise text replacement
 - `write_file` — create or overwrite files
 - `run_command` — execute local commands
-- `memory.remember` — append to memory.md
-- `memory.forget` — remove from memory.md
+- `remember_memory` — append to memory.md
+- `forget_memory` — remove from memory.md
 
 ## Permissions
 

@@ -36,8 +36,8 @@ impl ToolProfile {
                 "search_text",
                 "edit_file",
                 "write_file",
-                "memory.remember",
-                "memory.forget",
+                "remember_memory",
+                "forget_memory",
                 "run_command",
             ],
         }
@@ -147,7 +147,7 @@ mod tests {
         assert!(tools.contains(&"edit_file"));
         assert!(tools.contains(&"write_file"));
         assert!(tools.contains(&"run_command"));
-        assert!(tools.contains(&"memory.remember"));
+        assert!(tools.contains(&"remember_memory"));
     }
 
     #[test]

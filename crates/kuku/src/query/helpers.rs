@@ -140,7 +140,7 @@ pub(super) fn permission_candidate(
             .unwrap_or("")
             .trim()
             .to_string(),
-        "memory.remember" | "memory.forget" => match args
+        "remember_memory" | "forget_memory" => match args
             .get("scope")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
@@ -209,7 +209,7 @@ pub(super) fn display_summary(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string(),
-        "memory.remember" | "memory.forget" => args
+        "remember_memory" | "forget_memory" => args
             .get("text")
             .and_then(|v| v.as_str())
             .map(|t| format!("{:?}", t))
@@ -549,17 +549,17 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_memory_remember() {
+    fn display_summary_remember_memory() {
         let args =
             serde_json::json!({"scope": "global", "kind": "what_is_true", "text": "kuku is Rust"});
-        let s = display_summary("memory.remember", &args, None);
+        let s = display_summary("remember_memory", &args, None);
         assert_eq!(s, "\"kuku is Rust\"");
     }
 
     #[test]
-    fn display_summary_memory_forget() {
+    fn display_summary_forget_memory() {
         let args = serde_json::json!({"scope": "project", "text": "kuku is Rust"});
-        let s = display_summary("memory.forget", &args, None);
+        let s = display_summary("forget_memory", &args, None);
         assert_eq!(s, "\"kuku is Rust\"");
     }
 

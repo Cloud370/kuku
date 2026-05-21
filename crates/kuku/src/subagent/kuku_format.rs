@@ -107,8 +107,8 @@ fn infer_tool_profile_from_tools(tools: &Option<Vec<String>>) -> ToolProfile {
                     "edit_file"
                         | "write_file"
                         | "run_command"
-                        | "memory.remember"
-                        | "memory.forget"
+                        | "remember_memory"
+                        | "forget_memory"
                 )
             });
             if has_write {

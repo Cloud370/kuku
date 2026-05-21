@@ -16,8 +16,8 @@ Eight built-in tools, plus the `agent` tool when subagents are enabled.
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | — | `edit` |
 | `run_command` | `command`, `timeout`, `brief` | — | `command` |
-| `memory.remember` | `scope`, `kind`, `text` | — | `edit` |
-| `memory.forget` | `scope`, `text` | — | `edit` |
+| `remember_memory` | `scope`, `kind`, `text` | — | `edit` |
+| `forget_memory` | `scope`, `text` | — | `edit` |
 | `agent` | `name`, `prompt` | — | `read` |
 
 ### `find_files`
@@ -44,7 +44,7 @@ Write complete file content — create or overwrite. Overwrites require a prior 
 
 Execute a local command. `timeout` in seconds, required. Default cwd is workspace. `brief` describes the command in 3-5 words. stdout/stderr are merged.
 
-### `memory.remember` / `memory.forget`
+### `remember_memory` / `forget_memory`
 
 Append or remove a bullet in `memory.md`. `scope`: `global` or `project`. `kind`: `how_to_work`, `what_is_true`, or `where_to_look`.
 

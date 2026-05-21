@@ -28,7 +28,7 @@ pub(crate) async fn dispatch(
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
-        "edit_file" | "write_file" | "memory.remember" | "memory.forget" | "run_command"
+        "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
             ToolResultEnvelope::blocked(
@@ -40,8 +40,8 @@ pub(crate) async fn dispatch(
         }
         "edit_file" => builtin::edit_file(args, workspace, prior_events),
         "write_file" => builtin::write_file(args, workspace, prior_events),
-        "memory.remember" => builtin::memory_remember_with_home(args, workspace, kuku_home),
-        "memory.forget" => builtin::memory_forget_with_home(args, workspace, kuku_home),
+        "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
+        "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
@@ -316,10 +316,10 @@ mod tests {
             "hello\nworld\n"
         );
 
-        // memory.remember denial
+        // remember_memory denial
         let memory_denied = denied_event("tool_memory");
         let remember = dispatch(
-            "memory.remember",
+            "remember_memory",
             &serde_json::json!({"scope": "project", "kind": "how_to_work", "text": "Keep answers concise"}),
             dir.path(),
             dir.path(),
@@ -331,10 +331,10 @@ mod tests {
         assert_eq!(remember.status, "blocked");
         assert!(remember.model_content.contains("permission gate denied"));
 
-        // memory.forget denial
+        // forget_memory denial
         let memory_denied2 = denied_event("tool_memory");
         let forget = dispatch(
-            "memory.forget",
+            "forget_memory",
             &serde_json::json!({"scope": "project", "text": "Keep answers concise"}),
             dir.path(),
             dir.path(),
@@ -374,7 +374,7 @@ mod tests {
             .unwrap();
         let result = runtime.block_on(async {
             dispatch(
-                "memory.remember",
+                "remember_memory",
                 &args,
                 workspace,
                 session_home.path(),

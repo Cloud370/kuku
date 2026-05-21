@@ -39,12 +39,12 @@ struct MemoryFile {
     where_to_look: Vec<String>,
 }
 
-pub(crate) fn memory_remember_with_home(
+pub(crate) fn remember_memory_with_home(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
 ) -> ToolResultEnvelope {
-    let request = match memory_remember_request(args) {
+    let request = match remember_memory_request(args) {
         Ok(request) => request,
         Err(result) => return result,
     };
@@ -77,12 +77,12 @@ pub(crate) fn memory_remember_with_home(
     )
 }
 
-pub(crate) fn memory_forget_with_home(
+pub(crate) fn forget_memory_with_home(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
 ) -> ToolResultEnvelope {
-    let request = match memory_forget_request(args) {
+    let request = match forget_memory_request(args) {
         Ok(request) => request,
         Err(result) => return result,
     };
@@ -120,7 +120,7 @@ pub(crate) fn memory_forget_with_home(
     }
 
     memory_success_result(
-        "memory_forget",
+        "forget_memory",
         request.scope,
         Some(section),
         &memory_path,
@@ -128,7 +128,7 @@ pub(crate) fn memory_forget_with_home(
     )
 }
 
-fn memory_remember_request(args: &Value) -> Result<MemoryRememberRequest, ToolResultEnvelope> {
+fn remember_memory_request(args: &Value) -> Result<MemoryRememberRequest, ToolResultEnvelope> {
     Ok(MemoryRememberRequest {
         scope: memory_scope(args.get("scope"))?,
         section: memory_section(args.get("kind"))?,
@@ -136,7 +136,7 @@ fn memory_remember_request(args: &Value) -> Result<MemoryRememberRequest, ToolRe
     })
 }
 
-fn memory_forget_request(args: &Value) -> Result<MemoryForgetRequest, ToolResultEnvelope> {
+fn forget_memory_request(args: &Value) -> Result<MemoryForgetRequest, ToolResultEnvelope> {
     Ok(MemoryForgetRequest {
         scope: memory_scope(args.get("scope"))?,
         text: required_memory_text(args.get("text"))?,
@@ -169,7 +169,7 @@ fn memory_section(value: Option<&Value>) -> Result<MemorySection, ToolResultEnve
         )),
         None => Err(ToolResultEnvelope::error(
             "failed: missing kind",
-            "memory.remember requires kind",
+            "remember_memory requires kind",
         )),
     }
 }
@@ -431,12 +431,12 @@ mod tests {
     }
 
     #[test]
-    fn memory_remember_creates_expected_memory_file_and_appends_bullet() {
+    fn remember_memory_creates_expected_memory_file_and_appends_bullet() {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
 
         let result = with_kuku_home(home.path(), || {
-            memory_remember_with_home(
+            remember_memory_with_home(
                 &serde_json::json!({
                     "scope": "project",
                     "kind": "how_to_work",
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_remember_and_forget_only_touch_selected_scope() {
+    fn remember_memory_and_forget_only_touch_selected_scope() {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
         let workspace_path = std::fs::canonicalize(dir.path()).unwrap();
@@ -500,7 +500,7 @@ mod tests {
         .unwrap();
 
         let remember = with_kuku_home(home.path(), || {
-            memory_remember_with_home(
+            remember_memory_with_home(
                 &serde_json::json!({
                     "scope": "global",
                     "kind": "what_is_true",
@@ -520,7 +520,7 @@ mod tests {
         );
 
         let forget = with_kuku_home(home.path(), || {
-            memory_forget_with_home(
+            forget_memory_with_home(
                 &serde_json::json!({
                     "scope": "project",
                     "text": "Project only"
@@ -530,7 +530,7 @@ mod tests {
             )
         });
         assert_eq!(forget.status, "ok");
-        assert_eq!(forget.structured.as_ref().unwrap()["kind"], "memory_forget");
+        assert_eq!(forget.structured.as_ref().unwrap()["kind"], "forget_memory");
         assert_eq!(forget.structured.as_ref().unwrap()["scope"], "project");
         assert_eq!(
             forget.structured.as_ref().unwrap()["section"],
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_forget_requires_exactly_one_matching_bullet() {
+    fn forget_memory_requires_exactly_one_matching_bullet() {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
         let workspace_path = std::fs::canonicalize(dir.path()).unwrap();
@@ -560,7 +560,7 @@ mod tests {
         )
         .unwrap();
         let cross_section = with_kuku_home(home.path(), || {
-            memory_forget_with_home(
+            forget_memory_with_home(
                 &serde_json::json!({"scope": "project", "text": "Duplicate"}),
                 dir.path(),
                 home.path(),
@@ -573,7 +573,7 @@ mod tests {
         let same_section_content = "# memory\n\n## how_to_work\n- Duplicate\n- Duplicate\n\n## what_is_true\n\n## where_to_look\n";
         std::fs::write(&project_path, same_section_content).unwrap();
         let same_section = with_kuku_home(home.path(), || {
-            memory_forget_with_home(
+            forget_memory_with_home(
                 &serde_json::json!({"scope": "project", "text": "Duplicate"}),
                 dir.path(),
                 home.path(),
@@ -590,7 +590,7 @@ mod tests {
 
         // Zero matches
         let zero = with_kuku_home(home.path(), || {
-            memory_forget_with_home(
+            forget_memory_with_home(
                 &serde_json::json!({"scope": "project", "text": "Missing"}),
                 dir.path(),
                 home.path(),
@@ -606,7 +606,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
 
         let invalid_scope = with_kuku_home(home.path(), || {
-            memory_remember_with_home(
+            remember_memory_with_home(
                 &serde_json::json!({
                     "scope": "session",
                     "kind": "how_to_work",
@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(invalid_scope.structured.as_ref().unwrap()["kind"], "error");
 
         let invalid_kind = with_kuku_home(home.path(), || {
-            memory_remember_with_home(
+            remember_memory_with_home(
                 &serde_json::json!({
                     "scope": "project",
                     "kind": "preferences",
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(invalid_kind.structured.as_ref().unwrap()["kind"], "error");
 
         let invalid_text = with_kuku_home(home.path(), || {
-            memory_forget_with_home(
+            forget_memory_with_home(
                 &serde_json::json!({"scope": "project", "text": "   "}),
                 dir.path(),
                 home.path(),
@@ -645,12 +645,12 @@ mod tests {
     }
 
     #[test]
-    fn memory_remember_rejects_text_with_embedded_line_breaks() {
+    fn remember_memory_rejects_text_with_embedded_line_breaks() {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
 
         let result = with_kuku_home(home.path(), || {
-            memory_remember_with_home(
+            remember_memory_with_home(
                 &serde_json::json!({
                     "scope": "project",
                     "kind": "how_to_work",

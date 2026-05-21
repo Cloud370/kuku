@@ -43,12 +43,12 @@ Memory is edited through two restricted tools — not through general file tools
 
 | Tool | Args | Effect |
 |------|------|--------|
-| `memory.remember` | `scope`, `kind`, `text` | Append one bullet to the matching section |
-| `memory.forget` | `scope`, `text` | Remove one bullet by exact text match. Fails if zero or more than one match. |
+| `remember_memory` | `scope`, `kind`, `text` | Append one bullet to the matching section |
+| `forget_memory` | `scope`, `text` | Remove one bullet by exact text match. Fails if zero or more than one match. |
 
 `scope`: `global` or `project`. `kind`: `how_to_work`, `what_is_true`, or `where_to_look`.
 
-To update a memory: call `memory.forget` then `memory.remember` in the same tool batch. Tools execute in order; forget runs before remember.
+To update a memory: call `forget_memory` then `remember_memory` in the same tool batch. Tools execute in order; forget runs before remember.
 
 Memory tools write to `events.jsonl` like any other tool. The new memory snapshot takes effect on the next turn's context rebuild — the current turn sees the change through the tool result.
 
@@ -65,7 +65,7 @@ When in doubt, ask the user before writing.
 
 ## Writing standards
 
-Memory is agent-maintained, not auto-collected. The agent writes memory through `memory.remember` / `memory.forget`, following the guidance in its system prompt and tool-guidance.
+Memory is agent-maintained, not auto-collected. The agent writes memory through `remember_memory` / `forget_memory`, following the guidance in its system prompt and tool-guidance.
 
 ### What deserves memory
 

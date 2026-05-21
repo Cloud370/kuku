@@ -101,7 +101,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             "edit",
         ),
         tool(
-            "memory.remember",
+            "remember_memory",
             "Append one natural-language bullet to global or project memory under a supported section.",
             serde_json::json!({
                 "type": "object",
@@ -117,7 +117,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             "edit",
         ),
         tool(
-            "memory.forget",
+            "forget_memory",
             "Remove exactly one matching bullet from global or project memory by exact text.",
             serde_json::json!({
                 "type": "object",
@@ -212,8 +212,8 @@ mod tests {
                 "search_text",
                 "edit_file",
                 "write_file",
-                "memory.remember",
-                "memory.forget",
+                "remember_memory",
+                "forget_memory",
                 "run_command",
             ]
         );
@@ -227,15 +227,15 @@ mod tests {
 
         let remember = registry
             .iter()
-            .find(|tool| tool.name == "memory.remember")
-            .expect("memory.remember registered");
+            .find(|tool| tool.name == "remember_memory")
+            .expect("remember_memory registered");
         assert!(!remember.read_only);
         assert_eq!(remember.risk, "edit");
 
         let forget = registry
             .iter()
-            .find(|tool| tool.name == "memory.forget")
-            .expect("memory.forget registered");
+            .find(|tool| tool.name == "forget_memory")
+            .expect("forget_memory registered");
         assert!(!forget.read_only);
         assert_eq!(forget.risk, "edit");
     }

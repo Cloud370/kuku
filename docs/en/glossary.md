@@ -58,7 +58,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 
 | Canonical Name | Definition |
 |---------------|------------|
-| `tool` | An agent capability with a name, JSON schema, and execution handler. Built-in tools: `find_files`, `read_file`, `search_text`, `edit_file`, `write_file`, `memory.remember`, `memory.forget`, `run_command`, `agent`. |
+| `tool` | An agent capability with a name, JSON schema, and execution handler. Built-in tools: `find_files`, `read_file`, `search_text`, `edit_file`, `write_file`, `remember_memory`, `forget_memory`, `run_command`, `agent`. |
 | `tool registry` | Ordered, stable list of tool definitions for a request. Built-in tools are fixed-order; `agent` tool is conditionally appended. |
 | `tool result envelope` | Unified return type for all tool executions: `status`, `summary`, `model_content`, `truncated`, `structured`. |
 | `read snapshot` | File identity recorded on successful `read_file`: canonical path, content hash, event id, line range. Enables read caching and write/edit precondition checks. |

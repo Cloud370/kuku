@@ -273,8 +273,8 @@ mod tests {
         for (tool, candidate) in [
             ("edit_file", "src/main.rs"),
             ("write_file", "src/lib.rs"),
-            ("memory.remember", "memory.md"),
-            ("memory.forget", "memory.md"),
+            ("remember_memory", "memory.md"),
+            ("forget_memory", "memory.md"),
         ] {
             let decision = decide_tool_call(tool, "edit", candidate, &policy, &grants);
             assert_eq!(

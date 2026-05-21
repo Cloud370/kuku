@@ -185,8 +185,8 @@ async fn executes_find_files_and_continues_to_final_response() {
             ..
         } if tools.as_ref().is_some_and(|t| t.count == Some(10))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
-            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.remember".to_string())))
-            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"memory.forget".to_string())))
+            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"remember_memory".to_string())))
+            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"forget_memory".to_string())))
             && tools.as_ref().is_some_and(|t| t.hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:")))
     )));
     assert!(events.iter().any(|event| matches!(
