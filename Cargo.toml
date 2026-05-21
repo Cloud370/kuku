@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/kuku", "crates/kuku-cli", "crates/kuku-server", "apps/kuku"]
+default-members = ["apps/kuku"]
 resolver = "2"
 
 [workspace.dependencies]
