@@ -426,7 +426,7 @@ mod tests {
     #[cfg(windows)]
     fn noisy_timeout_command() -> String {
         format!(
-            "echo {} && ping 127.0.0.1 -n 3 > NUL",
+            "echo {} && timeout /t 3 /nobreak > NUL",
             "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
         )
     }
