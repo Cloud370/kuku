@@ -148,6 +148,8 @@ mod tests {
             output: RunOutput {
                 session_id: "s1".to_string(),
                 text: "done".to_string(),
+                usage: None,
+                turn: 1,
             },
             usage: None,
             turn: 1,

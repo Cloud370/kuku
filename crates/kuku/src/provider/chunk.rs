@@ -22,6 +22,8 @@ pub(crate) enum ProviderChunk {
     StreamUsage {
         input_tokens: u64,
         output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
     },
     /// The model's final stop reason for the response.
     StopReason { reason: String },

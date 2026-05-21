@@ -203,6 +203,23 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                         .unwrap_or("")
                         .to_string();
                     chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                    if let Some(usage) = msg.get("usage") {
+                        chunks.push(ProviderChunk::StreamUsage {
+                            input_tokens: usage
+                                .get("input_tokens")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            output_tokens: 0,
+                            cache_read_input_tokens: usage
+                                .get("cache_read_input_tokens")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            cache_creation_input_tokens: usage
+                                .get("cache_creation_input_tokens")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        });
+                    }
                 }
             }
             "content_block_start" => {
@@ -302,6 +319,8 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                             .get("output_tokens")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
                     });
                 }
             }

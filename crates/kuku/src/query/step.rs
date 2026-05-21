@@ -46,6 +46,9 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     if let Some(ref u) = usage {
         pending.cumulative_input_tokens += u.input_tokens.unwrap_or(0);
         pending.cumulative_output_tokens += u.output_tokens.unwrap_or(0);
+        pending.cumulative_cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
+        pending.cumulative_cache_creation_input_tokens +=
+            u.cache_creation_input_tokens.unwrap_or(0);
     }
 
     let has_tool_calls = !tool_calls.is_empty();
@@ -82,11 +85,15 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             let total_usage = Some(crate::provider::types::ProviderUsage {
                 input_tokens: Some(pending.cumulative_input_tokens),
                 output_tokens: Some(pending.cumulative_output_tokens),
+                cache_read_input_tokens: Some(pending.cumulative_cache_read_input_tokens),
+                cache_creation_input_tokens: Some(pending.cumulative_cache_creation_input_tokens),
             });
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
                     session_id: pending.session_id.clone(),
                     text: accumulated_text,
+                    usage: total_usage.clone(),
+                    turn: pending.turn,
                 },
                 total_usage,
                 pending.turn,
@@ -146,6 +153,8 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                     super::types::RunOutput {
                         session_id: pending.session_id.clone(),
                         text: String::new(),
+                        usage: None,
+                        turn: pending.turn,
                     },
                     None,
                     pending.turn,

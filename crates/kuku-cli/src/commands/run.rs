@@ -194,8 +194,16 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
                 for event in events.iter().rev() {
                     if let kuku::event::EventPayload::ModelResponse { usage, .. } = &event.payload {
-                        if let Some(tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                            previous_input_tokens = tokens;
+                        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            let cache_read = usage
+                                .get("cache_read_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let cache_creation = usage
+                                .get("cache_creation_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            previous_input_tokens = input + cache_read + cache_creation;
                             break;
                         }
                     }
@@ -206,15 +214,28 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // JSON single-result path: use run(), output one final JSON line
     if args.json {
+        let json_start = std::time::Instant::now();
         let output = q.run().await?;
+        let json_elapsed = json_start.elapsed();
+        let (input_tokens, output_tokens, cache_read, cache_creation) = output
+            .usage
+            .as_ref()
+            .map(|u| {
+                (
+                    u.input_tokens.unwrap_or(0),
+                    u.output_tokens.unwrap_or(0),
+                    u.cache_read_input_tokens.unwrap_or(0),
+                    u.cache_creation_input_tokens.unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
         let line = OutputLine::session_completed(
             output.session_id,
             tier_name.clone(),
             model_name.clone(),
-            0,
-            0,
-            0,
-            0,
+            output.turn,
+            (input_tokens, output_tokens, cache_read, cache_creation),
+            json_elapsed.as_millis() as u64,
         );
         println!("{}", line.to_json_line());
         return Ok(());
@@ -255,6 +276,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut thinking_start: Option<Instant> = None;
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
+    let mut total_cache_read_input_tokens: u64 = 0;
+    let mut total_cache_creation_input_tokens: u64 = 0;
     let mut current_turn: u64 = 0;
 
     loop {
@@ -404,6 +427,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(u) = &usage {
                     total_input_tokens += u.input_tokens.unwrap_or(0);
                     total_output_tokens += u.output_tokens.unwrap_or(0);
+                    total_cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
+                    total_cache_creation_input_tokens += u.cache_creation_input_tokens.unwrap_or(0);
                 }
                 current_turn = turn;
                 break;
@@ -423,8 +448,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 tier_name.clone(),
                 model_name.clone(),
                 current_turn,
-                total_input_tokens,
-                total_output_tokens,
+                (
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_input_tokens,
+                    total_cache_creation_input_tokens,
+                ),
                 session_elapsed.as_millis() as u64,
             )
             .to_json_line()
@@ -437,6 +466,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 current_turn,
                 total_input_tokens,
                 total_output_tokens,
+                total_cache_read_input_tokens,
                 session_elapsed,
             )
         );

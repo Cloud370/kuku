@@ -90,6 +90,8 @@ pub(crate) struct ProviderRequest {
 pub struct ProviderUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

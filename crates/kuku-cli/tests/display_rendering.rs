@@ -57,7 +57,7 @@ fn session_start_shows_tier_and_model() {
 #[test]
 fn session_completed_shows_in_out_tokens() {
     let d = Display::new(false, "medium");
-    let line = d.session_completed("s_001", 2, 35000, 7000, Duration::from_secs(18));
+    let line = d.session_completed("s_001", 2, 35000, 7000, 0, Duration::from_secs(18));
     assert!(
         line.contains("in 35.0k"),
         "should show input tokens: {line}"

@@ -232,12 +232,26 @@ impl Run {
                 ProviderChunk::StreamUsage {
                     input_tokens,
                     output_tokens,
-                    ..
+                    cache_read_input_tokens,
+                    cache_creation_input_tokens,
                 } => {
-                    streaming.usage = Some(crate::provider::types::ProviderUsage {
-                        input_tokens: Some(input_tokens),
-                        output_tokens: Some(output_tokens),
-                    });
+                    let entry =
+                        streaming
+                            .usage
+                            .get_or_insert(crate::provider::types::ProviderUsage {
+                                input_tokens: Some(0),
+                                output_tokens: Some(0),
+                                cache_read_input_tokens: Some(0),
+                                cache_creation_input_tokens: Some(0),
+                            });
+                    entry.input_tokens = Some(entry.input_tokens.unwrap_or(0) + input_tokens);
+                    entry.output_tokens = Some(entry.output_tokens.unwrap_or(0) + output_tokens);
+                    entry.cache_read_input_tokens =
+                        Some(entry.cache_read_input_tokens.unwrap_or(0) + cache_read_input_tokens);
+                    entry.cache_creation_input_tokens = Some(
+                        entry.cache_creation_input_tokens.unwrap_or(0)
+                            + cache_creation_input_tokens,
+                    );
                 }
                 ProviderChunk::StreamEnd => {}
             }
@@ -434,6 +448,8 @@ mod tests {
             request_num: 1,
             cumulative_input_tokens: 0,
             cumulative_output_tokens: 0,
+            cumulative_cache_read_input_tokens: 0,
+            cumulative_cache_creation_input_tokens: 0,
             resolved: None,
             queued_tool_calls: std::collections::VecDeque::new(),
             saved_tool_call: None,
@@ -487,6 +503,8 @@ mod tests {
                 request_num: 1,
                 cumulative_input_tokens: 0,
                 cumulative_output_tokens: 0,
+                cumulative_cache_read_input_tokens: 0,
+                cumulative_cache_creation_input_tokens: 0,
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,

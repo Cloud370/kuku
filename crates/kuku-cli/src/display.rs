@@ -216,16 +216,23 @@ impl Display {
         turns: u64,
         input_tokens: u64,
         output_tokens: u64,
+        cache_read_input_tokens: u64,
         duration: Duration,
     ) -> String {
         let secs = duration.as_secs();
+        let cache_part = if cache_read_input_tokens > 0 {
+            format!(" \u{b7} cache {}", fmt_tokens(cache_read_input_tokens))
+        } else {
+            String::new()
+        };
         format!(
-            "{} completed: {} \u{b7} {} turns \u{b7} in {} \u{b7} out {} \u{b7} {}s {}",
+            "{} completed: {} \u{b7} {} turns \u{b7} in {} \u{b7} out {}{} \u{b7} {}s {}",
             SESSION_PREFIX,
             session_id,
             turns,
             fmt_tokens(input_tokens),
             fmt_tokens(output_tokens),
+            cache_part,
             secs,
             SESSION_PREFIX
         )
@@ -508,6 +515,10 @@ pub enum OutputLine {
         #[serde(skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        cache_read_input_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_creation_input_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         previous_input_tokens: Option<u64>,
@@ -628,6 +639,8 @@ impl OutputLine {
             turns: None,
             input_tokens: None,
             output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
             duration_ms: None,
             previous_input_tokens,
         }
@@ -639,10 +652,10 @@ impl OutputLine {
         tier: String,
         model: String,
         turns: u64,
-        input_tokens: u64,
-        output_tokens: u64,
+        usage: (u64, u64, u64, u64),
         duration_ms: u64,
     ) -> Self {
+        let (input_tokens, output_tokens, cache_read, cache_creation) = usage;
         OutputLine::Session {
             session_id,
             event: "completed".into(),
@@ -651,6 +664,16 @@ impl OutputLine {
             turns: Some(turns),
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
+            cache_read_input_tokens: if cache_read > 0 {
+                Some(cache_read)
+            } else {
+                None
+            },
+            cache_creation_input_tokens: if cache_creation > 0 {
+                Some(cache_creation)
+            } else {
+                None
+            },
             duration_ms: Some(duration_ms),
             previous_input_tokens: None,
         }
@@ -666,6 +689,8 @@ impl OutputLine {
             turns: Some(turns),
             input_tokens: None,
             output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
             duration_ms: None,
             previous_input_tokens: None,
         }
@@ -688,7 +713,7 @@ mod tests {
     #[test]
     fn session_completed_shows_in_out_tokens() {
         let d = Display::new(false, "medium");
-        let line = d.session_completed("s_001", 2, 35000, 7000, Duration::from_secs(18));
+        let line = d.session_completed("s_001", 2, 35000, 7000, 0, Duration::from_secs(18));
         assert!(
             line.contains("in 35.0k"),
             "should show input tokens: {line}"

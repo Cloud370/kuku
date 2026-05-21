@@ -39,6 +39,8 @@ pub struct Query {
 pub struct RunOutput {
     pub session_id: String,
     pub text: String,
+    pub usage: Option<crate::provider::types::ProviderUsage>,
+    pub turn: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +152,8 @@ pub(super) struct PendingRun {
     pub(super) request_num: u64,
     pub(super) cumulative_input_tokens: u64,
     pub(super) cumulative_output_tokens: u64,
+    pub(super) cumulative_cache_read_input_tokens: u64,
+    pub(super) cumulative_cache_creation_input_tokens: u64,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) saved_tool_call: Option<QueuedToolCall>,

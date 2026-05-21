@@ -116,6 +116,8 @@ impl Query {
                 request_num: 0,
                 cumulative_input_tokens: 0,
                 cumulative_output_tokens: 0,
+                cumulative_cache_read_input_tokens: 0,
+                cumulative_cache_creation_input_tokens: 0,
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 saved_tool_call: None,
