@@ -630,7 +630,7 @@ fn render_responses_body_with_tools() {
     let tool = &tools[0];
     assert_eq!("function", tool["type"].as_str().unwrap());
     assert_eq!("find_files", tool["name"].as_str().unwrap());
-    assert_eq!(true, tool["strict"].as_bool().unwrap());
+    assert!(tool["strict"].is_null());
     assert!(tool["parameters"].is_object());
 }
 

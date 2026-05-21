@@ -117,7 +117,6 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
                     "name": schema.name,
                     "description": schema.description,
                     "parameters": schema.input_schema,
-                    "strict": true,
                 })
             })
             .collect::<Vec<_>>());
