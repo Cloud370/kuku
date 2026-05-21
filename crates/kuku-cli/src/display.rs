@@ -210,6 +210,7 @@ impl Display {
     }
 
     /// Render a session completed line with separate in/out tokens.
+    #[allow(clippy::too_many_arguments)]
     pub fn session_completed(
         &self,
         session_id: &str,
@@ -217,13 +218,21 @@ impl Display {
         input_tokens: u64,
         output_tokens: u64,
         cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
         duration: Duration,
     ) -> String {
         let secs = duration.as_secs();
-        let cache_part = if cache_read_input_tokens > 0 {
-            format!(" \u{b7} cache {}", fmt_tokens(cache_read_input_tokens))
-        } else {
+        let mut cache_parts = Vec::new();
+        if cache_read_input_tokens > 0 {
+            cache_parts.push(format!("read {}", fmt_tokens(cache_read_input_tokens)));
+        }
+        if cache_creation_input_tokens > 0 {
+            cache_parts.push(format!("write {}", fmt_tokens(cache_creation_input_tokens)));
+        }
+        let cache_part = if cache_parts.is_empty() {
             String::new()
+        } else {
+            format!(" \u{b7} cache {}", cache_parts.join(" / "))
         };
         format!(
             "{} completed: {} \u{b7} {} turns \u{b7} in {} \u{b7} out {}{} \u{b7} {}s {}",
@@ -713,7 +722,7 @@ mod tests {
     #[test]
     fn session_completed_shows_in_out_tokens() {
         let d = Display::new(false, "medium");
-        let line = d.session_completed("s_001", 2, 35000, 7000, 0, Duration::from_secs(18));
+        let line = d.session_completed("s_001", 2, 35000, 7000, 0, 0, Duration::from_secs(18));
         assert!(
             line.contains("in 35.0k"),
             "should show input tokens: {line}"
@@ -724,6 +733,20 @@ mod tests {
         );
         assert!(line.contains("2 turns"), "should show turn count");
         assert!(line.contains("18s"), "should show duration");
+    }
+
+    #[test]
+    fn session_completed_shows_cache_metrics() {
+        let d = Display::new(false, "medium");
+        let line = d.session_completed("s_001", 1, 1000, 500, 800, 200, Duration::from_secs(5));
+        assert!(
+            line.contains("cache read 800"),
+            "should show cache read: {line}"
+        );
+        assert!(
+            line.contains("write 200"),
+            "should show cache creation: {line}"
+        );
     }
 
     #[test]
