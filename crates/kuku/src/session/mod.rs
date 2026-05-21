@@ -51,7 +51,14 @@ fn process_alive(pid: i32) -> bool {
     {
         std::path::PathBuf::from(format!("/proc/{pid}")).exists()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        unsafe { kill(pid, 0) == 0 }
+    }
+    #[cfg(target_os = "windows")]
     {
         let _ = pid;
         false
