@@ -1,0 +1,24 @@
+name: Question
+description: Ask a question about kuku
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+      placeholder: Describe your question clearly
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Any relevant background (config, version, what you tried)
+      placeholder: |
+        - kuku version:
+        - OS:
+        - What I tried:
+    validations:
+      required: false

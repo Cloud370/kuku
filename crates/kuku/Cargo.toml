@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "File-native agent runtime SDK"
+repository = "https://github.com/Cloud370/kuku"
+homepage = "https://github.com/Cloud370/kuku"
+readme = "../../README.md"
+keywords = ["agent", "coding", "terminal", "llm", "cli"]
 
 [dependencies]
 home = { workspace = true }
