@@ -4,6 +4,8 @@
 
 > Minimal terminal coding agent, file-native at its core
 
+> **Status**: kuku is in active development. APIs and file formats may change.
+
 kuku is a terminal coding agent with a file-native architecture. No database, no server, no hidden state. Everything — config, memory, sessions, skills — is a file you can read, edit, and version-control.
 
 ## Why kuku
@@ -17,11 +19,11 @@ kuku is a terminal coding agent with a file-native architecture. No database, no
 
 | | kuku | Claude Code | Codex | OpenCode |
 |--|------|-------------|-------|----------|
-| Binary size | **~10 MB** | ~250 MB | ~80 MB | ~50 MB |
-| Dependencies | **~15** | ~80 | ~280 | ~100 |
-| Config | 1 TOML file | JSON + flags + feature gates | 96 fields, 9 TOML layers | 57+ fields, 9 layers |
-| System prompt | **~3K tokens** | ~30K tokens | ~9K tokens | ~15K tokens |
-| Memory | 1 markdown file | Markdown + YAML | SQLite + JSONL + Markdown | SQLite + JSON (no dedicated memory) |
+| Size | **~10 MB** | ~250 MB | ~80 MB | ~50 MB |
+| Deps | **~15** | ~80 | ~280 | ~100 |
+| Config | 1 TOML | JSON + flags | 9 layers | 9 layers |
+| Prompt | **~3K** | ~30K | ~9K | ~15K |
+| Memory | Markdown | MD + YAML | SQLite + JSONL | SQLite + JSON |
 
 > Based on source code analysis as of May 2026. System prompt includes all tokens injected at session initialization — system instructions, tool definitions, and runtime context.
 
@@ -29,12 +31,12 @@ kuku is a terminal coding agent with a file-native architecture. No database, no
 
 | Feature | Status |
 |---------|--------|
-| File-native agent loop | Done |
+| Agent loop (file-native) | Done |
 | Tools (read, search, edit, write, run) | Done |
-| Skills system | Done |
-| Memory (persistent, human-readable) | Done |
-| Subagents (isolated sessions) | Done |
-| Permission system (multi-level) | Done |
+| Skills | Done |
+| Memory (persistent) | Done |
+| Subagents | Done |
+| Permission system | Done |
 | Multi-provider (Anthropic, OpenAI) | Done |
 | Streaming | Done |
 | CLI | Done |
