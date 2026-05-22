@@ -119,7 +119,7 @@ pub async fn spawn_child_session(
             Some(crate::UiEvent::ThinkingDelta { .. })
             | Some(crate::UiEvent::ToolCall { .. })
             | Some(crate::UiEvent::ToolResult { .. })
-            | Some(crate::UiEvent::TurnStart)
+            | Some(crate::UiEvent::TurnStart { .. })
             | Some(crate::UiEvent::Error { .. })
             | Some(crate::UiEvent::ModelRequest { .. }) => continue,
         }

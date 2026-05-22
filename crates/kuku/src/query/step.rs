@@ -687,7 +687,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     let mut lead_events = Vec::new();
     if pending.request_num == 1 {
-        lead_events.push(UiEvent::TurnStart);
+        lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
     lead_events.push(UiEvent::ModelRequest {
         model: resolved.config.model.clone(),

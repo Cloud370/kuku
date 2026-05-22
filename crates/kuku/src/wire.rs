@@ -51,7 +51,7 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "turn": turn,
             "usage": usage,
         })),
-        UiEvent::TurnStart => Some(json!({
+        UiEvent::TurnStart { .. } => Some(json!({
             "type": "turn_start",
         })),
         UiEvent::Error { code, message } => Some(json!({
@@ -63,6 +63,33 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "model_request",
             "model": model,
             "provider": provider,
+        })),
+        UiEvent::SubexecStart {
+            stage_id,
+            kind,
+            label,
+        } => Some(json!({
+            "type": "subexec_start",
+            "stage_id": stage_id,
+            "kind": kind,
+            "label": label,
+        })),
+        UiEvent::SubexecOutput { stage_id, event } => Some(json!({
+            "type": "subexec_output",
+            "stage_id": stage_id,
+            "event": event,
+        })),
+        UiEvent::SubexecEnd {
+            stage_id,
+            status,
+            summary,
+            result,
+        } => Some(json!({
+            "type": "subexec_end",
+            "stage_id": stage_id,
+            "status": status,
+            "summary": summary,
+            "result": result,
         })),
     }
 }
@@ -161,7 +188,7 @@ mod tests {
 
     #[test]
     fn turn_start_wire_format() {
-        let event = UiEvent::TurnStart;
+        let event = UiEvent::TurnStart { turn: 1 };
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "turn_start");
     }
