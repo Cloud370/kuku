@@ -153,12 +153,13 @@ fn hard_guard_rule(tool: &str, risk: &str, candidate: &str) -> Option<String> {
 }
 
 fn is_hard_guarded_path(candidate: &str) -> bool {
-    candidate
+    let normalized = crate::tool::builtin::common::normalize_path_sep(candidate);
+    normalized
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")
-        || candidate.split('/').any(|part| part == ".kuku") && candidate.ends_with("/policy.md")
+        || (normalized.split('/').any(|part| part == ".kuku") && normalized.ends_with("/policy.md"))
         || crate::tool::builtin::common::is_sensitive_file_name(
-            candidate.rsplit('/').next().unwrap_or(candidate),
+            normalized.rsplit('/').next().unwrap_or(&normalized),
         )
 }
 
@@ -168,12 +169,19 @@ fn is_hard_guarded_command(candidate: &str) -> bool {
         .any(|segment| is_dangerous_command_segment(&segment))
 }
 
-fn normalized_command_segments(candidate: &str) -> Vec<String> {
-    let normalized = candidate
-        .to_ascii_lowercase()
-        .replace("&&", "\n")
+#[allow(clippy::collapsible_str_replace)]
+fn split_command_separators(input: &str) -> String {
+    // Order matters: && must be replaced before & to avoid double-splitting
+    input
+        .replace("&&", "\x00")
         .replace("||", "\n")
-        .replace(';', "\n");
+        .replace('&', "\n")
+        .replace('\x00', "\n")
+        .replace(';', "\n")
+}
+
+fn normalized_command_segments(candidate: &str) -> Vec<String> {
+    let normalized = split_command_separators(&candidate.to_ascii_lowercase());
 
     normalized
         .lines()
@@ -195,10 +203,7 @@ fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
     ] {
         if let Some(rest) = segment.strip_prefix(prefix) {
             let rest = rest.trim().trim_matches('"').trim_matches('\'');
-            return rest
-                .replace("&&", "\n")
-                .replace("||", "\n")
-                .replace(';', "\n")
+            return split_command_separators(rest)
                 .lines()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -235,6 +240,7 @@ fn is_dangerous_command_segment(segment: &str) -> bool {
 }
 
 fn pattern_matches(pattern: &str, candidate: &str) -> bool {
+    let candidate = crate::tool::builtin::common::normalize_path_sep(candidate);
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return candidate == prefix || candidate.starts_with(&format!("{prefix}/"));
     }

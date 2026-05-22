@@ -232,6 +232,11 @@ fn dirs_next() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            Some(std::path::PathBuf::from(drive).join(path))
+        })
 }
 
 #[cfg(test)]
@@ -346,11 +351,15 @@ mod tests {
         assert_eq!(changes.added.len(), 1);
         assert_eq!(changes.added[0].name, "fresh");
         assert_eq!(changes.added[0].description, "new");
-        assert!(changes.added[0].path.ends_with(".kuku/skills/fresh"));
+        let expected_added = std::path::Path::new(".kuku").join("skills").join("fresh");
+        let expected_added_str = expected_added.to_string_lossy().into_owned();
+        assert!(changes.added[0].path.ends_with(&expected_added_str));
         assert_eq!(changes.removed, vec!["tdd".to_string()]);
         assert_eq!(changes.updated.len(), 1);
         assert_eq!(changes.updated[0].name, "shared");
         assert_eq!(changes.updated[0].description, "v2");
-        assert!(changes.updated[0].path.ends_with(".kuku/skills/shared"));
+        let expected_updated = std::path::Path::new(".kuku").join("skills").join("shared");
+        let expected_updated_str = expected_updated.to_string_lossy().into_owned();
+        assert!(changes.updated[0].path.ends_with(&expected_updated_str));
     }
 }

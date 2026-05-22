@@ -50,7 +50,9 @@ mod tests {
         assert!(catalog.contains("<kuku_skill_catalog"));
         assert!(catalog.contains("Available skills:"));
         assert!(catalog.contains("- tdd — Write tests first"));
-        assert!(catalog.contains(".kuku/skills/tdd"));
+        let expected_path = std::path::Path::new(".kuku").join("skills").join("tdd");
+        let expected_path_str = expected_path.to_string_lossy().into_owned();
+        assert!(catalog.contains(&expected_path_str));
         assert!(
             !catalog.contains("Instructions"),
             "catalog must NOT include full instructions"

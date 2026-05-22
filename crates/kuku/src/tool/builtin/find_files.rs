@@ -150,6 +150,8 @@ fn collect_entries(
 }
 
 fn dir_should_traverse(pattern: &str, dir: &str) -> bool {
+    let pattern = pattern.replace('\\', "/");
+    let dir = dir.replace('\\', "/");
     if pattern.starts_with("**/") {
         return true;
     }
@@ -160,7 +162,7 @@ fn dir_should_traverse(pattern: &str, dir: &str) -> bool {
     if wildcard_prefix.is_empty() {
         return pattern.contains("**");
     }
-    wildcard_prefix.starts_with(dir)
+    wildcard_prefix.starts_with(&dir)
 }
 
 fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, files: &mut Vec<String>) {
@@ -220,7 +222,12 @@ mod tests {
         );
         assert_eq!(recursive_docs.model_content, "docs/tools.md");
 
-        let blocked = find_files(&serde_json::json!({"path": "/etc"}), dir.path());
+        let outside_path = if cfg!(target_os = "windows") {
+            "C:\\Windows"
+        } else {
+            "/etc"
+        };
+        let blocked = find_files(&serde_json::json!({"path": outside_path}), dir.path());
         assert_eq!(blocked.status, "blocked");
     }
 

@@ -167,9 +167,9 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
 fn blocked_command_reason(command: &str) -> Option<&'static str> {
     let normalized = command
         .to_ascii_lowercase()
-        .replace("&&", "\n")
+        .replace("&&", "\x00")
         .replace("||", "\n")
-        .replace(';', "\n");
+        .replace(['&', ';', '\x00'], "\n");
     for segment in normalized
         .lines()
         .map(str::trim)
@@ -182,6 +182,12 @@ fn blocked_command_reason(command: &str) -> Option<&'static str> {
             ("git clean -f", "git clean deletes untracked files"),
             ("rm -rf", "recursive force delete is destructive"),
             ("rm -fr", "recursive force delete is destructive"),
+            ("rmdir /s /q", "recursive force delete is destructive"),
+            ("del /s", "recursive delete is destructive"),
+            (
+                "remove-item -recurse -force",
+                "recursive force delete is destructive",
+            ),
             (
                 "cargo publish",
                 "publish affects external package registries",
@@ -425,10 +431,10 @@ mod tests {
 
     #[cfg(windows)]
     fn noisy_timeout_command() -> String {
-        format!(
-            "echo {} && ping 127.0.0.1 -n 3 > NUL",
-            "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
-        )
+        // Pre-encoded: `'x' * 80100; Start-Sleep -Seconds 3` as UTF-16LE base64.
+        // Using -EncodedCommand avoids cmd.exe mangling special characters (|, >, etc.).
+        let b64 = "JwB4ACcAIAAqACAAOAAwADEAMAAwADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAzAA==";
+        format!("powershell -EncodedCommand {b64}")
     }
 
     #[tokio::test(flavor = "current_thread")]

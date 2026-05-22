@@ -198,17 +198,15 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
         };
 
         match event_type {
-            "response.created" => {
-                if !started {
-                    let rid = data
-                        .get("response")
-                        .and_then(|r| r.get("id"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    chunks.push(ProviderChunk::StreamStart { request_id: rid });
-                    started = true;
-                }
+            "response.created" if !started => {
+                let rid = data
+                    .get("response")
+                    .and_then(|r| r.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                started = true;
             }
             "response.output_item.added" => {
                 let item = match data.get("item") {

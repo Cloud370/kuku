@@ -156,9 +156,19 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
         .replace('\\', "/")
 }
 
+pub(crate) fn normalize_path_sep(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 pub(super) fn is_blocked_relative_path(path: &str) -> bool {
-    path.split('/').any(|part| part == ".git" || part == ".ssh")
-        || path.rsplit('/').next().is_some_and(is_sensitive_file_name)
+    let normalized = normalize_path_sep(path);
+    normalized
+        .split('/')
+        .any(|part| part == ".git" || part == ".ssh")
+        || normalized
+            .rsplit('/')
+            .next()
+            .is_some_and(is_sensitive_file_name)
 }
 
 pub(super) fn is_default_excluded_dir(name: &str) -> bool {
@@ -243,30 +253,31 @@ pub(super) fn plural(count: usize) -> &'static str {
 // ---------- Glob ----------
 
 pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
+    let normalized = normalize_path_sep(path);
     if pattern == "*" {
         return true;
     }
     if let Some(suffix) = pattern.strip_prefix("**/*") {
-        return path.ends_with(suffix);
+        return normalized.ends_with(suffix);
     }
     if let Some((prefix, suffix)) = pattern.split_once("/**/*") {
-        return path.starts_with(&format!("{prefix}/")) && path.ends_with(suffix);
+        return normalized.starts_with(&format!("{prefix}/")) && normalized.ends_with(suffix);
     }
     if let Some(prefix) = pattern.strip_suffix("/**") {
-        return path == prefix || path.starts_with(&format!("{prefix}/"));
+        return normalized == prefix || normalized.starts_with(&format!("{prefix}/"));
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
-        return path
+        return normalized
             .strip_prefix(&format!("{prefix}/"))
             .is_some_and(|rest| !rest.contains('/'));
     }
     if let Some(suffix) = pattern.strip_prefix('*') {
-        return path
+        return normalized
             .rsplit('/')
             .next()
             .is_some_and(|name| name.ends_with(suffix));
     }
-    path == pattern
+    normalized == pattern
 }
 
 // ---------- Parse helpers ----------
