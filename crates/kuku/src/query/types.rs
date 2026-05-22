@@ -77,10 +77,23 @@ pub enum SubexecKind {
 /// Events produced during a sub-execution phase.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubexecEvent {
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolCall { tool_call_id: String, tool: String, summary: String },
-    ToolResult { tool_call_id: String, name: String, status: String, summary: String },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        tool: String,
+        summary: String,
+    },
+    ToolResult {
+        tool_call_id: String,
+        name: String,
+        status: String,
+        summary: String,
+    },
     Stdout(String),
     Stderr(String),
 }

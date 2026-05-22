@@ -877,9 +877,7 @@ async fn handle_agent_tool_call(
     Ok(PendingStep::InSubexec {
         pending: Box::new(pending),
         stage_id,
-        kind: super::types::SubexecKind::Agent {
-            child_session_id,
-        },
+        kind: super::types::SubexecKind::Agent { child_session_id },
         child_run: Box::new(child_run),
         label,
         tool_call_id,
@@ -892,11 +890,7 @@ fn truncate_summary(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        let end = s
-            .char_indices()
-            .nth(max)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
         format!("{}...", &s[..end])
     }
 }

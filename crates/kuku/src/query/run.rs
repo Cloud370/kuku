@@ -46,7 +46,10 @@ impl Run {
     /// Cancel the current run. Streaming is aborted, pending permissions are denied,
     /// and the cancelled model.response enters history.
     pub fn cancel(&mut self) {
-        if let RunState::InSubexec { ref mut child_run, .. } = self.state {
+        if let RunState::InSubexec {
+            ref mut child_run, ..
+        } = self.state
+        {
             child_run.cancel();
         }
         let (events_path, turn) = match &self.state {
@@ -166,7 +169,8 @@ impl Run {
                         Err(e) => {
                             let summary = format!("{} error: {e}", &agent_name);
                             {
-                                let mut store = crate::event::EventStore::open(&pending.events_path)?;
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
                                 store.append(crate::event::EventPayload::ToolResult {
                                     turn: pending.turn,
                                     ts: super::helpers::now_timestamp()?,
@@ -187,14 +191,16 @@ impl Run {
                             }));
                         }
                         Ok(Some(UiEvent::Done { output, .. })) => {
-                            let summary = format!("{} completed in {} turns", &agent_name, output.turn);
+                            let summary =
+                                format!("{} completed in {} turns", &agent_name, output.turn);
                             let structured = Some(serde_json::json!({
                                 "kind": "subagent_result",
                                 "child_session_id": stage_id,
                                 "turns_completed": output.turn,
                             }));
                             {
-                                let mut store = crate::event::EventStore::open(&pending.events_path)?;
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
                                 store.append(crate::event::EventPayload::ToolResult {
                                     turn: pending.turn,
                                     ts: super::helpers::now_timestamp()?,
@@ -231,9 +237,11 @@ impl Run {
                             }));
                         }
                         Ok(None) => {
-                            let summary = format!("{} error: stream ended unexpectedly", &agent_name);
+                            let summary =
+                                format!("{} error: stream ended unexpectedly", &agent_name);
                             {
-                                let mut store = crate::event::EventStore::open(&pending.events_path)?;
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
                                 store.append(crate::event::EventPayload::ToolResult {
                                     turn: pending.turn,
                                     ts: super::helpers::now_timestamp()?,
@@ -508,7 +516,9 @@ pub(super) fn find_tool_definition<'a>(
 fn map_child_to_subexec_event(event: UiEvent) -> crate::query::types::SubexecEvent {
     match event {
         UiEvent::TextDelta { text } => crate::query::types::SubexecEvent::TextDelta { text },
-        UiEvent::ThinkingDelta { text } => crate::query::types::SubexecEvent::ThinkingDelta { text },
+        UiEvent::ThinkingDelta { text } => {
+            crate::query::types::SubexecEvent::ThinkingDelta { text }
+        }
         UiEvent::ToolCall {
             tool_call_id,
             tool,
