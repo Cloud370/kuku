@@ -687,7 +687,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     let mut lead_events = Vec::new();
     if pending.request_num == 1 {
-        lead_events.push(UiEvent::TurnStart);
+        lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
     lead_events.push(UiEvent::ModelRequest {
         model: resolved.config.model.clone(),
@@ -796,7 +796,7 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
 }
 
 async fn handle_agent_tool_call(
-    mut pending: PendingRun,
+    pending: PendingRun,
     queued_tool_call: QueuedToolCall,
 ) -> Result<PendingStep> {
     let name = queued_tool_call
@@ -804,27 +804,28 @@ async fn handle_agent_tool_call(
         .args
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unknown")
+        .to_string();
     let prompt = queued_tool_call
         .tool_call
         .args
         .get("prompt")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
     let definition = pending
         .subagent_registry
         .as_ref()
-        .and_then(|reg| reg.get(name))
+        .and_then(|reg| reg.get(&name))
         .cloned()
         .ok_or_else(|| crate::error::Error::Provider {
             kind: crate::provider::types::ProviderFailureKind::Unknown,
-            message: format!("subagent '{name}' not found in registry"),
+            message: format!("subagent '{}' not found in registry", &name),
             provider: None,
             model: None,
         })?;
 
-    // Check session limit
     if pending.child_session_count >= 20 {
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ToolResult {
@@ -853,66 +854,63 @@ async fn handle_agent_tool_call(
         "child_{}_{}",
         pending.session_id, pending.child_session_count
     );
+    let stage_id = child_session_id.clone();
+    let label = format!("{} · {}", &name, truncate_summary(&prompt, 60));
+    let tool_call_id = queued_tool_call.tool_call.id.clone();
 
-    // Spawn child session
+    let mut pending = pending;
     pending.child_session_count += 1;
-    let result = crate::subagent::session::spawn_child_session(
+
+    let child_run = crate::subagent::session::start_child_session(
         pending.events_path.parent().unwrap(),
         &child_session_id,
         &definition,
-        prompt,
+        &prompt,
         &pending.workspace,
         &pending.kuku_home,
         pending.config.clone(),
         pending.prompts_dir.as_deref(),
-        super::types::PermissionMode::Interactive,
+        super::types::PermissionMode::AutoAllow,
     )
     .await?;
 
-    let summary = match result.status {
-        crate::subagent::session::ChildSessionStatus::Completed => {
-            format!("{} completed in {} turns", name, result.turns_completed)
-        }
-        crate::subagent::session::ChildSessionStatus::TurnLimitReached => {
-            format!("{} reached turn limit ({})", name, result.turns_completed)
-        }
-        crate::subagent::session::ChildSessionStatus::Error(ref e) => {
-            format!("{} error: {e}", name)
-        }
-    };
-
-    let status = match result.status {
-        crate::subagent::session::ChildSessionStatus::Completed => "ok".to_string(),
-        crate::subagent::session::ChildSessionStatus::TurnLimitReached => "ok".to_string(),
-        _ => "error".to_string(),
-    };
-
-    let structured = serde_json::json!({
-        "kind": "subagent_result",
-        "child_session_id": result.child_session_id,
-        "turns_completed": result.turns_completed,
-    });
-
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ToolResult {
-        turn: pending.turn,
-        ts: now_timestamp()?,
-        tool_call_id: queued_tool_call.tool_call.id.clone(),
-        status: status.clone(),
-        summary: summary.clone(),
-        model_content: result.output_text.clone(),
-        truncated: false,
-        structured: Some(structured.clone()),
-    })?;
-
-    Ok(PendingStep::ToolResultReady {
+    Ok(PendingStep::InSubexec {
         pending: Box::new(pending),
-        ui_event: UiEvent::ToolResult {
-            tool_call_id: queued_tool_call.tool_call.id.clone(),
-            name: queued_tool_call.tool_call.name.clone(),
-            status,
-            summary,
-            structured: Some(structured),
-        },
+        stage_id,
+        kind: super::types::SubexecKind::Agent { child_session_id },
+        child_run: Box::new(child_run),
+        label,
+        tool_call_id,
+        agent_name: name,
     })
+}
+
+fn truncate_summary(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
+        format!("{}...", &s[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_summary_handles_multibyte() {
+        let s = "这是中文测试字符串";
+        let result = truncate_summary(s, 8);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 27);
+    }
+
+    #[test]
+    fn truncate_summary_short_string_unchanged() {
+        let s = "hello";
+        let result = truncate_summary(s, 60);
+        assert_eq!(result, "hello");
+    }
 }

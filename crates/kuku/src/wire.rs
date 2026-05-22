@@ -51,8 +51,9 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "turn": turn,
             "usage": usage,
         })),
-        UiEvent::TurnStart => Some(json!({
+        UiEvent::TurnStart { turn } => Some(json!({
             "type": "turn_start",
+            "turn": turn,
         })),
         UiEvent::Error { code, message } => Some(json!({
             "type": "error",
@@ -63,6 +64,33 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "model_request",
             "model": model,
             "provider": provider,
+        })),
+        UiEvent::SubexecStart {
+            stage_id,
+            kind,
+            label,
+        } => Some(json!({
+            "type": "subexec_start",
+            "stage_id": stage_id,
+            "kind": kind,
+            "label": label,
+        })),
+        UiEvent::SubexecOutput { stage_id, event } => Some(json!({
+            "type": "subexec_output",
+            "stage_id": stage_id,
+            "event": event,
+        })),
+        UiEvent::SubexecEnd {
+            stage_id,
+            status,
+            summary,
+            result,
+        } => Some(json!({
+            "type": "subexec_end",
+            "stage_id": stage_id,
+            "status": status,
+            "summary": summary,
+            "result": result,
         })),
     }
 }
@@ -161,7 +189,7 @@ mod tests {
 
     #[test]
     fn turn_start_wire_format() {
-        let event = UiEvent::TurnStart;
+        let event = UiEvent::TurnStart { turn: 1 };
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "turn_start");
     }
@@ -188,5 +216,56 @@ mod tests {
         assert_eq!(wire["type"], "model_request");
         assert_eq!(wire["model"], "claude-sonnet-4-6");
         assert_eq!(wire["provider"], "anthropic");
+    }
+
+    #[test]
+    fn turn_start_wire_format_includes_turn() {
+        let event = UiEvent::TurnStart { turn: 5 };
+        let wire = to_wire(&event).unwrap();
+        assert_eq!(wire["type"], "turn_start");
+        assert_eq!(wire["turn"], 5);
+    }
+
+    #[test]
+    fn subexec_start_wire_format() {
+        let event = UiEvent::SubexecStart {
+            stage_id: "child_abc_0".into(),
+            kind: crate::query::SubexecKind::Agent {
+                child_session_id: "child_abc_0".into(),
+            },
+            label: "code-review".into(),
+        };
+        let wire = to_wire(&event).unwrap();
+        assert_eq!(wire["type"], "subexec_start");
+        assert_eq!(wire["stage_id"], "child_abc_0");
+        assert_eq!(wire["label"], "code-review");
+    }
+
+    #[test]
+    fn subexec_output_wire_format() {
+        let event = UiEvent::SubexecOutput {
+            stage_id: "child_abc_0".into(),
+            event: crate::query::SubexecEvent::TextDelta {
+                text: "hello".into(),
+            },
+        };
+        let wire = to_wire(&event).unwrap();
+        assert_eq!(wire["type"], "subexec_output");
+        assert_eq!(wire["stage_id"], "child_abc_0");
+    }
+
+    #[test]
+    fn subexec_end_wire_format() {
+        let event = UiEvent::SubexecEnd {
+            stage_id: "child_abc_0".into(),
+            status: "ok".into(),
+            summary: "completed in 3 turns".into(),
+            result: None,
+        };
+        let wire = to_wire(&event).unwrap();
+        assert_eq!(wire["type"], "subexec_end");
+        assert_eq!(wire["stage_id"], "child_abc_0");
+        assert_eq!(wire["status"], "ok");
+        assert_eq!(wire["summary"], "completed in 3 turns");
     }
 }

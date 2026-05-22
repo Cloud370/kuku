@@ -33,6 +33,7 @@ impl Run {
             RunState::Streaming(s) => &s.pending.workspace,
             RunState::WaitingForPermission(w) => &w.pending.workspace,
             RunState::BatchEvents(p, _) => &p.workspace,
+            RunState::InSubexec { pending, .. } => &pending.workspace,
             RunState::Cancelled { .. } | RunState::Done(_) => std::path::Path::new(""),
         }
     }
@@ -45,11 +46,18 @@ impl Run {
     /// Cancel the current run. Streaming is aborted, pending permissions are denied,
     /// and the cancelled model.response enters history.
     pub fn cancel(&mut self) {
+        if let RunState::InSubexec {
+            ref mut child_run, ..
+        } = self.state
+        {
+            child_run.cancel();
+        }
         let (events_path, turn) = match &self.state {
             RunState::Pending(p) => (p.events_path.clone(), p.turn),
             RunState::Streaming(s) => (s.pending.events_path.clone(), s.pending.turn),
             RunState::WaitingForPermission(w) => (w.pending.events_path.clone(), w.pending.turn),
             RunState::BatchEvents(p, _) => (p.events_path.clone(), p.turn),
+            RunState::InSubexec { pending, .. } => (pending.events_path.clone(), pending.turn),
             RunState::Cancelled { .. } | RunState::Done(_) => return,
         };
         self.state = RunState::Cancelled { events_path, turn };
@@ -86,6 +94,31 @@ impl Run {
                         }
                         return Ok(Some(first));
                     }
+                    PendingStep::InSubexec {
+                        pending,
+                        stage_id,
+                        kind,
+                        child_run,
+                        label,
+                        tool_call_id,
+                        agent_name,
+                    } => {
+                        let subexec_label = label.clone();
+                        self.state = RunState::InSubexec {
+                            pending,
+                            stage_id: stage_id.clone(),
+                            kind: kind.clone(),
+                            child_run,
+                            label,
+                            tool_call_id,
+                            agent_name,
+                        };
+                        return Ok(Some(UiEvent::SubexecStart {
+                            stage_id,
+                            kind,
+                            label: subexec_label,
+                        }));
+                    }
                     PendingStep::Done(output, usage, turn) => {
                         self.state = RunState::Done(None);
                         return Ok(Some(UiEvent::Done {
@@ -95,6 +128,141 @@ impl Run {
                         }));
                     }
                 },
+                RunState::InSubexec {
+                    pending,
+                    stage_id,
+                    kind,
+                    mut child_run,
+                    label,
+                    tool_call_id,
+                    agent_name,
+                } => {
+                    let cancel_token = self.cancel_token.clone();
+                    let child_result = tokio::select! {
+                        result = Box::pin(child_run.next()) => result,
+                        _ = cancel_token.notified() => {
+                            child_run.cancel();
+                            let summary = format!("{} cancelled", &agent_name);
+                            {
+                                let mut store = crate::event::EventStore::open(&pending.events_path)?;
+                                store.append(crate::event::EventPayload::ToolResult {
+                                    turn: pending.turn,
+                                    ts: super::helpers::now_timestamp()?,
+                                    tool_call_id: tool_call_id.clone(),
+                                    status: "cancelled".to_string(),
+                                    summary: summary.clone(),
+                                    model_content: String::new(),
+                                    truncated: false,
+                                    structured: None,
+                                })?;
+                            }
+                            self.state = RunState::Pending(pending);
+                            return Ok(Some(UiEvent::SubexecEnd {
+                                stage_id,
+                                status: "cancelled".to_string(),
+                                summary,
+                                result: None,
+                            }));
+                        }
+                    };
+                    match child_result {
+                        Err(e) => {
+                            let summary = format!("{} error: {e}", &agent_name);
+                            {
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
+                                store.append(crate::event::EventPayload::ToolResult {
+                                    turn: pending.turn,
+                                    ts: super::helpers::now_timestamp()?,
+                                    tool_call_id: tool_call_id.clone(),
+                                    status: "error".to_string(),
+                                    summary: summary.clone(),
+                                    model_content: String::new(),
+                                    truncated: false,
+                                    structured: None,
+                                })?;
+                            }
+                            self.state = RunState::Pending(pending);
+                            return Ok(Some(UiEvent::SubexecEnd {
+                                stage_id,
+                                status: "error".to_string(),
+                                summary,
+                                result: None,
+                            }));
+                        }
+                        Ok(Some(UiEvent::Done { output, .. })) => {
+                            let summary =
+                                format!("{} completed in {} turns", &agent_name, output.turn);
+                            let structured = Some(serde_json::json!({
+                                "kind": "subagent_result",
+                                "child_session_id": stage_id,
+                                "turns_completed": output.turn,
+                            }));
+                            {
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
+                                store.append(crate::event::EventPayload::ToolResult {
+                                    turn: pending.turn,
+                                    ts: super::helpers::now_timestamp()?,
+                                    tool_call_id: tool_call_id.clone(),
+                                    status: "ok".to_string(),
+                                    summary: summary.clone(),
+                                    model_content: output.text,
+                                    truncated: false,
+                                    structured: structured.clone(),
+                                })?;
+                            }
+                            self.state = RunState::Pending(pending);
+                            return Ok(Some(UiEvent::SubexecEnd {
+                                stage_id: stage_id.clone(),
+                                status: "ok".to_string(),
+                                summary,
+                                result: structured,
+                            }));
+                        }
+                        Ok(Some(child_event)) => {
+                            let subexec_event = map_child_to_subexec_event(child_event);
+                            self.state = RunState::InSubexec {
+                                pending,
+                                stage_id: stage_id.clone(),
+                                kind,
+                                child_run,
+                                label,
+                                tool_call_id,
+                                agent_name,
+                            };
+                            if let Some(event) = subexec_event {
+                                return Ok(Some(UiEvent::SubexecOutput { stage_id, event }));
+                            }
+                            continue;
+                        }
+                        Ok(None) => {
+                            let summary =
+                                format!("{} error: stream ended unexpectedly", &agent_name);
+                            {
+                                let mut store =
+                                    crate::event::EventStore::open(&pending.events_path)?;
+                                store.append(crate::event::EventPayload::ToolResult {
+                                    turn: pending.turn,
+                                    ts: super::helpers::now_timestamp()?,
+                                    tool_call_id: tool_call_id.clone(),
+                                    status: "error".to_string(),
+                                    summary: summary.clone(),
+                                    model_content: String::new(),
+                                    truncated: false,
+                                    structured: None,
+                                })?;
+                            }
+                            self.state = RunState::Pending(pending);
+                            return Ok(Some(UiEvent::SubexecEnd {
+                                stage_id,
+                                status: "error".to_string(),
+                                summary,
+                                result: None,
+                            }));
+                        }
+                    }
+                }
                 RunState::Streaming(mut streaming) => {
                     if let Some(event) = streaming.lead_events.pop() {
                         self.state = RunState::Streaming(streaming);
@@ -345,10 +513,50 @@ pub(super) fn find_tool_definition<'a>(
         .and_then(|resolved| resolved.registry.iter().find(|tool| tool.name == name))
 }
 
+fn map_child_to_subexec_event(event: UiEvent) -> Option<crate::query::types::SubexecEvent> {
+    use crate::query::types::SubexecEvent as SE;
+    match event {
+        UiEvent::TextDelta { text } => Some(SE::TextDelta { text }),
+        UiEvent::ThinkingDelta { text } => Some(SE::ThinkingDelta { text }),
+        UiEvent::ToolCall {
+            tool_call_id,
+            tool,
+            summary,
+        } => Some(SE::ToolCall {
+            tool_call_id,
+            tool,
+            summary,
+        }),
+        UiEvent::ToolResult {
+            tool_call_id,
+            name,
+            status,
+            summary,
+            ..
+        } => Some(SE::ToolResult {
+            tool_call_id,
+            name,
+            status,
+            summary,
+        }),
+        UiEvent::Error { code, message } => Some(SE::Stderr(format!("[{code}] {message}"))),
+        UiEvent::PermissionRequested { request } => Some(SE::Stderr(format!(
+            "[unexpected] permission requested in subexec: {} ({})",
+            request.tool, request.summary
+        ))),
+        UiEvent::Done { .. } => Some(SE::Stderr("[unexpected] Done in subexec map".into())),
+        UiEvent::SubexecStart { .. }
+        | UiEvent::SubexecOutput { .. }
+        | UiEvent::SubexecEnd { .. } => Some(SE::Stderr("[unexpected] nested subexec".into())),
+        UiEvent::TurnStart { .. } | UiEvent::ModelRequest { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
+    use crate::query::types::PermissionRequest;
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -594,5 +802,120 @@ mod tests {
         let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));
         assert!(messages.contains(&"Assistant".to_string()));
+    }
+
+    #[test]
+    fn subexec_event_maps_text_delta() {
+        let ui = UiEvent::TextDelta {
+            text: "hello".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            Some(crate::query::types::SubexecEvent::TextDelta {
+                text: "hello".into()
+            })
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_thinking_delta() {
+        let ui = UiEvent::ThinkingDelta {
+            text: "reasoning".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            Some(crate::query::types::SubexecEvent::ThinkingDelta {
+                text: "reasoning".into()
+            })
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_tool_call() {
+        let ui = UiEvent::ToolCall {
+            tool_call_id: "tc_1".into(),
+            tool: "read".into(),
+            summary: "reading file".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            Some(crate::query::types::SubexecEvent::ToolCall {
+                tool_call_id: "tc_1".into(),
+                tool: "read".into(),
+                summary: "reading file".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_tool_result() {
+        let ui = UiEvent::ToolResult {
+            tool_call_id: "tc_1".into(),
+            name: "read".into(),
+            status: "ok".into(),
+            summary: "3 files".into(),
+            structured: None,
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            Some(crate::query::types::SubexecEvent::ToolResult {
+                tool_call_id: "tc_1".into(),
+                name: "read".into(),
+                status: "ok".into(),
+                summary: "3 files".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_error_to_stderr() {
+        let ui = UiEvent::Error {
+            code: "NET".into(),
+            message: "timeout".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            Some(crate::query::types::SubexecEvent::Stderr(
+                "[NET] timeout".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_permission_requested_to_stderr() {
+        let ui = UiEvent::PermissionRequested {
+            request: PermissionRequest {
+                id: "req_1".into(),
+                tool_call_id: "tc_1".into(),
+                tool: "run_command".into(),
+                risk: "command".into(),
+                summary: "cargo test".into(),
+            },
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert!(matches!(
+            se,
+            Some(crate::query::types::SubexecEvent::Stderr(_))
+        ));
+    }
+
+    #[test]
+    fn subexec_event_skips_turn_start() {
+        let ui = UiEvent::TurnStart { turn: 1 };
+        let se = map_child_to_subexec_event(ui);
+        assert!(se.is_none());
+    }
+
+    #[test]
+    fn child_session_id_is_predictable() {
+        let parent_id = "abc123";
+        let counter = 0u64;
+        let expected = format!("child_{}_{}", parent_id, counter);
+        assert_eq!(expected, "child_abc123_0");
     }
 }

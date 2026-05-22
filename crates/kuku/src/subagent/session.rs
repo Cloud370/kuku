@@ -22,11 +22,13 @@ pub enum ChildSessionStatus {
     Error(String),
 }
 
+/// Start a child session and return the Run handle without blocking.
+/// For TUI/interactive use — the caller polls child events via Run::next().
 // Each parameter comes from a different source (config, registry, caller, filesystem);
 // bundling them into a struct would obscure which call sites provide which data.
 #[allow(clippy::too_many_arguments)]
-pub async fn spawn_child_session(
-    parent_session_dir: &Path,
+pub async fn start_child_session(
+    _parent_session_dir: &Path,
     child_session_id: &str,
     definition: &SubagentDefinition,
     delegated_prompt: &str,
@@ -34,17 +36,13 @@ pub async fn spawn_child_session(
     _kuku_home: &Path,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<&Path>,
-    parent_mode: PermissionMode,
-) -> Result<ChildSessionResult> {
-    let subs_dir = parent_session_dir.join("subs");
-    std::fs::create_dir_all(&subs_dir)?;
-
+    _parent_mode: PermissionMode,
+) -> Result<crate::query::Run> {
     let definition_block = super::catalog::render_agent_definition_block(definition);
     let user_prompt = format!(
         "{definition_block}\n\n<kuku_delegated_prompt>\n{delegated_prompt}\n</kuku_delegated_prompt>"
     );
 
-    // Build constrained tool registry from definition.tools
     let full_registry = crate::tool::builtin_registry(false, false);
     let constrained_registry: Vec<crate::tool::ToolDefinition> = match &definition.tools {
         None => full_registry,
@@ -54,7 +52,6 @@ pub async fn spawn_child_session(
             .collect(),
     };
 
-    // Query builder with overrides
     let mut query = crate::query::Query::new(user_prompt)
         .workspace(workspace.to_path_buf())
         .tier(definition.tier.clone())
@@ -67,14 +64,43 @@ pub async fn spawn_child_session(
         query = query.prompts_dir(dir.to_path_buf());
     }
 
-    let mut run = query.session(child_session_id.to_string()).start().await?;
+    query.session(child_session_id.to_string()).start().await
+}
+
+// Each parameter comes from a different source (config, registry, caller, filesystem);
+// bundling them into a struct would obscure which call sites provide which data.
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_child_session(
+    parent_session_dir: &Path,
+    child_session_id: &str,
+    definition: &SubagentDefinition,
+    delegated_prompt: &str,
+    workspace: &Path,
+    kuku_home: &Path,
+    config: Arc<crate::config::Config>,
+    prompts_dir: Option<&Path>,
+    parent_mode: PermissionMode,
+) -> Result<ChildSessionResult> {
+    let mut run = start_child_session(
+        parent_session_dir,
+        child_session_id,
+        definition,
+        delegated_prompt,
+        workspace,
+        kuku_home,
+        config,
+        prompts_dir,
+        parent_mode,
+    )
+    .await?;
 
     let mut turns = 0u32;
     let mut cumulative_text = String::new();
+    let max_turns = definition.max_turns;
 
     loop {
         turns += 1;
-        if turns > definition.max_turns {
+        if turns > max_turns {
             return Ok(ChildSessionResult {
                 child_session_id: child_session_id.to_string(),
                 output_text: cumulative_text,
@@ -119,9 +145,12 @@ pub async fn spawn_child_session(
             Some(crate::UiEvent::ThinkingDelta { .. })
             | Some(crate::UiEvent::ToolCall { .. })
             | Some(crate::UiEvent::ToolResult { .. })
-            | Some(crate::UiEvent::TurnStart)
+            | Some(crate::UiEvent::TurnStart { .. })
             | Some(crate::UiEvent::Error { .. })
-            | Some(crate::UiEvent::ModelRequest { .. }) => continue,
+            | Some(crate::UiEvent::ModelRequest { .. })
+            | Some(crate::UiEvent::SubexecStart { .. })
+            | Some(crate::UiEvent::SubexecOutput { .. })
+            | Some(crate::UiEvent::SubexecEnd { .. }) => continue,
         }
     }
 }
