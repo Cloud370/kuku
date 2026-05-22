@@ -1,20 +1,11 @@
 use kuku::session::list_sessions;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
-/// Mirror project_home logic: kuku_home/p/<workspace normal components>
 fn expected_sessions_dir(kuku_home: &Path, workspace: &Path) -> PathBuf {
-    let mut path = kuku_home.to_path_buf();
-    path.push("p");
-    for component in workspace.components() {
-        match component {
-            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
-            Component::Normal(part) => path.push(part),
-            Component::ParentDir => {}
-        }
-    }
-    path.push("sessions");
-    path
+    kuku::session::project_home(kuku_home, workspace)
+        .unwrap()
+        .join("sessions")
 }
 
 #[test]

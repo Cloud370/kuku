@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use home::env::{self, Env};
 
@@ -35,7 +35,8 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
 
     for component in workspace.components() {
         match component {
-            Component::RootDir | Component::Prefix(_) => {}
+            Component::RootDir => {}
+            Component::Prefix(prefix) => push_prefix(&mut path, &prefix),
             Component::Normal(part) => path.push(part),
             Component::CurDir => {}
             Component::ParentDir => {
@@ -45,6 +46,29 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     }
 
     Ok(path)
+}
+
+fn push_prefix(path: &mut PathBuf, prefix: &std::path::PrefixComponent<'_>) {
+    match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+            path.push(format!("{}", letter as char));
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            path.push(server);
+            path.push(share);
+        }
+        Prefix::DeviceNS(_) | Prefix::Verbatim(_) => {
+            let id: String = prefix
+                .as_os_str()
+                .to_string_lossy()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if !id.is_empty() {
+                path.push(id);
+            }
+        }
+    }
 }
 
 /// Resolve the events.jsonl path for a session within a workspace.
@@ -181,5 +205,25 @@ mod tests {
         let error = kuku_home_with_env(&MockEnv::default()).unwrap_err();
 
         assert!(matches!(error, Error::MissingHomeDirectory));
+    }
+
+    #[test]
+    fn project_home_discards_root_dir_and_cur_dir() {
+        let kuku_home = std::env::temp_dir().join("kuku-home");
+        let workspace = std::path::PathBuf::from("/code/kuku/example");
+
+        let path = super::project_home(&kuku_home, &workspace).unwrap();
+
+        assert_eq!(path, kuku_home.join("p").join("code/kuku/example"));
+    }
+
+    #[test]
+    fn project_home_rejects_parent_dir_in_workspace() {
+        let kuku_home = std::env::temp_dir().join("kuku-home");
+        let workspace = std::path::PathBuf::from("/code/../escape");
+
+        let err = super::project_home(&kuku_home, &workspace).unwrap_err();
+
+        assert!(matches!(err, crate::error::Error::InvalidWorkspacePath(_)));
     }
 }
