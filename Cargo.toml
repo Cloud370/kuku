@@ -24,3 +24,4 @@ home = "0.5.12"
 strip = true
 lto = "thin"
 codegen-units = 4
+panic = "abort"
