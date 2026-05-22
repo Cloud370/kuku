@@ -1,21 +1,21 @@
 name: Bug report
-description: Report an issue that should be fixed
+description: Report a bug or unexpected behavior
 labels: ["bug"]
 body:
   - type: textarea
-    id: description
+    id: summary
     attributes:
-      label: Description
-      description: Describe the bug you encountered
-      placeholder: What happened?
+      label: Summary
+      description: One sentence — what went wrong?
+      placeholder: "e.g., `kuku list` shows no sessions on Windows even after running a session"
     validations:
       required: true
 
   - type: textarea
-    id: reproduce
+    id: steps
     attributes:
       label: Steps to reproduce
-      description: How can we reproduce this issue?
+      description: Exact steps, starting from a clean state if possible
       placeholder: |
         1.
         2.
@@ -24,27 +24,32 @@ body:
       required: true
 
   - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Paste terminal output, logs, or screenshots.
+
+  - type: textarea
     id: expected
     attributes:
       label: Expected behavior
-      description: What did you expect to happen?
+      description: What should have happened instead?
 
-  - type: input
-    id: version
+  - type: textarea
+    id: environment
     attributes:
-      label: kuku version
-      description: Output of `kuku --version`
-      placeholder: "e.g., kuku 0.1.0"
+      label: Environment
+      description: OS, shell, and version info
+      value: |
+        - OS:
+        - Shell:
+        - kuku version:
+        - rustc version:
+    validations:
+      required: true
 
-  - type: input
-    id: os
+  - type: textarea
+    id: context
     attributes:
-      label: Operating System
-      placeholder: "e.g., Ubuntu 24.04, macOS 15, Windows 11"
-
-  - type: input
-    id: rust-version
-    attributes:
-      label: Rust version
-      description: Output of `rustc --version`
-      placeholder: "e.g., rustc 1.85.0"
+      label: Additional context
+      description: Anything else — related issues, suspicions about root cause, workarounds tried

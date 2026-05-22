@@ -1,24 +1,32 @@
 name: Question
-description: Ask a question about kuku
+description: Ask a question about using or developing kuku
 labels: ["question"]
 body:
   - type: textarea
     id: question
     attributes:
       label: Question
-      description: What would you like to know?
-      placeholder: Describe your question clearly
+      description: What do you want to know?
     validations:
       required: true
 
-  - type: textarea
-    id: context
+  - type: dropdown
+    id: category
     attributes:
-      label: Context
-      description: Any relevant background (config, version, what you tried)
+      label: Category
+      options:
+        - Usage help
+        - Configuration
+        - Development / contributing
+        - Architecture / design
+        - Other
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I've tried
+      description: Docs you've read, experiments you've attempted, what you already understand
       placeholder: |
         - kuku version:
         - OS:
         - What I tried:
-    validations:
-      required: false

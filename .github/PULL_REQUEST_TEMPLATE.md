@@ -1,24 +1,28 @@
-### Related issue
+### Linked issue
 
-<!-- Required: every PR must link to an issue. If none exists, open one first. -->
 Closes #
 
-### Type of change
+### What changed
+
+<!-- One or two sentences. What did you change AND why? -->
+
+### Type
 
 - [ ] Bug fix
 - [ ] New feature
-- [ ] Refactor / code improvement
+- [ ] Refactor
 - [ ] Documentation
+- [ ] CI / tooling
 
-### What does this PR do?
+### Test plan
 
-<!-- Describe what changed and why. -->
-
-### How did you verify your code works?
-
-### Checklist
+<!-- How did you verify? Commands run, edge cases checked, manual testing. -->
 
 - [ ] `cargo fmt --all -- --check` passes
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test -p kuku -p kuku-cli -p kuku-server` passes
-- [ ] I have not included unrelated changes in this PR
+
+### Breaking changes
+
+- [ ] No breaking changes
+- [ ] Breaking change (explain what breaks and the migration path below)

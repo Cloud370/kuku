@@ -1,21 +1,21 @@
 name: Feature request
-description: Suggest a new feature or enhancement
+description: Propose a new feature or enhancement
 labels: ["enhancement"]
 body:
   - type: textarea
-    id: problem
+    id: motivation
     attributes:
-      label: Problem
-      description: What problem would this feature solve?
-      placeholder: I'm always frustrated when...
+      label: Motivation
+      description: What problem would this solve? Who benefits?
+      placeholder: "As a [user], I want [goal] so that [reason]..."
     validations:
       required: true
 
   - type: textarea
-    id: solution
+    id: proposal
     attributes:
-      label: Proposed solution
-      description: Describe what you'd like to see
+      label: Proposal
+      description: What would the feature look like? Be specific enough to evaluate feasibility.
     validations:
       required: true
 
@@ -23,4 +23,17 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: What workarounds or alternative solutions have you tried?
+      description: Workarounds, rejected approaches, or why this approach over others
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected scope
+      description: Which part of kuku would this touch?
+      options:
+        - "SDK"
+        - "CLI"
+        - "Server"
+        - "SDK + CLI"
+        - "SDK + CLI + Server"
+        - "Other"
