@@ -4,7 +4,8 @@
 
 > Minimal terminal coding agent, file-native at its core
 
-> **Status**: kuku is in active development. APIs and file formats may change.
+> [!WARNING]
+> kuku is in active development. APIs and file formats may change.
 
 kuku is a terminal coding agent with a file-native architecture. No database, no server, no hidden state. Everything — config, memory, sessions, skills — is a file you can read, edit, and version-control.
 
@@ -25,26 +26,33 @@ kuku is a terminal coding agent with a file-native architecture. No database, no
 | Prompt | **~3K** | ~30K | ~9K | ~15K |
 | Memory | Markdown | MD + YAML | SQLite + JSONL | SQLite + JSON |
 
+> [!NOTE]
 > Based on source code analysis as of May 2026. System prompt includes all tokens injected at session initialization — system instructions, tool definitions, and runtime context.
 
 ## Features
 
-| Feature | Status |
-|---------|--------|
-| Agent loop (file-native) | Done |
-| Tools (read, search, edit, write, run) | Done |
-| Skills | Done |
-| Memory (persistent) | Done |
-| Subagents | Done |
-| Permission system | Done |
-| Multi-provider (Anthropic, OpenAI) | Done |
-| Streaming | Done |
-| CLI | Done |
-| HTTP Server | Done |
-| MCP support | Planned |
-| Extension system | Planned |
-| Web UI | Planned |
-| Desktop app | Planned |
+**Core**
+
+- Agent loop (file-native)
+- Tools: read, search, edit, write, run
+- Skills system
+- Persistent memory (human-readable)
+- Subagents (isolated sessions)
+- Permission system (multi-level)
+- Multi-provider (Anthropic, OpenAI)
+- Streaming output
+
+**Interface**
+
+- CLI
+- HTTP Server
+
+**Planned**
+
+- MCP support
+- Extension system
+- Web UI
+- Desktop app
 
 ## Quick Start
 
@@ -53,16 +61,23 @@ cargo install --git https://github.com/Cloud370/kuku
 kuku run say hello
 ```
 
+> [!TIP]
+> You need an API key for your chosen provider. Set it via environment variable (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) or in `~/.kuku/config.toml`.
+
 ## Documentation
 
-[docs/en/](docs/en/)
+- [Direction](docs/en/core/direction.md) — project goals and design philosophy
+- [Architecture](docs/en/core/architecture.md) — system overview
+- [Agent Loop](docs/en/core/agent-loop.md) — how the loop works
+- [Modules](docs/en/contributing/modules.md) — crate structure
+- [Code Style](docs/en/contributing/code-style.md) — conventions
 
 ## License
 
 Licensed under either of
 
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
 
 at your option.
 

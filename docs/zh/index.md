@@ -4,7 +4,8 @@
 
 > 极简终端编程助手，以文件为核心
 
-> **状态**：kuku 正在积极开发中。API 和文件格式可能会发生变化。
+> [!WARNING]
+> kuku 正在积极开发中。API 和文件格式可能会发生变化。
 
 kuku 是一个以文件为核心的终端编程助手。没有数据库，没有服务器，没有隐藏状态。一切——配置、记忆、会话、技能——都是你可以直接阅读、编辑和版本控制的文件。
 
@@ -25,26 +26,33 @@ kuku 是一个以文件为核心的终端编程助手。没有数据库，没有
 | 提示词 | **~3K** | ~30K | ~9K | ~15K |
 | 记忆 | Markdown | MD + YAML | SQLite + JSONL | SQLite + JSON |
 
+> [!NOTE]
 > 基于 2026 年 5 月的源码分析。系统提示词包含会话初始化时注入的全部 token——系统指令、工具定义、运行时上下文。
 
 ## 功能
 
-| 功能 | 状态 |
-|------|------|
-| Agent 循环（文件原生） | 已完成 |
-| 工具（读取、搜索、编辑、写入、执行） | 已完成 |
-| 技能 | 已完成 |
-| 记忆（持久化） | 已完成 |
-| 子代理 | 已完成 |
-| 权限系统 | 已完成 |
-| 多模型供应商（Anthropic、OpenAI） | 已完成 |
-| 流式输出 | 已完成 |
-| 命令行界面 | 已完成 |
-| HTTP 服务器 | 已完成 |
-| MCP 支持 | 计划中 |
-| 扩展系统 | 计划中 |
-| Web 界面 | 计划中 |
-| 桌面端 | 计划中 |
+**核心**
+
+- Agent 循环（文件原生）
+- 工具：读取、搜索、编辑、写入、执行
+- 技能系统
+- 持久化记忆（人类可读）
+- 子代理（隔离会话）
+- 权限系统（多层级）
+- 多模型供应商（Anthropic、OpenAI）
+- 流式输出
+
+**界面**
+
+- 命令行界面
+- HTTP 服务器
+
+**计划中**
+
+- MCP 支持
+- 扩展系统
+- Web 界面
+- 桌面端
 
 ## 快速开始
 
@@ -53,16 +61,23 @@ cargo install --git https://github.com/Cloud370/kuku
 kuku run say hello
 ```
 
+> [!TIP]
+> 你需要一个所选供应商的 API 密钥。通过环境变量（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`）或在 `~/.kuku/config.toml` 中设置。
+
 ## 文档
 
-[docs/en/](../en/)
+- [方向](../en/core/direction.md) — 项目目标与设计哲学
+- [架构](../en/core/architecture.md) — 系统概览
+- [Agent 循环](../en/core/agent-loop.md) — 循环工作原理
+- [模块](../en/contributing/modules.md) — crate 结构
+- [代码风格](../en/contributing/code-style.md) — 编码规范
 
 ## 许可证
 
 以下许可证任选其一：
 
-* MIT 许可证（[LICENSE-MIT](../../LICENSE-MIT) 或 http://opensource.org/licenses/MIT）
-* Apache 许可证 2.0 版（[LICENSE-APACHE](../../LICENSE-APACHE) 或 http://www.apache.org/licenses/LICENSE-2.0）
+- MIT 许可证（[LICENSE-MIT](../../LICENSE-MIT) 或 http://opensource.org/licenses/MIT）
+- Apache 许可证 2.0 版（[LICENSE-APACHE](../../LICENSE-APACHE) 或 http://www.apache.org/licenses/LICENSE-2.0）
 
 由您选择。
 
