@@ -89,6 +89,22 @@ fn different_unc_servers_do_not_collide() {
     assert_ne!(a, b);
 }
 
+#[cfg(windows)]
+#[test]
+fn verbatim_unc_path_has_no_invalid_chars() {
+    let kuku_home = std::env::temp_dir().join("kuku-home");
+    let workspace = std::path::PathBuf::from("\\\\?\\UNC\\server\\share\\foo");
+
+    let path = project_home(&kuku_home, &workspace).unwrap();
+
+    let path_str = path.to_string_lossy();
+    assert!(
+        !path_str.contains('?'),
+        "path contains invalid '?': {path_str}"
+    );
+    assert!(path_str.ends_with("server\\share\\foo") || path_str.ends_with("server/share/foo"));
+}
+
 #[test]
 fn builds_session_events_path() {
     let kuku_home = std::env::temp_dir().join("kuku-home");

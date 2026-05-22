@@ -53,11 +53,9 @@ fn push_prefix(path: &mut PathBuf, prefix: &std::path::PrefixComponent<'_>) {
         Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
             path.push(format!("{}", letter as char));
         }
-        Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) => {
-            let raw = prefix.as_os_str().to_string_lossy();
-            for part in raw.split(&['\\', '/']).filter(|p| !p.is_empty()) {
-                path.push(part);
-            }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            path.push(server);
+            path.push(share);
         }
         Prefix::DeviceNS(_) | Prefix::Verbatim(_) => {
             let id: String = prefix
