@@ -14,6 +14,7 @@ pub struct TestServer {
     pub workspace: tempfile::TempDir,
     pub home: tempfile::TempDir,
     handle: Option<tokio::task::JoinHandle<()>>,
+    prev_kuku_home: Option<std::ffi::OsString>,
 }
 
 impl TestServer {
@@ -28,6 +29,7 @@ impl TestServer {
         let workspace = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
 
+        let prev_kuku_home = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", home.path());
 
         let config_store = Arc::new(ArcSwap::from_pointee(config));
@@ -59,6 +61,7 @@ impl TestServer {
             workspace,
             home,
             handle: Some(handle),
+            prev_kuku_home,
         }
     }
 }
@@ -67,6 +70,10 @@ impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(h) = self.handle.take() {
             h.abort();
+        }
+        match self.prev_kuku_home.take() {
+            Some(val) => std::env::set_var("KUKU_HOME", val),
+            None => std::env::remove_var("KUKU_HOME"),
         }
     }
 }
