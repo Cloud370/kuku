@@ -37,16 +37,19 @@ async fn full_run_lifecycle() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let body = resp.text().await.unwrap();
     assert_eq!(
-        resp.headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "application/x-ndjson"
+        content_type, "application/x-ndjson",
+        "unexpected content-type, body: {body}"
     );
 
-    let body = resp.text().await.unwrap();
     let lines: Vec<&str> = body.trim().split('\n').collect();
     assert!(
         lines.len() >= 2,
