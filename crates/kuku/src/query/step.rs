@@ -900,3 +900,23 @@ fn truncate_summary(s: &str, max: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_summary_handles_multibyte() {
+        let s = "这是中文测试字符串";
+        let result = truncate_summary(s, 8);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 27);
+    }
+
+    #[test]
+    fn truncate_summary_short_string_unchanged() {
+        let s = "hello";
+        let result = truncate_summary(s, 60);
+        assert_eq!(result, "hello");
+    }
+}

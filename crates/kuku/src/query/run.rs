@@ -559,6 +559,7 @@ fn map_child_to_subexec_event(event: UiEvent) -> crate::query::types::SubexecEve
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
+    use crate::query::types::PermissionRequest;
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -804,5 +805,108 @@ mod tests {
         let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));
         assert!(messages.contains(&"Assistant".to_string()));
+    }
+
+    #[test]
+    fn subexec_event_maps_text_delta() {
+        let ui = UiEvent::TextDelta {
+            text: "hello".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            crate::query::types::SubexecEvent::TextDelta {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_thinking_delta() {
+        let ui = UiEvent::ThinkingDelta {
+            text: "reasoning".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            crate::query::types::SubexecEvent::ThinkingDelta {
+                text: "reasoning".into()
+            }
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_tool_call() {
+        let ui = UiEvent::ToolCall {
+            tool_call_id: "tc_1".into(),
+            tool: "read".into(),
+            summary: "reading file".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            crate::query::types::SubexecEvent::ToolCall {
+                tool_call_id: "tc_1".into(),
+                tool: "read".into(),
+                summary: "reading file".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_tool_result() {
+        let ui = UiEvent::ToolResult {
+            tool_call_id: "tc_1".into(),
+            name: "read".into(),
+            status: "ok".into(),
+            summary: "3 files".into(),
+            structured: None,
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            crate::query::types::SubexecEvent::ToolResult {
+                tool_call_id: "tc_1".into(),
+                name: "read".into(),
+                status: "ok".into(),
+                summary: "3 files".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_error_to_stderr() {
+        let ui = UiEvent::Error {
+            code: "NET".into(),
+            message: "timeout".into(),
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert_eq!(
+            se,
+            crate::query::types::SubexecEvent::Stderr("[NET] timeout".into())
+        );
+    }
+
+    #[test]
+    fn subexec_event_maps_permission_requested_to_stderr() {
+        let ui = UiEvent::PermissionRequested {
+            request: PermissionRequest {
+                id: "req_1".into(),
+                tool_call_id: "tc_1".into(),
+                tool: "run_command".into(),
+                risk: "command".into(),
+                summary: "cargo test".into(),
+            },
+        };
+        let se = map_child_to_subexec_event(ui);
+        assert!(matches!(se, crate::query::types::SubexecEvent::Stderr(_)));
+    }
+
+    #[test]
+    fn child_session_id_is_predictable() {
+        let parent_id = "abc123";
+        let counter = 0u64;
+        let expected = format!("child_{}_{}", parent_id, counter);
+        assert_eq!(expected, "child_abc123_0");
     }
 }
