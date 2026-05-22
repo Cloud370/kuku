@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use kuku::session::{project_home, project_policy_path, session_events_path};
 
 #[cfg(unix)]
