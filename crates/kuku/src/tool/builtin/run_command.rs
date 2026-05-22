@@ -425,8 +425,10 @@ mod tests {
 
     #[cfg(windows)]
     fn noisy_timeout_command() -> String {
-        let repeat = (RUN_COMMAND_MAX_CHARS + 100) / 16 + 1;
-        format!("for /L %i in (1,1,{repeat}) do @echo xxxxxxxxxxxxxxxx & ping -n 4 127.0.0.1 > NUL")
+        format!(
+            "powershell -Command \"'x' * {}; Start-Sleep -Seconds 3\"",
+            RUN_COMMAND_MAX_CHARS + 100
+        )
     }
 
     #[tokio::test(flavor = "current_thread")]
