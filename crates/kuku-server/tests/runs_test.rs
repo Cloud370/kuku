@@ -2,29 +2,38 @@ mod common;
 
 use common::mock_provider;
 
+async fn wait_for_server(base_url: &str) {
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        if let Ok(resp) = client.get(format!("{base_url}/health")).send().await {
+            if resp.status().is_success() {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("server did not become ready at {base_url}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_run_lifecycle() {
     let mock = mock_provider::start_mock_provider().await;
     mock_provider::mock_text_response(&mock, "Hello from server!");
+
+    let warmup = reqwest::Client::new();
+    let _ = warmup
+        .post(format!("http://127.0.0.1:{}/v1/messages", mock.port()))
+        .send()
+        .await;
+
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap();
-
-    for _ in 0..10 {
-        if client
-            .get(format!("{}/health", server.base_url))
-            .send()
-            .await
-            .is_ok()
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
 
     let resp = client
         .post(format!("{}/runs", server.base_url))
@@ -69,6 +78,7 @@ async fn cancel_nonexistent_run_returns_not_found() {
     let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -88,6 +98,7 @@ async fn invalid_workspace_returns_error() {
     let mock = mock_provider::start_mock_provider().await;
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
 
     let client = reqwest::Client::new();
     let resp = client
