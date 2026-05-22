@@ -5,7 +5,9 @@ mod step;
 mod types;
 
 pub(crate) use types::PermissionMode;
-pub use types::{PermissionChoice, PermissionRequest, Query, Run, RunOutput, UiEvent};
+pub use types::{
+    PermissionChoice, PermissionRequest, Query, Run, RunOutput, SubexecEvent, SubexecKind, UiEvent,
+};
 
 /// Start building a new query for the given prompt.
 pub fn query(prompt: impl Into<String>) -> Query {

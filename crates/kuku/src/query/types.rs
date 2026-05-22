@@ -62,6 +62,29 @@ pub enum PermissionChoice {
     Deny,
 }
 
+/// Identifies the kind of a sub-execution phase (agent or long-running tool).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubexecKind {
+    Agent {
+        child_session_id: String,
+    },
+    Tool {
+        tool_name: String,
+        tool_call_id: String,
+    },
+}
+
+/// Events produced during a sub-execution phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubexecEvent {
+    TextDelta { text: String },
+    ThinkingDelta { text: String },
+    ToolCall { tool_call_id: String, tool: String, summary: String },
+    ToolResult { tool_call_id: String, name: String, status: String, summary: String },
+    Stdout(String),
+    Stderr(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Permission mode for child sessions.
 pub enum PermissionMode {
@@ -101,7 +124,9 @@ pub enum UiEvent {
         usage: Option<crate::provider::types::ProviderUsage>,
         turn: u64,
     },
-    TurnStart,
+    TurnStart {
+        turn: u64,
+    },
     Error {
         code: String,
         message: String,
@@ -109,6 +134,24 @@ pub enum UiEvent {
     ModelRequest {
         model: String,
         provider: String,
+    },
+    /// A sub-execution phase has started (agent tool or long-running command).
+    SubexecStart {
+        stage_id: String,
+        kind: SubexecKind,
+        label: String,
+    },
+    /// Real-time output from a sub-execution phase.
+    SubexecOutput {
+        stage_id: String,
+        event: SubexecEvent,
+    },
+    /// A sub-execution phase has completed.
+    SubexecEnd {
+        stage_id: String,
+        status: String,
+        summary: String,
+        result: Option<serde_json::Value>,
     },
 }
 
@@ -127,6 +170,15 @@ pub(super) enum RunState {
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
     BatchEvents(Box<PendingRun>, VecDeque<UiEvent>),
+    InSubexec {
+        pending: Box<PendingRun>,
+        stage_id: String,
+        kind: SubexecKind,
+        child_run: Box<Run>,
+        label: String,
+        tool_call_id: String,
+        agent_name: String,
+    },
     Cancelled {
         events_path: std::path::PathBuf,
         turn: u64,
@@ -201,6 +253,15 @@ pub(super) enum PendingStep {
     BatchReady {
         pending: Box<PendingRun>,
         ui_events: Vec<UiEvent>,
+    },
+    InSubexec {
+        pending: Box<PendingRun>,
+        stage_id: String,
+        kind: SubexecKind,
+        child_run: Box<Run>,
+        label: String,
+        tool_call_id: String,
+        agent_name: String,
     },
     #[allow(clippy::type_complexity)]
     Done(
