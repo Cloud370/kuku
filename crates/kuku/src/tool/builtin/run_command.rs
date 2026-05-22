@@ -425,10 +425,10 @@ mod tests {
 
     #[cfg(windows)]
     fn noisy_timeout_command() -> String {
-        format!(
-            "powershell -Command \"'x' * {}; Start-Sleep -Seconds 3\"",
-            RUN_COMMAND_MAX_CHARS + 100
-        )
+        // Pre-encoded: `'x' * 80100; Start-Sleep -Seconds 3` as UTF-16LE base64.
+        // Using -EncodedCommand avoids cmd.exe mangling special characters (|, >, etc.).
+        let b64 = "JwB4ACcAIAAqACAAOAAwADEAMAAwADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAzAA==";
+        format!("powershell -EncodedCommand {b64}")
     }
 
     #[tokio::test(flavor = "current_thread")]
