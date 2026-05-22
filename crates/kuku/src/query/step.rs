@@ -887,7 +887,7 @@ async fn handle_agent_tool_call(
 
 fn truncate_summary(s: &str, max: usize) -> String {
     let s = s.trim();
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
         let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());

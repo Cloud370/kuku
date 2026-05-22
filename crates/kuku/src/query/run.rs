@@ -231,10 +231,10 @@ impl Run {
                                 tool_call_id,
                                 agent_name,
                             };
-                            return Ok(Some(UiEvent::SubexecOutput {
-                                stage_id,
-                                event: subexec_event,
-                            }));
+                            if let Some(event) = subexec_event {
+                                return Ok(Some(UiEvent::SubexecOutput { stage_id, event }));
+                            }
+                            continue;
                         }
                         Ok(None) => {
                             let summary =
@@ -513,55 +513,42 @@ pub(super) fn find_tool_definition<'a>(
         .and_then(|resolved| resolved.registry.iter().find(|tool| tool.name == name))
 }
 
-fn map_child_to_subexec_event(event: UiEvent) -> crate::query::types::SubexecEvent {
+fn map_child_to_subexec_event(event: UiEvent) -> Option<crate::query::types::SubexecEvent> {
+    use crate::query::types::SubexecEvent as SE;
     match event {
-        UiEvent::TextDelta { text } => crate::query::types::SubexecEvent::TextDelta { text },
-        UiEvent::ThinkingDelta { text } => {
-            crate::query::types::SubexecEvent::ThinkingDelta { text }
-        }
+        UiEvent::TextDelta { text } => Some(SE::TextDelta { text }),
+        UiEvent::ThinkingDelta { text } => Some(SE::ThinkingDelta { text }),
         UiEvent::ToolCall {
             tool_call_id,
             tool,
             summary,
-        } => crate::query::types::SubexecEvent::ToolCall {
+        } => Some(SE::ToolCall {
             tool_call_id,
             tool,
             summary,
-        },
+        }),
         UiEvent::ToolResult {
             tool_call_id,
             name,
             status,
             summary,
             ..
-        } => crate::query::types::SubexecEvent::ToolResult {
+        } => Some(SE::ToolResult {
             tool_call_id,
             name,
             status,
             summary,
-        },
-        UiEvent::Error { code, message } => {
-            crate::query::types::SubexecEvent::Stderr(format!("[{code}] {message}"))
-        }
-        UiEvent::PermissionRequested { request } => {
-            crate::query::types::SubexecEvent::Stderr(format!(
-                "[unexpected] permission requested in subexec: {} ({})",
-                request.tool, request.summary
-            ))
-        }
-        UiEvent::Done { .. } => {
-            crate::query::types::SubexecEvent::Stderr("[unexpected] Done in subexec map".into())
-        }
+        }),
+        UiEvent::Error { code, message } => Some(SE::Stderr(format!("[{code}] {message}"))),
+        UiEvent::PermissionRequested { request } => Some(SE::Stderr(format!(
+            "[unexpected] permission requested in subexec: {} ({})",
+            request.tool, request.summary
+        ))),
+        UiEvent::Done { .. } => Some(SE::Stderr("[unexpected] Done in subexec map".into())),
         UiEvent::SubexecStart { .. }
         | UiEvent::SubexecOutput { .. }
-        | UiEvent::SubexecEnd { .. } => {
-            crate::query::types::SubexecEvent::Stderr("[unexpected] nested subexec".into())
-        }
-        UiEvent::TurnStart { .. } | UiEvent::ModelRequest { .. } => {
-            crate::query::types::SubexecEvent::TextDelta {
-                text: String::new(),
-            }
-        }
+        | UiEvent::SubexecEnd { .. } => Some(SE::Stderr("[unexpected] nested subexec".into())),
+        UiEvent::TurnStart { .. } | UiEvent::ModelRequest { .. } => None,
     }
 }
 
@@ -825,9 +812,9 @@ mod tests {
         let se = map_child_to_subexec_event(ui);
         assert_eq!(
             se,
-            crate::query::types::SubexecEvent::TextDelta {
+            Some(crate::query::types::SubexecEvent::TextDelta {
                 text: "hello".into()
-            }
+            })
         );
     }
 
@@ -839,9 +826,9 @@ mod tests {
         let se = map_child_to_subexec_event(ui);
         assert_eq!(
             se,
-            crate::query::types::SubexecEvent::ThinkingDelta {
+            Some(crate::query::types::SubexecEvent::ThinkingDelta {
                 text: "reasoning".into()
-            }
+            })
         );
     }
 
@@ -855,11 +842,11 @@ mod tests {
         let se = map_child_to_subexec_event(ui);
         assert_eq!(
             se,
-            crate::query::types::SubexecEvent::ToolCall {
+            Some(crate::query::types::SubexecEvent::ToolCall {
                 tool_call_id: "tc_1".into(),
                 tool: "read".into(),
                 summary: "reading file".into(),
-            }
+            })
         );
     }
 
@@ -875,12 +862,12 @@ mod tests {
         let se = map_child_to_subexec_event(ui);
         assert_eq!(
             se,
-            crate::query::types::SubexecEvent::ToolResult {
+            Some(crate::query::types::SubexecEvent::ToolResult {
                 tool_call_id: "tc_1".into(),
                 name: "read".into(),
                 status: "ok".into(),
                 summary: "3 files".into(),
-            }
+            })
         );
     }
 
@@ -893,7 +880,9 @@ mod tests {
         let se = map_child_to_subexec_event(ui);
         assert_eq!(
             se,
-            crate::query::types::SubexecEvent::Stderr("[NET] timeout".into())
+            Some(crate::query::types::SubexecEvent::Stderr(
+                "[NET] timeout".into()
+            ))
         );
     }
 
@@ -909,7 +898,17 @@ mod tests {
             },
         };
         let se = map_child_to_subexec_event(ui);
-        assert!(matches!(se, crate::query::types::SubexecEvent::Stderr(_)));
+        assert!(matches!(
+            se,
+            Some(crate::query::types::SubexecEvent::Stderr(_))
+        ));
+    }
+
+    #[test]
+    fn subexec_event_skips_turn_start() {
+        let ui = UiEvent::TurnStart { turn: 1 };
+        let se = map_child_to_subexec_event(ui);
+        assert!(se.is_none());
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub enum PermissionChoice {
 }
 
 /// Identifies the kind of a sub-execution phase (agent or long-running tool).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubexecKind {
     Agent {
@@ -75,6 +76,7 @@ pub enum SubexecKind {
 }
 
 /// Events produced during a sub-execution phase.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubexecEvent {
     TextDelta {
