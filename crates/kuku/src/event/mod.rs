@@ -1,3 +1,4 @@
+pub(crate) mod scan;
 pub mod store;
 pub mod types;
 
