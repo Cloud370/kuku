@@ -20,7 +20,7 @@ pub enum Command {
     Show(ShowArgs),
     /// Show events from a session
     Events(EventsArgs),
-    /// List sessions (all workspaces by default, -w to filter)
+    /// List sessions (current workspace by default, -a for all)
     List(ListArgs),
     /// Delete a session
     Delete(DeleteArgs),
@@ -184,11 +184,15 @@ pub struct EventsArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
-    /// Filter to a specific workspace
+    /// List sessions across all workspaces
+    #[arg(short = 'a', long = "all")]
+    pub all: bool,
+
+    /// Filter to a specific workspace (overrides auto-detect)
     #[arg(short = 'w', long = "workspace")]
     pub workspace: Option<String>,
 
-    /// Verbose listing (size, mtime, created_at)
+    /// Verbose listing (mtime, created_at)
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 }
