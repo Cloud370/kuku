@@ -46,21 +46,7 @@ fn build_skill_body(
         .source_path
         .as_deref()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            format!(
-                "{}/{}",
-                match def.source {
-                    kuku::skill::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills",
-                    kuku::skill::definition::SkillSource::ClaudeCodeProject => ".claude/skills",
-                    kuku::skill::definition::SkillSource::OpenCodeUser =>
-                        "~/.config/opencode/skills",
-                    kuku::skill::definition::SkillSource::OpenCodeProject => ".opencode/skills",
-                    kuku::skill::definition::SkillSource::KukuUser => "~/.kuku/skills",
-                    kuku::skill::definition::SkillSource::KukuProject => ".kuku/skills",
-                },
-                skill_name,
-            )
-        });
+        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
     let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
     let (_, body) = kuku::subagent::compat::claude_code::split_yaml_frontmatter(&content);
     Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))

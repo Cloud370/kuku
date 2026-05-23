@@ -12,8 +12,8 @@ use super::helpers::{
     permission_rule,
 };
 use super::types::{
-    PendingRun, PendingStep, PermissionChoice, Run, RunState, SlotEvent, StreamingChunkState,
-    UiEvent,
+    PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
+    StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -125,77 +125,15 @@ impl Run {
                 }
             }
 
-            // 3. Advance state
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
-                    match super::step::advance_pending(
-                        *pending,
-                        self.slot_event_tx.clone(),
-                        self.slots.len(),
-                    )
-                    .await?
-                    {
-                        PendingStep::Pending {
-                            pending,
-                            slot,
-                            event,
-                        } => {
-                            if let Some(slot) = slot {
-                                self.slots.insert(slot.tool_call_id.clone(), slot);
-                            }
-                            self.state = RunState::Pending(pending);
-                            if let Some(event) = event {
-                                return Ok(Some(event));
-                            }
-                            // No event but slots may be active — continue loop
-                        }
-                        PendingStep::NeedPermission(waiting) => {
-                            let request = waiting.request.clone();
-                            self.state = RunState::WaitingForPermission(waiting);
-                            return Ok(Some(UiEvent::PermissionRequested { request }));
-                        }
-                        PendingStep::Streaming(streaming) => {
-                            self.state = RunState::Streaming(streaming);
-                        }
-                        PendingStep::Done(output, usage, turn) => {
-                            self.state = RunState::Done(None);
-                            return Ok(Some(UiEvent::Done {
-                                output,
-                                usage,
-                                turn,
-                            }));
-                        }
-                    }
-                }
-                RunState::Streaming(mut streaming) => {
-                    if let Some(event) = streaming.lead_events.pop() {
-                        self.state = RunState::Streaming(streaming);
+                    if let Some(event) = self.advance_from_pending(pending).await? {
                         return Ok(Some(event));
                     }
-                    match self.poll_stream_chunk(&mut streaming).await? {
-                        Some(event) => {
-                            self.state = RunState::Streaming(streaming);
-                            return Ok(Some(event));
-                        }
-                        None => {
-                            let step = super::step::finish_streaming(*streaming).await?;
-                            match step {
-                                PendingStep::Pending { pending, .. } => {
-                                    self.state = RunState::Pending(pending);
-                                }
-                                PendingStep::Done(output, usage, turn) => {
-                                    self.state = RunState::Done(None);
-                                    return Ok(Some(UiEvent::Done {
-                                        output,
-                                        usage,
-                                        turn,
-                                    }));
-                                }
-                                _ => {
-                                    self.state = RunState::Done(None);
-                                }
-                            }
-                        }
+                }
+                RunState::Streaming(streaming) => {
+                    if let Some(event) = self.advance_from_streaming(streaming).await? {
+                        return Ok(Some(event));
                     }
                 }
                 RunState::WaitingForPermission(waiting) => {
@@ -220,8 +158,81 @@ impl Run {
                         turn,
                     }));
                 }
-                RunState::Done(None) => {
-                    return Ok(None);
+                RunState::Done(None) => return Ok(None),
+            }
+        }
+    }
+
+    async fn advance_from_pending(
+        &mut self,
+        pending: Box<super::types::PendingRun>,
+    ) -> Result<Option<UiEvent>> {
+        match super::step::advance_pending(*pending, self.slot_event_tx.clone(), self.slots.len())
+            .await?
+        {
+            PendingStep::Pending {
+                pending,
+                slot,
+                event,
+            } => {
+                if let Some(slot) = slot {
+                    self.slots.insert(slot.tool_call_id.clone(), slot);
+                }
+                self.state = RunState::Pending(pending);
+                Ok(event)
+            }
+            PendingStep::NeedPermission(waiting) => {
+                let request = waiting.request.clone();
+                self.state = RunState::WaitingForPermission(waiting);
+                Ok(Some(UiEvent::PermissionRequested { request }))
+            }
+            PendingStep::Streaming(streaming) => {
+                self.state = RunState::Streaming(streaming);
+                Ok(None)
+            }
+            PendingStep::Done(output, usage, turn) => {
+                self.state = RunState::Done(None);
+                Ok(Some(UiEvent::Done {
+                    output,
+                    usage,
+                    turn,
+                }))
+            }
+        }
+    }
+
+    async fn advance_from_streaming(
+        &mut self,
+        mut streaming: Box<StreamingChunkState>,
+    ) -> Result<Option<UiEvent>> {
+        if let Some(event) = streaming.lead_events.pop() {
+            self.state = RunState::Streaming(streaming);
+            return Ok(Some(event));
+        }
+        match self.poll_stream_chunk(&mut streaming).await? {
+            Some(event) => {
+                self.state = RunState::Streaming(streaming);
+                Ok(Some(event))
+            }
+            None => {
+                let step = super::step::finish_streaming(*streaming).await?;
+                match step {
+                    PendingStep::Pending { pending, .. } => {
+                        self.state = RunState::Pending(pending);
+                        Ok(None)
+                    }
+                    PendingStep::Done(output, usage, turn) => {
+                        self.state = RunState::Done(None);
+                        Ok(Some(UiEvent::Done {
+                            output,
+                            usage,
+                            turn,
+                        }))
+                    }
+                    _ => {
+                        self.state = RunState::Done(None);
+                        Ok(None)
+                    }
                 }
             }
         }
@@ -248,10 +259,11 @@ impl Run {
         let definition = match find_tool_definition(pending, &queued.tool_call.name) {
             Some(d) => d,
             None => {
-                let queued = pending.queued_tool_calls.pop_front().unwrap();
+                let QueuedToolCall { tool_call, .. } =
+                    pending.queued_tool_calls.pop_front().unwrap();
                 return Ok(Some(UiEvent::Error {
                     code: "unknown_tool".to_string(),
-                    message: format!("unknown tool: {}", queued.tool_call.name),
+                    message: format!("unknown tool: {}", tool_call.name),
                 }));
             }
         };
@@ -298,30 +310,32 @@ impl Run {
                         ),
                     )?;
                 }
-                let queued = pending.queued_tool_calls.pop_front().unwrap();
-                let workspace = pending.workspace.clone();
-                let kuku_home = pending.kuku_home.clone();
+                let QueuedToolCall {
+                    tool_call,
+                    display_summary,
+                } = pending.queued_tool_calls.pop_front().unwrap();
                 let slot = super::slots::spawn_simple_slot(
-                    queued.tool_call.id.clone(),
-                    queued.tool_call.name.clone(),
-                    queued.tool_call.args.clone(),
-                    queued.display_summary.clone(),
-                    workspace,
-                    kuku_home,
+                    tool_call.id.clone(),
+                    tool_call.name.clone(),
+                    tool_call.args,
+                    display_summary.clone(),
+                    pending.workspace.clone(),
+                    pending.kuku_home.clone(),
                     self.slot_event_tx.clone(),
                 );
                 self.slots.insert(slot.tool_call_id.clone(), slot);
                 Ok(Some(UiEvent::ToolStart {
-                    id: queued.tool_call.id.clone(),
-                    tool: queued.tool_call.name.clone(),
-                    summary: queued.display_summary.clone(),
+                    id: tool_call.id,
+                    tool: tool_call.name,
+                    summary: display_summary,
                     kind: super::types::ToolKind::Simple,
                 }))
             }
             crate::permission::GateDecisionKind::Deny => {
-                let queued = pending.queued_tool_calls.pop_front().unwrap();
+                let QueuedToolCall { tool_call, .. } =
+                    pending.queued_tool_calls.pop_front().unwrap();
                 Ok(Some(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
+                    id: tool_call.id,
                     status: "blocked".to_string(),
                     summary: "permission denied".to_string(),
                     result: None,
@@ -491,35 +505,36 @@ impl Run {
             .queued_tool_calls
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
+        let QueuedToolCall { tool_call, .. } = queued;
         let rule = permission_rule(
             &pending.kuku_home,
             &pending.workspace,
-            &queued.tool_call.name,
-            &queued.tool_call.args,
+            &tool_call.name,
+            &tool_call.args,
         );
         if matches!(choice, PermissionChoice::Project) {
             append_project_allow_rule(
                 &pending.policy_path,
-                &queued.tool_call.name,
+                &tool_call.name,
                 &permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
-                    &queued.tool_call.name,
-                    &queued.tool_call.args,
+                    &tool_call.name,
+                    &tool_call.args,
                 ),
             )?;
         }
         append_permission_decision(
             &pending.events_path,
             pending.turn,
-            &queued.tool_call.id,
+            &tool_call.id,
             choice,
             source,
             &rule,
         )?;
-        let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+        let result = execute_tool_call(&mut pending, &tool_call).await?;
         let tool_result_event = Some(UiEvent::ToolEnd {
-            id: queued.tool_call.id.clone(),
+            id: tool_call.id,
             status: result.status,
             summary: result.summary,
             result: result.structured,

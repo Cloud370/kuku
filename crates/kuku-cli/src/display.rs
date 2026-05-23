@@ -349,13 +349,17 @@ fn render_context(ctx: &kuku::event::types::RequestContext) -> String {
 
     out.push_str("    [system]\n");
     for line in ctx.system.lines() {
-        out.push_str(&format!("    {line}\n"));
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
     }
 
     out.push_str("\n    [prelude]\n");
     for msg in &ctx.prelude {
         for line in msg.content.lines() {
-            out.push_str(&format!("    {line}\n"));
+            out.push_str("    ");
+            out.push_str(line);
+            out.push('\n');
         }
     }
 
@@ -363,7 +367,9 @@ fn render_context(ctx: &kuku::event::types::RequestContext) -> String {
         out.push_str("\n    [notices]\n");
         for msg in &ctx.notices {
             for line in msg.content.lines() {
-                out.push_str(&format!("    {line}\n"));
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
             }
         }
     }

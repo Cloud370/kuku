@@ -7,14 +7,11 @@ pub fn render_skill_catalog(registry: &SkillRegistry) -> Option<String> {
 
     let mut entries = String::new();
     for def in registry.definitions() {
-        let path = def.source_path.as_deref().unwrap_or(match def.source {
-            super::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills/",
-            super::definition::SkillSource::ClaudeCodeProject => ".claude/skills/",
-            super::definition::SkillSource::OpenCodeUser => "~/.config/opencode/skills/",
-            super::definition::SkillSource::OpenCodeProject => ".opencode/skills/",
-            super::definition::SkillSource::KukuUser => "~/.kuku/skills/",
-            super::definition::SkillSource::KukuProject => ".kuku/skills/",
-        });
+        let path = def
+            .source_path
+            .as_deref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}/", def.source.base_dir()));
         entries.push_str(&format!(
             "- {} — {} ({})\n",
             def.name, def.description, path,

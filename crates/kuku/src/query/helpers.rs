@@ -63,7 +63,7 @@ fn handle_use_skill(
         .source_path
         .as_deref()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}/{}", source_base_dir(&def.source), skill_name));
+        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
 
     let skill_md_path = std::path::Path::new(&skill_dir).join("SKILL.md");
     let content = std::fs::read_to_string(&skill_md_path)?;
@@ -78,17 +78,6 @@ fn handle_use_skill(
         truncated: false,
         structured: None,
     })
-}
-
-fn source_base_dir(source: &crate::skill::definition::SkillSource) -> &'static str {
-    match source {
-        crate::skill::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills",
-        crate::skill::definition::SkillSource::ClaudeCodeProject => ".claude/skills",
-        crate::skill::definition::SkillSource::OpenCodeUser => "~/.config/opencode/skills",
-        crate::skill::definition::SkillSource::OpenCodeProject => ".opencode/skills",
-        crate::skill::definition::SkillSource::KukuUser => "~/.kuku/skills",
-        crate::skill::definition::SkillSource::KukuProject => ".kuku/skills",
-    }
 }
 
 pub(super) async fn execute_tool_call(
@@ -278,21 +267,28 @@ pub(super) fn gate_source_name(source: crate::permission::GateSource) -> &'stati
 
 // ---------- Event append helpers ----------
 
+fn append_event(events_path: &std::path::PathBuf, payload: EventPayload) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(payload)?;
+    Ok(())
+}
+
 pub(super) fn append_permission_request(
     events_path: &std::path::PathBuf,
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::PermissionRequest {
-        turn,
-        ts: now_timestamp()?,
-        tool_call_id: request.tool_call_id.clone(),
-        tool: request.tool.clone(),
-        risk: request.risk.clone(),
-        summary: request.summary.clone(),
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::PermissionRequest {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: request.tool_call_id.clone(),
+            tool: request.tool.clone(),
+            risk: request.risk.clone(),
+            summary: request.summary.clone(),
+        },
+    )
 }
 
 pub(super) fn append_permission_decision(
@@ -303,17 +299,18 @@ pub(super) fn append_permission_decision(
     source: &str,
     rule: &str,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::PermissionDecision {
-        turn,
-        ts: now_timestamp()?,
-        tool_call_id: tool_call_id.to_string(),
-        decision: permission_decision(choice).to_string(),
-        scope: permission_scope(choice).to_string(),
-        source: source.to_string(),
-        rule: rule.to_string(),
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::PermissionDecision {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call_id.to_string(),
+            decision: permission_decision(choice).to_string(),
+            scope: permission_scope(choice).to_string(),
+            source: source.to_string(),
+            rule: rule.to_string(),
+        },
+    )
 }
 
 pub(super) fn append_model_error(
@@ -325,28 +322,30 @@ pub(super) fn append_model_error(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::ModelError {
-        turn,
-        ts: now_timestamp()?,
-        request_id,
-        kind: kind.to_string(),
-        message: message.to_string(),
-        status: None,
-        retryable: Some(false),
-        provider,
-        model,
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::ModelError {
+            turn,
+            ts: now_timestamp()?,
+            request_id,
+            kind: kind.to_string(),
+            message: message.to_string(),
+            status: None,
+            retryable: Some(false),
+            provider,
+            model,
+        },
+    )
 }
 
 pub(super) fn append_turn_end(events_path: &std::path::PathBuf, turn: u64) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::TurnEnd {
-        turn,
-        ts: now_timestamp()?,
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::TurnEnd {
+            turn,
+            ts: now_timestamp()?,
+        },
+    )
 }
 
 // ---------- Env / utility helpers ----------

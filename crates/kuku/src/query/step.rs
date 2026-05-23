@@ -32,6 +32,67 @@ use super::types::{
 
 const MAX_REQUEST_LOOP: u64 = 20;
 
+fn return_blocked_tool(
+    mut pending: PendingRun,
+    id: &str,
+    tool_name: &str,
+    display_summary: &str,
+    kind: super::types::ToolKind,
+    reason: &str,
+) -> Result<PendingStep> {
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        tool_call_id: id.to_string(),
+        status: "blocked".to_string(),
+        summary: reason.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        structured: None,
+    })?;
+    pending.pending_events.push_back(UiEvent::ToolEnd {
+        id: id.to_string(),
+        status: "blocked".to_string(),
+        summary: reason.to_string(),
+        result: None,
+    });
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(UiEvent::ToolStart {
+            id: id.to_string(),
+            tool: tool_name.to_string(),
+            summary: display_summary.to_string(),
+            kind,
+        }),
+    })
+}
+
+async fn execute_inline_tool(
+    mut pending: PendingRun,
+    queued: &QueuedToolCall,
+    kind: super::types::ToolKind,
+) -> Result<PendingStep> {
+    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+    pending.pending_events.push_back(UiEvent::ToolEnd {
+        id: queued.tool_call.id.clone(),
+        status: result.status,
+        summary: result.summary,
+        result: result.structured,
+    });
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(UiEvent::ToolStart {
+            id: queued.tool_call.id.clone(),
+            tool: queued.tool_call.name.clone(),
+            summary: queued.display_summary.clone(),
+            kind,
+        }),
+    })
+}
+
 pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
     let StreamingChunkState {
         mut pending,
@@ -166,6 +227,9 @@ pub(super) async fn advance_pending(
     }
 
     if let Some(queued) = pending.queued_tool_calls.pop_front() {
+        let id = queued.tool_call.id.clone();
+        let summary = queued.display_summary.clone();
+
         if queued.tool_call.name == "agent" {
             // --- Agent call ---
             let name = queued
@@ -188,83 +252,29 @@ pub(super) async fn advance_pending(
                 .cloned();
 
             let Some(definition) = definition else {
-                let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: result.status,
-                    summary: result.summary,
-                    result: result.structured,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
             };
 
             if pending.child_session_count >= 2 {
-                let mut store = EventStore::open(&pending.events_path)?;
-                store.append(EventPayload::ToolResult {
-                    turn: pending.turn,
-                    ts: now_timestamp()?,
-                    tool_call_id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum subagent depth (2) reached".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    structured: None,
-                })?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum subagent depth (2) reached".to_string(),
-                    result: None,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "agent",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    "blocked: maximum subagent depth (2) reached",
+                );
             }
 
             if active_slot_count >= 32 {
-                let mut store = EventStore::open(&pending.events_path)?;
-                store.append(EventPayload::ToolResult {
-                    turn: pending.turn,
-                    ts: now_timestamp()?,
-                    tool_call_id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    structured: None,
-                })?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                    result: None,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "agent",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    "blocked: maximum concurrent slots (32) reached",
+                );
             }
 
             let child_session_id = format!(
@@ -276,7 +286,7 @@ pub(super) async fn advance_pending(
 
             let parent_dir = pending.events_path.parent().unwrap().to_path_buf();
             let slot = spawn_agent_slot(
-                queued.tool_call.id.clone(),
+                id.clone(),
                 name.to_string(),
                 prompt.to_string(),
                 label,
@@ -295,32 +305,14 @@ pub(super) async fn advance_pending(
                 pending: Box::new(pending),
                 slot: Some(slot),
                 event: Some(UiEvent::ToolStart {
-                    id: queued.tool_call.id.clone(),
+                    id: id.clone(),
                     tool: "agent".to_string(),
-                    summary: queued.display_summary.clone(),
+                    summary: summary.clone(),
                     kind: super::types::ToolKind::Agent { child_session_id },
                 }),
             });
         } else if queued.tool_call.name == "use_skill" {
-            // --- Skill call: execute inline (no slot) ---
-            let event_start = UiEvent::ToolStart {
-                id: queued.tool_call.id.clone(),
-                tool: queued.tool_call.name.clone(),
-                summary: queued.display_summary.clone(),
-                kind: super::types::ToolKind::Simple,
-            };
-            let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-            pending.pending_events.push_back(UiEvent::ToolEnd {
-                id: queued.tool_call.id.clone(),
-                status: result.status,
-                summary: result.summary,
-                result: result.structured,
-            });
-            return Ok(PendingStep::Pending {
-                pending: Box::new(pending),
-                slot: None,
-                event: Some(event_start),
-            });
+            return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
             let definition =
@@ -349,12 +341,13 @@ pub(super) async fn advance_pending(
 
             match decision.kind {
                 GateDecisionKind::Ask => {
+                    let tc_id = id.clone();
                     let request = PermissionRequest {
-                        id: queued.tool_call.id.clone(),
-                        tool_call_id: queued.tool_call.id.clone(),
+                        id: tc_id.clone(),
+                        tool_call_id: tc_id,
                         tool: queued.tool_call.name.clone(),
                         risk: definition.risk.clone(),
-                        summary: queued.display_summary.clone(),
+                        summary: summary.clone(),
                     };
                     append_permission_request(&pending.events_path, pending.turn, &request)?;
                     pending.queued_tool_calls.push_front(queued);
@@ -375,7 +368,7 @@ pub(super) async fn advance_pending(
                         append_permission_decision(
                             &pending.events_path,
                             pending.turn,
-                            &queued.tool_call.id,
+                            &id,
                             choice,
                             gate_source_name(decision.source),
                             &permission_rule(
@@ -388,40 +381,21 @@ pub(super) async fn advance_pending(
                     }
 
                     if active_slot_count >= 32 {
-                        let mut store = EventStore::open(&pending.events_path)?;
-                        store.append(EventPayload::ToolResult {
-                            turn: pending.turn,
-                            ts: now_timestamp()?,
-                            tool_call_id: queued.tool_call.id.clone(),
-                            status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                            model_content: String::new(),
-                            truncated: false,
-                            structured: None,
-                        })?;
-                        pending.pending_events.push_back(UiEvent::ToolEnd {
-                            id: queued.tool_call.id.clone(),
-                            status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                            result: None,
-                        });
-                        return Ok(PendingStep::Pending {
-                            pending: Box::new(pending),
-                            slot: None,
-                            event: Some(UiEvent::ToolStart {
-                                id: queued.tool_call.id.clone(),
-                                tool: queued.tool_call.name.clone(),
-                                summary: queued.display_summary.clone(),
-                                kind: super::types::ToolKind::Simple,
-                            }),
-                        });
+                        return return_blocked_tool(
+                            pending,
+                            &id,
+                            &queued.tool_call.name,
+                            &summary,
+                            super::types::ToolKind::Simple,
+                            "blocked: maximum concurrent slots (32) reached",
+                        );
                     }
 
                     let slot = spawn_simple_slot(
-                        queued.tool_call.id.clone(),
+                        id.clone(),
                         queued.tool_call.name.clone(),
                         queued.tool_call.args.clone(),
-                        queued.display_summary.clone(),
+                        summary.clone(),
                         pending.workspace.clone(),
                         pending.kuku_home.clone(),
                         slot_event_tx,
@@ -430,9 +404,9 @@ pub(super) async fn advance_pending(
                         pending: Box::new(pending),
                         slot: Some(slot),
                         event: Some(UiEvent::ToolStart {
-                            id: queued.tool_call.id.clone(),
+                            id: id.clone(),
                             tool: queued.tool_call.name.clone(),
-                            summary: queued.display_summary.clone(),
+                            summary: summary.clone(),
                             kind: super::types::ToolKind::Simple,
                         }),
                     });
@@ -442,17 +416,17 @@ pub(super) async fn advance_pending(
                         &pending.events_path,
                         pending.turn,
                         &PermissionRequest {
-                            id: queued.tool_call.id.clone(),
-                            tool_call_id: queued.tool_call.id.clone(),
+                            id: id.clone(),
+                            tool_call_id: id.clone(),
                             tool: queued.tool_call.name.clone(),
                             risk: definition.risk.clone(),
-                            summary: queued.display_summary.clone(),
+                            summary: summary.clone(),
                         },
                     )?;
                     append_permission_decision(
                         &pending.events_path,
                         pending.turn,
-                        &queued.tool_call.id,
+                        &id,
                         PermissionChoice::Deny,
                         gate_source_name(decision.source),
                         &permission_rule(
@@ -462,23 +436,8 @@ pub(super) async fn advance_pending(
                             &queued.tool_call.args,
                         ),
                     )?;
-                    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-                    pending.pending_events.push_back(UiEvent::ToolEnd {
-                        id: queued.tool_call.id.clone(),
-                        status: result.status,
-                        summary: result.summary,
-                        result: result.structured,
-                    });
-                    return Ok(PendingStep::Pending {
-                        pending: Box::new(pending),
-                        slot: None,
-                        event: Some(UiEvent::ToolStart {
-                            id: queued.tool_call.id.clone(),
-                            tool: queued.tool_call.name.clone(),
-                            summary: queued.display_summary.clone(),
-                            kind: super::types::ToolKind::Simple,
-                        }),
-                    });
+                    return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple)
+                        .await;
                 }
             }
         }
@@ -490,35 +449,7 @@ pub(super) async fn advance_pending(
 async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     ensure_resolved(&mut pending)?;
     pending.request_num += 1;
-
-    if pending.request_num > MAX_REQUEST_LOOP {
-        let provider_name = pending
-            .resolved
-            .as_ref()
-            .map(|resolved| resolved.config.kind.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let model = pending
-            .resolved
-            .as_ref()
-            .map(|resolved| resolved.config.model.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        append_model_error(
-            &pending.events_path,
-            pending.turn,
-            format!("req_{}", pending.request_num),
-            "loop_limit",
-            "tool loop exceeded maximum provider requests",
-            Some(provider_name.clone()),
-            Some(model.clone()),
-        )?;
-        append_turn_end(&pending.events_path, pending.turn)?;
-        return Err(crate::error::Error::Provider {
-            kind: crate::provider::types::ProviderFailureKind::Unknown,
-            message: "tool loop exceeded maximum provider requests".to_string(),
-            provider: Some(provider_name),
-            model: Some(model),
-        });
-    }
+    check_loop_limit(&pending)?;
 
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let existing_events = EventStore::replay(&pending.events_path)?;
@@ -541,118 +472,15 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         crate::prompt::builtin_prompt_catalog()
     };
 
-    // Compute context headroom for notice budget
-    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
-    let thinking_overhead: u32 = match resolved.config.think_level {
-        crate::config::ThinkLevel::Off => 0,
-        crate::config::ThinkLevel::Low => 1024,
-        crate::config::ThinkLevel::Medium => 4096,
-        crate::config::ThinkLevel::High => 16000,
-    };
-    let context_headroom = compute_context_headroom(
-        resolved
-            .config
-            .max_context_tokens
-            .saturating_sub(thinking_overhead),
-        Some(resolved.config.max_output_tokens),
-        estimated_input,
-    );
-
-    // Build runtime_blocks: agent catalog + notices
-    let mut runtime_blocks_parts: Vec<String> = Vec::new();
-    let mut notice_bodies: Vec<String> = Vec::new();
-    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
-
-    // Agent catalog
-    if let Some(ref subagent_registry) = pending.subagent_registry {
-        if let Some(catalog_text) =
-            crate::subagent::catalog::render_agent_catalog(subagent_registry)
-        {
-            runtime_blocks_parts.push(catalog_text);
-        }
-    }
-
-    // Skill catalog (with hot-reload)
-    if let Some(ref skill_registry) = pending.skill_registry {
-        let new_registry = {
-            let builder = crate::skill::registry::SkillRegistry::builder()
-                .load_claude_user_skills()
-                .and_then(|b| b.load_claude_project_skills(&pending.workspace))
-                .and_then(|b| b.load_opencode_user_skills())
-                .and_then(|b| b.load_opencode_project_skills(&pending.workspace))
-                .and_then(|b| b.load_kuku_user_skills())
-                .and_then(|b| b.load_kuku_project_skills(&pending.workspace));
-            builder.map(|b| b.build()).ok()
-        };
-
-        if let Some(new_reg) = new_registry {
-            let new_hash = new_reg.hash().to_string();
-            if pending.skill_content_hash.as_deref() != Some(&new_hash) {
-                if let Some(changes) =
-                    crate::skill::registry::detect_skill_changes(skill_registry, &new_reg)
-                {
-                    pending.skill_registry = Some(new_reg);
-                    pending.skill_content_hash = Some(new_hash);
-                    let notice = Notice {
-                        kind: NoticeKind::SkillChanged {
-                            updated: changes.updated,
-                            added: changes.added,
-                            removed: changes.removed,
-                        },
-                        severity: NoticeSeverity::Info,
-                    };
-                    if let Some(body) = render_notice_body(&notice) {
-                        notice_bodies.push(body);
-                    }
-                } else {
-                    pending.skill_content_hash = Some(new_hash);
-                }
-            }
-        }
-
-        if let Some(catalog_text) =
-            crate::skill::catalog::render_skill_catalog(pending.skill_registry.as_ref().unwrap())
-        {
-            runtime_blocks_parts.push(catalog_text);
-        }
-    }
-
-    // Context drift notices (turn > 1)
-    if pending.turn > 1 {
-        let notices = build_runtime_notices(NoticeAssemblyInput {
-            workspace: &pending.workspace,
-            events: &existing_events,
-            context_budget_tier: context_headroom.tier,
-        });
-        for notice in &notices {
-            if let Some(body) = render_notice_body(notice) {
-                notice_bodies.push(body);
-            }
-        }
-        notice_snapshots = notices
-            .iter()
-            .filter_map(|n| {
-                render_notice_body(n).map(|content| crate::event::types::ContextMessage {
-                    role: "user".to_string(),
-                    content,
-                })
-            })
-            .collect();
-    }
-
-    // Merge all notice bodies into a single <kuku_system_notice>
-    if !notice_bodies.is_empty() {
-        let merged = notice_bodies.join("\n\n");
-        runtime_blocks_parts.push(format!(
-            "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
-        ));
-    }
-
-    let runtime_blocks = if runtime_blocks_parts.is_empty() {
-        None
-    } else {
-        Some(runtime_blocks_parts.join("\n"))
-    };
+    let (runtime_blocks, notice_snapshots) = build_runtime_blocks(
+        &pending.workspace,
+        pending.turn,
+        pending.subagent_registry.as_ref(),
+        pending.skill_registry.as_mut(),
+        &mut pending.skill_content_hash,
+        &resolved.config,
+        &existing_events,
+    )?;
 
     let mut assembly = match assemble_context(
         ContextInput {
@@ -689,27 +517,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     };
     let prelude_snapshot = assembly.snapshot_prelude();
 
-    // Inject runtime_context and skill_body into the last user message that has text blocks
-    if let Some(ref runtime_context) = assembly.runtime_context {
-        if let Some(user_msg) = assembly.history.iter_mut().rev().find(|msg| {
-            msg.role == crate::context::Role::User
-                && msg
-                    .blocks
-                    .iter()
-                    .any(|b| matches!(b, crate::context::MessageBlock::Text(_)))
-        }) {
-            let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
-            new_blocks.push(crate::context::MessageBlock::Text(runtime_context.clone()));
-            if let Some(ref sb) = pending.skill_body {
-                new_blocks.push(crate::context::MessageBlock::Text(sb.clone()));
-            }
-            // Preserve all existing blocks (text + tool results)
-            for block in &user_msg.blocks {
-                new_blocks.push(block.clone());
-            }
-            user_msg.blocks = new_blocks;
-        }
-    }
+    inject_runtime_context(
+        &mut assembly.history,
+        assembly.runtime_context.as_deref(),
+        pending.skill_body.as_deref(),
+    );
 
     let request_id = format!("req_{}", pending.request_num);
     let tier_name = pending
@@ -724,64 +536,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         "temperature": pending.query.temperature,
     });
 
-    let provenance = build_request_provenance(RequestProvenanceInput {
-        request_id: request_id.clone(),
-        tier: tier_name.clone(),
-        workspace: pending.workspace.display().to_string(),
-        platform: platform.clone(),
-        current_date: current_date.clone(),
-        project_instruction_sources: assembly
-            .project_instruction_sources
-            .iter()
-            .map(|source| FileSource {
-                path: source.path.clone(),
-                hash: source.hash.clone(),
-            })
-            .collect(),
-        memory_sources: assembly
-            .memory_sources
-            .iter()
-            .map(|source| FileSource {
-                path: source.path.clone(),
-                hash: source.hash.clone(),
-            })
-            .collect(),
-        prompt_asset_sources: assembly.prompt_asset_sources.clone(),
-        history_range: HistoryRange {
-            first_event_id: existing_events.first().map(|event| event.id),
-            last_event_id: existing_events.last().map(|event| event.id),
-        },
-        tool_registry: ToolRegistryProvenance {
-            hash: resolved.registry_hash.clone(),
-            names: resolved.tool_names.clone(),
-            tool_count: resolved.tool_count,
-        },
-        subagent_registry: pending
-            .subagent_registry
-            .as_ref()
-            .map(|r| SubagentRegistryProvenance {
-                hash: r.hash().to_string(),
-                names: r.names().to_vec(),
-            }),
-        skill_registry: pending.skill_registry.as_ref().map(|reg| {
-            crate::context::provenance::SkillRegistryProvenance {
-                hash: reg.hash().to_string(),
-                names: reg.names().to_vec(),
-            }
-        }),
-        provider_format: provider_format_name(&resolved.config.kind).to_string(),
-        provider: resolved.config.kind.as_str().to_string(),
-        model: resolved.config.model.clone(),
-        request_params: params.clone(),
-        token_estimate: None,
-        context_budget_tier: context_headroom.tier.as_str().to_string(),
-        max_context_tokens: Some(context_headroom.max_context_tokens),
-        remaining_input_tokens: context_headroom.remaining_input_tokens,
-    });
+    let provenance =
+        build_model_request_provenance(&pending, resolved, &assembly, &existing_events);
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
-
         store.append(EventPayload::ModelRequest {
             turn: pending.turn,
             ts: now_timestamp()?,
@@ -867,6 +626,271 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             })
         }
     }
+}
+
+fn check_loop_limit(pending: &PendingRun) -> Result<()> {
+    if pending.request_num > MAX_REQUEST_LOOP {
+        let provider_name = pending
+            .resolved
+            .as_ref()
+            .map(|r| r.config.kind.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let model = pending
+            .resolved
+            .as_ref()
+            .map(|r| r.config.model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        append_model_error(
+            &pending.events_path,
+            pending.turn,
+            format!("req_{}", pending.request_num),
+            "loop_limit",
+            "tool loop exceeded maximum provider requests",
+            Some(provider_name.clone()),
+            Some(model.clone()),
+        )?;
+        append_turn_end(&pending.events_path, pending.turn)?;
+        return Err(crate::error::Error::Provider {
+            kind: crate::provider::types::ProviderFailureKind::Unknown,
+            message: "tool loop exceeded maximum provider requests".to_string(),
+            provider: Some(provider_name),
+            model: Some(model),
+        });
+    }
+    Ok(())
+}
+
+fn build_runtime_blocks(
+    workspace: &std::path::Path,
+    turn: u64,
+    subagent_registry: Option<&crate::subagent::registry::SubagentRegistry>,
+    mut skill_registry: Option<&mut crate::skill::registry::SkillRegistry>,
+    skill_content_hash: &mut Option<String>,
+    resolved_config: &crate::provider::types::ResolvedProvider,
+    existing_events: &[crate::event::StoredEvent],
+) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
+    let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
+    let thinking_overhead: u32 = match resolved_config.think_level {
+        crate::config::ThinkLevel::Off => 0,
+        crate::config::ThinkLevel::Low => 1024,
+        crate::config::ThinkLevel::Medium => 4096,
+        crate::config::ThinkLevel::High => 16000,
+    };
+    let context_headroom = compute_context_headroom(
+        resolved_config
+            .max_context_tokens
+            .saturating_sub(thinking_overhead),
+        Some(resolved_config.max_output_tokens),
+        estimated_input,
+    );
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut notice_bodies: Vec<String> = Vec::new();
+    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
+
+    if let Some(subagent_registry) = subagent_registry {
+        if let Some(catalog_text) =
+            crate::subagent::catalog::render_agent_catalog(subagent_registry)
+        {
+            parts.push(catalog_text);
+        }
+    }
+
+    if let Some(ref mut skill_reg) = skill_registry {
+        let new_registry = {
+            let builder = crate::skill::registry::SkillRegistry::builder()
+                .load_claude_user_skills()
+                .and_then(|b| b.load_claude_project_skills(workspace))
+                .and_then(|b| b.load_opencode_user_skills())
+                .and_then(|b| b.load_opencode_project_skills(workspace))
+                .and_then(|b| b.load_kuku_user_skills())
+                .and_then(|b| b.load_kuku_project_skills(workspace));
+            builder.map(|b| b.build()).ok()
+        };
+
+        if let Some(new_reg) = new_registry {
+            let new_hash = new_reg.hash().to_string();
+            if skill_content_hash.as_deref() != Some(&new_hash) {
+                if let Some(changes) =
+                    crate::skill::registry::detect_skill_changes(skill_reg, &new_reg)
+                {
+                    **skill_reg = new_reg;
+                    *skill_content_hash = Some(new_hash);
+                    let notice = Notice {
+                        kind: NoticeKind::SkillChanged {
+                            updated: changes.updated,
+                            added: changes.added,
+                            removed: changes.removed,
+                        },
+                        severity: NoticeSeverity::Info,
+                    };
+                    if let Some(body) = render_notice_body(&notice) {
+                        notice_bodies.push(body);
+                    }
+                } else {
+                    *skill_content_hash = Some(new_hash);
+                }
+            }
+        }
+
+        if let Some(catalog_text) = crate::skill::catalog::render_skill_catalog(skill_reg) {
+            parts.push(catalog_text);
+        }
+    }
+
+    if turn > 1 {
+        let notices = build_runtime_notices(NoticeAssemblyInput {
+            workspace,
+            events: existing_events,
+            context_budget_tier: context_headroom.tier,
+        });
+        for notice in &notices {
+            if let Some(body) = render_notice_body(notice) {
+                notice_bodies.push(body);
+            }
+        }
+        notice_snapshots = notices
+            .iter()
+            .filter_map(|n| {
+                render_notice_body(n).map(|content| crate::event::types::ContextMessage {
+                    role: "user".to_string(),
+                    content,
+                })
+            })
+            .collect();
+    }
+
+    if !notice_bodies.is_empty() {
+        let merged = notice_bodies.join("\n\n");
+        parts.push(format!(
+            "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
+        ));
+    }
+
+    let runtime_blocks = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    };
+
+    Ok((runtime_blocks, notice_snapshots))
+}
+
+fn inject_runtime_context(
+    history: &mut [crate::context::CanonicalMessage],
+    runtime_context: Option<&str>,
+    skill_body: Option<&str>,
+) {
+    let Some(ctx) = runtime_context else { return };
+    let Some(user_msg) = history.iter_mut().rev().find(|msg| {
+        msg.role == crate::context::Role::User
+            && msg
+                .blocks
+                .iter()
+                .any(|b| matches!(b, crate::context::MessageBlock::Text(_)))
+    }) else {
+        return;
+    };
+    let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
+    new_blocks.push(crate::context::MessageBlock::Text(ctx.to_string()));
+    if let Some(sb) = skill_body {
+        new_blocks.push(crate::context::MessageBlock::Text(sb.to_string()));
+    }
+    for block in &user_msg.blocks {
+        new_blocks.push(block.clone());
+    }
+    user_msg.blocks = new_blocks;
+}
+
+fn build_model_request_provenance(
+    pending: &PendingRun,
+    resolved: &ResolvedRuntime,
+    assembly: &crate::context::ContextAssembly,
+    existing_events: &[crate::event::StoredEvent],
+) -> crate::context::RequestProvenance {
+    let headroom = {
+        let estimated_input = last_input_tokens(&resolved.config.kind, existing_events);
+        let thinking_overhead: u32 = match resolved.config.think_level {
+            crate::config::ThinkLevel::Off => 0,
+            crate::config::ThinkLevel::Low => 1024,
+            crate::config::ThinkLevel::Medium => 4096,
+            crate::config::ThinkLevel::High => 16000,
+        };
+        compute_context_headroom(
+            resolved
+                .config
+                .max_context_tokens
+                .saturating_sub(thinking_overhead),
+            Some(resolved.config.max_output_tokens),
+            estimated_input,
+        )
+    };
+
+    let request_id = format!("req_{}", pending.request_num);
+    let tier_name = pending
+        .query
+        .tier
+        .clone()
+        .unwrap_or_else(|| pending.config.default_tier().to_string());
+    let params = serde_json::json!({
+        "max_output_tokens": resolved.config.max_output_tokens,
+        "temperature": pending.query.temperature,
+    });
+
+    build_request_provenance(RequestProvenanceInput {
+        request_id,
+        tier: tier_name,
+        workspace: pending.workspace.display().to_string(),
+        platform: platform_label().to_string(),
+        current_date: current_date_string(),
+        project_instruction_sources: assembly
+            .project_instruction_sources
+            .iter()
+            .map(|s| FileSource {
+                path: s.path.clone(),
+                hash: s.hash.clone(),
+            })
+            .collect(),
+        memory_sources: assembly
+            .memory_sources
+            .iter()
+            .map(|s| FileSource {
+                path: s.path.clone(),
+                hash: s.hash.clone(),
+            })
+            .collect(),
+        prompt_asset_sources: assembly.prompt_asset_sources.clone(),
+        history_range: HistoryRange {
+            first_event_id: existing_events.first().map(|e| e.id),
+            last_event_id: existing_events.last().map(|e| e.id),
+        },
+        tool_registry: ToolRegistryProvenance {
+            hash: resolved.registry_hash.clone(),
+            names: resolved.tool_names.clone(),
+            tool_count: resolved.tool_count,
+        },
+        subagent_registry: pending
+            .subagent_registry
+            .as_ref()
+            .map(|r| SubagentRegistryProvenance {
+                hash: r.hash().to_string(),
+                names: r.names().to_vec(),
+            }),
+        skill_registry: pending.skill_registry.as_ref().map(|reg| {
+            crate::context::provenance::SkillRegistryProvenance {
+                hash: reg.hash().to_string(),
+                names: reg.names().to_vec(),
+            }
+        }),
+        provider_format: provider_format_name(&resolved.config.kind).to_string(),
+        provider: resolved.config.kind.as_str().to_string(),
+        model: resolved.config.model.clone(),
+        request_params: params,
+        token_estimate: None,
+        context_budget_tier: headroom.tier.as_str().to_string(),
+        max_context_tokens: Some(headroom.max_context_tokens),
+        remaining_input_tokens: headroom.remaining_input_tokens,
+    })
 }
 
 fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
