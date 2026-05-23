@@ -5,6 +5,7 @@ use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
+use super::sse::stream_sse_events;
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 pub(crate) fn responses_url(base_url: &str) -> String {
@@ -159,22 +160,32 @@ pub(crate) async fn stream(
         return Err(failure);
     }
 
-    let body_text = response
-        .text()
-        .await
-        .map_err(|error| transport_error(&error))?;
-    let chunks = parse_responses_sse(&body_text);
-    Ok(Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))))
+    let mut parser = OpenAiResponsesSseParser::new();
+    Ok(stream_sse_events(response, move |frame| {
+        parser.feed(frame);
+        parser.take_chunks()
+    }))
 }
 
-pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut chunks = Vec::new();
-    let mut started = false;
+pub(crate) struct OpenAiResponsesSseParser {
+    chunks: Vec<ProviderChunk>,
+    started: bool,
+}
 
-    for frame in body.split("\n\n") {
-        let frame = frame.trim();
+impl OpenAiResponsesSseParser {
+    pub(crate) fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            started: false,
+        }
+    }
+
+    pub(crate) fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
-            continue;
+            if !self.chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
+                self.chunks.push(ProviderChunk::StreamEnd);
+            }
+            return;
         }
 
         let mut event_type = "";
@@ -189,29 +200,29 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
         }
 
         if data_str.is_empty() {
-            continue;
+            return;
         }
 
         let data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => return,
         };
 
         match event_type {
-            "response.created" if !started => {
+            "response.created" if !self.started => {
                 let rid = data
                     .get("response")
                     .and_then(|r| r.get("id"))
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                chunks.push(ProviderChunk::StreamStart { request_id: rid });
-                started = true;
+                self.chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                self.started = true;
             }
             "response.output_item.added" => {
                 let item = match data.get("item") {
                     Some(i) => i,
-                    None => continue,
+                    None => return,
                 };
                 if let Some("function_call") = item.get("type").and_then(Value::as_str) {
                     let index = data
@@ -228,7 +239,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    chunks.push(ProviderChunk::ToolCallStart {
+                    self.chunks.push(ProviderChunk::ToolCallStart {
                         index,
                         id: call_id,
                         name,
@@ -238,7 +249,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
             "response.output_text.delta" => {
                 if let Some(delta) = data.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
-                        chunks.push(ProviderChunk::TextDelta {
+                        self.chunks.push(ProviderChunk::TextDelta {
                             text: delta.to_string(),
                         });
                     }
@@ -251,7 +262,7 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                     .unwrap_or(0);
                 if let Some(delta) = data.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
-                        chunks.push(ProviderChunk::ToolCallArgDelta {
+                        self.chunks.push(ProviderChunk::ToolCallArgDelta {
                             index,
                             fragment: delta.to_string(),
                         });
@@ -263,12 +274,12 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                chunks.push(ProviderChunk::ContentBlockStop { index });
+                self.chunks.push(ProviderChunk::ContentBlockStop { index });
             }
             "response.completed" => {
                 if let Some(resp) = data.get("response") {
                     if let Some(usage) = resp.get("usage") {
-                        chunks.push(ProviderChunk::StreamUsage {
+                        self.chunks.push(ProviderChunk::StreamUsage {
                             input_tokens: usage
                                 .get("input_tokens")
                                 .and_then(Value::as_u64)
@@ -290,23 +301,31 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
                             "completed" => "end_turn",
                             other => other,
                         };
-                        chunks.push(ProviderChunk::StopReason {
+                        self.chunks.push(ProviderChunk::StopReason {
                             reason: reason.to_string(),
                         });
                     }
                 }
-                chunks.push(ProviderChunk::StreamEnd);
+                self.chunks.push(ProviderChunk::StreamEnd);
             }
             "response.failed" | "error" => {
-                break;
+                return;
             }
             _ => {}
         }
     }
 
-    if !chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
-        chunks.push(ProviderChunk::StreamEnd);
+    pub(crate) fn take_chunks(&mut self) -> Vec<ProviderChunk> {
+        std::mem::take(&mut self.chunks)
     }
+}
 
-    chunks
+#[allow(dead_code)]
+pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
+    let mut parser = OpenAiResponsesSseParser::new();
+    for frame in body.split("\n\n") {
+        parser.feed(frame.trim());
+    }
+    parser.feed("");
+    parser.take_chunks()
 }
