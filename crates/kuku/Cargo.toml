@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }
-time = { version = "0.3", default-features = false, features = ["std", "formatting"] }
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 regex = "1"
