@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use super::types::{ExecSlot, PermissionChoice, PermissionMode, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn spawn_simple_slot(
     tool_call_id: String,
     tool_name: String,
@@ -66,7 +66,6 @@ pub(crate) async fn spawn_agent_slot(
     slot_index: usize,
     event_tx: mpsc::Sender<(usize, SlotEvent)>,
 ) -> crate::error::Result<ExecSlot> {
-
     let cancel = Arc::new(Notify::new());
     let child_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -157,9 +156,7 @@ pub(crate) async fn spawn_agent_slot(
                             slot_index,
                             SlotEvent::Done {
                                 status: "error".into(),
-                                summary: format!(
-                                    "{agent_name_clone}: stream ended unexpectedly"
-                                ),
+                                summary: format!("{agent_name_clone}: stream ended unexpectedly"),
                                 result: None,
                             },
                         ))
@@ -172,16 +169,14 @@ pub(crate) async fn spawn_agent_slot(
 
     Ok(ExecSlot {
         tool_call_id,
-        kind: ToolKind::Agent {
-            child_session_id,
-        },
+        kind: ToolKind::Agent { child_session_id },
         label: summary,
         cancel,
         child_permissions,
     })
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn spawn_command_slot(
     tool_call_id: String,
     command: String,
@@ -197,7 +192,8 @@ pub(crate) fn spawn_command_slot(
 
     let summary_clone = summary.clone();
     tokio::spawn(async move {
-        let args = serde_json::json!({"command": command, "timeout": timeout, "brief": summary_clone});
+        let args =
+            serde_json::json!({"command": command, "timeout": timeout, "brief": summary_clone});
         let result = tokio::select! {
             biased;
             _ = cancel_clone.notified() => SlotEvent::Done {
@@ -248,14 +244,15 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
             summary,
             kind,
         }),
-        UiEvent::ToolOutput { id, event } => {
-            Some(ToolEvent::ToolOutput {
-                id,
-                event: Box::new(event),
-            })
-        }
+        UiEvent::ToolOutput { id, event } => Some(ToolEvent::ToolOutput {
+            id,
+            event: Box::new(event),
+        }),
         UiEvent::ToolEnd {
-            id, status, summary, ..
+            id,
+            status,
+            summary,
+            ..
         } => Some(ToolEvent::ToolEnd {
             id,
             status,

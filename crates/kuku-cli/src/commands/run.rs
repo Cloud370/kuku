@@ -343,13 +343,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_call(
-                            tool,
-                            id,
-                            summary,
-                            serde_json::Value::Null,
-                        )
-                        .to_json_line()
+                        OutputLine::tool_call(tool, id, summary, serde_json::Value::Null,)
+                            .to_json_line()
                     );
                 } else {
                     println!("\n{}", display.tool_call(&tool, &summary, &id));
@@ -364,8 +359,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_result(id, status, summary, None, false)
-                            .to_json_line()
+                        OutputLine::tool_result(id, status, summary, None, false).to_json_line()
                     );
                 } else {
                     println!("{}", display.tool_result(&status, &summary, &id));
@@ -379,7 +373,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if args.auto_yes || use_stream_json {
-                    let _ = run.decide(&request.id, PermissionChoice::Once, None).await?;
+                    let _ = run
+                        .decide(&request.id, PermissionChoice::Once, None)
+                        .await?;
                     if use_stream_json {
                         println!(
                             "{}",

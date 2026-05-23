@@ -10,7 +10,6 @@ use crate::session::{global_memory_path, project_memory_path};
 
 use super::types::{ExecSlot, PendingRun, PermissionChoice, PermissionRequest};
 
-
 // ---------- Slot helpers ----------
 
 pub(crate) fn write_tool_result(

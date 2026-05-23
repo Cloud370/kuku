@@ -16,7 +16,12 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "thinking",
             "content": text,
         })),
-        UiEvent::ToolStart { id, tool, summary, kind } => {
+        UiEvent::ToolStart {
+            id,
+            tool,
+            summary,
+            kind,
+        } => {
             let mut val = json!({
                 "type": "tool_start",
                 "id": id,
@@ -31,7 +36,12 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "id": id,
             "event": tool_event_to_wire(event),
         })),
-        UiEvent::ToolEnd { id, status, summary, result } => {
+        UiEvent::ToolEnd {
+            id,
+            status,
+            summary,
+            result,
+        } => {
             let mut val = json!({
                 "type": "tool_end",
                 "id": id,
@@ -76,7 +86,9 @@ fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
     use crate::query::ToolKind;
     match kind {
         ToolKind::Simple => json!("simple"),
-        ToolKind::Agent { child_session_id } => json!({"agent": {"child_session_id": child_session_id}}),
+        ToolKind::Agent { child_session_id } => {
+            json!({"agent": {"child_session_id": child_session_id}})
+        }
         ToolKind::Command { pid } => json!({"command": {"pid": pid}}),
     }
 }
@@ -86,13 +98,22 @@ fn tool_event_to_wire(event: &crate::query::ToolEvent) -> serde_json::Value {
     match event {
         ToolEvent::TextDelta { text } => json!({"text": text}),
         ToolEvent::ThinkingDelta { text } => json!({"thinking": text}),
-        ToolEvent::ToolStart { id, tool, summary, kind } => {
+        ToolEvent::ToolStart {
+            id,
+            tool,
+            summary,
+            kind,
+        } => {
             json!({"tool_start": {"id": id, "tool": tool, "summary": summary, "kind": tool_kind_to_wire(kind)}})
         }
         ToolEvent::ToolOutput { id, event } => {
             json!({"tool_output": {"id": id, "event": tool_event_to_wire(event)}})
         }
-        ToolEvent::ToolEnd { id, status, summary } => {
+        ToolEvent::ToolEnd {
+            id,
+            status,
+            summary,
+        } => {
             json!({"tool_end": {"id": id, "status": status, "summary": summary}})
         }
         ToolEvent::Stdout { text } => json!({"stdout": text}),
@@ -166,9 +187,7 @@ mod tests {
     fn tool_output_wire_wraps_tool_event() {
         let event = UiEvent::ToolOutput {
             id: "t1".into(),
-            event: ToolEvent::Stdout {
-                text: "ok".into(),
-            },
+            event: ToolEvent::Stdout { text: "ok".into() },
         };
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "tool_output");

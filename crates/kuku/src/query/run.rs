@@ -90,7 +90,9 @@ impl Run {
                             let (events_path, turn) = match &self.state {
                                 RunState::Pending(p) => (&p.events_path, p.turn),
                                 RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
-                                RunState::WaitingForPermission(w) => (&w.pending.events_path, w.pending.turn),
+                                RunState::WaitingForPermission(w) => {
+                                    (&w.pending.events_path, w.pending.turn)
+                                }
                                 _ => {
                                     return Ok(Some(UiEvent::ToolEnd {
                                         id: slot.tool_call_id,
@@ -121,38 +123,33 @@ impl Run {
 
             // 3. No slots, no queued calls — advance state
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
-                RunState::Pending(pending) => {
-                    match super::step::advance_pending(*pending).await? {
-                        PendingStep::Pending(next_pending) => {
-                            self.state = RunState::Pending(next_pending);
-                        }
-                        PendingStep::NeedPermission(waiting) => {
-                            let request = waiting.request.clone();
-                            self.state = RunState::WaitingForPermission(waiting);
-                            return Ok(Some(UiEvent::PermissionRequested { request }));
-                        }
-                        PendingStep::Streaming(streaming) => {
-                            self.state = RunState::Streaming(streaming);
-                        }
-                        PendingStep::BatchReady {
-                            pending,
-                            ui_events,
-                        } => {
-                            let mut iter = ui_events.into_iter();
-                            let first = iter.next().unwrap();
-                            self.state = RunState::Pending(pending);
-                            return Ok(Some(first));
-                        }
-                        PendingStep::Done(output, usage, turn) => {
-                            self.state = RunState::Done(None);
-                            return Ok(Some(UiEvent::Done {
-                                output,
-                                usage,
-                                turn,
-                            }));
-                        }
+                RunState::Pending(pending) => match super::step::advance_pending(*pending).await? {
+                    PendingStep::Pending(next_pending) => {
+                        self.state = RunState::Pending(next_pending);
                     }
-                }
+                    PendingStep::NeedPermission(waiting) => {
+                        let request = waiting.request.clone();
+                        self.state = RunState::WaitingForPermission(waiting);
+                        return Ok(Some(UiEvent::PermissionRequested { request }));
+                    }
+                    PendingStep::Streaming(streaming) => {
+                        self.state = RunState::Streaming(streaming);
+                    }
+                    PendingStep::BatchReady { pending, ui_events } => {
+                        let mut iter = ui_events.into_iter();
+                        let first = iter.next().unwrap();
+                        self.state = RunState::Pending(pending);
+                        return Ok(Some(first));
+                    }
+                    PendingStep::Done(output, usage, turn) => {
+                        self.state = RunState::Done(None);
+                        return Ok(Some(UiEvent::Done {
+                            output,
+                            usage,
+                            turn,
+                        }));
+                    }
+                },
                 RunState::Streaming(mut streaming) => {
                     if let Some(event) = streaming.lead_events.pop() {
                         self.state = RunState::Streaming(streaming);
@@ -425,7 +422,6 @@ pub(super) fn find_tool_definition<'a>(
         .as_ref()
         .and_then(|resolved| resolved.registry.iter().find(|tool| tool.name == name))
 }
-
 
 #[cfg(test)]
 mod tests {

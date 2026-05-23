@@ -455,7 +455,7 @@ async fn can_allow_run_command_once_via_run_decide() {
         _ => unreachable!(),
     };
 
-    run.decide(&request.id, kuku::query::PermissionChoice::Session)
+    run.decide(&request.id, kuku::query::PermissionChoice::Session, None)
         .await
         .unwrap();
 
@@ -532,7 +532,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
         UiEvent::PermissionRequested { request } => request,
         _ => unreachable!(),
     };
-    run.decide(&request.id, kuku::query::PermissionChoice::Project)
+    run.decide(&request.id, kuku::query::PermissionChoice::Project, None)
         .await
         .unwrap();
     let event = next_matching(&mut run, deadline, |e| matches!(e, UiEvent::Done { .. })).await;

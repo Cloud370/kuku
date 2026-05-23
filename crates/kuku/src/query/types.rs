@@ -77,15 +77,40 @@ pub enum ToolKind {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEvent {
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolStart { id: String, tool: String, summary: String, kind: ToolKind },
-    ToolOutput { id: String, event: Box<ToolEvent> },
-    ToolEnd { id: String, status: String, summary: String },
-    Stdout { text: String },
-    Stderr { text: String },
-    PermissionRequested { request: PermissionRequest },
-    Error { code: String, message: String },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolStart {
+        id: String,
+        tool: String,
+        summary: String,
+        kind: ToolKind,
+    },
+    ToolOutput {
+        id: String,
+        event: Box<ToolEvent>,
+    },
+    ToolEnd {
+        id: String,
+        status: String,
+        summary: String,
+    },
+    Stdout {
+        text: String,
+    },
+    Stderr {
+        text: String,
+    },
+    PermissionRequested {
+        request: PermissionRequest,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,16 +126,47 @@ pub enum PermissionMode {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolStart { id: String, tool: String, summary: String, kind: ToolKind },
-    ToolOutput { id: String, event: ToolEvent },
-    ToolEnd { id: String, status: String, summary: String, result: Option<serde_json::Value> },
-    PermissionRequested { request: PermissionRequest },
-    Error { code: String, message: String },
-    ModelRequest { model: String, provider: String },
-    TurnStart { turn: u64 },
-    Done { output: RunOutput, usage: Option<crate::provider::types::ProviderUsage>, turn: u64 },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolStart {
+        id: String,
+        tool: String,
+        summary: String,
+        kind: ToolKind,
+    },
+    ToolOutput {
+        id: String,
+        event: ToolEvent,
+    },
+    ToolEnd {
+        id: String,
+        status: String,
+        summary: String,
+        result: Option<serde_json::Value>,
+    },
+    PermissionRequested {
+        request: PermissionRequest,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
+    ModelRequest {
+        model: String,
+        provider: String,
+    },
+    TurnStart {
+        turn: u64,
+    },
+    Done {
+        output: RunOutput,
+        usage: Option<crate::provider::types::ProviderUsage>,
+        turn: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -132,7 +188,8 @@ pub(crate) struct ExecSlot {
     pub(crate) kind: ToolKind,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
-    pub(crate) child_permissions: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
+    pub(crate) child_permissions:
+        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
 
 impl std::fmt::Debug for ExecSlot {
@@ -149,7 +206,11 @@ impl std::fmt::Debug for ExecSlot {
 #[allow(dead_code)]
 pub(crate) enum SlotEvent {
     Output(ToolEvent),
-    Done { status: String, summary: String, result: Option<serde_json::Value> },
+    Done {
+        status: String,
+        summary: String,
+        result: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug)]

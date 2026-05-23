@@ -49,7 +49,6 @@ pub(crate) async fn dispatch(
     }
 }
 
-
 fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {
     let Some(tool_call_id) = tool_call_id else {
         return false;
