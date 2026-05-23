@@ -268,21 +268,28 @@ pub(super) fn gate_source_name(source: crate::permission::GateSource) -> &'stati
 
 // ---------- Event append helpers ----------
 
+fn append_event(events_path: &std::path::PathBuf, payload: EventPayload) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(payload)?;
+    Ok(())
+}
+
 pub(super) fn append_permission_request(
     events_path: &std::path::PathBuf,
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::PermissionRequest {
-        turn,
-        ts: now_timestamp()?,
-        tool_call_id: request.tool_call_id.clone(),
-        tool: request.tool.clone(),
-        risk: request.risk.clone(),
-        summary: request.summary.clone(),
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::PermissionRequest {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: request.tool_call_id.clone(),
+            tool: request.tool.clone(),
+            risk: request.risk.clone(),
+            summary: request.summary.clone(),
+        },
+    )
 }
 
 pub(super) fn append_permission_decision(
@@ -293,17 +300,18 @@ pub(super) fn append_permission_decision(
     source: &str,
     rule: &str,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::PermissionDecision {
-        turn,
-        ts: now_timestamp()?,
-        tool_call_id: tool_call_id.to_string(),
-        decision: permission_decision(choice).to_string(),
-        scope: permission_scope(choice).to_string(),
-        source: source.to_string(),
-        rule: rule.to_string(),
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::PermissionDecision {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call_id.to_string(),
+            decision: permission_decision(choice).to_string(),
+            scope: permission_scope(choice).to_string(),
+            source: source.to_string(),
+            rule: rule.to_string(),
+        },
+    )
 }
 
 pub(super) fn append_model_error(
@@ -315,28 +323,30 @@ pub(super) fn append_model_error(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::ModelError {
-        turn,
-        ts: now_timestamp()?,
-        request_id,
-        kind: kind.to_string(),
-        message: message.to_string(),
-        status: None,
-        retryable: Some(false),
-        provider,
-        model,
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::ModelError {
+            turn,
+            ts: now_timestamp()?,
+            request_id,
+            kind: kind.to_string(),
+            message: message.to_string(),
+            status: None,
+            retryable: Some(false),
+            provider,
+            model,
+        },
+    )
 }
 
 pub(super) fn append_turn_end(events_path: &std::path::PathBuf, turn: u64) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::TurnEnd {
-        turn,
-        ts: now_timestamp()?,
-    })?;
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::TurnEnd {
+            turn,
+            ts: now_timestamp()?,
+        },
+    )
 }
 
 // ---------- Env / utility helpers ----------
