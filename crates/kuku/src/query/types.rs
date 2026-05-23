@@ -167,6 +167,9 @@ pub enum UiEvent {
         usage: Option<crate::provider::types::ProviderUsage>,
         turn: u64,
     },
+    Cancelled {
+        turn: u64,
+    },
 }
 
 #[derive(Debug)]

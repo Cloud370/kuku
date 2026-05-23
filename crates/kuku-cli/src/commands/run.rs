@@ -419,6 +419,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 current_turn = turn;
                 break;
             }
+            Some(UiEvent::Cancelled { .. }) => break,
             Some(_) => {}
             None => break,
         }

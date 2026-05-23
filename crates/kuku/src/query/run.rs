@@ -148,7 +148,7 @@ impl Run {
                         ts: now_timestamp()?,
                     })?;
                     self.state = RunState::Done(None);
-                    return Ok(None);
+                    return Ok(Some(UiEvent::Cancelled { turn }));
                 }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
@@ -607,6 +607,8 @@ mod tests {
         }
 
         let mut run = make_cancelled_run(events_path.clone(), 1);
+        let result = run.next().await.unwrap();
+        assert!(matches!(result, Some(UiEvent::Cancelled { turn: 1 })));
         let result = run.next().await.unwrap();
         assert!(result.is_none());
 

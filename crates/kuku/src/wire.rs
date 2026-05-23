@@ -69,6 +69,10 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "turn_start",
             "turn": turn,
         })),
+        UiEvent::Cancelled { turn } => Some(json!({
+            "type": "cancelled",
+            "turn": turn,
+        })),
         UiEvent::Error { code, message } => Some(json!({
             "type": "error",
             "code": code,
