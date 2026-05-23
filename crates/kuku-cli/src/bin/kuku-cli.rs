@@ -10,6 +10,7 @@ async fn main() {
         Some(Command::Show(args)) => kuku_cli::commands::show::run(args).await,
         Some(Command::Events(args)) => kuku_cli::commands::events::run(args).await,
         Some(Command::List(args)) => kuku_cli::commands::list::run(args).await,
+        Some(Command::Delete(args)) => kuku_cli::commands::delete::run(args).await,
         Some(Command::Config(args)) => kuku_cli::commands::config::run(args).await,
         Some(Command::Init) => kuku_cli::commands::init::run(),
         Some(Command::Prompts(args)) => kuku_cli::commands::prompts::run(args),

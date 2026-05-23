@@ -14,8 +14,8 @@ crates/kuku/src/
 ├── provider/           model API adapters (Anthropic, OpenAI)
 ├── tool/               tool definitions, registry, dispatch, builtins
 ├── permission/         runtime gate, hard guard, policy matching
-├── session/            directory paths, writer lock
-├── event/              event types, events.jsonl read/write
+├── session/            directory paths, writer lock, session list/delete, status
+├── event/              event types, events.jsonl read/write, fast scan helpers
 ├── prompt/             prompt assets, catalog, template rendering
 ├── config.rs           tiers, providers, config.toml parsing
 ├── subagent/           definitions, registry, catalog, child sessions
@@ -34,8 +34,8 @@ Each module has a clear boundary of what it may and may not depend on.
 | `provider/` | Protocol conversion (Anthropic, OpenAI) | Canonical messages, tool schemas, config | Session, event store, permission |
 | `tool/` | Definitions, registry, dispatch, built-in tools | `event/`, `context/` (ToolSchema) | Provider protocol, slot scheduling |
 | `permission/` | Gate decisions, hard guard, policy.md | `event/` | Tool execution, provider, session |
-| `session/` | Path derivation, writer lock | — | Event interpretation, model state |
-| `event/` | Event types, store append/replay | — | Provider, tools, permission |
+| `session/` | Path derivation, writer lock, session list/delete | `event/` (via scan helpers) | Provider, model state |
+| `event/` | Event types, store append/replay, fast scan helpers | — | Provider, tools, permission |
 | `prompt/` | Asset catalog, template rendering | — | Runtime decisions, session state |
 | `config/` | Config parsing, validation, tiers | — | Provider, tools, session |
 | `subagent/` | Definitions, registry, catalog, child spawn | `tool/`, `query/`, `session/` | — |

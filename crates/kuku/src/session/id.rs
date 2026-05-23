@@ -1,18 +1,29 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Generate a new unique session ID based on timestamp, process ID, and counter.
+/// Generate a new unique session ID: `YYYYMMDD-HHmm-xxxx`.
 pub fn new_session_id() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let date = now.date();
+    let time = now.time();
     let counter = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("s_{millis}_{}_{counter}", std::process::id())
+    let mut rng: u16 = (counter
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)) as u16;
+    rng ^= std::process::id() as u16;
+    rng ^= (counter.wrapping_mul(17)) as u16;
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}-{:04x}",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        time.hour(),
+        time.minute(),
+        rng
+    )
 }
 
 /// Validate a session ID against path-traversal and reserved-name rules.
@@ -36,7 +47,9 @@ pub fn validate_session_id(session_id: &str) -> Result<()> {
         || is_windows_reserved_device_name(session_id);
 
     if invalid {
-        return Err(Error::InvalidSessionId(session_id.to_string()));
+        return Err(crate::error::Error::InvalidSessionId(
+            session_id.to_string(),
+        ));
     }
 
     Ok(())

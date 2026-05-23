@@ -22,7 +22,7 @@ pub use provider::{Provider, ProviderUsage};
 pub use query::{
     query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent, ToolKind, UiEvent,
 };
-pub use session::{list_sessions, SessionSummary};
+pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 
 #[cfg(test)]
 pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {

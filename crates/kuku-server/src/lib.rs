@@ -68,6 +68,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(routes::health::health))
         .route("/sessions/{id}/events", get(routes::events::events))
+        .route("/sessions", get(routes::sessions::list))
+        .route("/sessions/{id}", delete(routes::sessions::delete))
         .route("/runs", post(routes::runs::create_run))
         .route("/runs/{id}", delete(routes::runs::cancel_run))
         .route("/runs/{id}/responses", post(routes::responses::respond))

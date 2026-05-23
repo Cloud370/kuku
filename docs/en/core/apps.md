@@ -25,7 +25,9 @@ apps/
 kuku run "check this"                  # agent task
 kuku show <session-id>                 # show output
 kuku events <session-id>               # show events
-kuku list                              # list sessions
+kuku list                              # list sessions (current workspace)
+kuku list -a                           # list all workspaces
+kuku delete <session-id>               # delete a session (with confirmation)
 kuku config show                       # show config
 kuku config set model.balanced.think high
 kuku init                              # initialize directory structure
@@ -47,6 +49,8 @@ GET    /health                    health check
 POST   /runs                      start a run (NDJSON stream in response body)
 DELETE /runs/:id                   cancel a run
 POST   /runs/:id/responses        respond to an interaction request
+GET    /sessions                  list sessions (?workspace= optional)
+DELETE /sessions/:id              delete a session (?workspace= optional)
 GET    /sessions/:id/events       historical events (JSON array)
 ```
 

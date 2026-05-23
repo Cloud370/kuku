@@ -40,8 +40,10 @@ Events are replayed in file order. `id` validates monotonicity; `ts` is display-
 The first event in every new session:
 
 ```jsonl
-{"id":1,"type":"session.meta","ts":"...","schema_version":1,"session_id":"s_001","created_at":"...","kuku_version":"0.1.0"}
+{"id":1,"type":"session.meta","ts":"...","schema_version":1,"session_id":"20260523-1430-a3f7","created_at":"...","kuku_version":"0.1.0"}
 ```
+
+Session IDs follow the format `YYYYMMDD-HHmm-xxxx` — local date, 24h time, 4-char hex random suffix.
 
 ## Writer lock
 
@@ -60,6 +62,24 @@ If a stale lock is taken over, a diagnostic event is appended to `events.jsonl`.
 ### Continuing a session
 
 `kuku::query(prompt).session(id).run()` — appends a new turn to the existing session. Context rebuild picks up prior history automatically.
+
+### Status
+
+Every session has one of three statuses (`SessionStatus`):
+
+| Status | Meaning |
+|--------|---------|
+| `Active` | Lock file exists and holder PID is alive |
+| `Done` | No active lock and last event is `turn.end` |
+| `Interrupted` | No active lock and last event is not `turn.end` (or no events) |
+
+### Listing sessions
+
+`list_sessions(kuku_home, Option<&Path>)` returns `Vec<SessionSummary>` with session ID, workspace, title (first `user.input`), created_at, turn count, status, mtime, and size. Pass `None` for workspace to list across all workspaces. Results are sorted by mtime descending.
+
+### Deleting a session
+
+`delete_session(kuku_home, Option<&Path>, session_id)` removes the session directory. Returns `Error::SessionLocked` if an active lock is held.
 
 ### End
 

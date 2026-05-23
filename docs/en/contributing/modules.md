@@ -21,23 +21,30 @@ Public API and agent loop orchestration. The only module that may depend on ever
 
 ## event/
 
-`event::store` is the only module that writes to `events.jsonl`.
+`event::store` is the only module that writes to `events.jsonl`. `event::scan` provides read-only helpers for fast metadata extraction without full replay.
 
 - Append-only. `EventStore::append` assigns `id` and `ts`, serializes one JSON line, flushes.
 - Reader replays in file order. `id` validates monotonicity, not ordering.
 - Trailing partial line → ignored with a diagnostic.
 - Unknown event types → preserved via two-step deserialization for display, excluded from `messages[]`.
+- `scan_first_user_input(path)` — stream from start, return first `user.input` text.
+- `scan_session_meta(path)` — parse first line, return `created_at`.
+- `scan_turn_count(path)` — byte-scan for `"type":"turn.start"`, no JSON parse.
+- `scan_last_event_type(path)` — seek to end-4KB, parse last line, return known type tag.
 
 No database abstraction, no event bus, no WAL. This module should be small, boring, hard to misuse.
 
 ## session/
 
-Path derivation only. No conversation state, no event interpretation, no message building.
+Path derivation, writer lock, session listing and deletion, status tracking.
 
 - `$KUKU_HOME` from env or default.
 - Project home: `$KUKU_HOME/p/<canonical-workspace-path>/`.
 - Session directory: `<project-home>/sessions/<id>/`.
 - Writer lock: `<project-home>/sessions/<session-id>/lock`.
+- `list_sessions(home, Option<&Path>)` — head+tail scan per session, sorted by mtime. `None` = global walk of `p/`.
+- `delete_session(home, Option<&Path>, &str)` — lock check then `remove_dir_all`.
+- `SessionStatus` enum: `Active` (lock + live PID), `Done` (last event is `turn.end`), `Interrupted` (otherwise).
 
 Full directory layout is in [architecture.md](../core/architecture.md#directory-layout).
 

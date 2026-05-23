@@ -21,6 +21,8 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `turn.start` | Event marking the beginning of a turn. |
 | `turn.end` | Event marking the end of a turn. |
 | `response group` | A `model.response` and its immediately following `tool.call[]` events, treated as one assistant message during context rebuild. |
+| `SessionSummary` | Metadata struct for a listed session: session_id, workspace, title, created_at, turn_count, status, mtime, size. Extracted from disk without full event replay. |
+| `SessionStatus` | Enum classifying a session's state: `Active` (lock + live PID), `Done` (last event is `turn.end`), `Interrupted` (otherwise). |
 
 ## Context
 

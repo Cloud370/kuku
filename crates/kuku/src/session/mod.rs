@@ -1,3 +1,21 @@
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// Whether a session is still running, finished cleanly, or was interrupted.
+pub enum SessionStatus {
+    Active,
+    Done,
+    Interrupted,
+}
+
+impl std::fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionStatus::Active => write!(f, "active"),
+            SessionStatus::Done => write!(f, "done"),
+            SessionStatus::Interrupted => write!(f, "interrupted"),
+        }
+    }
+}
+
 pub mod id;
 pub mod list;
 pub mod paths;
@@ -46,7 +64,37 @@ pub(crate) fn release_lock(lock_path: &Path) {
     let _ = fs::remove_file(lock_path);
 }
 
-fn process_alive(pid: i32) -> bool {
+/// Delete a session directory.
+/// Returns Error::SessionLocked if the session is actively locked by another process.
+pub fn delete_session(kuku_home: &Path, workspace: Option<&Path>, session_id: &str) -> Result<()> {
+    let workspace = match workspace {
+        Some(ws) => ws.to_path_buf(),
+        None => paths::current_workspace()?,
+    };
+    validate_session_id(session_id)?;
+    let lock_path = paths::session_lock_path(kuku_home, &workspace, session_id);
+    let events_path = paths::session_events_path(kuku_home, &workspace, session_id)?;
+
+    if let Ok(existing) = fs::read_to_string(&lock_path) {
+        let pid_str = existing.lines().next().unwrap_or("");
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            if process_alive(pid) {
+                return Err(Error::SessionLocked {
+                    session: events_path.parent().unwrap_or(&events_path).to_path_buf(),
+                    holder_pid: pid,
+                });
+            }
+        }
+    }
+
+    if let Some(session_dir) = events_path.parent() {
+        fs::remove_dir_all(session_dir)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn process_alive(pid: i32) -> bool {
     #[cfg(target_os = "linux")]
     {
         std::path::PathBuf::from(format!("/proc/{pid}")).exists()
