@@ -113,10 +113,7 @@ fn file_stat(path: &Path) -> (String, u64) {
     }
 }
 
-fn collect_global_sessions(
-    summaries: &mut Vec<SessionSummary>,
-    p_dir: &Path,
-) -> Result<()> {
+fn collect_global_sessions(summaries: &mut Vec<SessionSummary>, p_dir: &Path) -> Result<()> {
     find_sessions_dirs(summaries, p_dir, p_dir)
 }
 
@@ -134,7 +131,7 @@ fn find_sessions_dirs(
         if !path.is_dir() {
             continue;
         }
-        if path.file_name().map_or(false, |n| n == "sessions") {
+        if path.file_name().is_some_and(|n| n == "sessions") {
             let project_home = path.parent().unwrap();
             let workspace = super::paths::workspace_from_project_home(p_dir, project_home);
             let _ = collect_sessions(summaries, &path, &workspace);

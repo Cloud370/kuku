@@ -66,11 +66,7 @@ pub(crate) fn release_lock(lock_path: &Path) {
 
 /// Delete a session directory.
 /// Returns Error::SessionLocked if the session is actively locked by another process.
-pub fn delete_session(
-    kuku_home: &Path,
-    workspace: Option<&Path>,
-    session_id: &str,
-) -> Result<()> {
+pub fn delete_session(kuku_home: &Path, workspace: Option<&Path>, session_id: &str) -> Result<()> {
     let workspace = match workspace {
         Some(ws) => ws.to_path_buf(),
         None => paths::current_workspace()?,

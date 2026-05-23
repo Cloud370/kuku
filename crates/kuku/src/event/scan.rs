@@ -8,18 +8,18 @@ use serde_json::Value;
 pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_user_input = value
-                .get("type")
-                .and_then(|t| t.as_str())
-                == Some("user.input");
+            let is_user_input = value.get("type").and_then(|t| t.as_str()) == Some("user.input");
             if is_user_input {
-                return value.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+                return value
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string());
             }
         }
     }
@@ -30,18 +30,19 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
 pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_session_meta = value
-                .get("type")
-                .and_then(|t| t.as_str())
-                == Some("session.meta");
+            let is_session_meta =
+                value.get("type").and_then(|t| t.as_str()) == Some("session.meta");
             if is_session_meta {
-                return value.get("created_at").and_then(|t| t.as_str()).map(|s| s.to_string());
+                return value
+                    .get("created_at")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string());
             }
         }
         break;
@@ -62,10 +63,7 @@ pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     let needle = b"\"type\":\"turn.start\"";
     let mut count = 0;
     let mut pos = 0;
-    while let Some(idx) = buf[pos..]
-        .windows(needle.len())
-        .position(|w| w == needle)
-    {
+    while let Some(idx) = buf[pos..].windows(needle.len()).position(|w| w == needle) {
         count += 1;
         pos += idx + needle.len();
     }
@@ -84,7 +82,7 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = String::new();
     file.read_to_string(&mut buf).ok()?;
-    let last_line = buf.lines().filter(|l| !l.trim().is_empty()).last()?;
+    let last_line = buf.lines().rfind(|l| !l.trim().is_empty())?;
     let value: Value = serde_json::from_str(last_line).ok()?;
     match value.get("type").and_then(|t| t.as_str()) {
         Some("turn.end") => Some("turn.end"),

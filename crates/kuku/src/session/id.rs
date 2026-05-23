@@ -6,12 +6,11 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a new unique session ID: `YYYYMMDD-HHmm-xxxx`.
 pub fn new_session_id() -> String {
-    let now = time::OffsetDateTime::now_local()
-        .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
     let date = now.date();
     let time = now.time();
     let counter = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut rng: u16 = ((counter as u64)
+    let mut rng: u16 = (counter
         .wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407)) as u16;
     rng ^= std::process::id() as u16;

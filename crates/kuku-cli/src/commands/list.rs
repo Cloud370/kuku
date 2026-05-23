@@ -17,13 +17,13 @@ pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.verbose {
         println!(
-            "{:<20} {:<30} {:<15} {:<12} {:<20} {:<8} {}",
-            "session_id", "title", "workspace", "status", "mtime", "size", "turns"
+            "{:<20} {:<30} {:<15} {:<12} {:<20} {:<8} turns",
+            "session_id", "title", "workspace", "status", "mtime", "size"
         );
     } else {
         println!(
-            "{:<20} {:<30} {:<15} {:<12} {}",
-            "session_id", "title", "workspace", "status", "turns"
+            "{:<20} {:<30} {:<15} {:<12} turns",
+            "session_id", "title", "workspace", "status"
         );
     }
 

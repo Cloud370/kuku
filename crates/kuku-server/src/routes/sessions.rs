@@ -18,17 +18,13 @@ pub async fn list(
 ) -> Json<serde_json::Value> {
     let home = match kuku::session::kuku_home() {
         Ok(h) => h,
-        Err(_) => {
-            return Json(json!({"ok": false, "code": "internal", "message": "missing home"}))
-        }
+        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
     };
 
     let workspace = params.workspace.map(std::path::PathBuf::from);
     let sessions = match kuku::list_sessions(&home, workspace.as_deref()) {
         Ok(s) => s,
-        Err(e) => {
-            return Json(json!({"ok": false, "code": "internal", "message": e.to_string()}))
-        }
+        Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
     };
 
     let sessions_json: Vec<serde_json::Value> = sessions
@@ -57,9 +53,7 @@ pub async fn delete(
 ) -> Json<serde_json::Value> {
     let home = match kuku::session::kuku_home() {
         Ok(h) => h,
-        Err(_) => {
-            return Json(json!({"ok": false, "code": "internal", "message": "missing home"}))
-        }
+        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
     };
 
     let workspace = params.workspace.map(std::path::PathBuf::from);
@@ -68,9 +62,7 @@ pub async fn delete(
         Err(e) => {
             let code = match &e {
                 kuku::Error::SessionLocked { .. } => "session_locked",
-                kuku::Error::Io(io_err)
-                    if io_err.kind() == std::io::ErrorKind::NotFound =>
-                {
+                kuku::Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {
                     "session_not_found"
                 }
                 _ => "internal",

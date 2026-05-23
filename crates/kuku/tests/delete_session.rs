@@ -21,8 +21,9 @@ fn delete_session_removes_directory() {
     let dir = tempdir().unwrap();
     let home = dir.path();
     let workspace = std::fs::canonicalize(dir.path()).unwrap();
-    let sessions_dir =
-        kuku::session::project_home(home, &workspace).unwrap().join("sessions");
+    let sessions_dir = kuku::session::project_home(home, &workspace)
+        .unwrap()
+        .join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
 
     write_session(&sessions_dir, "s_delete_me");
@@ -51,8 +52,9 @@ fn delete_active_session_returns_locked_error() {
     let dir = tempdir().unwrap();
     let home = dir.path();
     let workspace = std::fs::canonicalize(dir.path()).unwrap();
-    let sessions_dir =
-        kuku::session::project_home(home, &workspace).unwrap().join("sessions");
+    let sessions_dir = kuku::session::project_home(home, &workspace)
+        .unwrap()
+        .join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
 
     write_session(&sessions_dir, "s_active");
@@ -68,8 +70,9 @@ fn delete_with_dead_lock_succeeds() {
     let dir = tempdir().unwrap();
     let home = dir.path();
     let workspace = std::fs::canonicalize(dir.path()).unwrap();
-    let sessions_dir =
-        kuku::session::project_home(home, &workspace).unwrap().join("sessions");
+    let sessions_dir = kuku::session::project_home(home, &workspace)
+        .unwrap()
+        .join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
 
     write_session(&sessions_dir, "s_dead");
