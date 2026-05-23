@@ -46,7 +46,7 @@ impl Run {
     /// Cancel the current run. Streaming is aborted, pending permissions are denied,
     /// and the cancelled model.response enters history.
     pub fn cancel(&mut self) {
-        for slot in &self.slots {
+        for slot in self.slots.values() {
             slot.cancel.notify_one();
         }
         let (events_path, turn) = match &self.state {
@@ -75,18 +75,20 @@ impl Run {
                     event = self.slot_event_rx.recv() => event,
                     _ = self.cancel_token.notified() => None,
                 };
-                if let Some((idx, event)) = slot_event {
+                if let Some((tool_call_id, event)) = slot_event {
                     match event {
                         SlotEvent::Output(te) => {
-                            let id = self.slots[idx].tool_call_id.clone();
-                            return Ok(Some(UiEvent::ToolOutput { id, event: te }));
+                            return Ok(Some(UiEvent::ToolOutput {
+                                id: tool_call_id,
+                                event: te,
+                            }));
                         }
                         SlotEvent::Done {
                             status,
                             summary,
                             result,
                         } => {
-                            let slot = self.slots.remove(idx);
+                            let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
                             let (events_path, turn) = match &self.state {
                                 RunState::Pending(p) => (&p.events_path, p.turn),
                                 RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
@@ -121,35 +123,44 @@ impl Run {
                 }
             }
 
-            // 3. No slots, no queued calls — advance state
+            // 3. Advance state
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
-                RunState::Pending(pending) => match super::step::advance_pending(*pending).await? {
-                    PendingStep::Pending(next_pending) => {
-                        self.state = RunState::Pending(next_pending);
+                RunState::Pending(pending) => {
+                    match super::step::advance_pending(
+                        *pending,
+                        self.slot_event_tx.clone(),
+                        self.slots.len(),
+                    )
+                    .await?
+                    {
+                        PendingStep::Pending { pending, slot, event } => {
+                            if let Some(slot) = slot {
+                                self.slots.insert(slot.tool_call_id.clone(), slot);
+                            }
+                            self.state = RunState::Pending(pending);
+                            if let Some(event) = event {
+                                return Ok(Some(event));
+                            }
+                            // No event but slots may be active — continue loop
+                        }
+                        PendingStep::NeedPermission(waiting) => {
+                            let request = waiting.request.clone();
+                            self.state = RunState::WaitingForPermission(waiting);
+                            return Ok(Some(UiEvent::PermissionRequested { request }));
+                        }
+                        PendingStep::Streaming(streaming) => {
+                            self.state = RunState::Streaming(streaming);
+                        }
+                        PendingStep::Done(output, usage, turn) => {
+                            self.state = RunState::Done(None);
+                            return Ok(Some(UiEvent::Done {
+                                output,
+                                usage,
+                                turn,
+                            }));
+                        }
                     }
-                    PendingStep::NeedPermission(waiting) => {
-                        let request = waiting.request.clone();
-                        self.state = RunState::WaitingForPermission(waiting);
-                        return Ok(Some(UiEvent::PermissionRequested { request }));
-                    }
-                    PendingStep::Streaming(streaming) => {
-                        self.state = RunState::Streaming(streaming);
-                    }
-                    PendingStep::BatchReady { pending, ui_events } => {
-                        let mut iter = ui_events.into_iter();
-                        let first = iter.next().unwrap();
-                        self.state = RunState::Pending(pending);
-                        return Ok(Some(first));
-                    }
-                    PendingStep::Done(output, usage, turn) => {
-                        self.state = RunState::Done(None);
-                        return Ok(Some(UiEvent::Done {
-                            output,
-                            usage,
-                            turn,
-                        }));
-                    }
-                },
+                }
                 RunState::Streaming(mut streaming) => {
                     if let Some(event) = streaming.lead_events.pop() {
                         self.state = RunState::Streaming(streaming);
@@ -204,7 +215,6 @@ impl Run {
                     }));
                 }
                 RunState::Done(None) => {
-                    self.state = RunState::Done(None);
                     return Ok(None);
                 }
             }
@@ -320,8 +330,7 @@ impl Run {
         if let Some(tool_id) = parent_tool_id {
             let slot = self
                 .slots
-                .iter_mut()
-                .find(|s| s.tool_call_id == tool_id)
+                .get_mut(tool_id)
                 .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
             let mut map = slot.child_permissions.lock().unwrap();
             let tx = map
@@ -337,7 +346,7 @@ impl Run {
 
     /// Cancel a single running tool by its tool_call_id.
     pub fn cancel_tool(&mut self, tool_call_id: &str) -> bool {
-        if let Some(slot) = self.slots.iter().find(|s| s.tool_call_id == tool_call_id) {
+        if let Some(slot) = self.slots.get(tool_call_id) {
             slot.cancel.notify_one();
             true
         } else {
@@ -374,35 +383,39 @@ impl Run {
         };
 
         let mut pending = waiting.pending;
+        let queued = pending
+            .queued_tool_calls
+            .pop_front()
+            .expect("PendingPermission implies a queued tool call");
         let rule = permission_rule(
             &pending.kuku_home,
             &pending.workspace,
-            &waiting.queued_tool_call.tool_call.name,
-            &waiting.queued_tool_call.tool_call.args,
+            &queued.tool_call.name,
+            &queued.tool_call.args,
         );
         if matches!(choice, PermissionChoice::Project) {
             append_project_allow_rule(
                 &pending.policy_path,
-                &waiting.queued_tool_call.tool_call.name,
+                &queued.tool_call.name,
                 &permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
-                    &waiting.queued_tool_call.tool_call.name,
-                    &waiting.queued_tool_call.tool_call.args,
+                    &queued.tool_call.name,
+                    &queued.tool_call.args,
                 ),
             )?;
         }
         append_permission_decision(
             &pending.events_path,
             pending.turn,
-            &waiting.queued_tool_call.tool_call.id,
+            &queued.tool_call.id,
             choice,
             source,
             &rule,
         )?;
-        let result = execute_tool_call(&mut pending, &waiting.queued_tool_call.tool_call).await?;
+        let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
         let tool_result_event = Some(UiEvent::ToolEnd {
-            id: waiting.queued_tool_call.tool_call.id.clone(),
+            id: queued.tool_call.id.clone(),
             status: result.status,
             summary: result.summary,
             result: result.structured,
@@ -443,7 +456,7 @@ mod tests {
                 events_path: events_path.clone(),
                 turn,
             },
-            slots: Vec::new(),
+            slots: std::collections::HashMap::new(),
             slot_event_tx,
             slot_event_rx,
             cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -498,7 +511,7 @@ mod tests {
                 events_path: events_path.clone(),
                 turn: 1,
             },
-            slots: Vec::new(),
+            slots: std::collections::HashMap::new(),
             slot_event_tx,
             slot_event_rx,
             cancel_token: cancel_token.clone(),
@@ -545,6 +558,7 @@ mod tests {
             skill_body: None,
             child_session_count: 0,
             tool_registry_override: None,
+            pending_events: std::collections::VecDeque::new(),
             cancel_token: cancel_token.clone(),
         };
 
@@ -600,9 +614,10 @@ mod tests {
                 skill_body: None,
                 child_session_count: 0,
                 tool_registry_override: None,
+                pending_events: std::collections::VecDeque::new(),
                 cancel_token: cancel_token.clone(),
             })),
-            slots: Vec::new(),
+            slots: std::collections::HashMap::new(),
             slot_event_tx,
             slot_event_rx,
             cancel_token: cancel_token.clone(),
