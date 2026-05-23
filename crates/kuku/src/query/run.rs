@@ -174,8 +174,8 @@ impl Run {
                         None => {
                             let step = super::step::finish_streaming(*streaming).await?;
                             match step {
-                                PendingStep::Pending(next_pending) => {
-                                    self.state = RunState::Pending(next_pending);
+                                PendingStep::Pending { pending, .. } => {
+                                    self.state = RunState::Pending(pending);
                                 }
                                 PendingStep::Done(output, usage, turn) => {
                                     self.state = RunState::Done(None);
@@ -222,8 +222,80 @@ impl Run {
     }
 
     fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
-        // TODO: Task 4 — implement permission queue processing
-        Ok(None)
+        let pending = match &mut self.state {
+            RunState::Pending(p) => p.as_mut(),
+            _ => return Ok(None),
+        };
+        let queued = match pending.queued_tool_calls.front() {
+            Some(q) => q,
+            None => return Ok(None),
+        };
+
+        if queued.tool_call.name == "agent" || queued.tool_call.name == "use_skill" {
+            return Ok(None);
+        }
+
+        let policy = crate::permission::load_project_policy(&pending.policy_path)?;
+        let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
+        let session_grants = crate::permission::recover_session_grants(&prior_events);
+
+        let definition = match find_tool_definition(pending, &queued.tool_call.name) {
+            Some(d) => d,
+            None => {
+                let queued = pending.queued_tool_calls.pop_front().unwrap();
+                return Ok(Some(UiEvent::Error {
+                    code: "unknown_tool".to_string(),
+                    message: format!("unknown tool: {}", queued.tool_call.name),
+                }));
+            }
+        };
+        let candidate = permission_candidate(
+            &pending.kuku_home,
+            &pending.workspace,
+            &queued.tool_call.name,
+            &queued.tool_call.args,
+        );
+        let decision = crate::permission::decide_tool_call(
+            &queued.tool_call.name,
+            &definition.risk,
+            &candidate,
+            &policy,
+            &session_grants,
+        );
+
+        match decision.kind {
+            crate::permission::GateDecisionKind::Ask => Ok(None),
+            crate::permission::GateDecisionKind::Allow => {
+                let queued = pending.queued_tool_calls.pop_front().unwrap();
+                let workspace = pending.workspace.clone();
+                let kuku_home = pending.kuku_home.clone();
+                let slot = super::slots::spawn_simple_slot(
+                    queued.tool_call.id.clone(),
+                    queued.tool_call.name.clone(),
+                    queued.tool_call.args.clone(),
+                    queued.display_summary.clone(),
+                    workspace,
+                    kuku_home,
+                    self.slot_event_tx.clone(),
+                );
+                self.slots.insert(slot.tool_call_id.clone(), slot);
+                Ok(Some(UiEvent::ToolStart {
+                    id: queued.tool_call.id.clone(),
+                    tool: queued.tool_call.name.clone(),
+                    summary: queued.display_summary.clone(),
+                    kind: super::types::ToolKind::Simple,
+                }))
+            }
+            crate::permission::GateDecisionKind::Deny => {
+                let queued = pending.queued_tool_calls.pop_front().unwrap();
+                Ok(Some(UiEvent::ToolEnd {
+                    id: queued.tool_call.id.clone(),
+                    status: "blocked".to_string(),
+                    summary: "permission denied".to_string(),
+                    result: None,
+                }))
+            }
+        }
     }
 
     async fn poll_stream_chunk(
