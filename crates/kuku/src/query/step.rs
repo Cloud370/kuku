@@ -32,6 +32,67 @@ use super::types::{
 
 const MAX_REQUEST_LOOP: u64 = 20;
 
+fn return_blocked_tool(
+    mut pending: PendingRun,
+    id: &str,
+    tool_name: &str,
+    display_summary: &str,
+    kind: super::types::ToolKind,
+    reason: &str,
+) -> Result<PendingStep> {
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        tool_call_id: id.to_string(),
+        status: "blocked".to_string(),
+        summary: reason.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        structured: None,
+    })?;
+    pending.pending_events.push_back(UiEvent::ToolEnd {
+        id: id.to_string(),
+        status: "blocked".to_string(),
+        summary: reason.to_string(),
+        result: None,
+    });
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(UiEvent::ToolStart {
+            id: id.to_string(),
+            tool: tool_name.to_string(),
+            summary: display_summary.to_string(),
+            kind,
+        }),
+    })
+}
+
+async fn execute_inline_tool(
+    mut pending: PendingRun,
+    queued: &QueuedToolCall,
+    kind: super::types::ToolKind,
+) -> Result<PendingStep> {
+    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+    pending.pending_events.push_back(UiEvent::ToolEnd {
+        id: queued.tool_call.id.clone(),
+        status: result.status,
+        summary: result.summary,
+        result: result.structured,
+    });
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(UiEvent::ToolStart {
+            id: queued.tool_call.id.clone(),
+            tool: queued.tool_call.name.clone(),
+            summary: queued.display_summary.clone(),
+            kind,
+        }),
+    })
+}
+
 pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
     let StreamingChunkState {
         mut pending,
@@ -188,83 +249,29 @@ pub(super) async fn advance_pending(
                 .cloned();
 
             let Some(definition) = definition else {
-                let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: result.status,
-                    summary: result.summary,
-                    result: result.structured,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
             };
 
             if pending.child_session_count >= 2 {
-                let mut store = EventStore::open(&pending.events_path)?;
-                store.append(EventPayload::ToolResult {
-                    turn: pending.turn,
-                    ts: now_timestamp()?,
-                    tool_call_id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum subagent depth (2) reached".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    structured: None,
-                })?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum subagent depth (2) reached".to_string(),
-                    result: None,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return return_blocked_tool(
+                    pending,
+                    &queued.tool_call.id,
+                    "agent",
+                    &queued.display_summary,
+                    super::types::ToolKind::Simple,
+                    "blocked: maximum subagent depth (2) reached",
+                );
             }
 
             if active_slot_count >= 32 {
-                let mut store = EventStore::open(&pending.events_path)?;
-                store.append(EventPayload::ToolResult {
-                    turn: pending.turn,
-                    ts: now_timestamp()?,
-                    tool_call_id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    structured: None,
-                })?;
-                pending.pending_events.push_back(UiEvent::ToolEnd {
-                    id: queued.tool_call.id.clone(),
-                    status: "blocked".to_string(),
-                    summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                    result: None,
-                });
-                return Ok(PendingStep::Pending {
-                    pending: Box::new(pending),
-                    slot: None,
-                    event: Some(UiEvent::ToolStart {
-                        id: queued.tool_call.id.clone(),
-                        tool: "agent".to_string(),
-                        summary: queued.display_summary.clone(),
-                        kind: super::types::ToolKind::Simple,
-                    }),
-                });
+                return return_blocked_tool(
+                    pending,
+                    &queued.tool_call.id,
+                    "agent",
+                    &queued.display_summary,
+                    super::types::ToolKind::Simple,
+                    "blocked: maximum concurrent slots (32) reached",
+                );
             }
 
             let child_session_id = format!(
@@ -302,25 +309,7 @@ pub(super) async fn advance_pending(
                 }),
             });
         } else if queued.tool_call.name == "use_skill" {
-            // --- Skill call: execute inline (no slot) ---
-            let event_start = UiEvent::ToolStart {
-                id: queued.tool_call.id.clone(),
-                tool: queued.tool_call.name.clone(),
-                summary: queued.display_summary.clone(),
-                kind: super::types::ToolKind::Simple,
-            };
-            let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-            pending.pending_events.push_back(UiEvent::ToolEnd {
-                id: queued.tool_call.id.clone(),
-                status: result.status,
-                summary: result.summary,
-                result: result.structured,
-            });
-            return Ok(PendingStep::Pending {
-                pending: Box::new(pending),
-                slot: None,
-                event: Some(event_start),
-            });
+            return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
             let definition =
@@ -388,33 +377,14 @@ pub(super) async fn advance_pending(
                     }
 
                     if active_slot_count >= 32 {
-                        let mut store = EventStore::open(&pending.events_path)?;
-                        store.append(EventPayload::ToolResult {
-                            turn: pending.turn,
-                            ts: now_timestamp()?,
-                            tool_call_id: queued.tool_call.id.clone(),
-                            status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                            model_content: String::new(),
-                            truncated: false,
-                            structured: None,
-                        })?;
-                        pending.pending_events.push_back(UiEvent::ToolEnd {
-                            id: queued.tool_call.id.clone(),
-                            status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
-                            result: None,
-                        });
-                        return Ok(PendingStep::Pending {
-                            pending: Box::new(pending),
-                            slot: None,
-                            event: Some(UiEvent::ToolStart {
-                                id: queued.tool_call.id.clone(),
-                                tool: queued.tool_call.name.clone(),
-                                summary: queued.display_summary.clone(),
-                                kind: super::types::ToolKind::Simple,
-                            }),
-                        });
+                        return return_blocked_tool(
+                            pending,
+                            &queued.tool_call.id,
+                            &queued.tool_call.name,
+                            &queued.display_summary,
+                            super::types::ToolKind::Simple,
+                            "blocked: maximum concurrent slots (32) reached",
+                        );
                     }
 
                     let slot = spawn_simple_slot(
@@ -462,23 +432,7 @@ pub(super) async fn advance_pending(
                             &queued.tool_call.args,
                         ),
                     )?;
-                    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-                    pending.pending_events.push_back(UiEvent::ToolEnd {
-                        id: queued.tool_call.id.clone(),
-                        status: result.status,
-                        summary: result.summary,
-                        result: result.structured,
-                    });
-                    return Ok(PendingStep::Pending {
-                        pending: Box::new(pending),
-                        slot: None,
-                        event: Some(UiEvent::ToolStart {
-                            id: queued.tool_call.id.clone(),
-                            tool: queued.tool_call.name.clone(),
-                            summary: queued.display_summary.clone(),
-                            kind: super::types::ToolKind::Simple,
-                        }),
-                    });
+                    return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
                 }
             }
         }
