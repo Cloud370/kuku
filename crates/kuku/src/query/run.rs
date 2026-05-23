@@ -148,7 +148,7 @@ impl Run {
                         ts: now_timestamp()?,
                     })?;
                     self.state = RunState::Done(None);
-                    return Ok(None);
+                    return Ok(Some(UiEvent::Cancelled { turn }));
                 }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
@@ -209,7 +209,7 @@ impl Run {
             self.state = RunState::Streaming(streaming);
             return Ok(Some(event));
         }
-        match self.poll_stream_chunk(&mut streaming).await? {
+        match Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await? {
             Some(event) => {
                 self.state = RunState::Streaming(streaming);
                 Ok(Some(event))
@@ -345,7 +345,7 @@ impl Run {
     }
 
     async fn poll_stream_chunk(
-        &self,
+        cancel_token: &tokio::sync::Notify,
         streaming: &mut StreamingChunkState,
     ) -> Result<Option<UiEvent>> {
         use tokio_stream::StreamExt;
@@ -353,10 +353,17 @@ impl Run {
             let chunk = tokio::select! {
                 chunk = streaming.stream.next() => match chunk {
                     Some(Ok(chunk)) => chunk,
-                    Some(Err(_failure)) => return Ok(None),
+                    Some(Err(failure)) => {
+                        return Err(crate::error::Error::Provider {
+                            kind: failure.kind,
+                            message: failure.message,
+                            provider: None,
+                            model: None,
+                        });
+                    }
                     None => return Ok(None),
                 },
-                _ = self.cancel_token.notified() => {
+                _ = cancel_token.notified() => {
                     streaming.stop_reason = Some("cancelled".to_string());
                     return Ok(None);
                 }
@@ -431,6 +438,9 @@ impl Run {
                         entry.cache_creation_input_tokens.unwrap_or(0)
                             + cache_creation_input_tokens,
                     );
+                }
+                ProviderChunk::ServerError { code, message } => {
+                    return Ok(Some(UiEvent::Error { code, message }));
                 }
                 ProviderChunk::StreamEnd => {}
             }
@@ -608,6 +618,8 @@ mod tests {
 
         let mut run = make_cancelled_run(events_path.clone(), 1);
         let result = run.next().await.unwrap();
+        assert!(matches!(result, Some(UiEvent::Cancelled { turn: 1 })));
+        let result = run.next().await.unwrap();
         assert!(result.is_none());
 
         let events = EventStore::replay(&events_path).unwrap();
@@ -708,7 +720,7 @@ mod tests {
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
-        let run = Run {
+        let _run = Run {
             session_id: "test".to_string(),
             state: RunState::Pending(Box::new(PendingRun {
                 session_id: "test".to_string(),
@@ -743,7 +755,9 @@ mod tests {
             lock_path: std::path::PathBuf::new(),
         };
 
-        let result = run.poll_stream_chunk(&mut streaming).await.unwrap();
+        let result = Run::poll_stream_chunk(&cancel_token, &mut streaming)
+            .await
+            .unwrap();
         assert!(result.is_none());
         assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
     }

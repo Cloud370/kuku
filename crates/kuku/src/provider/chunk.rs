@@ -27,6 +27,8 @@ pub(crate) enum ProviderChunk {
     },
     /// The model's final stop reason for the response.
     StopReason { reason: String },
+    /// The provider returned an error event mid-stream.
+    ServerError { code: String, message: String },
     /// The stream ended normally.
     StreamEnd,
 }

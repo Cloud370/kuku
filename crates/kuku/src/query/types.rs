@@ -167,6 +167,9 @@ pub enum UiEvent {
         usage: Option<crate::provider::types::ProviderUsage>,
         turn: u64,
     },
+    Cancelled {
+        turn: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -299,9 +302,8 @@ pub(super) enum PendingStep {
 pub(super) struct StreamingChunkState {
     pub(super) pending: PendingRun,
     pub(super) request_id: String,
-    pub(super) stream: Pin<
-        Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send + Sync>,
-    >,
+    pub(super) stream:
+        Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
     pub(super) stop_reason: Option<String>,

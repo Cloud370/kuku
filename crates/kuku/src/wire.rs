@@ -60,13 +60,23 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "risk": request.risk,
             "summary": request.summary,
         })),
-        UiEvent::Done { turn, usage, .. } => Some(json!({
+        UiEvent::Done {
+            output,
+            usage,
+            turn,
+        } => Some(json!({
             "type": "done",
+            "session_id": output.session_id,
+            "text": output.text,
             "turn": turn,
             "usage": usage,
         })),
         UiEvent::TurnStart { turn } => Some(json!({
             "type": "turn_start",
+            "turn": turn,
+        })),
+        UiEvent::Cancelled { turn } => Some(json!({
+            "type": "cancelled",
             "turn": turn,
         })),
         UiEvent::Error { code, message } => Some(json!({
@@ -248,6 +258,8 @@ mod tests {
         };
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "done");
+        assert_eq!(wire["session_id"], "s1");
+        assert_eq!(wire["text"], "done");
         assert_eq!(wire["turn"], 1);
     }
 

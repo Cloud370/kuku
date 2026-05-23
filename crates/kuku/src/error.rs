@@ -83,6 +83,7 @@ impl Error {
                 ProviderFailureKind::InvalidRequest => "invalid_request",
                 ProviderFailureKind::ProviderUnavailable => "provider_network",
                 ProviderFailureKind::Transport => "provider_network",
+                ProviderFailureKind::Internal => "internal",
                 ProviderFailureKind::Unknown => "internal",
             },
             Error::MissingProviderConfig(_) => "internal",

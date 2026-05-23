@@ -5,6 +5,7 @@ use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
+use super::sse::stream_sse_events;
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 pub(crate) fn chat_completions_url(base_url: &str) -> String {
@@ -211,53 +212,86 @@ pub(crate) async fn stream(
         return Err(failure);
     }
 
-    let body_text = response
-        .text()
-        .await
-        .map_err(|error| transport_error(&error))?;
-    let chunks = parse_openai_sse(&body_text);
-    Ok(Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))))
+    let mut parser = OpenAiCompatSseParser::new();
+    Ok(stream_sse_events(response, move |frame| {
+        parser.feed(frame);
+        parser.take_chunks()
+    }))
 }
 
-fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut chunks = Vec::new();
-    let mut started = false;
+struct OpenAiCompatSseParser {
+    chunks: Vec<ProviderChunk>,
+    started: bool,
+    tool_call_indices: Vec<u64>,
+}
 
-    // Track tool calls for arg assembly and ContentBlockStop emission
-    let mut tool_call_indices: Vec<u64> = Vec::new();
+impl OpenAiCompatSseParser {
+    fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            started: false,
+            tool_call_indices: Vec::new(),
+        }
+    }
 
-    for line in body.lines() {
-        let line = line.trim();
-        let data_str = match line.strip_prefix("data:") {
+    fn feed(&mut self, frame: &str) {
+        if frame.is_empty() {
+            if !self
+                .chunks
+                .iter()
+                .any(|c| matches!(c, ProviderChunk::StreamEnd))
+            {
+                self.chunks.push(ProviderChunk::StreamEnd);
+            }
+            return;
+        }
+
+        let data_str = match frame.strip_prefix("data:") {
             Some(s) => s.trim(),
-            None => continue,
+            None => return,
         };
 
         if data_str == "[DONE]" {
-            break;
+            return;
         }
 
         let data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => return,
         };
 
-        if !started {
+        if let Some(err) = data.get("error") {
+            let code = err
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("server_error")
+                .to_string();
+            let message = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("server error")
+                .to_string();
+            self.chunks
+                .push(ProviderChunk::ServerError { code, message });
+            return;
+        }
+
+        if !self.started {
             let rid = data
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            chunks.push(ProviderChunk::StreamStart { request_id: rid });
-            started = true;
+            self.chunks
+                .push(ProviderChunk::StreamStart { request_id: rid });
+            self.started = true;
         }
 
         let choices = match data.get("choices").and_then(Value::as_array) {
             Some(c) if !c.is_empty() => c,
             _ => {
-                // Usage-only chunk (empty choices array) or no choices
                 if let Some(usage) = data.get("usage").and_then(Value::as_object) {
-                    chunks.push(ProviderChunk::StreamUsage {
+                    self.chunks.push(ProviderChunk::StreamUsage {
                         input_tokens: usage
                             .get("prompt_tokens")
                             .and_then(Value::as_u64)
@@ -274,35 +308,32 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
                         cache_creation_input_tokens: 0,
                     });
                 }
-                continue;
+                return;
             }
         };
 
         let choice = &choices[0];
         let delta = choice.get("delta");
 
-        // Text content
         if let Some(text) = delta.and_then(|d| d.get("content")).and_then(Value::as_str) {
             if !text.is_empty() {
-                chunks.push(ProviderChunk::TextDelta {
+                self.chunks.push(ProviderChunk::TextDelta {
                     text: text.to_string(),
                 });
             }
         }
 
-        // Thinking/reasoning content
         if let Some(text) = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(Value::as_str)
         {
             if !text.is_empty() {
-                chunks.push(ProviderChunk::ThinkingDelta {
+                self.chunks.push(ProviderChunk::ThinkingDelta {
                     text: text.to_string(),
                 });
             }
         }
 
-        // Tool calls
         if let Some(tool_calls) = delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(Value::as_array)
@@ -311,30 +342,28 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
                 let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let function = tc.get("function");
 
-                // If id is present, this is a new tool call start
                 if let Some(id) = tc.get("id").and_then(Value::as_str) {
                     let name = function
                         .and_then(|f| f.get("name"))
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    chunks.push(ProviderChunk::ToolCallStart {
+                    self.chunks.push(ProviderChunk::ToolCallStart {
                         index,
                         id: id.to_string(),
                         name,
                     });
-                    if !tool_call_indices.contains(&index) {
-                        tool_call_indices.push(index);
+                    if !self.tool_call_indices.contains(&index) {
+                        self.tool_call_indices.push(index);
                     }
                 }
 
-                // Argument fragments
                 if let Some(args) = function
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                 {
                     if !args.is_empty() {
-                        chunks.push(ProviderChunk::ToolCallArgDelta {
+                        self.chunks.push(ProviderChunk::ToolCallArgDelta {
                             index,
                             fragment: args.to_string(),
                         });
@@ -343,20 +372,42 @@ fn parse_openai_sse(body: &str) -> Vec<ProviderChunk> {
             }
         }
 
-        // Finish reason
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            // Emit ContentBlockStop for each buffered tool call
-            for &idx in &tool_call_indices {
-                chunks.push(ProviderChunk::ContentBlockStop { index: idx });
+            for &idx in &self.tool_call_indices {
+                self.chunks
+                    .push(ProviderChunk::ContentBlockStop { index: idx });
             }
-            tool_call_indices.clear();
+            self.tool_call_indices.clear();
 
-            chunks.push(ProviderChunk::StopReason {
+            self.chunks.push(ProviderChunk::StopReason {
                 reason: normalize_stop_reason(reason),
             });
         }
     }
 
-    chunks.push(ProviderChunk::StreamEnd);
-    chunks
+    fn take_chunks(&mut self) -> Vec<ProviderChunk> {
+        std::mem::take(&mut self.chunks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_error_emits_server_error_chunk() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let frame =
+            r#"data: {"error": {"type": "server_error", "message": "something went wrong"}}"#;
+        parser.feed(frame);
+        let chunks = parser.take_chunks();
+        assert_eq!(chunks.len(), 1);
+        match &chunks[0] {
+            ProviderChunk::ServerError { code, message } => {
+                assert_eq!(code, "server_error");
+                assert_eq!(message, "something went wrong");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+    }
 }
