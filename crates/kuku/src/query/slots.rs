@@ -139,7 +139,7 @@ pub(crate) async fn spawn_agent_slot(
                         ))
                         .await;
                     let choice = prx.await.unwrap_or(PermissionChoice::Deny);
-                    let _ = child_run.decide(&request_id, choice).await;
+                    let _ = child_run.decide(&request_id, choice, None).await;
                 }
                 Ok(Some(child_event)) => {
                     if let Some(te) = map_ui_to_tool_event(child_event) {
