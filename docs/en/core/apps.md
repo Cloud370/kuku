@@ -82,7 +82,13 @@ Multiple workspaces are supported from day one. No restart required to switch.
 → {"type":"tool_end","id":"...","status":"ok","summary":"..."}
 → {"type":"turn_start"}
 → {"type":"text","content":"找到了 3 个文件"}
-→ {"type":"done","usage":{...}}
+→ {"type":"done","session_id":"...","text":"找到了 3 个文件","turn":2,"usage":{...}}
+```
+
+Cancellation produces a `cancelled` event before the stream ends:
+
+```text
+→ {"type":"cancelled","turn":1}
 ```
 
 The SDK provides `to_wire()` to convert `UiEvent` to wire format. The server calls this function; it owns no mapping logic.
