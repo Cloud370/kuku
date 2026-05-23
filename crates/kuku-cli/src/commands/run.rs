@@ -328,10 +328,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            Some(UiEvent::ToolCall {
-                tool_call_id,
+            Some(UiEvent::ToolStart {
+                id,
                 tool,
                 summary,
+                kind: _,
             }) => {
                 close_thinking(
                     &mut in_thinking,
@@ -344,31 +345,30 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         "{}",
                         OutputLine::tool_call(
                             tool,
-                            tool_call_id,
+                            id,
                             summary,
                             serde_json::Value::Null,
                         )
                         .to_json_line()
                     );
                 } else {
-                    println!("\n{}", display.tool_call(&tool, &summary, &tool_call_id));
+                    println!("\n{}", display.tool_call(&tool, &summary, &id));
                 }
             }
-            Some(UiEvent::ToolResult {
-                tool_call_id,
-                name: _,
+            Some(UiEvent::ToolEnd {
+                id,
                 status,
                 summary,
-                structured: _,
+                result: _,
             }) => {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_result(tool_call_id, status, summary, None, false)
+                        OutputLine::tool_result(id, status, summary, None, false)
                             .to_json_line()
                     );
                 } else {
-                    println!("{}", display.tool_result(&status, &summary, &tool_call_id));
+                    println!("{}", display.tool_result(&status, &summary, &id));
                 }
             }
             Some(UiEvent::PermissionRequested { request }) => {

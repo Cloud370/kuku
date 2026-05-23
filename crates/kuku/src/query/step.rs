@@ -125,20 +125,6 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
 }
 
 pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
-    if let Some(saved) = pending.saved_tool_call.take() {
-        let result = execute_tool_call(&mut pending, &saved.tool_call).await?;
-        return Ok(PendingStep::ToolResultReady {
-            pending: Box::new(pending),
-            ui_event: UiEvent::ToolResult {
-                tool_call_id: saved.tool_call.id.clone(),
-                name: saved.tool_call.name.clone(),
-                status: result.status,
-                summary: result.summary,
-                structured: result.structured,
-            },
-        });
-    }
-
     {
         {
             let notified = pending.cancel_token.notified();
@@ -187,18 +173,18 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
             let mut ui_events = Vec::new();
 
             for call in skill_calls {
-                ui_events.push(UiEvent::ToolCall {
-                    tool_call_id: call.tool_call.id.clone(),
+                ui_events.push(UiEvent::ToolStart {
+                    id: call.tool_call.id.clone(),
                     tool: call.tool_call.name.clone(),
                     summary: call.display_summary.clone(),
+                    kind: super::types::ToolKind::Simple,
                 });
                 let result = execute_tool_call(&mut pending, &call.tool_call).await?;
-                ui_events.push(UiEvent::ToolResult {
-                    tool_call_id: call.tool_call.id.clone(),
-                    name: call.tool_call.name.clone(),
+                ui_events.push(UiEvent::ToolEnd {
+                    id: call.tool_call.id.clone(),
                     status: result.status,
                     summary: result.summary,
-                    structured: result.structured,
+                    result: result.structured,
                 });
             }
 
@@ -262,10 +248,11 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                                 ),
                             )?;
                         }
-                        ui_events.push(UiEvent::ToolCall {
-                            tool_call_id: queued.tool_call.id.clone(),
+                        ui_events.push(UiEvent::ToolStart {
+                            id: queued.tool_call.id.clone(),
                             tool: queued.tool_call.name.clone(),
                             summary: queued.display_summary.clone(),
+                            kind: super::types::ToolKind::Simple,
                         });
                         let result_event_id = EventStore::open(&pending.events_path)?.next_id()
                             + dispatch_batch.len() as u64;
@@ -306,12 +293,11 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             ),
                         )?;
                         let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
-                        ui_events.push(UiEvent::ToolResult {
-                            tool_call_id: queued.tool_call.id.clone(),
-                            name: queued.tool_call.name.clone(),
+                        ui_events.push(UiEvent::ToolEnd {
+                            id: queued.tool_call.id.clone(),
                             status: result.status,
                             summary: result.summary,
-                            structured: result.structured,
+                            result: result.structured,
                         });
                     }
                 }
@@ -838,15 +824,14 @@ async fn handle_agent_tool_call(
             truncated: false,
             structured: None,
         })?;
-        return Ok(PendingStep::ToolResultReady {
+        return Ok(PendingStep::BatchReady {
             pending: Box::new(pending),
-            ui_event: UiEvent::ToolResult {
-                tool_call_id: queued_tool_call.tool_call.id.clone(),
-                name: queued_tool_call.tool_call.name.clone(),
+            ui_events: vec![UiEvent::ToolEnd {
+                id: queued_tool_call.tool_call.id.clone(),
                 status: "blocked".to_string(),
                 summary: "blocked: maximum subagent sessions (20) reached".to_string(),
-                structured: None,
-            },
+                result: None,
+            }],
         });
     }
 
@@ -854,14 +839,15 @@ async fn handle_agent_tool_call(
         "child_{}_{}",
         pending.session_id, pending.child_session_count
     );
-    let stage_id = child_session_id.clone();
-    let label = format!("{} · {}", &name, truncate_summary(&prompt, 60));
-    let tool_call_id = queued_tool_call.tool_call.id.clone();
+    let _stage_id = child_session_id.clone();
+    let _label = format!("{} · {}", &name, truncate_summary(&prompt, 60));
+    let _tool_call_id = queued_tool_call.tool_call.id.clone();
 
     let mut pending = pending;
     pending.child_session_count += 1;
 
-    let child_run = crate::subagent::session::start_child_session(
+    // TODO: Task 3/4 — replace with spawn_agent_slot
+    let _child_run = crate::subagent::session::start_child_session(
         pending.events_path.parent().unwrap(),
         &child_session_id,
         &definition,
@@ -874,15 +860,7 @@ async fn handle_agent_tool_call(
     )
     .await?;
 
-    Ok(PendingStep::InSubexec {
-        pending: Box::new(pending),
-        stage_id,
-        kind: super::types::SubexecKind::Agent { child_session_id },
-        child_run: Box::new(child_run),
-        label,
-        tool_call_id,
-        agent_name: name,
-    })
+    Ok(PendingStep::Pending(Box::new(pending)))
 }
 
 fn truncate_summary(s: &str, max: usize) -> String {

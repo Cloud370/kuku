@@ -8,7 +8,32 @@ use crate::provider;
 use crate::provider::types::{ProviderKind, ProviderToolCall};
 use crate::session::{global_memory_path, project_memory_path};
 
-use super::types::{PendingRun, PermissionChoice, PermissionRequest};
+use super::types::{ExecSlot, PendingRun, PermissionChoice, PermissionRequest};
+
+
+// ---------- Slot helpers ----------
+
+pub(crate) fn write_tool_result(
+    slot: &ExecSlot,
+    status: &str,
+    summary: &str,
+    result: &Option<serde_json::Value>,
+    events_path: &std::path::Path,
+    turn: u64,
+) -> crate::error::Result<()> {
+    let mut store = crate::event::EventStore::open(events_path)?;
+    store.append(crate::event::EventPayload::ToolResult {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: slot.tool_call_id.clone(),
+        status: status.to_string(),
+        summary: summary.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        structured: result.clone(),
+    })?;
+    Ok(())
+}
 
 // ---------- Tool execution ----------
 

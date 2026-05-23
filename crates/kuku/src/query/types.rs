@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_core::Stream;
 
@@ -43,7 +43,7 @@ pub struct RunOutput {
     pub turn: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// A pending permission request for a tool call.
 pub struct PermissionRequest {
     pub id: String,
@@ -62,42 +62,30 @@ pub enum PermissionChoice {
     Deny,
 }
 
-/// Identifies the kind of a sub-execution phase (agent or long-running tool).
+/// Identifies the kind of tool execution.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum SubexecKind {
-    Agent {
-        child_session_id: String,
-    },
-    Tool {
-        tool_name: String,
-        tool_call_id: String,
-    },
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    Simple,
+    Agent { child_session_id: String },
+    Command { pid: Option<u32> },
 }
 
-/// Events produced during a sub-execution phase.
+/// Events produced during a tool execution phase.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum SubexecEvent {
-    TextDelta {
-        text: String,
-    },
-    ThinkingDelta {
-        text: String,
-    },
-    ToolCall {
-        tool_call_id: String,
-        tool: String,
-        summary: String,
-    },
-    ToolResult {
-        tool_call_id: String,
-        name: String,
-        status: String,
-        summary: String,
-    },
-    Stdout(String),
-    Stderr(String),
+#[serde(rename_all = "snake_case")]
+pub enum ToolEvent {
+    TextDelta { text: String },
+    ThinkingDelta { text: String },
+    ToolStart { id: String, tool: String, summary: String, kind: ToolKind },
+    ToolOutput { id: String, event: Box<ToolEvent> },
+    ToolEnd { id: String, status: String, summary: String },
+    Stdout { text: String },
+    Stderr { text: String },
+    PermissionRequested { request: PermissionRequest },
+    Error { code: String, message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,61 +101,16 @@ pub enum PermissionMode {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    TextDelta {
-        text: String,
-    },
-    ThinkingDelta {
-        text: String,
-    },
-    ToolCall {
-        tool_call_id: String,
-        tool: String,
-        summary: String,
-    },
-    ToolResult {
-        tool_call_id: String,
-        name: String,
-        status: String,
-        summary: String,
-        structured: Option<serde_json::Value>,
-    },
-    PermissionRequested {
-        request: PermissionRequest,
-    },
-    Done {
-        output: RunOutput,
-        usage: Option<crate::provider::types::ProviderUsage>,
-        turn: u64,
-    },
-    TurnStart {
-        turn: u64,
-    },
-    Error {
-        code: String,
-        message: String,
-    },
-    ModelRequest {
-        model: String,
-        provider: String,
-    },
-    /// A sub-execution phase has started (agent tool or long-running command).
-    SubexecStart {
-        stage_id: String,
-        kind: SubexecKind,
-        label: String,
-    },
-    /// Real-time output from a sub-execution phase.
-    SubexecOutput {
-        stage_id: String,
-        event: SubexecEvent,
-    },
-    /// A sub-execution phase has completed.
-    SubexecEnd {
-        stage_id: String,
-        status: String,
-        summary: String,
-        result: Option<serde_json::Value>,
-    },
+    TextDelta { text: String },
+    ThinkingDelta { text: String },
+    ToolStart { id: String, tool: String, summary: String, kind: ToolKind },
+    ToolOutput { id: String, event: ToolEvent },
+    ToolEnd { id: String, status: String, summary: String, result: Option<serde_json::Value> },
+    PermissionRequested { request: PermissionRequest },
+    Error { code: String, message: String },
+    ModelRequest { model: String, provider: String },
+    TurnStart { turn: u64 },
+    Done { output: RunOutput, usage: Option<crate::provider::types::ProviderUsage>, turn: u64 },
 }
 
 #[derive(Debug)]
@@ -175,8 +118,38 @@ pub enum UiEvent {
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
+    pub(crate) slots: Vec<ExecSlot>,
+    #[allow(dead_code)]
+    pub(crate) slot_event_tx: tokio::sync::mpsc::Sender<(usize, SlotEvent)>,
+    pub(crate) slot_event_rx: tokio::sync::mpsc::Receiver<(usize, SlotEvent)>,
     pub(crate) cancel_token: Arc<tokio::sync::Notify>,
     pub(crate) lock_path: PathBuf,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ExecSlot {
+    pub(crate) tool_call_id: String,
+    pub(crate) kind: ToolKind,
+    pub(crate) label: String,
+    pub(crate) cancel: Arc<tokio::sync::Notify>,
+    pub(crate) child_permissions: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
+}
+
+impl std::fmt::Debug for ExecSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecSlot")
+            .field("tool_call_id", &self.tool_call_id)
+            .field("kind", &self.kind)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) enum SlotEvent {
+    Output(ToolEvent),
+    Done { status: String, summary: String, result: Option<serde_json::Value> },
 }
 
 #[derive(Debug)]
@@ -184,16 +157,6 @@ pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
-    BatchEvents(Box<PendingRun>, VecDeque<UiEvent>),
-    InSubexec {
-        pending: Box<PendingRun>,
-        stage_id: String,
-        kind: SubexecKind,
-        child_run: Box<Run>,
-        label: String,
-        tool_call_id: String,
-        agent_name: String,
-    },
     Cancelled {
         events_path: std::path::PathBuf,
         turn: u64,
@@ -223,7 +186,6 @@ pub(super) struct PendingRun {
     pub(super) cumulative_cache_creation_input_tokens: u64,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
-    pub(super) saved_tool_call: Option<QueuedToolCall>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
@@ -261,22 +223,9 @@ pub(super) enum PendingStep {
     Pending(Box<PendingRun>),
     NeedPermission(Box<PendingPermission>),
     Streaming(Box<StreamingChunkState>),
-    ToolResultReady {
-        pending: Box<PendingRun>,
-        ui_event: UiEvent,
-    },
     BatchReady {
         pending: Box<PendingRun>,
         ui_events: Vec<UiEvent>,
-    },
-    InSubexec {
-        pending: Box<PendingRun>,
-        stage_id: String,
-        kind: SubexecKind,
-        child_run: Box<Run>,
-        label: String,
-        tool_call_id: String,
-        agent_name: String,
     },
     #[allow(clippy::type_complexity)]
     Done(
@@ -453,5 +402,58 @@ impl Query {
     /// The session ID, if set.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_kind_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ToolKind::Simple).unwrap(),
+            r#""simple""#
+        );
+        let cmd = ToolKind::Command { pid: None };
+        assert_eq!(
+            serde_json::to_string(&cmd).unwrap(),
+            r#"{"command":{"pid":null}}"#
+        );
+        let agent = ToolKind::Agent {
+            child_session_id: "child_abc_0".into(),
+        };
+        let agent_json = serde_json::to_string(&agent).unwrap();
+        let back: ToolKind = serde_json::from_str(&agent_json).unwrap();
+        assert_eq!(back, agent);
+    }
+
+    #[test]
+    fn tool_event_recursive_serialization() {
+        let inner = ToolEvent::ToolStart {
+            id: "tc_2".into(),
+            tool: "find_files".into(),
+            summary: "search".into(),
+            kind: ToolKind::Simple,
+        };
+        let outer = ToolEvent::ToolOutput {
+            id: "tc_1".into(),
+            event: Box::new(inner),
+        };
+        let json = serde_json::to_string(&outer).unwrap();
+        assert!(json.contains("tc_1"));
+        assert!(json.contains("tc_2"));
+    }
+
+    #[test]
+    fn tool_event_stdout_stderr_struct_variants() {
+        let out = ToolEvent::Stdout {
+            text: "hello".into(),
+        };
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(json.contains("stdout"));
+        assert!(json.contains("hello"));
+        let back: ToolEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, out);
     }
 }

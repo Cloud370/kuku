@@ -103,6 +103,7 @@ impl Query {
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
         crate::session::acquire_lock(&lock_path)?;
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(256);
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -120,7 +121,6 @@ impl Query {
                 cumulative_cache_creation_input_tokens: 0,
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
-                saved_tool_call: None,
                 config,
                 prompts_dir,
                 subagent_registry,
@@ -131,6 +131,9 @@ impl Query {
                 tool_registry_override,
                 cancel_token: cancel_token.clone(),
             })),
+            slots: Vec::new(),
+            slot_event_tx,
+            slot_event_rx,
             cancel_token,
             lock_path,
         })
