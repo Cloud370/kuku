@@ -74,8 +74,8 @@ Multiple workspaces are supported from day one. No restart required to switch.
 → {"type":"turn_start"}
 → {"type":"text","content":"你"}
 → {"type":"text","content":"好"}
-→ {"type":"tool_start","id":"...","name":"find_files","summary":"..."}
-→ {"type":"tool_end","id":"...","name":"find_files","status":"ok","summary":"..."}
+→ {"type":"tool_start","id":"...","tool":"find_files","summary":"...","kind":"simple"}
+→ {"type":"tool_end","id":"...","status":"ok","summary":"..."}
 → {"type":"turn_start"}
 → {"type":"text","content":"找到了 3 个文件"}
 → {"type":"done","usage":{...}}

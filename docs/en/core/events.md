@@ -39,6 +39,23 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 
 `model.request` provenance records the sources needed to inspect a request: instruction and memory hashes, prompt asset hashes, history range, tool/subagent registry snapshots, resolved provider/model, params, and context budget. It is not a stored provider raw request body.
 
+## UiEvent ↔ persisted event mapping
+
+The runtime emits `UiEvent` to the host and writes `EventPayload` to `events.jsonl`. The two streams are independent — the execution tree cannot be recovered from persisted events alone.
+
+| UiEvent | Persisted event(s) | Notes |
+|---------|-------------------|-------|
+| `ToolStart` | `tool.call` | Written at slot spawn time |
+| `ToolOutput` | — | Runtime-only, not persisted |
+| `ToolEnd` | `tool.result` | Written when slot completes |
+| `PermissionRequested` | `permission.request` | |
+| `TextDelta` | — | Runtime-only stream |
+| `ThinkingDelta` | — | Runtime-only stream |
+| `Done` | `turn.end` | |
+| `Error` | `model.error` | When provider fails |
+| `TurnStart` | `turn.start` | |
+| `ModelRequest` | `model.request` | |
+
 ## Context rebuild
 
 Events marked `contributes` are folded into `messages[]` during context rebuild. The rebuild processes events in file order, grouping by `request_id`:
