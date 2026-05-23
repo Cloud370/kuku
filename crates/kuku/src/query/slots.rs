@@ -71,8 +71,6 @@ pub(crate) async fn spawn_agent_slot(
     let child_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let _child_session_count = child_session_count;
-
     let mut child_run = crate::subagent::session::start_child_session(
         parent_session_dir,
         &child_session_id,
@@ -83,6 +81,7 @@ pub(crate) async fn spawn_agent_slot(
         config,
         prompts_dir,
         PermissionMode::AutoAllow,
+        child_session_count,
     )
     .await?;
 

@@ -862,6 +862,7 @@ async fn handle_agent_tool_call(
         pending.config.clone(),
         pending.prompts_dir.as_deref(),
         super::types::PermissionMode::AutoAllow,
+        pending.child_session_count,
     )
     .await?;
 
