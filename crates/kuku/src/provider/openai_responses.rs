@@ -167,20 +167,20 @@ pub(crate) async fn stream(
     }))
 }
 
-pub(crate) struct OpenAiResponsesSseParser {
+struct OpenAiResponsesSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
 }
 
 impl OpenAiResponsesSseParser {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             chunks: Vec::new(),
             started: false,
         }
     }
 
-    pub(crate) fn feed(&mut self, frame: &str) {
+    fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
             if !self
                 .chunks
@@ -313,12 +313,27 @@ impl OpenAiResponsesSseParser {
                 }
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
-            "response.failed" | "error" => {}
+            "response.failed" | "error" => {
+                let code = event_type.to_string();
+                let message = data
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        data.get("response")
+                            .and_then(|r| r.get("status_details"))
+                            .and_then(|d| d.as_str())
+                    })
+                    .unwrap_or("server error")
+                    .to_string();
+                self.chunks
+                    .push(ProviderChunk::ServerError { code, message });
+            }
             _ => {}
         }
     }
 
-    pub(crate) fn take_chunks(&mut self) -> Vec<ProviderChunk> {
+    fn take_chunks(&mut self) -> Vec<ProviderChunk> {
         std::mem::take(&mut self.chunks)
     }
 }

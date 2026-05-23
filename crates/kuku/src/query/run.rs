@@ -353,7 +353,14 @@ impl Run {
             let chunk = tokio::select! {
                 chunk = streaming.stream.next() => match chunk {
                     Some(Ok(chunk)) => chunk,
-                    Some(Err(_failure)) => return Ok(None),
+                    Some(Err(failure)) => {
+                        return Err(crate::error::Error::Provider {
+                            kind: failure.kind,
+                            message: failure.message,
+                            provider: None,
+                            model: None,
+                        });
+                    }
                     None => return Ok(None),
                 },
                 _ = cancel_token.notified() => {
@@ -431,6 +438,9 @@ impl Run {
                         entry.cache_creation_input_tokens.unwrap_or(0)
                             + cache_creation_input_tokens,
                     );
+                }
+                ProviderChunk::ServerError { code, message } => {
+                    return Ok(Some(UiEvent::Error { code, message }));
                 }
                 ProviderChunk::StreamEnd => {}
             }

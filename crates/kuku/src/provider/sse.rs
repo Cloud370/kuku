@@ -5,7 +5,6 @@ use super::error::transport_error;
 use super::types::ProviderFailure;
 use super::ProviderChunkStream;
 
-#[allow(dead_code)]
 pub(crate) fn stream_sse_events(
     response: reqwest::Response,
     mut on_frame: impl FnMut(&str) -> Vec<ProviderChunk> + Send + 'static,

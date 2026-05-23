@@ -165,8 +165,6 @@ pub(crate) async fn stream(
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
-    #[allow(dead_code)]
-    text_buffers: Vec<String>,
     tool_arg_buffers: Vec<(u64, String)>,
 }
 
@@ -174,7 +172,6 @@ impl AnthropicSseParser {
     fn new() -> Self {
         Self {
             chunks: Vec::new(),
-            text_buffers: Vec::new(),
             tool_arg_buffers: Vec::new(),
         }
     }
@@ -238,11 +235,7 @@ impl AnthropicSseParser {
                 let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(block) = data.get("content_block") {
                     match block.get("type").and_then(Value::as_str) {
-                        Some("text") => {
-                            while self.text_buffers.len() <= index as usize {
-                                self.text_buffers.push(String::new());
-                            }
-                        }
+                        Some("text") => {}
                         Some("thinking") => {}
                         Some("tool_use") => {
                             let id = block
@@ -276,9 +269,6 @@ impl AnthropicSseParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            if let Some(buf) = self.text_buffers.get_mut(index as usize) {
-                                buf.push_str(&text);
-                            }
                             self.chunks.push(ProviderChunk::TextDelta { text });
                         }
                         Some("thinking_delta") => {
@@ -343,7 +333,22 @@ impl AnthropicSseParser {
             "message_stop" => {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
-            "error" => {}
+            "error" => {
+                let code = data
+                    .get("error")
+                    .and_then(|e| e.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let message = data
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("server error")
+                    .to_string();
+                self.chunks
+                    .push(ProviderChunk::ServerError { code, message });
+            }
             _ => {}
         }
     }

@@ -236,7 +236,13 @@ impl OpenAiCompatSseParser {
 
     fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
-            self.chunks.push(ProviderChunk::StreamEnd);
+            if !self
+                .chunks
+                .iter()
+                .any(|c| matches!(c, ProviderChunk::StreamEnd))
+            {
+                self.chunks.push(ProviderChunk::StreamEnd);
+            }
             return;
         }
 
@@ -253,6 +259,22 @@ impl OpenAiCompatSseParser {
             Ok(v) => v,
             Err(_) => return,
         };
+
+        if let Some(err) = data.get("error") {
+            let code = err
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("server_error")
+                .to_string();
+            let message = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("server error")
+                .to_string();
+            self.chunks
+                .push(ProviderChunk::ServerError { code, message });
+            return;
+        }
 
         if !self.started {
             let rid = data
@@ -365,5 +387,27 @@ impl OpenAiCompatSseParser {
 
     fn take_chunks(&mut self) -> Vec<ProviderChunk> {
         std::mem::take(&mut self.chunks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_error_emits_server_error_chunk() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let frame =
+            r#"data: {"error": {"type": "server_error", "message": "something went wrong"}}"#;
+        parser.feed(frame);
+        let chunks = parser.take_chunks();
+        assert_eq!(chunks.len(), 1);
+        match &chunks[0] {
+            ProviderChunk::ServerError { code, message } => {
+                assert_eq!(code, "server_error");
+                assert_eq!(message, "something went wrong");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
     }
 }
