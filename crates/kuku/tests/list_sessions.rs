@@ -72,6 +72,7 @@ fn global_lists_all_workspaces() {
         "s_aaa",
         "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_aaa\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"proj a\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\"}\n",
     );
+    std::thread::sleep(std::time::Duration::from_millis(50));
     write_session(
         &ws2,
         "s_bbb",
