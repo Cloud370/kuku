@@ -313,12 +313,40 @@ impl Run {
     }
 
     /// Apply a permission decision for a pending tool call.
+    /// `parent_tool_id`: `None` for top-level, `Some(id)` for subagent permission.
     pub async fn decide(
         &mut self,
         request_id: impl AsRef<str>,
         choice: PermissionChoice,
+        parent_tool_id: Option<&str>,
     ) -> Result<Option<UiEvent>> {
-        self.apply_choice(request_id.as_ref(), choice, "host").await
+        let request_id = request_id.as_ref();
+        if let Some(tool_id) = parent_tool_id {
+            let slot = self
+                .slots
+                .iter_mut()
+                .find(|s| s.tool_call_id == tool_id)
+                .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
+            let mut map = slot.child_permissions.lock().unwrap();
+            let tx = map
+                .remove(request_id)
+                .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
+            drop(map);
+            let _ = tx.send(choice);
+            Ok(None)
+        } else {
+            self.apply_choice(request_id, choice, "host").await
+        }
+    }
+
+    /// Cancel a single running tool by its tool_call_id.
+    pub fn cancel_tool(&mut self, tool_call_id: &str) -> bool {
+        if let Some(slot) = self.slots.iter().find(|s| s.tool_call_id == tool_call_id) {
+            slot.cancel.notify_one();
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) async fn deny_pending(&mut self) -> Result<Option<UiEvent>> {

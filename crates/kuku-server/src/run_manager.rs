@@ -95,7 +95,7 @@ impl RunManager {
                         let (tx, rx) = oneshot::channel();
                         permissions.lock().await.insert(request.id.clone(), tx);
                         let choice = rx.await.unwrap_or(kuku::PermissionChoice::Deny);
-                        if let Ok(Some(result_event)) = run.decide(&request.id, choice).await {
+                        if let Ok(Some(result_event)) = run.decide(&request.id, choice, None).await {
                             if let Some(line) = crate::wire::serialize_event(&result_event) {
                                 if event_tx.send(line).await.is_err() {
                                     break;

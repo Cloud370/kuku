@@ -379,7 +379,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if args.auto_yes || use_stream_json {
-                    let _ = run.decide(&request.id, PermissionChoice::Once).await?;
+                    let _ = run.decide(&request.id, PermissionChoice::Once, None).await?;
                     if use_stream_json {
                         println!(
                             "{}",
@@ -408,7 +408,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         "y" | "" => (PermissionChoice::Once, "user"),
                         _ => (PermissionChoice::Deny, "user"),
                     };
-                    let _ = run.decide(&request.id, decision).await?;
+                    let _ = run.decide(&request.id, decision, None).await?;
                     let decision_str = if matches!(decision, PermissionChoice::Once) {
                         "allow"
                     } else {

@@ -123,7 +123,7 @@ pub async fn spawn_child_session(
             }
             Some(crate::UiEvent::PermissionRequested { request }) => match parent_mode {
                 PermissionMode::AutoAllow => {
-                    run.decide(request.id, crate::query::PermissionChoice::Once)
+                    run.decide(request.id, crate::query::PermissionChoice::Once, None)
                         .await?;
                 }
                 PermissionMode::Interactive => {
