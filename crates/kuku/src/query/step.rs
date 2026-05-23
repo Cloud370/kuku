@@ -303,25 +303,30 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                 }
             }
 
-            if !dispatch_batch.is_empty() {
-                let results = crate::tool::dispatch::dispatch_all(
-                    dispatch_batch,
-                    pending.cancel_token.clone(),
+            for (_index, tc_id, name, args, workspace, kuku_home, prior_events, result_event_id) in
+                dispatch_batch
+            {
+                let result = crate::tool::dispatch::dispatch(
+                    &name,
+                    &args,
+                    &workspace,
+                    &kuku_home,
+                    &prior_events,
+                    result_event_id,
+                    None,
                 )
                 .await;
-                for (_index, tc_id, result) in results {
-                    let mut store = EventStore::open(&pending.events_path)?;
-                    store.append(crate::event::EventPayload::ToolResult {
-                        turn: pending.turn,
-                        ts: now_timestamp()?,
-                        tool_call_id: tc_id,
-                        status: result.status.clone(),
-                        summary: result.summary.clone(),
-                        model_content: result.model_content.clone(),
-                        truncated: result.truncated,
-                        structured: result.structured.clone(),
-                    })?;
-                }
+                let mut store = EventStore::open(&pending.events_path)?;
+                store.append(crate::event::EventPayload::ToolResult {
+                    turn: pending.turn,
+                    ts: now_timestamp()?,
+                    tool_call_id: tc_id,
+                    status: result.status.clone(),
+                    summary: result.summary.clone(),
+                    model_content: result.model_content.clone(),
+                    truncated: result.truncated,
+                    structured: result.structured.clone(),
+                })?;
             }
 
             if !ui_events.is_empty() {
