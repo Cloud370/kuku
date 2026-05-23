@@ -46,9 +46,7 @@ fn build_skill_body(
         .source_path
         .as_deref()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            format!("{}/{}", def.source.base_dir(), skill_name)
-        });
+        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
     let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
     let (_, body) = kuku::subagent::compat::claude_code::split_yaml_frontmatter(&content);
     Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))

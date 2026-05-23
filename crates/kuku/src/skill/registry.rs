@@ -203,7 +203,6 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
     }
 }
 
-
 fn compute_registry_hash(defs: &BTreeMap<String, SkillDefinition>, names: &[String]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

@@ -80,7 +80,6 @@ fn handle_use_skill(
     })
 }
 
-
 pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
     tool_call: &ProviderToolCall,

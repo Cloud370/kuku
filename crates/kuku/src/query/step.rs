@@ -436,7 +436,8 @@ pub(super) async fn advance_pending(
                             &queued.tool_call.args,
                         ),
                     )?;
-                    return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
+                    return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple)
+                        .await;
                 }
             }
         }
@@ -535,17 +536,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         "temperature": pending.query.temperature,
     });
 
-    let provenance = build_model_request_provenance(
-        &pending,
-        resolved,
-        &assembly,
-        &existing_events,
-        &platform,
-        &current_date,
-        &request_id,
-        &tier_name,
-        &params,
-    );
+    let provenance = build_model_request_provenance(&pending, resolved, &assembly, &existing_events);
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
@@ -815,11 +806,6 @@ fn build_model_request_provenance(
     resolved: &ResolvedRuntime,
     assembly: &crate::context::ContextAssembly,
     existing_events: &[crate::event::StoredEvent],
-    platform: &str,
-    current_date: &str,
-    request_id: &str,
-    tier_name: &str,
-    params: &serde_json::Value,
 ) -> crate::context::RequestProvenance {
     let headroom = {
         let estimated_input = last_input_tokens(&resolved.config.kind, existing_events);
@@ -839,12 +825,23 @@ fn build_model_request_provenance(
         )
     };
 
+    let request_id = format!("req_{}", pending.request_num);
+    let tier_name = pending
+        .query
+        .tier
+        .clone()
+        .unwrap_or_else(|| pending.config.default_tier().to_string());
+    let params = serde_json::json!({
+        "max_output_tokens": resolved.config.max_output_tokens,
+        "temperature": pending.query.temperature,
+    });
+
     build_request_provenance(RequestProvenanceInput {
-        request_id: request_id.to_string(),
-        tier: tier_name.to_string(),
+        request_id,
+        tier: tier_name,
         workspace: pending.workspace.display().to_string(),
-        platform: platform.to_string(),
-        current_date: current_date.to_string(),
+        platform: platform_label().to_string(),
+        current_date: current_date_string(),
         project_instruction_sources: assembly
             .project_instruction_sources
             .iter()
@@ -887,7 +884,7 @@ fn build_model_request_provenance(
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
         provider: resolved.config.kind.as_str().to_string(),
         model: resolved.config.model.clone(),
-        request_params: params.clone(),
+        request_params: params,
         token_estimate: None,
         context_budget_tier: headroom.tier.as_str().to_string(),
         max_context_tokens: Some(headroom.max_context_tokens),

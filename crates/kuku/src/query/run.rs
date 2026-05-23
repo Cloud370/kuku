@@ -167,12 +167,8 @@ impl Run {
         &mut self,
         pending: Box<super::types::PendingRun>,
     ) -> Result<Option<UiEvent>> {
-        match super::step::advance_pending(
-            *pending,
-            self.slot_event_tx.clone(),
-            self.slots.len(),
-        )
-        .await?
+        match super::step::advance_pending(*pending, self.slot_event_tx.clone(), self.slots.len())
+            .await?
         {
             PendingStep::Pending {
                 pending,
@@ -314,8 +310,10 @@ impl Run {
                         ),
                     )?;
                 }
-                let QueuedToolCall { tool_call, display_summary } =
-                    pending.queued_tool_calls.pop_front().unwrap();
+                let QueuedToolCall {
+                    tool_call,
+                    display_summary,
+                } = pending.queued_tool_calls.pop_front().unwrap();
                 let slot = super::slots::spawn_simple_slot(
                     tool_call.id.clone(),
                     tool_call.name.clone(),
