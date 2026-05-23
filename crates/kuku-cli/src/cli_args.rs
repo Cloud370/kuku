@@ -20,8 +20,10 @@ pub enum Command {
     Show(ShowArgs),
     /// Show events from a session
     Events(EventsArgs),
-    /// List sessions for the current workspace
+    /// List sessions (all workspaces by default, -w to filter)
     List(ListArgs),
+    /// Delete a session
+    Delete(DeleteArgs),
     /// Show or manage configuration
     Config(ConfigArgs),
     /// Initialize config and directory structure
@@ -182,9 +184,25 @@ pub struct EventsArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
-    /// Verbose listing (created time, turn count)
+    /// Filter to a specific workspace
+    #[arg(short = 'w', long = "workspace")]
+    pub workspace: Option<String>,
+
+    /// Verbose listing (size, mtime, created_at)
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+}
+
+// ── Delete ──
+
+#[derive(Args)]
+pub struct DeleteArgs {
+    /// Session ID to delete
+    pub session_id: String,
+
+    /// Workspace the session belongs to
+    #[arg(short = 'w', long = "workspace")]
+    pub workspace: Option<String>,
 }
 
 // ── Config ──

@@ -185,7 +185,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     } else if args.cont {
         let home = kuku::session::kuku_home()?;
         let workspace = kuku::session::current_workspace()?;
-        let sessions = kuku::session::list_sessions(&home, &workspace)?;
+        let sessions = kuku::session::list_sessions(&home, Some(&workspace))?;
         let latest = sessions
             .iter()
             .max_by_key(|s| s.created_at.as_str())
