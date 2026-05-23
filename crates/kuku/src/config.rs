@@ -135,135 +135,55 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
 impl ConfigFile {
     /// Validate and resolve the raw config into typed, validated Config.
     pub fn resolve(&self) -> Result<Config> {
-        const REQUIRED_TIERS: &[&str] = &["strong", "balanced", "light"];
-        for &name in REQUIRED_TIERS {
-            if !self.model.contains_key(name) {
-                return Err(Error::ConfigLoad(format!(
-                    "required tier '{name}' is missing"
-                )));
-            }
-        }
+        self.validate_required_tiers()?;
+        self.validate_tier_entries()?;
+        self.validate_provider_entries()?;
+        self.validate_cross_references()?;
 
         let mut tiers = BTreeMap::new();
         for (name, entry) in &self.model {
-            let provider = entry.provider.trim().to_string();
-            if provider.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "tier '{name}': provider is required"
-                )));
-            }
-            let model = entry.model.trim().to_string();
-            if model.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "tier '{name}': model is required"
-                )));
-            }
             let think = match entry.think.as_deref() {
                 None | Some("medium") => ThinkLevel::Medium,
                 Some("off") => ThinkLevel::Off,
                 Some("low") => ThinkLevel::Low,
                 Some("high") => ThinkLevel::High,
-                Some(other) => {
-                    return Err(Error::ConfigLoad(format!(
-                        "tier '{name}': think '{other}' is invalid, must be off/low/medium/high"
-                    )));
-                }
+                _ => unreachable!("validate_tier_entries checked"),
             };
-            let context_window = entry.context_window.unwrap_or(200000);
-            if context_window == 0 {
-                return Err(Error::ConfigLoad(format!(
-                    "tier '{name}': context_window must be a positive integer"
-                )));
-            }
-            let max_output_tokens = entry.max_output_tokens.unwrap_or(48000);
-            if max_output_tokens == 0 {
-                return Err(Error::ConfigLoad(format!(
-                    "tier '{name}': max_output_tokens must be a positive integer"
-                )));
-            }
-            let purpose = entry.purpose.clone().unwrap_or_else(|| name.clone());
-
             tiers.insert(
                 name.clone(),
                 TierConfig {
-                    provider,
-                    model,
+                    provider: entry.provider.trim().to_string(),
+                    model: entry.model.trim().to_string(),
                     think,
-                    context_window,
-                    max_output_tokens,
-                    purpose,
+                    context_window: entry.context_window.unwrap_or(200000),
+                    max_output_tokens: entry.max_output_tokens.unwrap_or(48000),
+                    purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
                 },
             );
         }
 
         let mut providers = BTreeMap::new();
         for (name, entry) in &self.provider {
-            let format = entry.format.trim().to_string();
-            if format.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': format is required"
-                )));
-            }
-            if !matches!(
-                format.as_str(),
-                "anthropic" | "openai-chat" | "openai-responses"
-            ) {
-                return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': format '{format}' is not supported, must be anthropic/openai-chat/openai-responses"
-                )));
-            }
-            let base_url = entry.base_url.trim().to_string();
-            if base_url.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': base_url is required"
-                )));
-            }
-            let api_key_raw = entry.api_key.trim().to_string();
-            if api_key_raw.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': api_key is required"
-                )));
-            }
+            let api_key_raw = entry.api_key.trim();
             let api_key = if let Some(env_name) = api_key_raw.strip_prefix('$') {
-                if env_name.is_empty() {
-                    return Err(Error::ConfigLoad(format!(
-                        "provider '{name}': api_key '$' prefix must be followed by an env var name"
-                    )));
-                }
                 ApiKey::Env(env_name.to_string())
             } else {
-                ApiKey::Plaintext(api_key_raw)
+                ApiKey::Plaintext(api_key_raw.to_string())
             };
-
             providers.insert(
                 name.clone(),
                 ProviderConfig {
-                    format,
-                    base_url,
+                    format: entry.format.trim().to_string(),
+                    base_url: entry.base_url.trim().to_string(),
                     api_key,
                 },
             );
-        }
-
-        for (name, tier) in &tiers {
-            if !providers.contains_key(&tier.provider) {
-                return Err(Error::ConfigLoad(format!(
-                    "tier '{name}': provider '{}' is not defined in [provider]",
-                    tier.provider
-                )));
-            }
         }
 
         let default_tier = self
             .default_model
             .clone()
             .unwrap_or_else(|| "balanced".to_string());
-
-        if !tiers.contains_key(&default_tier) {
-            return Err(Error::ConfigLoad(format!(
-                "default_model '{default_tier}' is not defined in [model]"
-            )));
-        }
 
         Ok(Config {
             tiers,
@@ -272,9 +192,14 @@ impl ConfigFile {
         })
     }
 
-    /// Structural validation without runtime checks (no env var existence).
-    /// Used by `set_value` to verify cross-references, types, and enum values.
     fn validate_structural(&self) -> Result<()> {
+        self.validate_required_tiers()?;
+        self.validate_tier_entries()?;
+        self.validate_provider_entries()?;
+        self.validate_cross_references()
+    }
+
+    fn validate_required_tiers(&self) -> Result<()> {
         const REQUIRED_TIERS: &[&str] = &["strong", "balanced", "light"];
         for &name in REQUIRED_TIERS {
             if !self.model.contains_key(name) {
@@ -283,10 +208,12 @@ impl ConfigFile {
                 )));
             }
         }
+        Ok(())
+    }
 
+    fn validate_tier_entries(&self) -> Result<()> {
         for (name, entry) in &self.model {
-            let provider = entry.provider.trim();
-            if provider.is_empty() {
+            if entry.provider.trim().is_empty() {
                 return Err(Error::ConfigLoad(format!(
                     "tier '{name}': provider is required"
                 )));
@@ -318,7 +245,10 @@ impl ConfigFile {
                 }
             }
         }
+        Ok(())
+    }
 
+    fn validate_provider_entries(&self) -> Result<()> {
         for (name, entry) in &self.provider {
             let format = entry.format.trim();
             if format.is_empty() {
@@ -326,11 +256,11 @@ impl ConfigFile {
                     "provider '{name}': format is required"
                 )));
             }
-            if !matches!(format, "anthropic" | "openai-chat" | "openai-responses") {
-                return Err(Error::ConfigLoad(format!(
+            Self::validate_format(format).map_err(|_| {
+                Error::ConfigLoad(format!(
                     "provider '{name}': format '{format}' is not supported, must be anthropic/openai-chat/openai-responses"
-                )));
-            }
+                ))
+            })?;
             if entry.base_url.trim().is_empty() {
                 return Err(Error::ConfigLoad(format!(
                     "provider '{name}': base_url is required"
@@ -350,7 +280,10 @@ impl ConfigFile {
                 }
             }
         }
+        Ok(())
+    }
 
+    fn validate_cross_references(&self) -> Result<()> {
         for (name, tier) in &self.model {
             if !self.provider.contains_key(tier.provider.trim()) {
                 return Err(Error::ConfigLoad(format!(
@@ -359,14 +292,21 @@ impl ConfigFile {
                 )));
             }
         }
-
         let default_tier = self.default_model.as_deref().unwrap_or("balanced");
         if !self.model.contains_key(default_tier) {
             return Err(Error::ConfigLoad(format!(
                 "default_model '{default_tier}' is not defined in [model]"
             )));
         }
+        Ok(())
+    }
 
+    fn validate_format(format: &str) -> Result<()> {
+        if !matches!(format, "anthropic" | "openai-chat" | "openai-responses") {
+            return Err(Error::ConfigLoad(format!(
+                "'format' must be anthropic/openai-chat/openai-responses, got '{format}'"
+            )));
+        }
         Ok(())
     }
 }
@@ -553,11 +493,7 @@ pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
             toml_edit::value(value)
         }
         "format" => {
-            if !matches!(value, "anthropic" | "openai-chat" | "openai-responses") {
-                return Err(Error::ConfigLoad(format!(
-                    "'format' must be anthropic/openai-chat/openai-responses, got '{value}'"
-                )));
-            }
+            ConfigFile::validate_format(value)?;
             toml_edit::value(value)
         }
         _ => toml_edit::value(value),
