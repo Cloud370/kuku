@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -11,13 +9,18 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().flatten() {
-        let line = line.trim().to_string();
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let value: Value = serde_json::from_str(&line).ok()?;
-        if value.get("type")?.as_str()? == "user.input" {
-            return value.get("text")?.as_str().map(|s| s.to_string());
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            let is_user_input = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                == Some("user.input");
+            if is_user_input {
+                return value.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+            }
         }
     }
     None
@@ -28,13 +31,18 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().flatten() {
-        let line = line.trim().to_string();
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let value: Value = serde_json::from_str(&line).ok()?;
-        if value.get("type")?.as_str()? == "session.meta" {
-            return value.get("created_at")?.as_str().map(|s| s.to_string());
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            let is_session_meta = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                == Some("session.meta");
+            if is_session_meta {
+                return value.get("created_at").and_then(|t| t.as_str()).map(|s| s.to_string());
+            }
         }
         break;
     }
@@ -78,11 +86,11 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     file.read_to_string(&mut buf).ok()?;
     let last_line = buf.lines().filter(|l| !l.trim().is_empty()).last()?;
     let value: Value = serde_json::from_str(last_line).ok()?;
-    match value.get("type")?.as_str()? {
-        "turn.end" => Some("turn.end"),
-        "turn.start" => Some("turn.start"),
-        "model.response" => Some("model.response"),
-        "tool.result" => Some("tool.result"),
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("turn.end") => Some("turn.end"),
+        Some("turn.start") => Some("turn.start"),
+        Some("model.response") => Some("model.response"),
+        Some("tool.result") => Some("tool.result"),
         _ => None,
     }
 }

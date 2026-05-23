@@ -48,6 +48,47 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Reconstruct a workspace path from a project_home directory.
+/// Inverse of `project_home` — best-effort, lossy for DeviceNS/Verbatim prefixes.
+pub(crate) fn workspace_from_project_home(p_dir: &Path, project_home: &Path) -> PathBuf {
+    let rel = project_home.strip_prefix(p_dir).unwrap_or(project_home);
+    let mut components = rel.components().peekable();
+    let Some(first) = components.peek() else {
+        return PathBuf::from("/");
+    };
+    let _first_str = first.as_os_str().to_string_lossy();
+
+    #[cfg(windows)]
+    {
+        if _first_str.len() == 1 && _first_str.chars().all(|c| c.is_ascii_uppercase()) {
+            let _ = components.next();
+            let mut result = PathBuf::from(format!("{first_str}:\\"));
+            for c in components {
+                result.push(c);
+            }
+            return result;
+        }
+        if components.clone().count() >= 2 {
+            let _first = components.next();
+            let second = components.next().unwrap();
+            let second_str = second.as_os_str().to_string_lossy();
+            if !second_str.is_empty() {
+                let mut result = PathBuf::from(format!("\\\\{first_str}\\{second_str}"));
+                for c in components {
+                    result.push(c);
+                }
+                return result;
+            }
+        }
+    }
+
+    let mut result = PathBuf::from("/");
+    for c in components {
+        result.push(c);
+    }
+    result
+}
+
 fn push_prefix(path: &mut PathBuf, prefix: &std::path::PrefixComponent<'_>) {
     match prefix.kind() {
         Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {

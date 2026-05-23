@@ -1,3 +1,21 @@
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// Whether a session is still running, finished cleanly, or was interrupted.
+pub enum SessionStatus {
+    Active,
+    Done,
+    Interrupted,
+}
+
+impl std::fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionStatus::Active => write!(f, "active"),
+            SessionStatus::Done => write!(f, "done"),
+            SessionStatus::Interrupted => write!(f, "interrupted"),
+        }
+    }
+}
+
 pub mod id;
 pub mod list;
 pub mod paths;
@@ -46,7 +64,7 @@ pub(crate) fn release_lock(lock_path: &Path) {
     let _ = fs::remove_file(lock_path);
 }
 
-fn process_alive(pid: i32) -> bool {
+pub(crate) fn process_alive(pid: i32) -> bool {
     #[cfg(target_os = "linux")]
     {
         std::path::PathBuf::from(format!("/proc/{pid}")).exists()
