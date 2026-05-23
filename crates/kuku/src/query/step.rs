@@ -323,14 +323,13 @@ pub(super) async fn advance_pending(
             });
         } else {
             // --- Regular tool call ---
-            let definition = find_tool_definition(&pending, &queued.tool_call.name).ok_or_else(
-                || {
+            let definition =
+                find_tool_definition(&pending, &queued.tool_call.name).ok_or_else(|| {
                     crate::error::Error::InvalidArgument(format!(
                         "unknown tool: {}",
                         queued.tool_call.name
                     ))
-                },
-            )?;
+                })?;
             let candidate = permission_candidate(
                 &pending.kuku_home,
                 &pending.workspace,
@@ -395,8 +394,7 @@ pub(super) async fn advance_pending(
                             ts: now_timestamp()?,
                             tool_call_id: queued.tool_call.id.clone(),
                             status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached"
-                                .to_string(),
+                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
                             model_content: String::new(),
                             truncated: false,
                             structured: None,
@@ -404,8 +402,7 @@ pub(super) async fn advance_pending(
                         pending.pending_events.push_back(UiEvent::ToolEnd {
                             id: queued.tool_call.id.clone(),
                             status: "blocked".to_string(),
-                            summary: "blocked: maximum concurrent slots (32) reached"
-                                .to_string(),
+                            summary: "blocked: maximum concurrent slots (32) reached".to_string(),
                             result: None,
                         });
                         return Ok(PendingStep::Pending {

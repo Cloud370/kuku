@@ -130,10 +130,7 @@ pub(crate) fn spawn_agent_slot(
                             tc_id.clone(),
                             SlotEvent::Done {
                                 status: "ok".into(),
-                                summary: format!(
-                                    "{agent_name} completed in {} turns",
-                                    output.turn
-                                ),
+                                summary: format!("{agent_name} completed in {} turns", output.turn),
                                 model_content: String::new(),
                                 result: Some(serde_json::json!({
                                     "kind": "subagent_result",

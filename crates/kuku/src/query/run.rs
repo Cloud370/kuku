@@ -135,7 +135,11 @@ impl Run {
                     )
                     .await?
                     {
-                        PendingStep::Pending { pending, slot, event } => {
+                        PendingStep::Pending {
+                            pending,
+                            slot,
+                            event,
+                        } => {
                             if let Some(slot) = slot {
                                 self.slots.insert(slot.tool_call_id.clone(), slot);
                             }
@@ -269,18 +273,17 @@ impl Run {
             crate::permission::GateDecisionKind::Ask => Ok(None),
             crate::permission::GateDecisionKind::Allow => {
                 if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
-                    let choice =
-                        if matches!(decision.source, crate::permission::GateSource::ProjectPolicy)
-                        {
-                            PermissionChoice::Project
-                        } else if matches!(
-                            decision.source,
-                            crate::permission::GateSource::SessionGrant
-                        ) {
-                            PermissionChoice::Session
-                        } else {
-                            PermissionChoice::Once
-                        };
+                    let choice = if matches!(
+                        decision.source,
+                        crate::permission::GateSource::ProjectPolicy
+                    ) {
+                        PermissionChoice::Project
+                    } else if matches!(decision.source, crate::permission::GateSource::SessionGrant)
+                    {
+                        PermissionChoice::Session
+                    } else {
+                        PermissionChoice::Once
+                    };
                     append_permission_decision(
                         &pending.events_path,
                         pending.turn,

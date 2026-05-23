@@ -103,7 +103,8 @@ impl Query {
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
         crate::session::acquire_lock(&lock_path)?;
-        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
+        let (slot_event_tx, slot_event_rx) =
+            tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
