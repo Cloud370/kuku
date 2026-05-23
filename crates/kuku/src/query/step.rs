@@ -536,7 +536,8 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         "temperature": pending.query.temperature,
     });
 
-    let provenance = build_model_request_provenance(&pending, resolved, &assembly, &existing_events);
+    let provenance =
+        build_model_request_provenance(&pending, resolved, &assembly, &existing_events);
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
