@@ -31,6 +31,12 @@ All tool calls run in parallel — including agent tools. Each tool runs in its 
 
 Three slot types: **Simple** (builtin tools — no intermediate output), **Agent** (child session with real-time event streaming via ToolOutput), **Command** (run_command with stdout/stderr streaming). Slots report events through a shared channel; the host receives `ToolStart → ToolOutput* → ToolEnd` uniformly.
 
+**Concurrency limit:** Maximum 32 active ExecSlots at any time. Additional tool calls are queued and spawn their slot once a running slot completes.
+
+**Depth guard:** Subagent nesting is capped at 2 levels (parent → child → grandchild). Exceeding the limit blocks the tool call with `status:"blocked"` and a descriptive summary.
+
+**Single-tool cancellation:** `Run::cancel_tool(tool_call_id)` cancels one running tool by notifying its slot's cancel token. Other slots continue unaffected. `Run::cancel()` still cancels the entire run.
+
 Tool results go into `events.jsonl` first. The next context rebuild reads them as user `tool_result` blocks.
 
 ## Errors

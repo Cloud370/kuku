@@ -32,7 +32,7 @@ Each module has a clear boundary of what it may and may not depend on.
 | `query/` | Agent loop, Run state machine, UiEvent stream | All other modules | — |
 | `context/` | Message rebuild, provenance, assembly | `event/`, `prompt/`, `config/` | Provider, tool execution, permission |
 | `provider/` | Protocol conversion (Anthropic, OpenAI) | Canonical messages, tool schemas, config | Session, event store, permission |
-| `tool/` | Definitions, registry, dispatch, built-in tools | `event/`, `context/` (ToolSchema) | Provider protocol |
+| `tool/` | Definitions, registry, dispatch, built-in tools | `event/`, `context/` (ToolSchema) | Provider protocol, slot scheduling |
 | `permission/` | Gate decisions, hard guard, policy.md | `event/` | Tool execution, provider, session |
 | `session/` | Path derivation, writer lock | — | Event interpretation, model state |
 | `event/` | Event types, store append/replay | — | Provider, tools, permission |

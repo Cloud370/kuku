@@ -63,6 +63,10 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `tool result envelope` | Unified return type for all tool executions: `status`, `summary`, `model_content`, `truncated`, `structured`. |
 | `read snapshot` | File identity recorded on successful `read_file`: canonical path, content hash, event id, line range. Enables read caching and write/edit precondition checks. |
 | `display summary` | Human-readable one-liner derived from tool args and result. Used by CLI/TUI to show what a tool did without exposing raw output. |
+| `ExecSlot` | Per-tool runtime unit in `Run`. Holds an independent `tokio::sync::Notify` cancel token and a child-permission channel map. All tools (including agent) run in their own slot concurrently. |
+| `ToolKind` | Classifies a tool execution: `Simple` (builtin tools), `Agent { child_session_id }` (subagent child session), `Command { pid }` (run_command). Used by `ExecSlot` and `ToolStart` events. |
+| `ToolEvent` | Runtime event produced inside an `ExecSlot`: `TextDelta`, `ThinkingDelta`, `ToolStart`, `ToolOutput`, `ToolEnd`, `Stdout`, `Stderr`, `PermissionRequested`, `Error`. Forwarded to `Run::next()` as `UiEvent`. |
+| `cancel_tool` | `Run::cancel_tool(tool_call_id)` method. Cancels a single running tool by notifying its `ExecSlot` cancel token. Returns `true` if the slot was found and cancelled. |
 
 ## Permission
 
@@ -92,6 +96,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `tool_profile` | Allowed tool preset for a subagent: `none` / `read` / `read_write`. Mapped to a concrete tool allowlist at spawn time. |
 | `agent tool` | The single stable tool (`name: "agent"`) for dispatching subagents. Schema is fixed; available agents are declared in the catalog. |
 | `child session` | Isolated session created under `subs/<id>/`. Has its own `events.jsonl`, constrained tool registry, and capped permissions. |
+| `depth guard` | Hard limit on subagent nesting: maximum 2 levels (parent → child → grandchild). Checked via `child_session_count` in `PendingRun`; a tool call that would exceed depth is blocked with status `"blocked"` and a descriptive summary. |
 | `agent catalog` | Short XML block listing available subagents (name, description, tier, tool_profile, hash). Injected into `runtime_context`. Does not include full instructions. |
 | `subagent registry` | Loaded set of `SubagentDefinition`s from builtins + compatibility imports. Content-hashed for drift detection. |
 | `compatibility import` | Read-only conversion of external agent definitions (Claude Code, OpenCode) into `SubagentDefinition`. Never mutates source files. |
@@ -117,11 +122,11 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 |---------------|------------|
 | `Query` | Typed builder returned by `kuku::query(prompt)`. Configure workspace, tier, config, session, and subagents via chained methods. Call `.run()` or `.start()`. |
 | `Run` | Handle to an active query. Stream `UiEvent` via `.next()`, respond to permissions via `.decide()`, read `.session_id()`. |
-| `UiEvent` | Event streamed from SDK to host. Current: `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `PermissionRequested`, `Done`. Planned additions: `InteractionRequest` (replaces `PermissionRequested`), `TurnStart`, `Error`, `ModelRequest`. Not persisted — `events.jsonl` holds the canonical facts. |
+| `UiEvent` | Event streamed from SDK to host. Variants: `TextDelta`, `ThinkingDelta`, `ToolStart`, `ToolOutput`, `ToolEnd`, `PermissionRequested`, `TurnStart`, `Error`, `ModelRequest`, `Done`. Planned: `InteractionRequest` (generalizes `PermissionRequested`). Not persisted — `events.jsonl` holds the canonical facts. |
 | `RunOutput` | Final result from `.run()` or `UiEvent::Done`: `session_id`, `text`, `usage`, `turn`. |
 | `PermissionChoice` | Host's response to a permission request: `Once`, `Session`, `Project`, `Deny`. |
 | `Error` | Typed error enum (`kuku::error::Error`) covering provider failures, invalid arguments, I/O errors, and prompt rendering failures. |
-| `InteractionRequest` | Unified host-agent interaction: replaces `PermissionRequested`. Covers permission, ask, confirm, and future interaction types. Host responds via `run.respond()`. |
+| `InteractionRequest` | Planned unified host-agent interaction: generalizes `PermissionRequested` to cover ask, confirm, and future interaction types. Host responds via `run.respond()`. |
 | `wire event` | Client-friendly JSON representation of a `UiEvent`, streamed via NDJSON. Produced by SDK's `to_wire()` function. |
 | `ExternalToolSource` | Trait for external tool providers. Implementations include future MCP client. Tools registered through this trait go through the standard permission gate. |
 | `skill registry` | Loaded set of skill definitions from user and project directories. Metadata injected into `runtime_context` at startup; full content loaded on demand. |

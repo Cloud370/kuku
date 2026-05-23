@@ -39,6 +39,10 @@ user agents with the same name.
 - `remember_memory` — append to memory.md
 - `forget_memory` — remove from memory.md
 
+## Depth guard
+
+Subagent nesting is limited to 2 levels: parent → child → grandchild. When a child session tries to spawn a tool call that would exceed this limit, the call is blocked with `status:"blocked"` and the summary `"blocked: maximum subagent depth (2) reached"`. The limit is tracked via `child_session_count` on `PendingRun` and enforced before spawning an agent ExecSlot.
+
 ## Permissions
 
 Child sessions inherit the parent's permission mode:
