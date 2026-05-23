@@ -174,15 +174,13 @@ pub enum UiEvent {
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
-    pub(crate) slots: Vec<ExecSlot>,
-    #[allow(dead_code)]
-    pub(crate) slot_event_tx: tokio::sync::mpsc::Sender<(usize, SlotEvent)>,
-    pub(crate) slot_event_rx: tokio::sync::mpsc::Receiver<(usize, SlotEvent)>,
+    pub(crate) slots: std::collections::HashMap<String, ExecSlot>,
+    pub(crate) slot_event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
+    pub(crate) slot_event_rx: tokio::sync::mpsc::Receiver<(String, SlotEvent)>,
     pub(crate) cancel_token: Arc<tokio::sync::Notify>,
     pub(crate) lock_path: PathBuf,
 }
 
-#[allow(dead_code)]
 pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
     pub(crate) kind: ToolKind,
@@ -203,7 +201,6 @@ impl std::fmt::Debug for ExecSlot {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) enum SlotEvent {
     Output(ToolEvent),
     Done {
@@ -255,6 +252,7 @@ pub(super) struct PendingRun {
     pub(super) skill_body: Option<String>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+    pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
 }
 
@@ -276,18 +274,19 @@ pub(super) struct QueuedToolCall {
 #[derive(Debug)]
 pub(super) struct PendingPermission {
     pub(super) pending: PendingRun,
-    pub(super) queued_tool_call: QueuedToolCall,
     pub(super) request: PermissionRequest,
 }
 
 pub(super) enum PendingStep {
-    Pending(Box<PendingRun>),
+    /// One tool call processed. May carry a spawned slot and/or a UI event.
+    /// When both are None, advance_pending has no more queued calls to process.
+    Pending {
+        pending: Box<PendingRun>,
+        slot: Option<ExecSlot>,
+        event: Option<UiEvent>,
+    },
     NeedPermission(Box<PendingPermission>),
     Streaming(Box<StreamingChunkState>),
-    BatchReady {
-        pending: Box<PendingRun>,
-        ui_events: Vec<UiEvent>,
-    },
     #[allow(clippy::type_complexity)]
     Done(
         RunOutput,

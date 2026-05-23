@@ -121,6 +121,7 @@ impl Query {
                 cumulative_cache_creation_input_tokens: 0,
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
+                pending_events: std::collections::VecDeque::new(),
                 config,
                 prompts_dir,
                 subagent_registry,

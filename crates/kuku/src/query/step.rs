@@ -121,7 +121,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         });
     }
 
-    Ok(PendingStep::Pending(Box::new(pending)))
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: None,
+    })
 }
 
 pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingStep> {
@@ -219,9 +223,9 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                             summary: queued.display_summary.clone(),
                         };
                         append_permission_request(&pending.events_path, pending.turn, &request)?;
+                        pending.queued_tool_calls.push_front(queued);
                         return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
                             pending,
-                            queued_tool_call: queued,
                             request,
                         })));
                     }
@@ -335,7 +339,11 @@ pub(super) async fn advance_pending(mut pending: PendingRun) -> Result<PendingSt
                     ui_events,
                 });
             }
-            return Ok(PendingStep::Pending(Box::new(pending)));
+            return Ok(PendingStep::Pending {
+                pending: Box::new(pending),
+                slot: None,
+                event: None,
+            });
         }
 
         call_provider_step(pending).await
@@ -866,7 +874,11 @@ async fn handle_agent_tool_call(
     )
     .await?;
 
-    Ok(PendingStep::Pending(Box::new(pending)))
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: None,
+    })
 }
 
 fn truncate_summary(s: &str, max: usize) -> String {
