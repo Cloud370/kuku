@@ -29,6 +29,17 @@ impl SkillSource {
             Self::OpenCodeProject => "opencode:project",
         }
     }
+
+    pub fn base_dir(&self) -> &'static str {
+        match self {
+            Self::ClaudeCodeUser => "~/.claude/skills",
+            Self::ClaudeCodeProject => ".claude/skills",
+            Self::OpenCodeUser => "~/.config/opencode/skills",
+            Self::OpenCodeProject => ".opencode/skills",
+            Self::KukuUser => "~/.kuku/skills",
+            Self::KukuProject => ".kuku/skills",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

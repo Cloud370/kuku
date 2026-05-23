@@ -167,7 +167,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
                 path: def
                     .source_path
                     .clone()
-                    .unwrap_or_else(|| default_path_for_source(&def.source)),
+                    .unwrap_or_else(|| format!("{}/", def.source.base_dir())),
             })
         })
         .collect();
@@ -187,7 +187,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
                 path: def
                     .source_path
                     .clone()
-                    .unwrap_or_else(|| default_path_for_source(&def.source)),
+                    .unwrap_or_else(|| format!("{}/", def.source.base_dir())),
             })
         })
         .collect();
@@ -203,16 +203,6 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
     }
 }
 
-fn default_path_for_source(source: &super::definition::SkillSource) -> String {
-    match source {
-        super::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills/".to_string(),
-        super::definition::SkillSource::ClaudeCodeProject => ".claude/skills/".to_string(),
-        super::definition::SkillSource::OpenCodeUser => "~/.config/opencode/skills/".to_string(),
-        super::definition::SkillSource::OpenCodeProject => ".opencode/skills/".to_string(),
-        super::definition::SkillSource::KukuUser => "~/.kuku/skills/".to_string(),
-        super::definition::SkillSource::KukuProject => ".kuku/skills/".to_string(),
-    }
-}
 
 fn compute_registry_hash(defs: &BTreeMap<String, SkillDefinition>, names: &[String]) -> String {
     use sha2::{Digest, Sha256};

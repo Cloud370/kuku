@@ -63,7 +63,7 @@ fn handle_use_skill(
         .source_path
         .as_deref()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}/{}", source_base_dir(&def.source), skill_name));
+        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
 
     let skill_md_path = std::path::Path::new(&skill_dir).join("SKILL.md");
     let content = std::fs::read_to_string(&skill_md_path)?;
@@ -80,16 +80,6 @@ fn handle_use_skill(
     })
 }
 
-fn source_base_dir(source: &crate::skill::definition::SkillSource) -> &'static str {
-    match source {
-        crate::skill::definition::SkillSource::ClaudeCodeUser => "~/.claude/skills",
-        crate::skill::definition::SkillSource::ClaudeCodeProject => ".claude/skills",
-        crate::skill::definition::SkillSource::OpenCodeUser => "~/.config/opencode/skills",
-        crate::skill::definition::SkillSource::OpenCodeProject => ".opencode/skills",
-        crate::skill::definition::SkillSource::KukuUser => "~/.kuku/skills",
-        crate::skill::definition::SkillSource::KukuProject => ".kuku/skills",
-    }
-}
 
 pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
