@@ -313,11 +313,10 @@ impl Run {
     /// `parent_tool_id`: `None` for top-level, `Some(id)` for subagent permission.
     pub async fn decide(
         &mut self,
-        request_id: impl AsRef<str>,
+        request_id: &str,
         choice: PermissionChoice,
         parent_tool_id: Option<&str>,
     ) -> Result<Option<UiEvent>> {
-        let request_id = request_id.as_ref();
         if let Some(tool_id) = parent_tool_id {
             let slot = self
                 .slots

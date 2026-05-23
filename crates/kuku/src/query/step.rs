@@ -817,7 +817,7 @@ async fn handle_agent_tool_call(
             model: None,
         })?;
 
-    if pending.child_session_count >= 20 {
+    if pending.child_session_count >= 2 {
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: pending.turn,
