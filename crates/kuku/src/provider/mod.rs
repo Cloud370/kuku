@@ -4,6 +4,7 @@ pub(crate) mod config;
 pub(crate) mod error;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
+pub(crate) mod sse;
 pub(crate) mod types;
 
 pub use types::{Provider, ProviderUsage};
