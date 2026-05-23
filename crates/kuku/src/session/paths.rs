@@ -53,14 +53,13 @@ pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
 pub(crate) fn workspace_from_project_home(p_dir: &Path, project_home: &Path) -> PathBuf {
     let rel = project_home.strip_prefix(p_dir).unwrap_or(project_home);
     let mut components = rel.components().peekable();
-    let Some(first) = components.peek() else {
+    let Some(_first) = components.peek() else {
         return PathBuf::from("/");
     };
-    let _first_str = first.as_os_str().to_string_lossy();
-
     #[cfg(windows)]
     {
-        if _first_str.len() == 1 && _first_str.chars().all(|c| c.is_ascii_uppercase()) {
+        let first_str = _first.as_os_str().to_string_lossy();
+        if first_str.len() == 1 && first_str.chars().all(|c| c.is_ascii_uppercase()) {
             let _ = components.next();
             let mut result = PathBuf::from(format!("{first_str}:\\"));
             for c in components {
