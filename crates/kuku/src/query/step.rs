@@ -227,6 +227,9 @@ pub(super) async fn advance_pending(
     }
 
     if let Some(queued) = pending.queued_tool_calls.pop_front() {
+        let id = queued.tool_call.id.clone();
+        let summary = queued.display_summary.clone();
+
         if queued.tool_call.name == "agent" {
             // --- Agent call ---
             let name = queued
@@ -255,9 +258,9 @@ pub(super) async fn advance_pending(
             if pending.child_session_count >= 2 {
                 return return_blocked_tool(
                     pending,
-                    &queued.tool_call.id,
+                    &id,
                     "agent",
-                    &queued.display_summary,
+                    &summary,
                     super::types::ToolKind::Simple,
                     "blocked: maximum subagent depth (2) reached",
                 );
@@ -266,9 +269,9 @@ pub(super) async fn advance_pending(
             if active_slot_count >= 32 {
                 return return_blocked_tool(
                     pending,
-                    &queued.tool_call.id,
+                    &id,
                     "agent",
-                    &queued.display_summary,
+                    &summary,
                     super::types::ToolKind::Simple,
                     "blocked: maximum concurrent slots (32) reached",
                 );
@@ -283,7 +286,7 @@ pub(super) async fn advance_pending(
 
             let parent_dir = pending.events_path.parent().unwrap().to_path_buf();
             let slot = spawn_agent_slot(
-                queued.tool_call.id.clone(),
+                id.clone(),
                 name.to_string(),
                 prompt.to_string(),
                 label,
@@ -302,9 +305,9 @@ pub(super) async fn advance_pending(
                 pending: Box::new(pending),
                 slot: Some(slot),
                 event: Some(UiEvent::ToolStart {
-                    id: queued.tool_call.id.clone(),
+                    id: id.clone(),
                     tool: "agent".to_string(),
-                    summary: queued.display_summary.clone(),
+                    summary: summary.clone(),
                     kind: super::types::ToolKind::Agent { child_session_id },
                 }),
             });
@@ -338,12 +341,13 @@ pub(super) async fn advance_pending(
 
             match decision.kind {
                 GateDecisionKind::Ask => {
+                    let tc_id = id.clone();
                     let request = PermissionRequest {
-                        id: queued.tool_call.id.clone(),
-                        tool_call_id: queued.tool_call.id.clone(),
+                        id: tc_id.clone(),
+                        tool_call_id: tc_id,
                         tool: queued.tool_call.name.clone(),
                         risk: definition.risk.clone(),
-                        summary: queued.display_summary.clone(),
+                        summary: summary.clone(),
                     };
                     append_permission_request(&pending.events_path, pending.turn, &request)?;
                     pending.queued_tool_calls.push_front(queued);
@@ -364,7 +368,7 @@ pub(super) async fn advance_pending(
                         append_permission_decision(
                             &pending.events_path,
                             pending.turn,
-                            &queued.tool_call.id,
+                            &id,
                             choice,
                             gate_source_name(decision.source),
                             &permission_rule(
@@ -379,19 +383,19 @@ pub(super) async fn advance_pending(
                     if active_slot_count >= 32 {
                         return return_blocked_tool(
                             pending,
-                            &queued.tool_call.id,
+                            &id,
                             &queued.tool_call.name,
-                            &queued.display_summary,
+                            &summary,
                             super::types::ToolKind::Simple,
                             "blocked: maximum concurrent slots (32) reached",
                         );
                     }
 
                     let slot = spawn_simple_slot(
-                        queued.tool_call.id.clone(),
+                        id.clone(),
                         queued.tool_call.name.clone(),
                         queued.tool_call.args.clone(),
-                        queued.display_summary.clone(),
+                        summary.clone(),
                         pending.workspace.clone(),
                         pending.kuku_home.clone(),
                         slot_event_tx,
@@ -400,9 +404,9 @@ pub(super) async fn advance_pending(
                         pending: Box::new(pending),
                         slot: Some(slot),
                         event: Some(UiEvent::ToolStart {
-                            id: queued.tool_call.id.clone(),
+                            id: id.clone(),
                             tool: queued.tool_call.name.clone(),
-                            summary: queued.display_summary.clone(),
+                            summary: summary.clone(),
                             kind: super::types::ToolKind::Simple,
                         }),
                     });
@@ -412,17 +416,17 @@ pub(super) async fn advance_pending(
                         &pending.events_path,
                         pending.turn,
                         &PermissionRequest {
-                            id: queued.tool_call.id.clone(),
-                            tool_call_id: queued.tool_call.id.clone(),
+                            id: id.clone(),
+                            tool_call_id: id.clone(),
                             tool: queued.tool_call.name.clone(),
                             risk: definition.risk.clone(),
-                            summary: queued.display_summary.clone(),
+                            summary: summary.clone(),
                         },
                     )?;
                     append_permission_decision(
                         &pending.events_path,
                         pending.turn,
-                        &queued.tool_call.id,
+                        &id,
                         PermissionChoice::Deny,
                         gate_source_name(decision.source),
                         &permission_rule(
