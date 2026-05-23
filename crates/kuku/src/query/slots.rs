@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use super::types::{ExecSlot, PermissionChoice, PermissionMode, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
 
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_simple_slot(
     tool_call_id: String,
     tool_name: String,
@@ -15,11 +15,11 @@ pub(crate) fn spawn_simple_slot(
     summary: String,
     workspace: PathBuf,
     kuku_home: PathBuf,
-    slot_index: usize,
-    event_tx: mpsc::Sender<(usize, SlotEvent)>,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
+    let tc_id = tool_call_id.clone();
 
     tokio::spawn(async move {
         let result = tokio::select! {
@@ -37,7 +37,7 @@ pub(crate) fn spawn_simple_slot(
                 result: r.structured,
             },
         };
-        let _ = event_tx.send((slot_index, result)).await;
+        let _ = event_tx.send((tc_id, result)).await;
     });
 
     ExecSlot {
@@ -49,7 +49,7 @@ pub(crate) fn spawn_simple_slot(
     }
 }
 
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn spawn_agent_slot(
     tool_call_id: String,
     agent_name: String,
@@ -63,8 +63,7 @@ pub(crate) async fn spawn_agent_slot(
     prompts_dir: Option<&std::path::Path>,
     child_session_id: String,
     child_session_count: u32,
-    slot_index: usize,
-    event_tx: mpsc::Sender<(usize, SlotEvent)>,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> crate::error::Result<ExecSlot> {
     let cancel = Arc::new(Notify::new());
     let child_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
@@ -89,6 +88,7 @@ pub(crate) async fn spawn_agent_slot(
     let agent_name_clone = agent_name.clone();
     let child_session_id_clone = child_session_id.clone();
     let event_tx_clone = event_tx.clone();
+    let tc_id = tool_call_id.clone();
 
     tokio::spawn(async move {
         loop {
@@ -96,7 +96,7 @@ pub(crate) async fn spawn_agent_slot(
                 biased;
                 _ = cancel_clone.notified() => {
                     child_run.cancel();
-                    let _ = event_tx_clone.send((slot_index, SlotEvent::Done {
+                    let _ = event_tx_clone.send((tc_id.clone(), SlotEvent::Done {
                         status: "cancelled".into(),
                         summary: format!("{agent_name_clone} cancelled"),
                         result: None,
@@ -109,7 +109,7 @@ pub(crate) async fn spawn_agent_slot(
                 Ok(Some(UiEvent::Done { output, .. })) => {
                     let _ = event_tx_clone
                         .send((
-                            slot_index,
+                            tc_id.clone(),
                             SlotEvent::Done {
                                 status: "ok".into(),
                                 summary: format!(
@@ -132,7 +132,7 @@ pub(crate) async fn spawn_agent_slot(
                     cp.lock().unwrap().insert(request_id.clone(), ptx);
                     let _ = event_tx_clone
                         .send((
-                            slot_index,
+                            tc_id.clone(),
                             SlotEvent::Output(ToolEvent::PermissionRequested { request }),
                         ))
                         .await;
@@ -142,7 +142,7 @@ pub(crate) async fn spawn_agent_slot(
                 Ok(Some(child_event)) => {
                     if let Some(te) = map_ui_to_tool_event(child_event) {
                         if event_tx_clone
-                            .send((slot_index, SlotEvent::Output(te)))
+                            .send((tc_id.clone(), SlotEvent::Output(te)))
                             .await
                             .is_err()
                         {
@@ -153,7 +153,7 @@ pub(crate) async fn spawn_agent_slot(
                 Ok(None) | Err(_) => {
                     let _ = event_tx_clone
                         .send((
-                            slot_index,
+                            tc_id.clone(),
                             SlotEvent::Done {
                                 status: "error".into(),
                                 summary: format!("{agent_name_clone}: stream ended unexpectedly"),
@@ -176,7 +176,7 @@ pub(crate) async fn spawn_agent_slot(
     })
 }
 
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_command_slot(
     tool_call_id: String,
     command: String,
@@ -184,11 +184,11 @@ pub(crate) fn spawn_command_slot(
     summary: String,
     workspace: PathBuf,
     kuku_home: PathBuf,
-    slot_index: usize,
-    event_tx: mpsc::Sender<(usize, SlotEvent)>,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
+    let tc_id = tool_call_id.clone();
 
     let summary_clone = summary.clone();
     tokio::spawn(async move {
@@ -215,7 +215,7 @@ pub(crate) fn spawn_command_slot(
                 result: r.structured,
             },
         };
-        let _ = event_tx.send((slot_index, result)).await;
+        let _ = event_tx.send((tc_id, result)).await;
     });
 
     ExecSlot {
@@ -227,7 +227,6 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolEvent> {
     use crate::query::UiEvent;
     match event {
