@@ -5,6 +5,7 @@ use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
+use super::sse::stream_sse_events;
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -155,23 +156,35 @@ pub(crate) async fn stream(
         return Err(failure);
     }
 
-    let body_text = response
-        .text()
-        .await
-        .map_err(|error| transport_error(&error))?;
-    let chunks = parse_anthropic_sse(&body_text);
-    Ok(Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))))
+    let mut parser = AnthropicSseParser::new();
+    Ok(stream_sse_events(response, move |frame| {
+        parser.feed(frame);
+        parser.take_chunks()
+    }))
 }
 
-fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut chunks = Vec::new();
-    let mut text_buffers: Vec<String> = Vec::new();
-    let mut tool_arg_buffers: Vec<(u64, String)> = Vec::new(); // (index, buffer)
+struct AnthropicSseParser {
+    chunks: Vec<ProviderChunk>,
+    #[allow(dead_code)]
+    text_buffers: Vec<String>,
+    tool_arg_buffers: Vec<(u64, String)>,
+}
 
-    for frame in body.split("\n\n") {
-        let frame = frame.trim();
+impl AnthropicSseParser {
+    fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            text_buffers: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+        }
+    }
+
+    fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
-            continue;
+            if !self.chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
+                self.chunks.push(ProviderChunk::StreamEnd);
+            }
+            return;
         }
 
         let mut event_type = "";
@@ -186,12 +199,12 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
         }
 
         if data_str.is_empty() || event_type == "ping" {
-            continue;
+            return;
         }
 
         let data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => return,
         };
 
         match event_type {
@@ -202,9 +215,9 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                    self.chunks.push(ProviderChunk::StreamStart { request_id: rid });
                     if let Some(usage) = msg.get("usage") {
-                        chunks.push(ProviderChunk::StreamUsage {
+                        self.chunks.push(ProviderChunk::StreamUsage {
                             input_tokens: usage
                                 .get("input_tokens")
                                 .and_then(Value::as_u64)
@@ -221,14 +234,11 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                 if let Some(block) = data.get("content_block") {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
-                            while text_buffers.len() <= index as usize {
-                                text_buffers.push(String::new());
+                            while self.text_buffers.len() <= index as usize {
+                                self.text_buffers.push(String::new());
                             }
                         }
-                        Some("thinking") => {
-                            // thinking content is emitted as ThinkingDelta chunks;
-                            // no buffer needed here
-                        }
+                        Some("thinking") => {}
                         Some("tool_use") => {
                             let id = block
                                 .get("id")
@@ -240,12 +250,12 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            chunks.push(ProviderChunk::ToolCallStart {
+                            self.chunks.push(ProviderChunk::ToolCallStart {
                                 index,
                                 id: id.clone(),
                                 name: name.clone(),
                             });
-                            tool_arg_buffers.push((index, String::new()));
+                            self.tool_arg_buffers.push((index, String::new()));
                         }
                         _ => {}
                     }
@@ -261,10 +271,10 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            if let Some(buf) = text_buffers.get_mut(index as usize) {
+                            if let Some(buf) = self.text_buffers.get_mut(index as usize) {
                                 buf.push_str(&text);
                             }
-                            chunks.push(ProviderChunk::TextDelta { text });
+                            self.chunks.push(ProviderChunk::TextDelta { text });
                         }
                         Some("thinking_delta") => {
                             let text = delta
@@ -272,7 +282,7 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            chunks.push(ProviderChunk::ThinkingDelta { text });
+                            self.chunks.push(ProviderChunk::ThinkingDelta { text });
                         }
                         Some("input_json_delta") => {
                             let fragment = delta
@@ -281,11 +291,11 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                                 .unwrap_or("")
                                 .to_string();
                             if let Some((_, buf)) =
-                                tool_arg_buffers.iter_mut().find(|(i, _)| *i == index)
+                                self.tool_arg_buffers.iter_mut().find(|(i, _)| *i == index)
                             {
                                 buf.push_str(&fragment);
                             }
-                            chunks.push(ProviderChunk::ToolCallArgDelta { index, fragment });
+                            self.chunks.push(ProviderChunk::ToolCallArgDelta { index, fragment });
                         }
                         _ => {}
                     }
@@ -293,18 +303,18 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
             }
             "content_block_stop" => {
                 let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
-                chunks.push(ProviderChunk::ContentBlockStop { index });
+                self.chunks.push(ProviderChunk::ContentBlockStop { index });
             }
             "message_delta" => {
                 if let Some(delta) = data.get("delta") {
                     if let Some(reason) = delta.get("stop_reason").and_then(Value::as_str) {
-                        chunks.push(ProviderChunk::StopReason {
+                        self.chunks.push(ProviderChunk::StopReason {
                             reason: reason.to_string(),
                         });
                     }
                 }
                 if let Some(usage) = data.get("usage") {
-                    chunks.push(ProviderChunk::StreamUsage {
+                    self.chunks.push(ProviderChunk::StreamUsage {
                         input_tokens: usage
                             .get("input_tokens")
                             .and_then(Value::as_u64)
@@ -325,21 +335,16 @@ fn parse_anthropic_sse(body: &str) -> Vec<ProviderChunk> {
                 }
             }
             "message_stop" => {
-                chunks.push(ProviderChunk::StreamEnd);
+                self.chunks.push(ProviderChunk::StreamEnd);
             }
-            "error" => {
-                // Skip in-stream errors for now; the stream will end without StreamEnd.
-            }
+            "error" => {}
             _ => {}
         }
     }
 
-    // Ensure StreamEnd is always present
-    if !chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
-        chunks.push(ProviderChunk::StreamEnd);
+    fn take_chunks(&mut self) -> Vec<ProviderChunk> {
+        std::mem::take(&mut self.chunks)
     }
-
-    chunks
 }
 
 #[cfg(test)]

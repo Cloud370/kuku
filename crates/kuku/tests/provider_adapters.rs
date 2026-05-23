@@ -61,6 +61,14 @@ mod provider {
     }
 
     #[allow(dead_code)]
+    pub mod sse {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/sse.rs"
+        ));
+    }
+
+    #[allow(dead_code)]
     pub mod openai_responses {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -1,10 +1,8 @@
-use std::panic::{self, AssertUnwindSafe};
-
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::chunk::ProviderChunk;
 use super::error::transport_error;
-use super::types::{ProviderFailure, ProviderFailureKind};
+use super::types::ProviderFailure;
 use super::ProviderChunkStream;
 
 #[allow(dead_code)]
@@ -15,27 +13,12 @@ pub(crate) fn stream_sse_events(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
 
     tokio::spawn(async move {
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            run_sse_loop(response, &mut on_frame, &tx)
-        }));
-
-        if let Err(_panic) = result {
-            let _ = tx
-                .send(Err(ProviderFailure {
-                    kind: ProviderFailureKind::Internal,
-                    message: "SSE parser panicked".into(),
-                    status: None,
-                    provider_request_id: None,
-                    retryable: false,
-                }))
-                .await;
-        }
+        run_sse_loop(response, &mut on_frame, &tx).await;
     });
 
     Box::pin(ReceiverStream::new(rx))
 }
 
-#[allow(dead_code)]
 async fn run_sse_loop(
     response: reqwest::Response,
     on_frame: &mut (impl FnMut(&str) -> Vec<ProviderChunk> + Send),
