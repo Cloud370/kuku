@@ -15,7 +15,7 @@ use futures_core::Stream;
 use types::{ProviderFailure, ProviderKind, ProviderRequest, ResolvedProvider};
 
 pub(crate) type ProviderChunkStream =
-    Pin<Box<dyn Stream<Item = Result<chunk::ProviderChunk, ProviderFailure>> + Send + Sync>>;
+    Pin<Box<dyn Stream<Item = Result<chunk::ProviderChunk, ProviderFailure>> + Send>>;
 
 pub(crate) async fn stream_provider(
     config: &ResolvedProvider,

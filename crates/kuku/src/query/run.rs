@@ -209,7 +209,7 @@ impl Run {
             self.state = RunState::Streaming(streaming);
             return Ok(Some(event));
         }
-        match self.poll_stream_chunk(&mut streaming).await? {
+        match Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await? {
             Some(event) => {
                 self.state = RunState::Streaming(streaming);
                 Ok(Some(event))
@@ -345,7 +345,7 @@ impl Run {
     }
 
     async fn poll_stream_chunk(
-        &self,
+        cancel_token: &tokio::sync::Notify,
         streaming: &mut StreamingChunkState,
     ) -> Result<Option<UiEvent>> {
         use tokio_stream::StreamExt;
@@ -356,7 +356,7 @@ impl Run {
                     Some(Err(_failure)) => return Ok(None),
                     None => return Ok(None),
                 },
-                _ = self.cancel_token.notified() => {
+                _ = cancel_token.notified() => {
                     streaming.stop_reason = Some("cancelled".to_string());
                     return Ok(None);
                 }
@@ -708,7 +708,7 @@ mod tests {
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
-        let run = Run {
+        let _run = Run {
             session_id: "test".to_string(),
             state: RunState::Pending(Box::new(PendingRun {
                 session_id: "test".to_string(),
@@ -743,7 +743,7 @@ mod tests {
             lock_path: std::path::PathBuf::new(),
         };
 
-        let result = run.poll_stream_chunk(&mut streaming).await.unwrap();
+        let result = Run::poll_stream_chunk(&cancel_token, &mut streaming).await.unwrap();
         assert!(result.is_none());
         assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
     }

@@ -383,6 +383,7 @@ pub(super) fn provider_failure_kind(kind: &provider::types::ProviderFailureKind)
         provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
         provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
         provider::types::ProviderFailureKind::Transport => "transport",
+        provider::types::ProviderFailureKind::Internal => "internal",
         provider::types::ProviderFailureKind::Unknown => "unknown",
     }
 }

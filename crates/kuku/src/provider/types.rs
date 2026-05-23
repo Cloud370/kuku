@@ -110,6 +110,7 @@ pub enum ProviderFailureKind {
     InvalidRequest,
     ProviderUnavailable,
     Transport,
+    Internal,
     Unknown,
 }
 
