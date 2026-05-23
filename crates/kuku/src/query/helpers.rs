@@ -16,6 +16,7 @@ pub(crate) fn write_tool_result(
     slot: &ExecSlot,
     status: &str,
     summary: &str,
+    model_content: &str,
     result: &Option<serde_json::Value>,
     events_path: &std::path::Path,
     turn: u64,
@@ -27,7 +28,7 @@ pub(crate) fn write_tool_result(
         tool_call_id: slot.tool_call_id.clone(),
         status: status.to_string(),
         summary: summary.to_string(),
-        model_content: String::new(),
+        model_content: model_content.to_string(),
         truncated: false,
         structured: result.clone(),
     })?;

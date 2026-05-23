@@ -27,6 +27,7 @@ pub(crate) fn spawn_simple_slot(
             _ = cancel_clone.notified() => SlotEvent::Done {
                 status: "cancelled".into(),
                 summary: "cancelled".into(),
+                model_content: String::new(),
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
@@ -34,6 +35,7 @@ pub(crate) fn spawn_simple_slot(
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
+                model_content: r.model_content,
                 result: r.structured,
             },
         };
@@ -97,6 +99,7 @@ pub(crate) fn spawn_agent_slot(
                         SlotEvent::Done {
                             status: "error".into(),
                             summary: format!("{agent_name}: failed to start child session"),
+                            model_content: String::new(),
                             result: None,
                         },
                     ))
@@ -113,6 +116,7 @@ pub(crate) fn spawn_agent_slot(
                     let _ = event_tx.send((tc_id.clone(), SlotEvent::Done {
                         status: "cancelled".into(),
                         summary: format!("{agent_name} cancelled"),
+                        model_content: String::new(),
                         result: None,
                     })).await;
                     return;
@@ -130,6 +134,7 @@ pub(crate) fn spawn_agent_slot(
                                     "{agent_name} completed in {} turns",
                                     output.turn
                                 ),
+                                model_content: String::new(),
                                 result: Some(serde_json::json!({
                                     "kind": "subagent_result",
                                     "child_session_id": child_session_id_for_slot,
@@ -171,6 +176,7 @@ pub(crate) fn spawn_agent_slot(
                             SlotEvent::Done {
                                 status: "error".into(),
                                 summary: format!("{agent_name}: stream ended unexpectedly"),
+                                model_content: String::new(),
                                 result: None,
                             },
                         ))
@@ -213,6 +219,7 @@ pub(crate) fn spawn_command_slot(
             _ = cancel_clone.notified() => SlotEvent::Done {
                 status: "cancelled".into(),
                 summary: "cancelled".into(),
+                model_content: String::new(),
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
@@ -226,6 +233,7 @@ pub(crate) fn spawn_command_slot(
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
+                model_content: r.model_content,
                 result: r.structured,
             },
         };

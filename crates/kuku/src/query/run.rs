@@ -86,6 +86,7 @@ impl Run {
                         SlotEvent::Done {
                             status,
                             summary,
+                            model_content,
                             result,
                         } => {
                             let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
@@ -108,6 +109,7 @@ impl Run {
                                 &slot,
                                 &status,
                                 &summary,
+                                &model_content,
                                 &result,
                                 events_path,
                                 turn,
@@ -266,6 +268,33 @@ impl Run {
         match decision.kind {
             crate::permission::GateDecisionKind::Ask => Ok(None),
             crate::permission::GateDecisionKind::Allow => {
+                if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
+                    let choice =
+                        if matches!(decision.source, crate::permission::GateSource::ProjectPolicy)
+                        {
+                            PermissionChoice::Project
+                        } else if matches!(
+                            decision.source,
+                            crate::permission::GateSource::SessionGrant
+                        ) {
+                            PermissionChoice::Session
+                        } else {
+                            PermissionChoice::Once
+                        };
+                    append_permission_decision(
+                        &pending.events_path,
+                        pending.turn,
+                        &queued.tool_call.id,
+                        choice,
+                        super::helpers::gate_source_name(decision.source),
+                        &permission_rule(
+                            &pending.kuku_home,
+                            &pending.workspace,
+                            &queued.tool_call.name,
+                            &queued.tool_call.args,
+                        ),
+                    )?;
+                }
                 let queued = pending.queued_tool_calls.pop_front().unwrap();
                 let workspace = pending.workspace.clone();
                 let kuku_home = pending.kuku_home.clone();

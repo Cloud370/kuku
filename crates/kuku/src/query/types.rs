@@ -206,6 +206,7 @@ pub(crate) enum SlotEvent {
     Done {
         status: String,
         summary: String,
+        model_content: String,
         result: Option<serde_json::Value>,
     },
 }
