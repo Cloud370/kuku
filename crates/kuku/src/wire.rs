@@ -60,7 +60,11 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "risk": request.risk,
             "summary": request.summary,
         })),
-        UiEvent::Done { output, usage, turn } => Some(json!({
+        UiEvent::Done {
+            output,
+            usage,
+            turn,
+        } => Some(json!({
             "type": "done",
             "session_id": output.session_id,
             "text": output.text,

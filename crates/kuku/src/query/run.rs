@@ -745,7 +745,9 @@ mod tests {
             lock_path: std::path::PathBuf::new(),
         };
 
-        let result = Run::poll_stream_chunk(&cancel_token, &mut streaming).await.unwrap();
+        let result = Run::poll_stream_chunk(&cancel_token, &mut streaming)
+            .await
+            .unwrap();
         assert!(result.is_none());
         assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
     }

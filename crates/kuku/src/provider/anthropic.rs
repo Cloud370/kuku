@@ -181,7 +181,11 @@ impl AnthropicSseParser {
 
     fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
-            if !self.chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
+            if !self
+                .chunks
+                .iter()
+                .any(|c| matches!(c, ProviderChunk::StreamEnd))
+            {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             return;
@@ -215,7 +219,8 @@ impl AnthropicSseParser {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    self.chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                    self.chunks
+                        .push(ProviderChunk::StreamStart { request_id: rid });
                     if let Some(usage) = msg.get("usage") {
                         self.chunks.push(ProviderChunk::StreamUsage {
                             input_tokens: usage
@@ -295,7 +300,8 @@ impl AnthropicSseParser {
                             {
                                 buf.push_str(&fragment);
                             }
-                            self.chunks.push(ProviderChunk::ToolCallArgDelta { index, fragment });
+                            self.chunks
+                                .push(ProviderChunk::ToolCallArgDelta { index, fragment });
                         }
                         _ => {}
                     }

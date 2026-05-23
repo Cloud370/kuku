@@ -260,7 +260,8 @@ impl OpenAiCompatSseParser {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            self.chunks.push(ProviderChunk::StreamStart { request_id: rid });
+            self.chunks
+                .push(ProviderChunk::StreamStart { request_id: rid });
             self.started = true;
         }
 
@@ -351,7 +352,8 @@ impl OpenAiCompatSseParser {
 
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             for &idx in &self.tool_call_indices {
-                self.chunks.push(ProviderChunk::ContentBlockStop { index: idx });
+                self.chunks
+                    .push(ProviderChunk::ContentBlockStop { index: idx });
             }
             self.tool_call_indices.clear();
 

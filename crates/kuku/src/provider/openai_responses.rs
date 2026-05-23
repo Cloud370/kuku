@@ -182,7 +182,11 @@ impl OpenAiResponsesSseParser {
 
     pub(crate) fn feed(&mut self, frame: &str) {
         if frame.is_empty() {
-            if !self.chunks.iter().any(|c| matches!(c, ProviderChunk::StreamEnd)) {
+            if !self
+                .chunks
+                .iter()
+                .any(|c| matches!(c, ProviderChunk::StreamEnd))
+            {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             return;
@@ -216,7 +220,8 @@ impl OpenAiResponsesSseParser {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                self.chunks.push(ProviderChunk::StreamStart { request_id: rid });
+                self.chunks
+                    .push(ProviderChunk::StreamStart { request_id: rid });
                 self.started = true;
             }
             "response.output_item.added" => {
@@ -308,9 +313,7 @@ impl OpenAiResponsesSseParser {
                 }
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
-            "response.failed" | "error" => {
-                return;
-            }
+            "response.failed" | "error" => {}
             _ => {}
         }
     }

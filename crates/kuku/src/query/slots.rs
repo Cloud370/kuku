@@ -281,6 +281,8 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
         }
         UiEvent::Error { code, message } => Some(ToolEvent::Error { code, message }),
         UiEvent::Done { .. } => None,
-        UiEvent::TurnStart { .. } | UiEvent::ModelRequest { .. } | UiEvent::Cancelled { .. } => None,
+        UiEvent::TurnStart { .. } | UiEvent::ModelRequest { .. } | UiEvent::Cancelled { .. } => {
+            None
+        }
     }
 }
