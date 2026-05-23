@@ -1,12 +1,13 @@
 mod helpers;
 mod run;
+pub(crate) mod slots;
 mod start;
 mod step;
 mod types;
 
 pub(crate) use types::PermissionMode;
 pub use types::{
-    PermissionChoice, PermissionRequest, Query, Run, RunOutput, SubexecEvent, SubexecKind, UiEvent,
+    PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent, ToolKind, UiEvent,
 };
 
 /// Start building a new query for the given prompt.

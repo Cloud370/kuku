@@ -58,6 +58,7 @@ impl ToolResultEnvelope {
         }
     }
 
+    #[allow(dead_code)] // will be used when slot cancellation is fully wired
     pub(crate) fn cancelled(summary: impl Into<String>) -> Self {
         Self {
             status: "cancelled".to_string(),

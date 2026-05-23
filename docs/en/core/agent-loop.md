@@ -27,10 +27,9 @@ A `model.response` and its immediately following `tool.call[]` events form a res
 
 ## Tool execution
 
-All tool calls from one `model.response` run in parallel. The model controls
-ordering: dependent operations go in separate turns, independent operations
-in the same turn. Results are always appended in the model's original
-`tool.call` order.
+All tool calls run in parallel — including agent tools. Each tool runs in its own ExecSlot with independent cancellation. The model controls ordering: dependent operations go in separate turns, independent operations in the same turn. Results are always appended in the model's original `tool.call` order.
+
+Three slot types: **Simple** (builtin tools — no intermediate output), **Agent** (child session with real-time event streaming via ToolOutput), **Command** (run_command with stdout/stderr streaming). Slots report events through a shared channel; the host receives `ToolStart → ToolOutput* → ToolEnd` uniformly.
 
 Tool results go into `events.jsonl` first. The next context rebuild reads them as user `tool_result` blocks.
 

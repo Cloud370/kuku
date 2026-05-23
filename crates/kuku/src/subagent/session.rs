@@ -6,22 +6,6 @@ use crate::query::PermissionMode;
 
 use super::definition::SubagentDefinition;
 
-/// Result of a completed child session.
-#[derive(Debug, Clone)]
-pub struct ChildSessionResult {
-    pub child_session_id: String,
-    pub output_text: String,
-    pub turns_completed: u32,
-    pub status: ChildSessionStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChildSessionStatus {
-    Completed,
-    TurnLimitReached,
-    Error(String),
-}
-
 /// Start a child session and return the Run handle without blocking.
 /// For TUI/interactive use — the caller polls child events via Run::next().
 // Each parameter comes from a different source (config, registry, caller, filesystem);
@@ -37,6 +21,7 @@ pub async fn start_child_session(
     config: Arc<crate::config::Config>,
     prompts_dir: Option<&Path>,
     _parent_mode: PermissionMode,
+    _child_session_count: u32,
 ) -> Result<crate::query::Run> {
     let definition_block = super::catalog::render_agent_definition_block(definition);
     let user_prompt = format!(
@@ -65,92 +50,4 @@ pub async fn start_child_session(
     }
 
     query.session(child_session_id.to_string()).start().await
-}
-
-// Each parameter comes from a different source (config, registry, caller, filesystem);
-// bundling them into a struct would obscure which call sites provide which data.
-#[allow(clippy::too_many_arguments)]
-pub async fn spawn_child_session(
-    parent_session_dir: &Path,
-    child_session_id: &str,
-    definition: &SubagentDefinition,
-    delegated_prompt: &str,
-    workspace: &Path,
-    kuku_home: &Path,
-    config: Arc<crate::config::Config>,
-    prompts_dir: Option<&Path>,
-    parent_mode: PermissionMode,
-) -> Result<ChildSessionResult> {
-    let mut run = start_child_session(
-        parent_session_dir,
-        child_session_id,
-        definition,
-        delegated_prompt,
-        workspace,
-        kuku_home,
-        config,
-        prompts_dir,
-        parent_mode,
-    )
-    .await?;
-
-    let mut turns = 0u32;
-    let mut cumulative_text = String::new();
-    let max_turns = definition.max_turns;
-
-    loop {
-        turns += 1;
-        if turns > max_turns {
-            return Ok(ChildSessionResult {
-                child_session_id: child_session_id.to_string(),
-                output_text: cumulative_text,
-                turns_completed: turns - 1,
-                status: ChildSessionStatus::TurnLimitReached,
-            });
-        }
-
-        match run.next().await? {
-            Some(crate::UiEvent::Done { output, .. }) => {
-                return Ok(ChildSessionResult {
-                    child_session_id: child_session_id.to_string(),
-                    output_text: output.text,
-                    turns_completed: turns,
-                    status: ChildSessionStatus::Completed,
-                });
-            }
-            Some(crate::UiEvent::TextDelta { text }) => {
-                cumulative_text.push_str(&text);
-            }
-            Some(crate::UiEvent::PermissionRequested { request }) => match parent_mode {
-                PermissionMode::AutoAllow => {
-                    run.decide(request.id, crate::query::PermissionChoice::Once)
-                        .await?;
-                }
-                PermissionMode::Interactive => {
-                    return Err(crate::error::Error::ChildPermissionRequested {
-                        tool: request.tool,
-                        candidate: request.summary,
-                    });
-                }
-            },
-            None => {
-                return Ok(ChildSessionResult {
-                    child_session_id: child_session_id.to_string(),
-                    output_text: cumulative_text,
-                    turns_completed: turns,
-                    status: ChildSessionStatus::Error("stream ended unexpectedly".into()),
-                });
-            }
-            // Child session does not need to act on these events
-            Some(crate::UiEvent::ThinkingDelta { .. })
-            | Some(crate::UiEvent::ToolCall { .. })
-            | Some(crate::UiEvent::ToolResult { .. })
-            | Some(crate::UiEvent::TurnStart { .. })
-            | Some(crate::UiEvent::Error { .. })
-            | Some(crate::UiEvent::ModelRequest { .. })
-            | Some(crate::UiEvent::SubexecStart { .. })
-            | Some(crate::UiEvent::SubexecOutput { .. })
-            | Some(crate::UiEvent::SubexecEnd { .. }) => continue,
-        }
-    }
 }

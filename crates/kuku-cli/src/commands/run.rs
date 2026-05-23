@@ -328,10 +328,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            Some(UiEvent::ToolCall {
-                tool_call_id,
+            Some(UiEvent::ToolStart {
+                id,
                 tool,
                 summary,
+                kind: _,
             }) => {
                 close_thinking(
                     &mut in_thinking,
@@ -342,33 +343,26 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_call(
-                            tool,
-                            tool_call_id,
-                            summary,
-                            serde_json::Value::Null,
-                        )
-                        .to_json_line()
+                        OutputLine::tool_call(tool, id, summary, serde_json::Value::Null,)
+                            .to_json_line()
                     );
                 } else {
-                    println!("\n{}", display.tool_call(&tool, &summary, &tool_call_id));
+                    println!("\n{}", display.tool_call(&tool, &summary, &id));
                 }
             }
-            Some(UiEvent::ToolResult {
-                tool_call_id,
-                name: _,
+            Some(UiEvent::ToolEnd {
+                id,
                 status,
                 summary,
-                structured: _,
+                result: _,
             }) => {
                 if use_stream_json {
                     println!(
                         "{}",
-                        OutputLine::tool_result(tool_call_id, status, summary, None, false)
-                            .to_json_line()
+                        OutputLine::tool_result(id, status, summary, None, false).to_json_line()
                     );
                 } else {
-                    println!("{}", display.tool_result(&status, &summary, &tool_call_id));
+                    println!("{}", display.tool_result(&status, &summary, &id));
                 }
             }
             Some(UiEvent::PermissionRequested { request }) => {
@@ -379,7 +373,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if args.auto_yes || use_stream_json {
-                    let _ = run.decide(&request.id, PermissionChoice::Once).await?;
+                    let _ = run
+                        .decide(&request.id, PermissionChoice::Once, None)
+                        .await?;
                     if use_stream_json {
                         println!(
                             "{}",
@@ -408,7 +404,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         "y" | "" => (PermissionChoice::Once, "user"),
                         _ => (PermissionChoice::Deny, "user"),
                     };
-                    let _ = run.decide(&request.id, decision).await?;
+                    let _ = run.decide(&request.id, decision, None).await?;
                     let decision_str = if matches!(decision, PermissionChoice::Once) {
                         "allow"
                     } else {

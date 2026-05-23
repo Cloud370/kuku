@@ -19,7 +19,9 @@ pub mod wire;
 pub use error::{Error, Result};
 pub use provider::types::ProviderFailureKind;
 pub use provider::{Provider, ProviderUsage};
-pub use query::{query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, UiEvent};
+pub use query::{
+    query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent, ToolKind, UiEvent,
+};
 pub use session::{list_sessions, SessionSummary};
 
 #[cfg(test)]

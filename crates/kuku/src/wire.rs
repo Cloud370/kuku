@@ -16,29 +16,43 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "thinking",
             "content": text,
         })),
-        UiEvent::ToolCall {
-            tool_call_id,
+        UiEvent::ToolStart {
+            id,
             tool,
             summary,
-        } => Some(json!({
-            "type": "tool_start",
-            "id": tool_call_id,
-            "name": tool,
-            "summary": summary,
+            kind,
+        } => {
+            let mut val = json!({
+                "type": "tool_start",
+                "id": id,
+                "tool": tool,
+                "summary": summary,
+            });
+            val["kind"] = tool_kind_to_wire(kind);
+            Some(val)
+        }
+        UiEvent::ToolOutput { id, event } => Some(json!({
+            "type": "tool_output",
+            "id": id,
+            "event": tool_event_to_wire(event),
         })),
-        UiEvent::ToolResult {
-            tool_call_id,
-            name,
+        UiEvent::ToolEnd {
+            id,
             status,
             summary,
-            ..
-        } => Some(json!({
-            "type": "tool_end",
-            "id": tool_call_id,
-            "name": name,
-            "status": status,
-            "summary": summary,
-        })),
+            result,
+        } => {
+            let mut val = json!({
+                "type": "tool_end",
+                "id": id,
+                "status": status,
+                "summary": summary,
+            });
+            if let Some(r) = result {
+                val["result"] = r.clone();
+            }
+            Some(val)
+        }
         UiEvent::PermissionRequested { request } => Some(json!({
             "type": "permission",
             "id": request.id,
@@ -65,40 +79,56 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "model": model,
             "provider": provider,
         })),
-        UiEvent::SubexecStart {
-            stage_id,
+    }
+}
+
+fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
+    use crate::query::ToolKind;
+    match kind {
+        ToolKind::Simple => json!("simple"),
+        ToolKind::Agent { child_session_id } => {
+            json!({"agent": {"child_session_id": child_session_id}})
+        }
+        ToolKind::Command { pid } => json!({"command": {"pid": pid}}),
+    }
+}
+
+fn tool_event_to_wire(event: &crate::query::ToolEvent) -> serde_json::Value {
+    use crate::query::ToolEvent;
+    match event {
+        ToolEvent::TextDelta { text } => json!({"text": text}),
+        ToolEvent::ThinkingDelta { text } => json!({"thinking": text}),
+        ToolEvent::ToolStart {
+            id,
+            tool,
+            summary,
             kind,
-            label,
-        } => Some(json!({
-            "type": "subexec_start",
-            "stage_id": stage_id,
-            "kind": kind,
-            "label": label,
-        })),
-        UiEvent::SubexecOutput { stage_id, event } => Some(json!({
-            "type": "subexec_output",
-            "stage_id": stage_id,
-            "event": event,
-        })),
-        UiEvent::SubexecEnd {
-            stage_id,
+        } => {
+            json!({"tool_start": {"id": id, "tool": tool, "summary": summary, "kind": tool_kind_to_wire(kind)}})
+        }
+        ToolEvent::ToolOutput { id, event } => {
+            json!({"tool_output": {"id": id, "event": tool_event_to_wire(event)}})
+        }
+        ToolEvent::ToolEnd {
+            id,
             status,
             summary,
-            result,
-        } => Some(json!({
-            "type": "subexec_end",
-            "stage_id": stage_id,
-            "status": status,
-            "summary": summary,
-            "result": result,
-        })),
+        } => {
+            json!({"tool_end": {"id": id, "status": status, "summary": summary}})
+        }
+        ToolEvent::Stdout { text } => json!({"stdout": text}),
+        ToolEvent::Stderr { text } => json!({"stderr": text}),
+        ToolEvent::PermissionRequested { request } => {
+            json!({"permission": {"id": request.id, "tool": request.tool, "risk": request.risk, "summary": request.summary}})
+        }
+        ToolEvent::Error { code, message } => json!({"error": {"code": code, "message": message}}),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::{PermissionRequest, RunOutput, UiEvent};
+    use crate::query::{PermissionRequest, RunOutput, ToolEvent, ToolKind, UiEvent};
 
     #[test]
     fn text_delta_wire_format() {
@@ -121,34 +151,68 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_wire_format() {
-        let event = UiEvent::ToolCall {
-            tool_call_id: "tc_1".to_string(),
-            tool: "find_files".to_string(),
-            summary: "path: \".\"".to_string(),
-        };
-        let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "tool_start");
-        assert_eq!(wire["id"], "tc_1");
-        assert_eq!(wire["name"], "find_files");
-        assert_eq!(wire["summary"], "path: \".\"");
+    fn tool_start_wire_all_kinds() {
+        let simple = to_wire(&UiEvent::ToolStart {
+            id: "t1".into(),
+            tool: "find_files".into(),
+            summary: "path: .".into(),
+            kind: ToolKind::Simple,
+        })
+        .unwrap();
+        assert_eq!(simple["kind"], "simple");
+        assert_eq!(simple["type"], "tool_start");
+
+        let cmd = to_wire(&UiEvent::ToolStart {
+            id: "t2".into(),
+            tool: "run_command".into(),
+            summary: "cargo test".into(),
+            kind: ToolKind::Command { pid: Some(42) },
+        })
+        .unwrap();
+        assert_eq!(cmd["kind"]["command"]["pid"], 42);
+
+        let agent = to_wire(&UiEvent::ToolStart {
+            id: "t3".into(),
+            tool: "agent".into(),
+            summary: "code-review".into(),
+            kind: ToolKind::Agent {
+                child_session_id: "cs".into(),
+            },
+        })
+        .unwrap();
+        assert_eq!(agent["kind"]["agent"]["child_session_id"], "cs");
     }
 
     #[test]
-    fn tool_result_wire_format() {
-        let event = UiEvent::ToolResult {
-            tool_call_id: "tc_1".to_string(),
-            name: "find_files".to_string(),
-            status: "ok".to_string(),
-            summary: "found 3 files".to_string(),
-            structured: None,
+    fn tool_output_wire_wraps_tool_event() {
+        let event = UiEvent::ToolOutput {
+            id: "t1".into(),
+            event: ToolEvent::Stdout { text: "ok".into() },
         };
         let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "tool_end");
-        assert_eq!(wire["id"], "tc_1");
-        assert_eq!(wire["name"], "find_files");
-        assert_eq!(wire["status"], "ok");
-        assert_eq!(wire["summary"], "found 3 files");
+        assert_eq!(wire["type"], "tool_output");
+        assert_eq!(wire["event"]["stdout"], "ok");
+    }
+
+    #[test]
+    fn tool_end_wire_with_and_without_result() {
+        let w1 = to_wire(&UiEvent::ToolEnd {
+            id: "t1".into(),
+            status: "ok".into(),
+            summary: "done".into(),
+            result: Some(serde_json::json!({"n": 1})),
+        })
+        .unwrap();
+        assert_eq!(w1["result"]["n"], 1);
+
+        let w2 = to_wire(&UiEvent::ToolEnd {
+            id: "t2".into(),
+            status: "cancelled".into(),
+            summary: "".into(),
+            result: None,
+        })
+        .unwrap();
+        assert!(w2.get("result").is_none());
     }
 
     #[test]
@@ -188,13 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn turn_start_wire_format() {
-        let event = UiEvent::TurnStart { turn: 1 };
-        let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "turn_start");
-    }
-
-    #[test]
     fn error_wire_format() {
         let event = UiEvent::Error {
             code: "provider_rate_limit".to_string(),
@@ -224,48 +281,5 @@ mod tests {
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "turn_start");
         assert_eq!(wire["turn"], 5);
-    }
-
-    #[test]
-    fn subexec_start_wire_format() {
-        let event = UiEvent::SubexecStart {
-            stage_id: "child_abc_0".into(),
-            kind: crate::query::SubexecKind::Agent {
-                child_session_id: "child_abc_0".into(),
-            },
-            label: "code-review".into(),
-        };
-        let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "subexec_start");
-        assert_eq!(wire["stage_id"], "child_abc_0");
-        assert_eq!(wire["label"], "code-review");
-    }
-
-    #[test]
-    fn subexec_output_wire_format() {
-        let event = UiEvent::SubexecOutput {
-            stage_id: "child_abc_0".into(),
-            event: crate::query::SubexecEvent::TextDelta {
-                text: "hello".into(),
-            },
-        };
-        let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "subexec_output");
-        assert_eq!(wire["stage_id"], "child_abc_0");
-    }
-
-    #[test]
-    fn subexec_end_wire_format() {
-        let event = UiEvent::SubexecEnd {
-            stage_id: "child_abc_0".into(),
-            status: "ok".into(),
-            summary: "completed in 3 turns".into(),
-            result: None,
-        };
-        let wire = to_wire(&event).unwrap();
-        assert_eq!(wire["type"], "subexec_end");
-        assert_eq!(wire["stage_id"], "child_abc_0");
-        assert_eq!(wire["status"], "ok");
-        assert_eq!(wire["summary"], "completed in 3 turns");
     }
 }

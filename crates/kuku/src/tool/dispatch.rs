@@ -1,5 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -48,67 +47,6 @@ pub(crate) async fn dispatch(
             format!("unknown tool: {name}"),
         ),
     }
-}
-
-/// (index, tool_call_id, name, args, workspace, kuku_home, prior_events, result_event_id)
-type DispatchCall = (
-    usize,
-    String,
-    String,
-    Value,
-    PathBuf,
-    PathBuf,
-    Vec<StoredEvent>,
-    u64,
-);
-
-/// Execute all tool calls concurrently. Agent calls must be routed separately
-/// through the subagent handler. Cancellation is cooperative: each spawned task
-/// checks the cancel token before beginning work.
-pub(crate) async fn dispatch_all(
-    calls: Vec<DispatchCall>,
-    cancel: Arc<tokio::sync::Notify>,
-) -> Vec<(usize, String, ToolResultEnvelope)> {
-    let mut handles = Vec::with_capacity(calls.len());
-
-    for (index, tool_call_id, name, args, workspace, kuku_home, prior_events, result_event_id) in
-        calls
-    {
-        let cancel = cancel.clone();
-        handles.push(tokio::spawn(async move {
-            tokio::select! {
-                biased;
-                _ = cancel.notified() => {
-                    (index, tool_call_id, ToolResultEnvelope::cancelled("cancelled before execution"))
-                }
-                result = dispatch(
-                    &name,
-                    &args,
-                    &workspace,
-                    &kuku_home,
-                    &prior_events,
-                    result_event_id,
-                    None,
-                ) => {
-                    (index, tool_call_id, result)
-                }
-            }
-        }));
-    }
-
-    let mut results = Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
-            Ok(r) => results.push(r),
-            Err(e) => results.push((
-                0,
-                String::new(),
-                ToolResultEnvelope::error("dispatch", format!("tool task panicked: {e}")),
-            )),
-        }
-    }
-    results.sort_by_key(|(idx, _, _)| *idx);
-    results
 }
 
 fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {
