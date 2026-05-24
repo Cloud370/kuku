@@ -2,7 +2,7 @@
 
 [中文](docs/zh/index.md)
 
-> Minimal terminal coding agent, file-native at its core
+> The agent explained. A readable Rust agent SDK — understand the loop from source, own your sessions as files. No database, no black box.
 
 > [!WARNING]
 > kuku is in active development. APIs and file formats may change.
