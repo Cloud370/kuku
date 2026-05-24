@@ -25,7 +25,7 @@ SDK owns runtime facts and semantics. Host apps own input, output, layout, and i
 | [prompt.md](prompt.md) | Prompt layering, assembly order, cache strategy | implemented |
 | [apps.md](core/apps.md) | Host app architecture, HTTP API, NDJSON streaming | partial |
 | [skills.md](core/skills.md) | Skills format, SkillRegistry, progressive disclosure | implemented |
-| [evolution.md](core/evolution.md) | SDK evolution: InteractionRequest, wire format, extensions | design |
+| [evolution.md](core/evolution.md) | SDK evolution: InteractionRequest, wire format, extensions (5/8 phases done) | partial |
 
 ## Reference
 

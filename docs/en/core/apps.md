@@ -14,6 +14,7 @@ crates/
 
 apps/
 ├── kuku/              # Unified release binary (package: kuku-app, bin: kuku)
+├── web/               # Frontend SPA (React 19 + Vite 8, depends on kuku-server)
 └── tauri/             # FUTURE — desktop shell (depends on kuku-server)
 ```
 
@@ -45,7 +46,7 @@ No subcommand → interactive mode.
 `crates/kuku-server` is a long-lived HTTP process. It holds active `Run` instances in memory. No state beyond what the SDK persists to `events.jsonl`.
 
 ```text
-GET    /health                    health check
+GET    /health                    health check (returns workspace, version)
 POST   /runs                      start a run (NDJSON stream in response body)
 DELETE /runs/:id                   cancel a run
 POST   /runs/:id/responses        respond to an interaction request
@@ -75,12 +76,15 @@ Multiple workspaces are supported from day one. No restart required to switch.
 ```text
 ← POST /runs { "prompt": "..." }
 
-→ {"type":"turn_start"}
+→ {"type":"run_start","run_id":"..."}
+→ {"type":"turn_start","turn":1}
 → {"type":"text","content":"你"}
 → {"type":"text","content":"好"}
+→ {"type":"thinking","content":"..."}
 → {"type":"tool_start","id":"...","tool":"find_files","summary":"...","kind":"simple"}
-→ {"type":"tool_end","id":"...","status":"ok","summary":"..."}
-→ {"type":"turn_start"}
+→ {"type":"tool_output","id":"...","event":{"stdout":"..."}}
+→ {"type":"tool_end","id":"...","status":"ok","summary":"...","model_content":"..."}
+→ {"type":"turn_start","turn":2}
 → {"type":"text","content":"找到了 3 个文件"}
 → {"type":"done","session_id":"...","text":"找到了 3 个文件","turn":2,"usage":{...}}
 ```
@@ -150,7 +154,7 @@ Only infrastructure failures (server down, route not found) use HTTP status code
 | `provider_overflow` | Context window exceeded |
 | `internal` | Server internal error |
 
-## WebUI (planned)
+## WebUI
 
 `apps/web` is a frontend SPA. It talks to `kuku-server` via `fetch` (POST for runs, GET for history). The same SPA works behind `apps/tauri` via localhost HTTP.
 

@@ -9,17 +9,19 @@ SDK owns runtime facts, session state, context rebuild, provider adapters, tool 
 ```text
 crates/kuku/src/
 ├── lib.rs              pub mod declarations, re-exports
-├── query/              public API: Query builder, Run state machine
+├── query/              public API: Query builder, Run state machine, slot dispatch
 ├── context/            rebuild messages from files + events
-├── provider/           model API adapters (Anthropic, OpenAI)
-├── tool/               tool definitions, registry, dispatch, builtins
+├── provider/           model API adapters (Anthropic, OpenAI), SSE parsing
+├── tool/               tool definitions, registry, dispatch, builtins, streaming output
 ├── permission/         runtime gate, hard guard, policy matching
 ├── session/            directory paths, writer lock, session list/delete, status
 ├── event/              event types, events.jsonl read/write, fast scan helpers
 ├── prompt/             prompt assets, catalog, template rendering
+├── skill/              skill definitions, catalog, loader, registry
 ├── config.rs           tiers, providers, config.toml parsing
 ├── subagent/           definitions, registry, catalog, child sessions
 ├── notice/             context drift detection, system notices
+├── wire.rs             UiEvent → NDJSON wire format serialization
 └── error.rs            typed error enum
 ```
 
@@ -38,6 +40,7 @@ Each module has a clear boundary of what it may and may not depend on.
 | `event/` | Event types, store append/replay, fast scan helpers | — | Provider, tools, permission |
 | `prompt/` | Asset catalog, template rendering | — | Runtime decisions, session state |
 | `config/` | Config parsing, validation, tiers | — | Provider, tools, session |
+| `skill/` | Skill definitions, catalog, loader, registry | `prompt/` | Runtime decisions, session state |
 | `subagent/` | Definitions, registry, catalog, child spawn | `tool/`, `query/`, `session/` | — |
 | `notice/` | Drift detection, system notice rendering | `event/`, `prompt/` | — |
 | `error.rs` | Typed error enum | — | — |

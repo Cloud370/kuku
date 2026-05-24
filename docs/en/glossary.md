@@ -8,7 +8,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 |---------------|------------|
 | `workspace` | The project root directory. All file tool paths are relative to workspace. Determines where project instructions, memory, and policy are found. |
 | `kuku_home` | `$KUKU_HOME` directory. Stores project-scoped sessions (`p/<workspace-path>/sessions/`), config (`config.toml`), and user-level memory. |
-| `session` | One agent execution lifecycle. A session directory under `$KUKU_HOME/p/<workspace>/sessions/<id>/` contains `events.jsonl`, `subs/`, and derived views. |
+| `session` | One agent execution lifecycle. A session directory under `$KUKU_HOME/p/<workspace>/sessions/<id>/` contains `events.jsonl` and derived views. Child sessions live alongside under `sessions/child_<parent>_<N>/`. |
 | `events.jsonl` | Append-only JSONL file. Every fact the runtime observes (model requests, tool calls, permission decisions) is a line. The ground truth for replay and inspection. |
 | `turn` | One request→response→tools cycle within a session. Starts with `turn.start`, ends with `turn.end`. |
 | `StoredEvent` | A single line in `events.jsonl`: `{id, ts, payload}`. `EventPayload` is the tagged union of all known event types. |
@@ -93,11 +93,11 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 
 | Canonical Name | Definition |
 |---------------|------------|
-| `subagent` | A tool-backed child session. The main agent dispatches via the stable `agent` tool; runtime spawns an isolated child session under `subs/`. |
+| `subagent` | A tool-backed child session. The main agent dispatches via the stable `agent` tool; runtime spawns an isolated child session under `sessions/child_<parent>_<N>/`. |
 | `SubagentDefinition` | Internal representation of a subagent: name, description, instructions, tier, tool_profile, tools, max_turns, source, hash. |
 | `tool_profile` | Allowed tool preset for a subagent: `none` / `read` / `read_write`. Mapped to a concrete tool allowlist at spawn time. |
 | `agent tool` | The single stable tool (`name: "agent"`) for dispatching subagents. Schema is fixed; available agents are declared in the catalog. |
-| `child session` | Isolated session created under `subs/<id>/`. Has its own `events.jsonl`, constrained tool registry, and capped permissions. |
+| `child session` | Isolated session created under `sessions/child_<parent>_<N>/`. Has its own `events.jsonl`, constrained tool registry, and capped permissions. |
 | `depth guard` | Hard limit on subagent nesting: maximum 2 levels (parent → child → grandchild). Checked via `child_session_count` in `PendingRun`; a tool call that would exceed depth is blocked with status `"blocked"` and a descriptive summary. |
 | `agent catalog` | Short XML block listing available subagents (name, description, tier, tool_profile, hash). Injected into `runtime_context`. Does not include full instructions. |
 | `subagent registry` | Loaded set of `SubagentDefinition`s from builtins + compatibility imports. Content-hashed for drift detection. |
@@ -107,30 +107,34 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 
 | Canonical Name | Definition |
 |---------------|------------|
-| `package` | Extension container: manifest, capabilities, resources. Not part of core runtime. |
-| `hook` | Extension point allowing packages to intercept runtime events. |
-| `MCP` | Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. |
+| `package` | (planned) Extension container: manifest, capabilities, resources. Not part of core runtime. |
+| `hook` | (planned) Extension point allowing packages to intercept runtime events. |
+| `MCP` | (planned) Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. |
 | `skill` | A packaged capability (instructions, scripts, references) that extends the current session. Follows the Agent Skills specification. Discovered through a catalog, loaded on demand via `use_skill`. See [skills.md](core/skills.md). |
 | `SkillDefinition` | Internal representation of a skill: name, description, instructions, source, hash, source_path, allowed_tools, disallowed_tools, max_turns, model, license, compatibility, metadata. |
 | `SkillRegistry` | Loaded set of `SkillDefinition`s from user and project directories (kuku, Claude Code, OpenCode). Content-hashed for drift detection. Metadata injected into `runtime_context` at startup. |
 | `use_skill` | Built-in tool that loads a skill's full `SKILL.md` body into the current session on demand. Reads from disk for hot-reload support. |
 | `skill catalog` | XML block listing available skills (name, description, source, hash). Injected into `runtime_context` after the agent catalog. Does not include full instructions. |
-| `plugin` | Synonym for `package`. A plugin is a package that may include hooks, skills, tools, or MCP servers. |
+| `plugin` | (planned) Synonym for `package`. A plugin is a package that may include hooks, skills, tools, or MCP servers. |
 | `host overlay` | Host-specific prompt layer (CLI, TUI, WebUI). Complements but does not redefine the system prompt. |
 
 ## Public API
 
 | Canonical Name | Definition |
 |---------------|------------|
+| `query()` | Free function `kuku::query(prompt)` that returns a `Query` builder. The primary SDK entry point. |
 | `Query` | Typed builder returned by `kuku::query(prompt)`. Configure workspace, tier, config, session, and subagents via chained methods. Call `.run()` or `.start()`. |
 | `Run` | Handle to an active query. Stream `UiEvent` via `.next()`, respond to permissions via `.decide()`, read `.session_id()`. |
-| `UiEvent` | Event streamed from SDK to host. Variants: `TextDelta`, `ThinkingDelta`, `ToolStart`, `ToolOutput`, `ToolEnd`, `PermissionRequested`, `TurnStart`, `Error`, `ModelRequest`, `Done`. Planned: `InteractionRequest` (generalizes `PermissionRequested`). Not persisted — `events.jsonl` holds the canonical facts. |
+| `UiEvent` | Event streamed from SDK to host. Variants: `TextDelta`, `ThinkingDelta`, `ToolStart`, `ToolOutput`, `ToolEnd`, `PermissionRequested`, `Cancelled`, `TurnStart`, `Error`, `ModelRequest`, `Done`. Planned: `InteractionRequest` (generalizes `PermissionRequested`). Not persisted — `events.jsonl` holds the canonical facts. |
 | `RunOutput` | Final result from `.run()` or `UiEvent::Done`: `session_id`, `text`, `usage`, `turn`. |
+| `PermissionRequest` | Struct representing a pending permission check: `id`, `tool_call_id`, `tool`, `risk`, `summary`. Emitted via `UiEvent::PermissionRequested`. |
 | `PermissionChoice` | Host's response to a permission request: `Once`, `Session`, `Project`, `Deny`. |
 | `Error` | Typed error enum (`kuku::error::Error`) covering provider failures, invalid arguments, I/O errors, and prompt rendering failures. |
+| `ProviderUsage` | Token usage struct: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`. Returned in `RunOutput` and `model.response`. |
+| `ProviderFailureKind` | Enum classifying provider errors: `Authentication`, `RateLimited`, `ContextTooLarge`, `InvalidRequest`, `ProviderUnavailable`, `Transport`, `Internal`, `Unknown`. |
 | `InteractionRequest` | Planned unified host-agent interaction: generalizes `PermissionRequested` to cover ask, confirm, and future interaction types. Host responds via `run.respond()`. |
+| `run_start` | Wire event synthesized by the server at run creation (`{"type":"run_start","run_id":"..."}`). Emitted before any `UiEvent`-derived lines. |
 | `wire event` | Client-friendly JSON representation of a `UiEvent`, streamed via NDJSON. Produced by SDK's `to_wire()` function. |
-| `ExternalToolSource` | Trait for external tool providers. Implementations include future MCP client. Tools registered through this trait go through the standard permission gate. |
-| `skill registry` | Loaded set of skill definitions from user and project directories. Metadata injected into `runtime_context` at startup; full content loaded on demand. |
+| `ExternalToolSource` | (planned) Trait for external tool providers. Implementations include future MCP client. Tools registered through this trait go through the standard permission gate. |
 | `progressive disclosure` | Three-stage skill loading: metadata at startup, instructions on trigger, resources on demand. Minimizes context usage. |
 | `NDJSON streaming` | Newline-delimited JSON over HTTP. Used by `kuku-server` to stream run events in real time. No SSE, no WebSocket. |

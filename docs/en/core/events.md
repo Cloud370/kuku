@@ -47,7 +47,8 @@ The runtime emits `UiEvent` to the host and writes `EventPayload` to `events.jso
 |---------|-------------------|-------|
 | `ToolStart` | `tool.call` | Written at slot spawn time |
 | `ToolOutput` | — | Runtime-only, not persisted |
-| `ToolEnd` | `tool.result` | Written when slot completes |
+| `ToolEnd` | `tool.result` | Written when slot completes; carries `model_content` |
+| `ToolOutput` | — | Runtime-only streaming tool output (stdout/stderr/thinking) |
 | `PermissionRequested` | `permission.request` | |
 | `TextDelta` | — | Runtime-only stream |
 | `ThinkingDelta` | — | Runtime-only stream |
@@ -55,6 +56,7 @@ The runtime emits `UiEvent` to the host and writes `EventPayload` to `events.jso
 | `Error` | `model.error` | When provider fails |
 | `TurnStart` | `turn.start` | |
 | `ModelRequest` | `model.request` | |
+| `Cancelled` | — | Turn cancelled by user; runtime-only |
 
 ## Context rebuild
 
