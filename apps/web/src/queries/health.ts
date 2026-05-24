@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 export interface HealthResponse {
   ok: boolean;
   version: string;
+  workspace: string;
 }
 
 export function useHealth() {
