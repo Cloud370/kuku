@@ -1,6 +1,6 @@
 import type { Turn, AgentMessage, ToolRender } from "@/types/turn";
 
-interface EventPayload {
+export interface EventPayload {
   type: string;
   [key: string]: unknown;
 }

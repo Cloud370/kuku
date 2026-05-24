@@ -1,34 +1,83 @@
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useCallback } from "react";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { TurnCard } from "@/components/chat/TurnCard";
-import { FileAccessBar } from "@/components/chat/FileAccessBar";
 import { TextContent } from "@/components/chat/TextContent";
 import { ToolCard } from "@/components/chat/ToolCard";
+import { ThinkingBlock } from "@/components/chat/ThinkingBlock";
+import { ErrorNotice } from "@/components/chat/ErrorNotice";
+import { CancelledNotice } from "@/components/chat/CancelledNotice";
 import { Composer } from "@/components/chat/Composer";
 import { RightPanel } from "@/components/right-panel/RightPanel";
 import { DiffViewer } from "@/components/right-panel/DiffViewer";
 import { TerminalPanel } from "@/components/right-panel/TerminalPanel";
 import { StatusPanel } from "@/components/right-panel/StatusPanel";
-
-const introMarkdown = [
-  "## Hello! I'm kuku",
-  "",
-  "I can help you with:",
-  "",
-  "- Reading and writing files",
-  "- Running shell commands",
-  "- Managing sub-agents for complex tasks",
-  "",
-  "How can I help you today?",
-].join("\n");
+import { useUIStore } from "@/stores/ui";
+import { useRunStore } from "@/stores/run";
+import { useSessionEvents } from "@/queries/sessions";
+import { replayToTurns } from "@/adapters/replay";
+import type { EventPayload } from "@/adapters/replay";
+import { createRun } from "@/api/runs";
 
 export function Session() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const workspace = useUIStore((s) => s.workspace);
+  const { turns, status, loadTurns, pushWireLine, pushActiveStream, setStatus, clear } = useRunStore();
+  const isNew = !id || id === "new";
+
+  const { data } = useSessionEvents(isNew ? undefined : id, workspace);
+
+  useEffect(() => {
+    clear();
+  }, [id, clear]);
+
+  useEffect(() => {
+    if (!data) return;
+    if (Array.isArray(data)) {
+      loadTurns(replayToTurns(data.map((e) => e.payload as EventPayload)));
+    } else {
+      loadTurns(replayToTurns(data.events.map((e) => e.payload as EventPayload)));
+      if (data.active_stream?.length) {
+        pushActiveStream(data.active_stream);
+      }
+    }
+  }, [data, loadTurns, pushActiveStream]);
+
+  const handleSubmit = useCallback(
+    (prompt: string, _model: string) => {
+      setStatus("streaming");
+      void createRun(
+        prompt,
+        workspace,
+        isNew ? undefined : id,
+        (line) => {
+          pushWireLine(line);
+        },
+        (sessionId) => {
+          if (isNew) void navigate(`/session/${sessionId}`, { replace: true });
+        },
+        () => {
+          setStatus("error");
+        },
+      );
+    },
+    [workspace, id, isNew, pushWireLine, setStatus, navigate],
+  );
+
+  const isLoading = !isNew && status === "idle";
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center text-[var(--color-text-muted)]">
+        Loading...
+      </div>
+    );
+  }
 
   return (
     <MainLayout
-      sessionTitle={id ?? "unknown"}
-      sessionStatus="idle"
+      sessionTitle={id ?? "New Session"}
+      sessionStatus={status === "streaming" ? "running" : "idle"}
       rightPanel={
         <RightPanel
           diffContent={<DiffViewer />}
@@ -39,36 +88,60 @@ export function Session() {
     >
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex-1 overflow-auto px-4 py-4 space-y-3">
-          <TurnCard role="user">
-            <p>Help me set up the project.</p>
-          </TurnCard>
-          <TurnCard role="agent">
-            <FileAccessBar />
-            <TextContent text={introMarkdown} />
-          </TurnCard>
-          <TurnCard role="user">
-            <p>Show me the gateway configuration file.</p>
-          </TurnCard>
-          <TurnCard role="agent">
-            <ToolCard
-              icon="👁️"
-              name="read_file"
-              summary="src/api/gateway.ts (142 lines)"
-              status="completed"
-            >
-              <pre className="font-mono text-[var(--text-xs)] text-[var(--color-text-secondary)] p-2 bg-[var(--color-surface)] rounded-[var(--radius-sm)] border border-[var(--color-border)] overflow-x-auto">
-{`export class Gateway {
-  private rateLimiter: RateLimiter;
-  constructor(config: GatewayConfig) {
-    this.rateLimiter = new RateLimiter(config.limit);
-  }
-}`}
-              </pre>
-            </ToolCard>
-            <TextContent text="The gateway is configured with rate limiting at 1000 req/s." />
-          </TurnCard>
+          {turns.length === 0 && isNew ? (
+            <div className="text-center text-[var(--color-text-muted)] mt-20">
+              Start a conversation.
+            </div>
+          ) : (
+            turns.map((turn) => (
+              <div key={turn.turnNumber} className="space-y-3">
+                <TurnCard role="user">
+                  <p>{turn.userText}</p>
+                </TurnCard>
+                <TurnCard role="agent">
+                  {turn.agent.error && (
+                    <ErrorNotice
+                      type="internal"
+                      message={turn.agent.error.message}
+                    />
+                  )}
+                  {turn.status === "cancelled" && (
+                    <CancelledNotice turnNumber={turn.turnNumber} />
+                  )}
+                  {turn.agent.thinking && (
+                    <ThinkingBlock>{turn.agent.thinking}</ThinkingBlock>
+                  )}
+                  {turn.agent.text && (
+                    <TextContent text={turn.agent.text} />
+                  )}
+                  {turn.agent.tools.map((t) => (
+                    <ToolCard
+                      key={t.id}
+                      name={t.name}
+                      summary={t.summary}
+                      status={
+                        t.status === "running"
+                          ? "running"
+                          : t.status === "error"
+                            ? "error"
+                            : "completed"
+                      }
+                      kind={t.kind === "agent" ? "agent" : "tool"}
+                      childSessionId={t.childSessionId}
+                    >
+                      {t.modelContent ? (
+                        <pre className="text-xs text-[var(--color-text-secondary)]">
+                          {t.modelContent}
+                        </pre>
+                      ) : null}
+                    </ToolCard>
+                  ))}
+                </TurnCard>
+              </div>
+            ))
+          )}
         </div>
-        <Composer onSubmit={() => {}} />
+        <Composer onSubmit={handleSubmit} />
       </div>
     </MainLayout>
   );
