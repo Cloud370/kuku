@@ -193,46 +193,47 @@ pub(crate) fn spawn_agent_slot(
     }
 }
 
-#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn spawn_command_slot(
     tool_call_id: String,
-    command: String,
-    timeout: u64,
+    args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
-    kuku_home: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
-    let cancel_clone = cancel.clone();
+    let cancel_cmd = cancel.clone();
     let tc_id = tool_call_id.clone();
 
-    let summary_clone = summary.clone();
     tokio::spawn(async move {
-        let args =
-            serde_json::json!({"command": command, "timeout": timeout, "brief": summary_clone});
-        let result = tokio::select! {
-            biased;
-            _ = cancel_clone.notified() => SlotEvent::Done {
-                status: "cancelled".into(),
-                summary: "cancelled".into(),
-                model_content: String::new(),
-                result: None,
-            },
-            r = crate::tool::dispatch::dispatch(
-                "run_command",
-                &args,
-                &workspace,
-                &kuku_home,
-                &[],
-                0,
-                None,
-            ) => SlotEvent::Done {
-                status: r.status,
-                summary: r.summary,
-                model_content: r.model_content,
-                result: r.structured,
-            },
+        let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
+
+        let fwd_tc_id = tc_id.clone();
+        let fwd_event_tx = event_tx.clone();
+        let forward_handle = tokio::spawn(async move {
+            while let Some(ce) = tool_rx.recv().await {
+                let te = match ce {
+                    crate::tool::builtin::CommandEvent::Stdout(text) => ToolEvent::Stdout { text },
+                    crate::tool::builtin::CommandEvent::Stderr(text) => ToolEvent::Stderr { text },
+                };
+                if fwd_event_tx
+                    .send((fwd_tc_id.clone(), SlotEvent::Output(te)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let r =
+            crate::tool::builtin::run_command(&args, &workspace, Some(tool_tx), Some(cancel_cmd))
+                .await;
+        let _ = forward_handle.await;
+        let result = SlotEvent::Done {
+            status: r.status,
+            summary: r.summary,
+            model_content: r.model_content,
+            result: r.structured,
         };
         let _ = event_tx.send((tc_id, result)).await;
     });
@@ -243,6 +244,32 @@ pub(crate) fn spawn_command_slot(
         label: summary,
         cancel,
         child_permissions: Arc::new(Mutex::new(HashMap::new())),
+    }
+}
+
+pub(crate) fn dispatch_tool_slot(
+    tool_name: &str,
+    tool_id: String,
+    args: serde_json::Value,
+    summary: String,
+    workspace: PathBuf,
+    kuku_home: PathBuf,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
+) -> (ExecSlot, ToolKind) {
+    if tool_name == "run_command" {
+        let slot = spawn_command_slot(tool_id, args, summary, workspace, event_tx);
+        (slot, ToolKind::Command { pid: None })
+    } else {
+        let slot = spawn_simple_slot(
+            tool_id,
+            tool_name.to_string(),
+            args,
+            summary,
+            workspace,
+            kuku_home,
+            event_tx,
+        );
+        (slot, ToolKind::Simple)
     }
 }
 

@@ -40,6 +40,7 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             id,
             status,
             summary,
+            model_content,
             result,
         } => {
             let mut val = json!({
@@ -48,6 +49,9 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
                 "status": status,
                 "summary": summary,
             });
+            if let Some(mc) = model_content {
+                val["model_content"] = json!(mc);
+            }
             if let Some(r) = result {
                 val["result"] = r.clone();
             }
@@ -210,18 +214,22 @@ mod tests {
             id: "t1".into(),
             status: "ok".into(),
             summary: "done".into(),
+            model_content: Some("content".into()),
             result: Some(serde_json::json!({"n": 1})),
         })
         .unwrap();
+        assert_eq!(w1["model_content"], "content");
         assert_eq!(w1["result"]["n"], 1);
 
         let w2 = to_wire(&UiEvent::ToolEnd {
             id: "t2".into(),
             status: "cancelled".into(),
             summary: "".into(),
+            model_content: None,
             result: None,
         })
         .unwrap();
+        assert!(w2.get("model_content").is_none());
         assert!(w2.get("result").is_none());
     }
 

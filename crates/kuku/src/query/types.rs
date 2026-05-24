@@ -146,6 +146,7 @@ pub enum UiEvent {
         id: String,
         status: String,
         summary: String,
+        model_content: Option<String>,
         result: Option<serde_json::Value>,
     },
     PermissionRequested {

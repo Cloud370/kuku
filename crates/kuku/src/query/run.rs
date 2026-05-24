@@ -8,8 +8,8 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_permission_decision, execute_tool_call, now_timestamp, permission_candidate,
-    permission_rule,
+    append_permission_decision, display_summary, execute_tool_call, now_timestamp,
+    permission_candidate, permission_rule,
 };
 use super::types::{
     PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
@@ -101,6 +101,7 @@ impl Run {
                                         id: slot.tool_call_id,
                                         status,
                                         summary,
+                                        model_content: None,
                                         result,
                                     }));
                                 }
@@ -114,10 +115,16 @@ impl Run {
                                 events_path,
                                 turn,
                             )?;
+                            let mc = if model_content.is_empty() {
+                                None
+                            } else {
+                                Some(model_content)
+                            };
                             return Ok(Some(UiEvent::ToolEnd {
                                 id: slot.tool_call_id,
                                 status,
                                 summary,
+                                model_content: mc,
                                 result,
                             }));
                         }
@@ -314,9 +321,9 @@ impl Run {
                     tool_call,
                     display_summary,
                 } = pending.queued_tool_calls.pop_front().unwrap();
-                let slot = super::slots::spawn_simple_slot(
+                let (slot, tool_kind) = super::slots::dispatch_tool_slot(
+                    &tool_call.name,
                     tool_call.id.clone(),
-                    tool_call.name.clone(),
                     tool_call.args,
                     display_summary.clone(),
                     pending.workspace.clone(),
@@ -328,7 +335,7 @@ impl Run {
                     id: tool_call.id,
                     tool: tool_call.name,
                     summary: display_summary,
-                    kind: super::types::ToolKind::Simple,
+                    kind: tool_kind,
                 }))
             }
             crate::permission::GateDecisionKind::Deny => {
@@ -338,6 +345,7 @@ impl Run {
                     id: tool_call.id,
                     status: "blocked".to_string(),
                     summary: "permission denied".to_string(),
+                    model_content: None,
                     result: None,
                 }))
             }
@@ -542,15 +550,40 @@ impl Run {
             source,
             &rule,
         )?;
-        let result = execute_tool_call(&mut pending, &tool_call).await?;
-        let tool_result_event = Some(UiEvent::ToolEnd {
-            id: tool_call.id,
-            status: result.status,
-            summary: result.summary,
-            result: result.structured,
-        });
+        if matches!(choice, PermissionChoice::Deny) {
+            let result = execute_tool_call(&mut pending, &tool_call).await?;
+            let mc = if result.model_content.is_empty() {
+                None
+            } else {
+                Some(result.model_content)
+            };
+            self.state = RunState::Pending(Box::new(pending));
+            return Ok(Some(UiEvent::ToolEnd {
+                id: tool_call.id,
+                status: result.status,
+                summary: result.summary,
+                model_content: mc,
+                result: result.structured,
+            }));
+        }
+        let summary = display_summary(&tool_call.name, &tool_call.args, None);
+        let (slot, tool_kind) = super::slots::dispatch_tool_slot(
+            &tool_call.name,
+            tool_call.id.clone(),
+            tool_call.args,
+            summary.clone(),
+            pending.workspace.clone(),
+            pending.kuku_home.clone(),
+            self.slot_event_tx.clone(),
+        );
+        self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));
-        Ok(tool_result_event)
+        Ok(Some(UiEvent::ToolStart {
+            id: tool_call.id,
+            tool: tool_call.name,
+            summary,
+            kind: tool_kind,
+        }))
     }
 }
 
