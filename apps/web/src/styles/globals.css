@@ -19,3 +19,49 @@ pre,
 code {
   font-family: var(--font-mono);
 }
+
+.prose pre {
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow-x: auto;
+  margin: var(--space-sm) 0;
+}
+
+.prose code {
+  font-size: var(--text-xs);
+}
+
+.prose pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.prose h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin: var(--space-lg) 0 var(--space-sm);
+}
+
+.prose p {
+  margin: var(--space-sm) 0;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: var(--space-xl);
+  margin: var(--space-sm) 0;
+}
+
+.prose li {
+  margin: var(--space-xs) 0;
+}
+
+.prose blockquote {
+  border-left: 3px solid var(--color-accent);
+  padding-left: var(--space-md);
+  color: var(--color-text-muted);
+  margin: var(--space-sm) 0;
+}
