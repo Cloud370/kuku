@@ -1,11 +1,17 @@
 import { useUIStore } from "@/stores/ui";
 import { cn } from "@/lib/cn";
 
-const workspaces = ["personal", "work", "oss"];
+const workspaces = [
+  "/home/cloud/projects/kuku",
+  "/home/cloud/projects/work",
+  "/home/cloud/projects/oss",
+];
 
 export function WorkspaceZone() {
   const active = useUIStore((s) => s.workspace);
   const setWorkspace = useUIStore((s) => s.setWorkspace);
+
+  const folderName = (path: string) => path.split("/").pop() ?? path;
 
   return (
     <div className="h-full flex flex-col p-3 gap-2 overflow-auto">
@@ -18,13 +24,14 @@ export function WorkspaceZone() {
             key={ws}
             onClick={() => setWorkspace(ws)}
             className={cn(
-              "text-left px-3 py-1.5 text-[var(--text-sm)] rounded-[var(--radius-md)] transition-colors cursor-pointer",
+              "text-left px-3 py-1.5 text-[var(--text-sm)] rounded-[var(--radius-md)] transition-colors cursor-pointer truncate",
               ws === active
                 ? "bg-[var(--color-accent)] text-white font-medium"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]",
             )}
+            title={ws}
           >
-            {ws}
+            {folderName(ws)}
           </button>
         ))}
       </div>

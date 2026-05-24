@@ -8,7 +8,7 @@ const meta = {
   parameters: { layout: "padded" },
   decorators: [
     (Story) => {
-      useUIStore.setState({ workspace: "personal" });
+      useUIStore.setState({ workspace: "/home/cloud/projects/kuku" });
       return (
         <div style={{ maxWidth: "260px", height: "200px" }}>
           <Story />
@@ -26,7 +26,7 @@ export const Default: Story = {};
 export const WorkSelected: Story = {
   decorators: [
     (Story) => {
-      useUIStore.setState({ workspace: "work" });
+      useUIStore.setState({ workspace: "/home/cloud/projects/work" });
       return (
         <div style={{ maxWidth: "260px", height: "200px" }}>
           <Story />
@@ -39,7 +39,7 @@ export const WorkSelected: Story = {
 export const OssSelected: Story = {
   decorators: [
     (Story) => {
-      useUIStore.setState({ workspace: "oss" });
+      useUIStore.setState({ workspace: "/home/cloud/projects/oss" });
       return (
         <div style={{ maxWidth: "260px", height: "200px" }}>
           <Story />

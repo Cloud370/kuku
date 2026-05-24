@@ -39,7 +39,7 @@ export const useUIStore = create<UIState>()(
   persist(
     (set, get) => ({
       theme: initialTheme(),
-      workspace: "personal",
+      workspace: "/home/cloud/projects/kuku",
 
       setTheme: (theme) => {
         document.documentElement.dataset.theme = theme;
