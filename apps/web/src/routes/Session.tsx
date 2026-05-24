@@ -7,6 +7,7 @@ import { ToolCard } from "@/components/chat/ToolCard";
 import { ThinkingBlock } from "@/components/chat/ThinkingBlock";
 import { ErrorNotice } from "@/components/chat/ErrorNotice";
 import { CancelledNotice } from "@/components/chat/CancelledNotice";
+import { PermissionDock } from "@/components/chat/PermissionDock";
 import { Composer } from "@/components/chat/Composer";
 import { RightPanel } from "@/components/right-panel/RightPanel";
 import { DiffViewer } from "@/components/right-panel/DiffViewer";
@@ -19,11 +20,18 @@ import { replayToTurns } from "@/adapters/replay";
 import type { EventPayload } from "@/adapters/replay";
 import { createRun } from "@/api/runs";
 
+function riskIcon(risk: string): string {
+  if (risk === "command") return ">";
+  if (risk === "file_write") return "+";
+  if (risk === "file_read") return "\u{1F441}";
+  return "\u{1F527}";
+}
+
 export function Session() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const workspace = useUIStore((s) => s.workspace);
-  const { turns, status, loadTurns, pushWireLine, pushActiveStream, setStatus, clear } = useRunStore();
+  const { turns, status, pendingPermission, loadTurns, pushWireLine, pushActiveStream, setStatus, clear, respondToPermission } = useRunStore();
   const isNew = !id || id === "new";
 
   const { data } = useSessionEvents(isNew ? undefined : id, workspace);
@@ -141,7 +149,18 @@ export function Session() {
             ))
           )}
         </div>
-        <Composer onSubmit={handleSubmit} />
+        {pendingPermission && (
+            <PermissionDock
+              toolIcon={riskIcon(pendingPermission.risk)}
+              toolName={pendingPermission.tool}
+              riskLabel={pendingPermission.risk}
+              summary={pendingPermission.summary}
+              onDeny={() => { void respondToPermission(id!, pendingPermission.id, "deny"); }}
+              onAllowOnce={() => { void respondToPermission(id!, pendingPermission.id, "once"); }}
+              onAllowAlways={() => { void respondToPermission(id!, pendingPermission.id, "project"); }}
+            />
+          )}
+          <Composer onSubmit={handleSubmit} />
       </div>
     </MainLayout>
   );

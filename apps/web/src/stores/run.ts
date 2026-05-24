@@ -1,57 +1,77 @@
 import { create } from "zustand";
-import type { Turn, ToolRender } from "@/types/turn";
+import type { Turn, ToolRender, PermissionRender } from "@/types/turn";
 import { parseWireEvent } from "@/adapters/stream";
 import type { TurnMutation } from "@/adapters/stream";
+import { sendResponse } from "@/api/responses";
 
 interface RunState {
   turns: Turn[];
   status: "idle" | "loading" | "streaming" | "done" | "error";
   error?: string;
+  pendingPermission: PermissionRender | null;
   loadTurns: (turns: Turn[]) => void;
   clear: () => void;
   pushWireLine: (line: string) => void;
   pushActiveStream: (lines: Array<Record<string, unknown>>) => void;
   setStatus: (status: RunState["status"]) => void;
+  respondToPermission: (runId: string, interactionId: string, choice: string) => Promise<void>;
 }
 
 export const useRunStore = create<RunState>()((set) => ({
   turns: [],
   status: "idle",
+  pendingPermission: null,
 
   loadTurns: (turns) => {
     set({ turns, status: "done" });
   },
 
   clear: () => {
-    set({ turns: [], status: "idle", error: undefined });
+    set({ turns: [], status: "idle", error: undefined, pendingPermission: null });
   },
 
   pushWireLine: (line) => {
     const mutations = parseWireEvent(line);
     set((state) => {
       let { turns } = state;
+      let pendingPermission = state.pendingPermission;
       for (const m of mutations) {
         turns = applyMutation(turns, m);
+        if (m.type === "add_permission") pendingPermission = m.permission;
+        if (m.type === "finish_turn" || m.type === "new_turn") pendingPermission = null;
       }
-      return { turns, status: "streaming" };
+      return { turns, status: "streaming", pendingPermission };
     });
   },
 
   pushActiveStream: (lines) => {
     set((state) => {
       let { turns } = state;
+      let lastMutationType: string | null = null;
+      let lastPermission: PermissionRender | null = null;
       for (const line of lines) {
         const wire = JSON.stringify(line);
         for (const m of parseWireEvent(wire)) {
           turns = applyMutation(turns, m);
+          lastMutationType = m.type;
+          if (m.type === "add_permission") lastPermission = m.permission;
+          if (m.type === "finish_turn" || m.type === "new_turn") {
+            lastPermission = null;
+          }
         }
       }
-      return { turns, status: "streaming" };
+      const pendingPermission = lastMutationType === "add_permission" ? lastPermission : null;
+      return { turns, status: "streaming", pendingPermission };
     });
   },
 
   setStatus: (status) => {
     set({ status });
+  },
+
+  respondToPermission: async (runId, interactionId, choice) => {
+    set({ pendingPermission: null });
+    await sendResponse(runId, interactionId, choice);
   },
 }));
 
