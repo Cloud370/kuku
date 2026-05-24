@@ -17,6 +17,7 @@ interface UIState {
   rightPanelWidth: number;
   rightPanelTab: RightPanelTab;
   layoutMode: LayoutMode;
+  workspaceZoneSize: number;
 
   setLeftSidebarOpen: (open: boolean) => void;
   toggleLeftSidebar: () => void;
@@ -26,6 +27,7 @@ interface UIState {
   setRightPanelWidth: (width: number) => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   setLayoutMode: (mode: LayoutMode) => void;
+  setWorkspaceZoneSize: (size: number) => void;
 }
 
 const initialTheme = (): "dark" | "light" => {
@@ -58,6 +60,7 @@ export const useUIStore = create<UIState>()(
       rightPanelWidth: 400,
       rightPanelTab: "diff",
       layoutMode: "three-column",
+      workspaceZoneSize: 33,
 
       setLeftSidebarOpen: (open) => set({ leftSidebarOpen: open }),
       toggleLeftSidebar: () => set({ leftSidebarOpen: !get().leftSidebarOpen }),
@@ -67,6 +70,7 @@ export const useUIStore = create<UIState>()(
       setRightPanelWidth: (width) => set({ rightPanelWidth: width }),
       setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
       setLayoutMode: (mode) => set({ layoutMode: mode }),
+      setWorkspaceZoneSize: (size) => set({ workspaceZoneSize: size }),
     }),
     {
       name: "kuku-ui",
