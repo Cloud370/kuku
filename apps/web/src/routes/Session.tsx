@@ -31,7 +31,7 @@ export function Session() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const workspace = useUIStore((s) => s.workspace);
-  const { turns, status, pendingPermission, loadTurns, pushWireLine, pushActiveStream, setStatus, clear, respondToPermission } = useRunStore();
+  const { turns, status, pendingPermission, loadTurns, pushWireLine, pushActiveStream, setStatus, clear, addUserTurn, respondToPermission } = useRunStore();
   const isNew = !id || id === "new";
 
   const { data } = useSessionEvents(isNew ? undefined : id, workspace);
@@ -55,6 +55,7 @@ export function Session() {
   const handleSubmit = useCallback(
     (prompt: string, _model: string) => {
       setStatus("streaming");
+      addUserTurn(prompt);
       void createRun(
         prompt,
         workspace,
@@ -70,7 +71,7 @@ export function Session() {
         },
       );
     },
-    [workspace, id, isNew, pushWireLine, setStatus, navigate],
+    [workspace, id, isNew, pushWireLine, setStatus, addUserTurn, navigate],
   );
 
   const isLoading = !isNew && status === "idle";
@@ -122,28 +123,46 @@ export function Session() {
                   {turn.agent.text && (
                     <TextContent text={turn.agent.text} />
                   )}
-                  {turn.agent.tools.map((t) => (
-                    <ToolCard
-                      key={t.id}
-                      name={t.name}
-                      summary={t.summary}
-                      status={
-                        t.status === "running"
-                          ? "running"
-                          : t.status === "error"
-                            ? "error"
-                            : "completed"
-                      }
-                      kind={t.kind === "agent" ? "agent" : "tool"}
-                      childSessionId={t.childSessionId}
-                    >
-                      {t.modelContent ? (
-                        <pre className="text-xs text-[var(--color-text-secondary)]">
-                          {t.modelContent}
-                        </pre>
-                      ) : null}
-                    </ToolCard>
-                  ))}
+                  {turn.agent.tools.map((t) => {
+                    const hasSub = t.subEvents.length > 0 || t.modelContent;
+                    return (
+                      <ToolCard
+                        key={t.id}
+                        name={t.name}
+                        summary={t.summary}
+                        status={
+                          t.status === "running"
+                            ? "running"
+                            : t.status === "error"
+                              ? "error"
+                              : "completed"
+                        }
+                        kind={t.kind === "agent" ? "agent" : "tool"}
+                        childSessionId={t.childSessionId}
+                      >
+                        {hasSub ? (
+                          <div className="space-y-1">
+                            {t.modelContent ? (
+                              <pre className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
+                                {t.modelContent}
+                              </pre>
+                            ) : null}
+                            {t.subEvents.map((se, i) => {
+                              if (se.type === "stdout")
+                                return <pre key={i} className="font-mono text-xs text-[var(--color-text-primary)] whitespace-pre-wrap">{se.text}</pre>;
+                              if (se.type === "stderr")
+                                return <pre key={i} className="font-mono text-xs text-red-400 whitespace-pre-wrap">{se.text}</pre>;
+                              if (se.type === "thinking")
+                                return <p key={i} className="text-xs text-[var(--color-text-muted)] whitespace-pre-wrap">{se.content}</p>;
+                              if (se.type === "text")
+                                return <p key={i} className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap">{se.content}</p>;
+                              return null;
+                            })}
+                          </div>
+                        ) : undefined}
+                      </ToolCard>
+                    );
+                  })}
                 </TurnCard>
               </div>
             ))

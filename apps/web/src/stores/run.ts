@@ -14,6 +14,7 @@ interface RunState {
   pushWireLine: (line: string) => void;
   pushActiveStream: (lines: Array<Record<string, unknown>>) => void;
   setStatus: (status: RunState["status"]) => void;
+  addUserTurn: (text: string) => void;
   respondToPermission: (runId: string, interactionId: string, choice: string) => Promise<void>;
 }
 
@@ -69,6 +70,21 @@ export const useRunStore = create<RunState>()((set) => ({
     set({ status });
   },
 
+  addUserTurn: (text) => {
+    set((state) => ({
+      turns: [
+        ...state.turns,
+        {
+          turnNumber: 0,
+          userText: text,
+          agent: { tools: [], permissions: [] },
+          status: "streaming",
+        },
+      ],
+      status: "streaming",
+    }));
+  },
+
   respondToPermission: async (runId, interactionId, choice) => {
     set({ pendingPermission: null });
     await sendResponse(runId, interactionId, choice);
@@ -91,9 +107,22 @@ function applyMutation(turns: Turn[], m: TurnMutation): Turn[] {
     : null;
 
   switch (m.type) {
-    case "new_turn":
-      copy.push(m.turn);
+    case "new_turn": {
+      const prev = copy[copy.length - 1];
+      const isPlaceholder =
+        prev &&
+        prev.turnNumber === 0 &&
+        !prev.agent.text &&
+        !prev.agent.thinking &&
+        prev.agent.tools.length === 0 &&
+        prev.agent.permissions.length === 0;
+      if (isPlaceholder) {
+        copy[copy.length - 1] = { ...prev, turnNumber: m.turn.turnNumber };
+      } else {
+        copy.push(m.turn);
+      }
       break;
+    }
     case "append_text":
       if (last) last.agent.text = (last.agent.text ?? "") + m.text;
       if (last) copy[copy.length - 1] = last;
