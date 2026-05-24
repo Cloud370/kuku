@@ -7,7 +7,7 @@ const meta = {
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
-      <div style={{ maxWidth: "300px", height: "500px" }}>
+      <div className="overflow-hidden" style={{ maxWidth: "300px", height: "500px" }}>
         <Story />
       </div>
     ),
