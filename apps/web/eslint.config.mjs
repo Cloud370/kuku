@@ -24,5 +24,5 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
   },
-  { ignores: ["dist/", "storybook-static/"] },
+  { ignores: ["dist/", "storybook-static/", "eslint.config.mjs"] },
 );

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useHealth } from "@/queries/health";
 import { Button } from "@/components/ui/Button";
 
@@ -15,7 +16,15 @@ function LoadingScreen() {
   );
 }
 
-function ErrorScreen({ onRetry, isRefetching }: { onRetry: () => void; isRefetching: boolean }) {
+function ErrorScreen({
+  onRetry,
+  isRefetching,
+  onSkip,
+}: {
+  onRetry: () => void;
+  isRefetching: boolean;
+  onSkip: () => void;
+}) {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen gap-4">
       <div className="text-3xl select-none">&#9888;</div>
@@ -25,17 +34,30 @@ function ErrorScreen({ onRetry, isRefetching }: { onRetry: () => void; isRefetch
       <p className="text-[var(--color-text-muted)] text-[var(--text-sm)]">
         Is kuku-server running on localhost?
       </p>
-      <Button variant="secondary" size="sm" onClick={onRetry} disabled={isRefetching}>
-        {isRefetching ? "Retrying..." : "Retry"}
-      </Button>
+      <div className="flex gap-2">
+        <Button variant="secondary" size="sm" onClick={onRetry} disabled={isRefetching}>
+          {isRefetching ? "Retrying..." : "Retry"}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onSkip}>
+          Skip
+        </Button>
+      </div>
     </div>
   );
 }
 
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
   const { isLoading, isError, refetch, isRefetching } = useHealth();
+  const [skipped, setSkipped] = useState(false);
 
-  if (isLoading) return <LoadingScreen />;
-  if (isError) return <ErrorScreen onRetry={() => { void refetch(); }} isRefetching={isRefetching} />;
+  if (isLoading && !skipped) return <LoadingScreen />;
+  if (isError && !skipped)
+    return (
+      <ErrorScreen
+        onRetry={() => { void refetch(); }}
+        isRefetching={isRefetching}
+        onSkip={() => { setSkipped(true); }}
+      />
+    );
   return <>{children}</>;
 }

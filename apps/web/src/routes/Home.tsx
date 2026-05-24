@@ -1,19 +1,23 @@
-import { Card } from "@/components/ui/Card";
+import { useNavigate } from "react-router-dom";
+import { Header } from "@/components/layout/Header";
+import { SessionList } from "@/components/layout/SessionList";
+import { useUIStore } from "@/stores/ui";
+import type { LayoutMode } from "@/stores/ui";
 
 export function Home() {
+  const navigate = useNavigate();
+  const layoutMode = useUIStore((s) => s.layoutMode);
+  const setLayoutMode = useUIStore((s) => s.setLayoutMode);
+
   return (
-    <div className="p-8">
-      <h1 className="text-[var(--text-xl)] font-semibold text-[var(--color-text-primary)] mb-6">
-        Sessions
-      </h1>
-      <div className="grid gap-4 max-w-2xl">
-        <Card>
-          <Card.Body>
-            <p className="text-[var(--color-text-muted)]">
-              No sessions yet. Start a new one from the workspace.
-            </p>
-          </Card.Body>
-        </Card>
+    <div className="h-screen flex flex-col bg-[var(--color-surface)]">
+      <Header
+        sessionTitle="kuku"
+        layoutMode={layoutMode}
+        onLayoutModeChange={(m: LayoutMode) => { setLayoutMode(m); }}
+      />
+      <div className="flex-1 min-h-0 max-w-2xl mx-auto w-full">
+        <SessionList onSelect={(id) => { void navigate(`/session/${id}`); }} />
       </div>
     </div>
   );
