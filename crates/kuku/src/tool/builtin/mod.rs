@@ -14,7 +14,7 @@ pub(crate) use edit_file::edit_file;
 pub(crate) use find_files::find_files;
 pub(crate) use memory::{forget_memory_with_home, remember_memory_with_home};
 pub(crate) use read_file::read_file;
-pub(crate) use run_command::run_command;
+pub(crate) use run_command::{run_command, CommandEvent};
 pub(crate) use search_text::search_text;
 pub(crate) use write_file::write_file;
 
