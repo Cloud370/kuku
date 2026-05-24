@@ -21,6 +21,10 @@ Closes #
 - [ ] `cargo fmt --all -- --check` passes
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test -p kuku -p kuku-cli -p kuku-server` passes
+- [ ] `npm run typecheck` passes (WebUI)
+- [ ] `npm run lint` passes (WebUI)
+- [ ] `npm run test` passes (WebUI)
+- [ ] `npm run build` succeeds (WebUI)
 
 ### Breaking changes
 

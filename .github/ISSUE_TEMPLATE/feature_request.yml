@@ -34,6 +34,7 @@ body:
         - "SDK"
         - "CLI"
         - "Server"
+        - "WebUI"
         - "SDK + CLI"
         - "SDK + CLI + Server"
         - "Other"
