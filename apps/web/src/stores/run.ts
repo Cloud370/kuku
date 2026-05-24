@@ -118,7 +118,7 @@ function applyMutation(turns: Turn[], m: TurnMutation): Turn[] {
         prev.agent.permissions.length === 0;
       if (isPlaceholder) {
         copy[copy.length - 1] = { ...prev, turnNumber: m.turn.turnNumber };
-      } else {
+      } else if (!copy.some((t) => t.turnNumber === m.turn.turnNumber)) {
         copy.push(m.turn);
       }
       break;
@@ -148,6 +148,8 @@ function applyMutation(turns: Turn[], m: TurnMutation): Turn[] {
             m.tool.subEvents.length > 0
               ? m.tool.subEvents
               : existing.subEvents,
+          modelContent: m.tool.modelContent || existing.modelContent,
+          result: m.tool.result ?? existing.result,
         };
       } else {
         last.agent.tools.push(m.tool);

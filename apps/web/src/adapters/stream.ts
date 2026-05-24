@@ -74,6 +74,8 @@ export function parseWireEvent(line: string): TurnMutation[] {
             summary: (e.summary as string | undefined) ?? "",
             kind: "simple",
             status: e.status === "ok" ? "completed" : "error",
+            modelContent: (e.model_content as string | undefined) ?? "",
+            result: e.result,
             subEvents: [],
           },
         },
