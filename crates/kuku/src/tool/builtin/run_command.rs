@@ -1,11 +1,13 @@
 use std::io;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -15,6 +17,14 @@ use super::common::plural;
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
 const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
+const FLUSH_THRESHOLD_MS: u64 = 50;
+const FLUSH_THRESHOLD_BYTES: usize = 4096;
+
+#[derive(Debug, Clone)]
+pub(crate) enum CommandEvent {
+    Stdout(String),
+    Stderr(String),
+}
 
 struct CommandRequest {
     command: String,
@@ -22,7 +32,12 @@ struct CommandRequest {
     _brief: String,
 }
 
-pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+pub(crate) async fn run_command(
+    args: &Value,
+    workspace: &Path,
+    event_tx: Option<mpsc::Sender<CommandEvent>>,
+    cancel: Option<Arc<Notify>>,
+) -> ToolResultEnvelope {
     let request = match run_command_request(args) {
         Ok(request) => request,
         Err(result) => return result,
@@ -60,8 +75,23 @@ pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnv
             )
         }
     };
-    let stdout_task = child.stdout.take().map(read_pipe_task);
-    let stderr_task = child.stderr.take().map(read_pipe_task);
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|p| read_pipe_streaming(p, event_tx.clone(), true));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|p| read_pipe_streaming(p, event_tx, false));
+
+    let cancel_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = match &cancel
+    {
+        Some(c) => {
+            let c = c.clone();
+            Box::pin(async move { c.notified().await })
+        }
+        None => Box::pin(std::future::pending()),
+    };
 
     let status = tokio::select! {
         status = child.wait() => match status {
@@ -82,6 +112,19 @@ pub(crate) async fn run_command(args: &Value, workspace: &Path) -> ToolResultEnv
             return render_command_timeout_result(
                 &request.command,
                 request.timeout_seconds,
+                duration_ms,
+                &stdout,
+                &stderr,
+            );
+        }
+        _ = cancel_fut => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let duration_ms = started.elapsed().as_millis() as u64;
+            let stdout = collect_pipe(stdout_task).await.unwrap_or_default();
+            let stderr = collect_pipe(stderr_task).await.unwrap_or_default();
+            return render_command_cancelled_result(
+                &request.command,
                 duration_ms,
                 &stdout,
                 &stderr,
@@ -230,16 +273,59 @@ fn shell_command(command: &str) -> Command {
     child
 }
 
-fn read_pipe_task<P>(pipe: P) -> JoinHandle<io::Result<Vec<u8>>>
+fn read_pipe_streaming<P>(
+    pipe: P,
+    tx: Option<mpsc::Sender<CommandEvent>>,
+    is_stdout: bool,
+) -> JoinHandle<io::Result<Vec<u8>>>
 where
     P: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut pipe = pipe;
-        let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes).await?;
-        Ok(bytes)
+        let mut full_buf = Vec::new();
+        let mut flush_buf = String::new();
+        let mut buf = [0u8; 4096];
+
+        loop {
+            tokio::select! {
+                result = pipe.read(&mut buf) => {
+                    match result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            full_buf.extend_from_slice(&buf[..n]);
+                            flush_buf.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if flush_buf.len() >= FLUSH_THRESHOLD_BYTES {
+                                flush_send(&mut flush_buf, &tx, is_stdout).await;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                _ = sleep(Duration::from_millis(FLUSH_THRESHOLD_MS)), if !flush_buf.is_empty() => {
+                    flush_send(&mut flush_buf, &tx, is_stdout).await;
+                }
+            }
+        }
+        if !flush_buf.is_empty() {
+            flush_send(&mut flush_buf, &tx, is_stdout).await;
+        }
+        Ok(full_buf)
     })
+}
+
+async fn flush_send(buf: &mut String, tx: &Option<mpsc::Sender<CommandEvent>>, is_stdout: bool) {
+    if let Some(tx) = tx {
+        let text = std::mem::take(buf);
+        let event = if is_stdout {
+            CommandEvent::Stdout(text)
+        } else {
+            CommandEvent::Stderr(text)
+        };
+        let _ = tx.send(event).await;
+    } else {
+        buf.clear();
+    }
 }
 
 async fn collect_pipe(task: Option<JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
@@ -345,6 +431,54 @@ fn render_command_timeout_result(
     }
 }
 
+fn render_command_cancelled_result(
+    command: &str,
+    duration_ms: u64,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> ToolResultEnvelope {
+    let stdout = String::from_utf8_lossy(stdout).into_owned();
+    let stderr = String::from_utf8_lossy(stderr).into_owned();
+    let stdout_lines = line_count(&stdout);
+    let stderr_lines = line_count(&stderr);
+    let rendered = render_command_output(&stdout, &stderr);
+    let model_content = if rendered == "(command produced no output)" {
+        format!("command cancelled after {duration_ms}ms")
+    } else {
+        format!("command cancelled after {duration_ms}ms\n\n{rendered}")
+    };
+    let (model_content, truncated) = truncate_text(
+        model_content,
+        RUN_COMMAND_MAX_CHARS,
+        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
+    );
+    let mut summary = format!(
+        "command cancelled after {duration_ms}ms, stdout {stdout_lines} line{}, stderr {stderr_lines} line{}",
+        plural(stdout_lines),
+        plural(stderr_lines),
+    );
+    if truncated {
+        summary.push_str(", output truncated");
+    }
+    ToolResultEnvelope {
+        status: "cancelled".to_string(),
+        summary,
+        model_content,
+        truncated,
+        structured: Some(serde_json::json!({
+            "kind": "command_result",
+            "command": command,
+            "exit_code": null,
+            "duration_ms": duration_ms,
+            "stdout_lines": stdout_lines,
+            "stderr_lines": stderr_lines,
+            "timed_out": false,
+            "cancelled": true,
+            "line_numbered": false,
+        })),
+    }
+}
+
 fn render_command_output(stdout: &str, stderr: &str) -> String {
     let mut sections = Vec::new();
     if !stdout.is_empty() {
@@ -444,6 +578,8 @@ mod tests {
         let result = run_command(
             &serde_json::json!({"command": read_marker_command(), "timeout": 5, "brief": "read marker"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
 
@@ -466,6 +602,8 @@ mod tests {
         let result = run_command(
             &serde_json::json!({"command": stderr_nonzero_command(), "timeout": 5, "brief": "test stderr"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
 
@@ -482,6 +620,8 @@ mod tests {
         let result = run_command(
             &serde_json::json!({"command": noisy_timeout_command(), "timeout": 1, "brief": "test timeout"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
 
@@ -504,6 +644,8 @@ mod tests {
         let missing = run_command(
             &serde_json::json!({"timeout": 1, "brief": "test"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(missing.status, "error");
@@ -514,6 +656,8 @@ mod tests {
         let empty = run_command(
             &serde_json::json!({"command": "   ", "timeout": 1, "brief": "test"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(empty.status, "error");
@@ -522,6 +666,8 @@ mod tests {
         let zero = run_command(
             &serde_json::json!({"command": stdout_command(), "timeout": 0, "brief": "test"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(zero.status, "error");
@@ -530,6 +676,8 @@ mod tests {
         let over_cap = run_command(
             &serde_json::json!({"command": stdout_command(), "timeout": 601, "brief": "test"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(over_cap.status, "error");
@@ -538,6 +686,8 @@ mod tests {
         let dangerous = run_command(
             &serde_json::json!({"command": "git reset --hard HEAD", "timeout": 1, "brief": "test danger"}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(dangerous.status, "blocked");
@@ -552,9 +702,179 @@ mod tests {
         let result = run_command(
             &serde_json::json!({"command": "echo hi", "timeout": 1}),
             dir.path(),
+            None,
+            None,
         )
         .await;
         assert_eq!(result.status, "error");
         assert!(result.model_content.contains("run_command requires brief"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_streams_stdout_incrementally() {
+        let dir = workspace();
+        let (tx, mut rx) = mpsc::channel::<CommandEvent>(64);
+
+        // Generate >4KB to reliably trigger the byte threshold flush
+        let cmd = "dd if=/dev/zero bs=1 count=5000 2>/dev/null | tr '\\0' 'x'";
+
+        let handle = tokio::spawn(async move {
+            run_command(
+                &serde_json::json!({"command": cmd, "timeout": 5, "brief": "stream test"}),
+                dir.path(),
+                Some(tx),
+                None,
+            )
+            .await
+        });
+
+        let mut events: Vec<CommandEvent> = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        let result = handle.await.unwrap();
+        assert_eq!(result.status, "ok");
+        assert!(
+            !events.is_empty(),
+            "streaming path must emit at least one event"
+        );
+        for event in &events {
+            assert!(
+                matches!(event, CommandEvent::Stdout(_)),
+                "all events should be stdout, got: {event:?}"
+            );
+        }
+        let streamed: String = events
+            .iter()
+            .map(|e| match e {
+                CommandEvent::Stdout(t) | CommandEvent::Stderr(t) => t.as_str(),
+            })
+            .collect();
+        assert_eq!(streamed.len(), 5000);
+        assert!(streamed.chars().all(|c| c == 'x'));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_streams_stderr_separately() {
+        let dir = workspace();
+        let (tx, mut rx) = mpsc::channel::<CommandEvent>(64);
+
+        // 5000 bytes to stderr triggers byte threshold, not just final flush
+        let cmd = "dd if=/dev/zero bs=1 count=5000 2>/dev/null | tr '\\0' 'y' >&2";
+
+        let handle = tokio::spawn(async move {
+            run_command(
+                &serde_json::json!({"command": cmd, "timeout": 5, "brief": "stderr stream"}),
+                dir.path(),
+                Some(tx),
+                None,
+            )
+            .await
+        });
+
+        let mut events: Vec<CommandEvent> = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        let result = handle.await.unwrap();
+        assert_eq!(result.status, "ok");
+        assert!(!events.is_empty());
+        for event in &events {
+            assert!(
+                matches!(event, CommandEvent::Stderr(_)),
+                "all events should be stderr"
+            );
+        }
+        let streamed: String = events
+            .iter()
+            .map(|e| match e {
+                CommandEvent::Stdout(t) | CommandEvent::Stderr(t) => t.as_str(),
+            })
+            .collect();
+        assert_eq!(streamed.len(), 5000);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_streams_fast_small_output_via_final_flush() {
+        let dir = workspace();
+        let (tx, mut rx) = mpsc::channel::<CommandEvent>(64);
+
+        // Completes in < 50ms — too fast for the timer, must rely on final flush
+        let handle = tokio::spawn(async move {
+            run_command(
+                &serde_json::json!({"command": "echo hello", "timeout": 5, "brief": "fast output"}),
+                dir.path(),
+                Some(tx),
+                None,
+            )
+            .await
+        });
+
+        let mut events: Vec<CommandEvent> = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        let result = handle.await.unwrap();
+        assert_eq!(result.status, "ok");
+        assert_eq!(events.len(), 1, "fast output should flush exactly once");
+        let text = match &events[0] {
+            CommandEvent::Stdout(t) => t.clone(),
+            _ => panic!("expected stdout"),
+        };
+        assert!(text.contains("hello"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_streaming_no_output_produces_no_events() {
+        let dir = workspace();
+        let (tx, rx) = mpsc::channel::<CommandEvent>(64);
+
+        let result = run_command(
+            &serde_json::json!({"command": "true", "timeout": 5, "brief": "no output"}),
+            dir.path(),
+            Some(tx),
+            None,
+        )
+        .await;
+
+        assert_eq!(result.status, "ok");
+        assert!(rx.is_empty(), "no output should produce no events");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_streaming_non_utf8_output_is_lossy() {
+        let dir = workspace();
+        let (tx, mut rx) = mpsc::channel::<CommandEvent>(64);
+
+        // Outputs raw byte 0xFF which is never valid UTF-8
+        let cmd = "printf '\\377'";
+
+        let handle = tokio::spawn(async move {
+            run_command(
+                &serde_json::json!({"command": cmd, "timeout": 5, "brief": "binary output"}),
+                dir.path(),
+                Some(tx),
+                None,
+            )
+            .await
+        });
+
+        let mut events: Vec<CommandEvent> = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        let result = handle.await.unwrap();
+        assert_eq!(result.status, "ok");
+        // Must not panic from invalid UTF-8; U+FFFD replacement is fine
+        assert!(!events.is_empty());
     }
 }

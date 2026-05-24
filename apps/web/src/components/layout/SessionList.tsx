@@ -49,9 +49,10 @@ export type SessionListProps = {
   groups?: SessionGroup[];
   activeId?: string;
   onSelect?: (id: string) => void;
+  onNew?: () => void;
 };
 
-export function SessionList({ groups = exampleGroups, activeId, onSelect }: SessionListProps) {
+export function SessionList({ groups = exampleGroups, activeId, onSelect, onNew }: SessionListProps) {
   return (
     <div className="h-full flex flex-col overflow-auto">
       <div className="flex items-center justify-between px-3 pt-3 pb-2 shrink-0">
@@ -59,6 +60,7 @@ export function SessionList({ groups = exampleGroups, activeId, onSelect }: Sess
           Sessions
         </p>
         <button
+          onClick={() => { onNew?.(); }}
           className="text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] p-1 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
           aria-label="New session"
           title="New session"

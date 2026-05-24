@@ -41,7 +41,7 @@ pub(crate) async fn dispatch(
         "write_file" => builtin::write_file(args, workspace, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
-        "run_command" => builtin::run_command(args, workspace).await,
+        "run_command" => builtin::run_command(args, workspace, None, None).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),

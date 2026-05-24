@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use crate::AppState;
 
@@ -45,7 +45,7 @@ pub async fn create_run(
         query = query.tier(tier);
     }
 
-    let (run_id, mut event_rx) = {
+    let (_run_id, event_rx) = {
         let mut mgr = state.run_manager.lock().await;
         match mgr.spawn_run(query).await {
             Ok(pair) => pair,
@@ -56,18 +56,18 @@ pub async fn create_run(
         }
     };
 
-    let run_start = crate::wire::run_start(&run_id);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
-
     tokio::spawn(async move {
-        let _ = tx.send(Ok(run_start)).await;
-        while let Some(line) = event_rx.recv().await {
-            if tx.send(Ok(line)).await.is_err() {
-                break;
+        use tokio_stream::StreamExt;
+        let mut bstream = BroadcastStream::new(event_rx);
+        while let Some(item) = bstream.next().await {
+            if let Ok(line) = item {
+                if tx.send(Ok(line)).await.is_err() {
+                    break;
+                }
             }
         }
     });
-
     let stream = ReceiverStream::new(rx);
     Response::builder()
         .status(StatusCode::OK)
@@ -81,8 +81,12 @@ pub async fn cancel_run(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    let mut mgr = state.run_manager.lock().await;
-    if mgr.cancel(&run_id) {
+    let jh = {
+        let mgr = state.run_manager.lock().await;
+        mgr.cancel(&run_id)
+    };
+    if let Some(jh) = jh {
+        let _ = jh.await;
         Json(json!({"ok": true}))
     } else {
         Json(json!({"ok": false, "code": "session_not_found", "message": "run not found"}))

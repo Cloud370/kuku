@@ -340,7 +340,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 id,
                 status,
                 summary,
-                result: _,
+                ..
             }) => {
                 if use_stream_json {
                     println!(

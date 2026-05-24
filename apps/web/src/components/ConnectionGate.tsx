@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useHealth } from "@/queries/health";
+import { useUIStore } from "@/stores/ui";
 import { Button } from "@/components/ui/Button";
 
 function LoadingScreen() {
@@ -47,8 +48,16 @@ function ErrorScreen({
 }
 
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
-  const { isLoading, isError, refetch, isRefetching } = useHealth();
+  const { data, isLoading, isError, refetch, isRefetching } = useHealth();
   const [skipped, setSkipped] = useState(false);
+  const workspace = useUIStore((s) => s.workspace);
+  const setWorkspace = useUIStore((s) => s.setWorkspace);
+
+  useEffect(() => {
+    if (data?.workspace && !workspace) {
+      setWorkspace(data.workspace);
+    }
+  }, [data?.workspace, workspace, setWorkspace]);
 
   if (isLoading && !skipped) return <LoadingScreen />;
   if (isError && !skipped)

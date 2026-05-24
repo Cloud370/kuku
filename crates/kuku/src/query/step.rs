@@ -24,7 +24,7 @@ use super::helpers::{
     permission_rule, platform_label, provider_failure_kind, provider_format_name,
 };
 use super::run::find_tool_definition;
-use super::slots::{spawn_agent_slot, spawn_simple_slot};
+use super::slots::{dispatch_tool_slot, spawn_agent_slot};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, ResolvedRuntime, StreamingChunkState, UiEvent,
@@ -55,6 +55,7 @@ fn return_blocked_tool(
         id: id.to_string(),
         status: "blocked".to_string(),
         summary: reason.to_string(),
+        model_content: None,
         result: None,
     });
     Ok(PendingStep::Pending {
@@ -75,10 +76,16 @@ async fn execute_inline_tool(
     kind: super::types::ToolKind,
 ) -> Result<PendingStep> {
     let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+    let mc = if result.model_content.is_empty() {
+        None
+    } else {
+        Some(result.model_content)
+    };
     pending.pending_events.push_back(UiEvent::ToolEnd {
         id: queued.tool_call.id.clone(),
         status: result.status,
         summary: result.summary,
+        model_content: mc,
         result: result.structured,
     });
     Ok(PendingStep::Pending {
@@ -391,9 +398,9 @@ pub(super) async fn advance_pending(
                         );
                     }
 
-                    let slot = spawn_simple_slot(
+                    let (slot, tool_kind) = dispatch_tool_slot(
+                        &queued.tool_call.name,
                         id.clone(),
-                        queued.tool_call.name.clone(),
                         queued.tool_call.args.clone(),
                         summary.clone(),
                         pending.workspace.clone(),
@@ -407,7 +414,7 @@ pub(super) async fn advance_pending(
                             id: id.clone(),
                             tool: queued.tool_call.name.clone(),
                             summary: summary.clone(),
-                            kind: super::types::ToolKind::Simple,
+                            kind: tool_kind,
                         }),
                     });
                 }
