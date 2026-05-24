@@ -174,9 +174,9 @@ export function Session() {
               toolName={pendingPermission.tool}
               riskLabel={pendingPermission.risk}
               summary={pendingPermission.summary}
-              onDeny={() => { void respondToPermission(id!, pendingPermission.id, "deny"); }}
-              onAllowOnce={() => { void respondToPermission(id!, pendingPermission.id, "once"); }}
-              onAllowAlways={() => { void respondToPermission(id!, pendingPermission.id, "project"); }}
+              onDeny={() => { void respondToPermission(id ?? "", pendingPermission.id, "deny"); }}
+              onAllowOnce={() => { void respondToPermission(id ?? "", pendingPermission.id, "once"); }}
+              onAllowAlways={() => { void respondToPermission(id ?? "", pendingPermission.id, "project"); }}
             />
           )}
           <Composer onSubmit={handleSubmit} />
