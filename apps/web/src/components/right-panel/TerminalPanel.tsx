@@ -16,7 +16,7 @@ export type TerminalPanelProps = {
 
 export function TerminalPanel({ lines = exampleOutput }: TerminalPanelProps) {
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0c]">
+    <div className="h-full flex flex-col bg-[var(--color-surface)]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
         <span className="text-[var(--text-xs)] text-[var(--color-text-muted)] font-mono">Terminal</span>
         <button className="text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] cursor-pointer transition-colors">
