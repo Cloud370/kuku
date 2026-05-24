@@ -23,7 +23,7 @@ export function FileAccessBar({ files = exampleFiles }: FileAccessBarProps) {
   return (
     <div className="mb-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-2 text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors cursor-pointer"
       >
         <span className="font-mono text-[var(--text-sm)]">&#x1F4C4;</span>

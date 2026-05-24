@@ -38,7 +38,7 @@ export function Composer({ onSubmit, disabled, error, onDismissError }: Composer
         <div className="flex items-center justify-between mb-3 px-3 py-1.5 rounded-[var(--radius-md)] bg-[var(--color-error)] border border-[var(--color-error-border)] text-[var(--text-xs)] text-red-400">
           <span>{error}</span>
           <button
-            onClick={onDismissError}
+            onClick={() => { onDismissError?.(); }}
             className="ml-2 text-red-400 hover:text-red-300 cursor-pointer shrink-0"
             aria-label="Dismiss error"
           >
@@ -51,7 +51,7 @@ export function Composer({ onSubmit, disabled, error, onDismissError }: Composer
           {models.map((m) => (
             <button
               key={m.id}
-              onClick={() => setModel(m.id)}
+              onClick={() => { setModel(m.id); }}
               disabled={disabled}
               className={cn(
                 "px-2.5 py-0.5 text-[var(--text-xs)] rounded-[var(--radius-full)] transition-colors cursor-pointer border",
@@ -68,7 +68,7 @@ export function Composer({ onSubmit, disabled, error, onDismissError }: Composer
         <div className="flex items-start gap-2">
           <textarea
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => { setValue(e.target.value); }}
             onKeyDown={handleKeyDown}
             disabled={disabled}
             rows={2}
@@ -83,7 +83,7 @@ export function Composer({ onSubmit, disabled, error, onDismissError }: Composer
             )}
           />
           <button
-            onClick={handleSend}
+            onClick={() => { handleSend(); }}
             disabled={disabled || value.trim() === ""}
             className={cn(
               "px-4 py-2 text-[var(--text-sm)] font-medium rounded-[var(--radius-md)] transition-colors cursor-pointer shrink-0",

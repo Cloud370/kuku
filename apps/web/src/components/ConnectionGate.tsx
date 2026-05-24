@@ -56,7 +56,7 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
       <ErrorScreen
         onRetry={() => { void refetch(); }}
         isRefetching={isRefetching}
-        onSkip={() => setSkipped(true)}
+        onSkip={() => { setSkipped(true); }}
       />
     );
   return <>{children}</>;

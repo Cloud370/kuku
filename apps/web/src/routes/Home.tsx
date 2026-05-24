@@ -14,10 +14,10 @@ export function Home() {
       <Header
         sessionTitle="kuku"
         layoutMode={layoutMode}
-        onLayoutModeChange={(m: LayoutMode) => setLayoutMode(m)}
+        onLayoutModeChange={(m: LayoutMode) => { setLayoutMode(m); }}
       />
       <div className="flex-1 min-h-0 max-w-2xl mx-auto w-full">
-        <SessionList onSelect={(id) => navigate(`/session/${id}`)} />
+        <SessionList onSelect={(id) => { void navigate(`/session/${id}`); }} />
       </div>
     </div>
   );

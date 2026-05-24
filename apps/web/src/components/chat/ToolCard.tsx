@@ -42,7 +42,7 @@ export function ToolCard({
       )}
     >
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors cursor-pointer hover:bg-[var(--color-surface-hover)]"
       >
         <span className="text-[var(--text-sm)] shrink-0">{icon}</span>
@@ -70,7 +70,7 @@ export function ToolCard({
           {kind === "agent" && childSessionId && status === "completed" && (
             <button
               className="mt-2 text-[var(--text-xs)] text-[var(--color-accent)] hover:underline cursor-pointer"
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); }}
             >
               View sub-agent
             </button>

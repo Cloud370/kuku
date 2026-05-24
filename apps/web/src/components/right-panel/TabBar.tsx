@@ -18,7 +18,7 @@ export function TabBar({ active, onChange }: TabBarProps) {
       {tabs.map((tab) => (
         <button
           key={tab.id}
-          onClick={() => onChange(tab.id)}
+          onClick={() => { onChange(tab.id); }}
           className={cn(
             "px-3 py-2 text-[var(--text-xs)] font-medium transition-colors cursor-pointer border-b-2 -mb-[1px]",
             tab.id === active

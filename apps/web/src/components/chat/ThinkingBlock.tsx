@@ -12,7 +12,7 @@ export function ThinkingBlock({ children, defaultOpen = false }: ThinkingBlockPr
   return (
     <div className="mb-2 rounded-[var(--radius-md)] border border-[var(--color-border)] overflow-hidden">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors cursor-pointer bg-[var(--color-surface)]"
       >
         <span className="font-mono text-[var(--text-xs)]">&#x1F9E0;</span>

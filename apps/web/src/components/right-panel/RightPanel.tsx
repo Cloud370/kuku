@@ -15,7 +15,7 @@ export function RightPanel({ diffContent, terminalContent, statusContent }: Righ
 
   return (
     <div className="h-full flex flex-col bg-[var(--color-surface)]">
-      <TabBar active={tab} onChange={(t: RightPanelTab) => setTab(t)} />
+      <TabBar active={tab} onChange={(t: RightPanelTab) => { setTab(t); }} />
       <div className="flex-1 min-h-0 overflow-auto">
         {tab === "diff" && (diffContent ?? <EmptyPlaceholder label="Diff" />)}
         {tab === "terminal" && (terminalContent ?? <EmptyPlaceholder label="Terminal" />)}

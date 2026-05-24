@@ -22,7 +22,7 @@ export function WorkspaceZone() {
         {workspaces.map((ws) => (
           <button
             key={ws}
-            onClick={() => setWorkspace(ws)}
+            onClick={() => { setWorkspace(ws); }}
             className={cn(
               "text-left px-3 py-1.5 text-[var(--text-sm)] rounded-[var(--radius-md)] transition-colors cursor-pointer truncate",
               ws === active

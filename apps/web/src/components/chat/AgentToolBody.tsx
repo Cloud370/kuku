@@ -16,7 +16,7 @@ export function AgentToolBody({ children, maxExpand = 2 }: AgentToolBodyProps) {
       </div>
       {!expanded && (
         <button
-          onClick={() => setExpanded(true)}
+          onClick={() => { setExpanded(true); }}
           className="text-[var(--text-xs)] text-[var(--color-accent)] hover:underline cursor-pointer mt-1"
         >
           Show all ({maxExpand}+ layers)

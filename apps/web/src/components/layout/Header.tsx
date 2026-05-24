@@ -7,7 +7,9 @@ export type HeaderProps = {
   onLayoutModeChange?: (mode: LayoutMode) => void;
 };
 
-const statusColors: Record<string, string> = {
+type SessionStatus = NonNullable<HeaderProps["sessionStatus"]>;
+
+const statusColors: Record<SessionStatus, string> = {
   running: "bg-green-400",
   waiting: "bg-yellow-400",
   completed: "bg-[var(--color-text-muted)]",
@@ -44,7 +46,7 @@ export function Header({
       </div>
       <div className="flex items-center gap-2">
         <button
-          onClick={() => onLayoutModeChange(nextLayout[layoutMode])}
+          onClick={() => { onLayoutModeChange(nextLayout[layoutMode]); }}
           className="text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] px-2 py-1 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
           aria-label={`Layout mode: ${layoutLabel[layoutMode]}`}
         >

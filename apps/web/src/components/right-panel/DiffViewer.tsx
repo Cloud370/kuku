@@ -48,7 +48,7 @@ export function DiffViewer({ lines = exampleDiff }: DiffViewerProps) {
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
         <button
-          onClick={() => setMode("unified")}
+          onClick={() => { setMode("unified"); }}
           className={cn(
             "text-[var(--text-xs)] px-2 py-0.5 rounded-[var(--radius-sm)] cursor-pointer transition-colors",
             mode === "unified"
@@ -59,7 +59,7 @@ export function DiffViewer({ lines = exampleDiff }: DiffViewerProps) {
           Unified
         </button>
         <button
-          onClick={() => setMode("split")}
+          onClick={() => { setMode("split"); }}
           className={cn(
             "text-[var(--text-xs)] px-2 py-0.5 rounded-[var(--radius-sm)] cursor-pointer transition-colors",
             mode === "split"
@@ -96,7 +96,7 @@ export function DiffViewer({ lines = exampleDiff }: DiffViewerProps) {
           <div className="grid grid-cols-2">
             <div className="border-r border-[var(--color-border)]">
               {lines.map((line, i) => (
-                <div key={`old-${i}`} className={cn("flex", line.type === "removed" ? "bg-red-950/30" : "")}>
+                <div key={`old-${String(i)}`} className={cn("flex", line.type === "removed" ? "bg-red-950/30" : "")}>
                   <span className="text-right w-[3em] pr-2 text-[var(--color-text-muted)] select-none shrink-0">
                     {line.oldLineNum}
                   </span>
@@ -108,7 +108,7 @@ export function DiffViewer({ lines = exampleDiff }: DiffViewerProps) {
             </div>
             <div>
               {lines.map((line, i) => (
-                <div key={`new-${i}`} className={cn("flex", line.type === "added" ? "bg-green-950/30" : "")}>
+                <div key={`new-${String(i)}`} className={cn("flex", line.type === "added" ? "bg-green-950/30" : "")}>
                   <span className="text-right w-[3em] pr-2 text-[var(--color-text-muted)] select-none shrink-0">
                     {line.newLineNum}
                   </span>
