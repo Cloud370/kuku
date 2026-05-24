@@ -21,7 +21,6 @@ function App() {
       <ConnectionGate>
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/session/new" element={<Session />} />
           <Route path="/session/:id" element={<Session />} />
         </Routes>
       </ConnectionGate>

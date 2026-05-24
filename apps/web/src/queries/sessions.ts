@@ -17,5 +17,7 @@ export function useSessionEvents(
     queryKey: ["session-events", sessionId],
     queryFn: () => fetchSessionEvents(sessionId as string, workspace),
     enabled: !!sessionId,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
