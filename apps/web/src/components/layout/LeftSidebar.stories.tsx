@@ -4,12 +4,10 @@ import { LeftSidebar } from "./LeftSidebar";
 const meta = {
   title: "Layout/LeftSidebar",
   component: LeftSidebar,
-  parameters: {
-    layout: "padded",
-  },
+  parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
-      <div style={{ height: "600px", maxWidth: "280px" }}>
+      <div className="fixed inset-0" style={{ maxWidth: "280px" }}>
         <Story />
       </div>
     ),
