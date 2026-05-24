@@ -1,6 +1,7 @@
 import { Panel, Group, Separator } from "react-resizable-panels";
 import { useUIStore } from "@/stores/ui";
 import { WorkspaceZone } from "./WorkspaceZone";
+import { SessionList } from "./SessionList";
 
 const vertSep =
   "group flex items-center justify-center h-[6px] shrink-0 hover:bg-[var(--color-accent-muted)] transition-colors";
@@ -21,14 +22,7 @@ export function LeftSidebar() {
           <div className={vertLine} />
         </Separator>
         <Panel defaultSize={67} minSize="120px">
-          <div className="h-full flex flex-col p-3 gap-2 overflow-auto">
-            <p className="text-[var(--text-xs)] font-medium text-[var(--color-text-muted)] uppercase tracking-wider shrink-0">
-              Sessions
-            </p>
-            <div className="flex-1 text-[var(--text-sm)] text-[var(--color-text-muted)]">
-              {/* SessionList filled in Task 4 */}
-            </div>
-          </div>
+          <SessionList />
         </Panel>
       </Group>
       <div className="border-t border-[var(--color-border)] p-2 flex justify-center shrink-0">
