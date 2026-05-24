@@ -1,5 +1,6 @@
 import { Panel, Group, Separator } from "react-resizable-panels";
 import { useUIStore } from "@/stores/ui";
+import { WorkspaceZone } from "./WorkspaceZone";
 
 const vertSep =
   "group flex items-center justify-center h-[6px] shrink-0 hover:bg-[var(--color-accent-muted)] transition-colors";
@@ -14,24 +15,7 @@ export function LeftSidebar() {
     <aside className="h-full flex flex-col bg-[var(--color-surface)] border-r border-[var(--color-border)]">
       <Group orientation="vertical" className="flex-1 min-h-0">
         <Panel defaultSize={33} minSize="80px" maxSize="50%">
-          <div className="h-full flex flex-col p-3 gap-2 overflow-auto">
-            <p className="text-[var(--text-xs)] font-medium text-[var(--color-text-muted)] uppercase tracking-wider shrink-0">
-              Workspace
-            </p>
-            <div className="flex-1 flex flex-col gap-1.5">
-              <div className="text-[var(--text-sm)] text-[var(--color-text-secondary)]">personal</div>
-              <div className="text-[var(--text-sm)] text-[var(--color-text-muted)]">work</div>
-              <div className="text-[var(--text-sm)] text-[var(--color-text-muted)]">oss</div>
-            </div>
-            <div className="flex gap-1 shrink-0">
-              <button
-                className="text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] p-1 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-                aria-label="Add workspace"
-              >
-                +
-              </button>
-            </div>
-          </div>
+          <WorkspaceZone />
         </Panel>
         <Separator className={vertSep}>
           <div className={vertLine} />
