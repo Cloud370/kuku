@@ -8,7 +8,6 @@ use tokio::sync::{broadcast, oneshot, Mutex as TokioMutex, Semaphore};
 pub struct RunHandle {
     cancel_token: Arc<tokio::sync::Notify>,
     pub workspace: PathBuf,
-    #[allow(dead_code)]
     join_handle: tokio::task::JoinHandle<()>,
     recent_events: Arc<Mutex<VecDeque<String>>>,
 }
@@ -16,7 +15,7 @@ pub struct RunHandle {
 type PermissionMap = Arc<TokioMutex<HashMap<String, oneshot::Sender<kuku::PermissionChoice>>>>;
 
 pub struct RunManager {
-    runs: HashMap<String, RunHandle>,
+    runs: Arc<Mutex<HashMap<String, RunHandle>>>,
     permissions: PermissionMap,
     semaphore: Arc<Semaphore>,
 }
@@ -24,7 +23,7 @@ pub struct RunManager {
 impl RunManager {
     pub fn new(max_concurrent: usize) -> Self {
         Self {
-            runs: HashMap::new(),
+            runs: Arc::new(Mutex::new(HashMap::new())),
             permissions: Arc::new(TokioMutex::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
         }
@@ -42,7 +41,7 @@ impl RunManager {
             .map_err(|_| kuku::Error::ConfigLoad("semaphore closed".to_string()))?;
 
         if let Some(sid) = query.session_id() {
-            if self.runs.contains_key(sid) {
+            if self.runs.lock().unwrap().contains_key(sid) {
                 drop(permit);
                 return Err(kuku::Error::SessionLocked {
                     session: PathBuf::from(sid),
@@ -74,14 +73,19 @@ impl RunManager {
         let event_tx_clone = event_tx.clone();
         let recent_clone = recent_events.clone();
         let cancel_for_perm = cancel_token.clone();
-        let join_handle = tokio::spawn(Self::run_loop(
-            run,
-            event_tx_clone,
-            permissions,
-            permit,
-            recent_clone,
-            cancel_for_perm,
-        ));
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let join_handle = tokio::spawn(async move {
+            Self::run_loop(
+                run,
+                event_tx_clone,
+                permissions,
+                permit,
+                recent_clone,
+                cancel_for_perm,
+            )
+            .await;
+            let _ = done_tx.send(());
+        });
 
         let handle = RunHandle {
             cancel_token: cancel_token.clone(),
@@ -89,7 +93,14 @@ impl RunManager {
             join_handle,
             recent_events,
         };
-        self.runs.insert(run_id.clone(), handle);
+        self.runs.lock().unwrap().insert(run_id.clone(), handle);
+
+        let runs = self.runs.clone();
+        let rid = run_id.clone();
+        tokio::spawn(async move {
+            let _ = done_rx.await;
+            runs.lock().unwrap().remove(&rid);
+        });
 
         Ok((run_id, event_rx))
     }
@@ -117,8 +128,8 @@ impl RunManager {
                             _ = tokio::time::sleep(Duration::from_secs(60)) => kuku::PermissionChoice::Deny,
                             _ = cancel_for_perm.notified() => kuku::PermissionChoice::Deny,
                         };
-                        if let Ok(Some(result_event)) =
-                            run.decide(&request.id, choice, None).await
+                        permissions.lock().await.remove(&request.id);
+                        if let Ok(Some(result_event)) = run.decide(&request.id, choice, None).await
                         {
                             if let Some(line) = crate::wire::serialize_event(&result_event) {
                                 push_event(&recent_events, &line);
@@ -152,12 +163,12 @@ impl RunManager {
         }
     }
 
-    pub fn cancel(&mut self, run_id: &str) -> bool {
-        if let Some(handle) = self.runs.remove(run_id) {
+    pub fn cancel(&self, run_id: &str) -> Option<tokio::task::JoinHandle<()>> {
+        if let Some(handle) = self.runs.lock().unwrap().remove(run_id) {
             handle.cancel_token.notify_waiters();
-            true
+            Some(handle.join_handle)
         } else {
-            false
+            None
         }
     }
 
@@ -177,11 +188,13 @@ impl RunManager {
     }
 
     pub fn active_run_ids(&self) -> Vec<String> {
-        self.runs.keys().cloned().collect()
+        self.runs.lock().unwrap().keys().cloned().collect()
     }
 
     pub fn recent_events(&self, session_id: &str) -> Vec<String> {
         self.runs
+            .lock()
+            .unwrap()
             .get(session_id)
             .map(|h| h.recent_events.lock().unwrap().iter().cloned().collect())
             .unwrap_or_default()

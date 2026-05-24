@@ -81,8 +81,12 @@ pub async fn cancel_run(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    let mut mgr = state.run_manager.lock().await;
-    if mgr.cancel(&run_id) {
+    let jh = {
+        let mgr = state.run_manager.lock().await;
+        mgr.cancel(&run_id)
+    };
+    if let Some(jh) = jh {
+        let _ = jh.await;
         Json(json!({"ok": true}))
     } else {
         Json(json!({"ok": false, "code": "session_not_found", "message": "run not found"}))

@@ -122,8 +122,16 @@ pub async fn shutdown_signal(state: Arc<AppState>) {
         mgr.active_run_ids()
     };
 
+    let mut handles = Vec::new();
     for run_id in run_ids {
-        let mut mgr = state.run_manager.lock().await;
-        mgr.cancel(&run_id);
+        if let Some(jh) = {
+            let mgr = state.run_manager.lock().await;
+            mgr.cancel(&run_id)
+        } {
+            handles.push(jh);
+        }
+    }
+    for jh in handles {
+        let _ = jh.await;
     }
 }
