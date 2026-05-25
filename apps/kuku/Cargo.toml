@@ -25,3 +25,4 @@ tracing-subscriber = { workspace = true }
 arc-swap = { workspace = true }
 home = { workspace = true }
 axum = { workspace = true }
+rust-embed = { version = "8", features = [] }

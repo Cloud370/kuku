@@ -32,6 +32,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - run: mkdir -p apps/web/dist && cp apps/web/index.html apps/web/dist/
       - run: cargo clippy -- -D warnings
 
   test:
@@ -44,4 +45,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: mkdir -p apps/web/dist && cp apps/web/index.html apps/web/dist/
       - run: cargo test -p kuku -p kuku-cli -p kuku-server
