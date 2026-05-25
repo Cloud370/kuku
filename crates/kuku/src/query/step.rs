@@ -1,9 +1,9 @@
 use sha2::Digest;
 
 use crate::context::{
-    assemble_context, build_request_provenance, rebuild_history, ContextInput, EnvironmentSource,
-    FileSource, HistoryRange, RequestProvenanceInput, SubagentRegistryProvenance,
-    ToolRegistryProvenance,
+    assemble_context, build_request_provenance, rebuild_history, restore_frozen_prelude,
+    ContextInput, EnvironmentSource, FileSource, HistoryRange, RequestProvenanceInput,
+    SubagentRegistryProvenance, ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -522,6 +522,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
+
+    // Freeze prelude on first turn, restore on subsequent turns
+    if let Some(frozen) = restore_frozen_prelude(&existing_events) {
+        assembly.prelude_messages = frozen;
+    }
+
     let prelude_snapshot = assembly.snapshot_prelude();
 
     inject_runtime_context(

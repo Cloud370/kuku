@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::event::types::ContextMessage;
+use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
 use crate::prompt::{render_project_context, render_runtime_context, ProjectContextInput};
 
 use super::message::{CanonicalMessage, MessageBlock};
@@ -95,6 +95,22 @@ impl ContextAssembly {
             })
             .collect()
     }
+}
+
+/// Restore frozen prelude messages from the first ModelRequest in event history.
+/// Returns None if no ModelRequest exists yet (first turn).
+pub fn restore_frozen_prelude(events: &[StoredEvent]) -> Option<Vec<CanonicalMessage>> {
+    let first_req = events.iter().find_map(|ev| match &ev.payload {
+        EventPayload::ModelRequest { context, .. } => context.as_ref(),
+        _ => None,
+    })?;
+
+    let prelude = first_req
+        .prelude
+        .iter()
+        .map(|cm| CanonicalMessage::user_text(&cm.content))
+        .collect();
+    Some(prelude)
 }
 
 /// Build a complete context assembly with A2b two-layer structure.
