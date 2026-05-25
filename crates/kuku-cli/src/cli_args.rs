@@ -37,6 +37,9 @@ pub enum Command {
     /// Start the HTTP API server
     #[cfg(feature = "server")]
     Server(kuku_server::server_args::ServerArgs),
+    /// Start the HTTP server with embedded Web UI
+    #[cfg(feature = "server")]
+    Web(kuku_server::server_args::ServerArgs),
 }
 
 // ── Prompts ──
