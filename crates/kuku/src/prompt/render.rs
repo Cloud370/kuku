@@ -6,8 +6,6 @@ pub(crate) struct ProjectContextInput {
     pub(crate) platform: String,
     pub(crate) current_date: String,
     pub(crate) project_instructions_rendered: String,
-    pub(crate) global_memory_rendered: String,
-    pub(crate) project_memory_rendered: String,
     pub(crate) model_tiers_rendered: String,
 }
 
@@ -22,8 +20,6 @@ pub(crate) fn render_project_context(
             "platform",
             "current_date",
             "project_instructions_rendered",
-            "global_memory_rendered",
-            "project_memory_rendered",
             "model_tiers_rendered",
         ],
     )?;
@@ -35,11 +31,6 @@ pub(crate) fn render_project_context(
     rendered = rendered.replace(
         "{{project_instructions_rendered}}",
         &input.project_instructions_rendered,
-    );
-    rendered = rendered.replace("{{global_memory_rendered}}", &input.global_memory_rendered);
-    rendered = rendered.replace(
-        "{{project_memory_rendered}}",
-        &input.project_memory_rendered,
     );
     rendered = rendered.replace("{{model_tiers_rendered}}", &input.model_tiers_rendered);
     Ok(rendered)
@@ -80,8 +71,6 @@ mod tests {
             platform: "linux".to_string(),
             current_date: "2026-05-18".to_string(),
             project_instructions_rendered: "No project instructions found.".to_string(),
-            global_memory_rendered: "No global memory.".to_string(),
-            project_memory_rendered: "No project memory.".to_string(),
             model_tiers_rendered: "No model tiers configured.".to_string(),
         };
 
@@ -108,8 +97,6 @@ mod tests {
             platform: "".into(),
             current_date: "".into(),
             project_instructions_rendered: "".into(),
-            global_memory_rendered: "".into(),
-            project_memory_rendered: "".into(),
             model_tiers_rendered: "".into(),
         };
         let error = render_project_context("{{missing_key}}", &input).unwrap_err();

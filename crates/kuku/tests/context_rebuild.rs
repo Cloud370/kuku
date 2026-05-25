@@ -87,7 +87,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     assert!(assembly.system_prompt.contains("<kuku_identity>"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
     assert!(assembly.system_prompt.contains("<kuku_working_style>"));
-    assert_eq!(assembly.prelude_messages.len(), 2);
+    assert_eq!(assembly.prelude_messages.len(), 4);
     assert_eq!(assembly.history, history);
     assert_eq!(assembly.tools, tools);
     assert_eq!(assembly.project_instruction_sources, project_instructions);
@@ -95,9 +95,39 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         assembly.memory_sources,
         vec![global_memory.clone(), project_memory.clone()]
     );
-    assert_eq!(assembly.prompt_asset_sources.len(), 3);
+    assert_eq!(assembly.prompt_asset_sources.len(), 5);
 
+    // [0] tool_guidance
     match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_tool_guidance>"));
+            assert!(
+                text.contains("Use tools to establish evidence before concluding or modifying.")
+            );
+        }
+        other => panic!("expected tool-guidance text block, got {other:?}"),
+    }
+
+    // [1] global_memory
+    match &assembly.prelude_messages[1].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_global_memory>"));
+            assert!(text.contains("global"));
+        }
+        other => panic!("expected global-memory text block, got {other:?}"),
+    }
+
+    // [2] project_memory
+    match &assembly.prelude_messages[2].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_project_memory>"));
+            assert!(text.contains("project"));
+        }
+        other => panic!("expected project-memory text block, got {other:?}"),
+    }
+
+    // [3] project_context
+    match &assembly.prelude_messages[3].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_execution_context>"));
             assert!(text.contains("Workspace root: /workspace"));
@@ -105,27 +135,10 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             assert!(text.contains("Current date: 2026-05-14"));
             assert!(text.contains("<kuku_project_instructions>"));
             assert!(text.contains("instructions"));
-            assert!(text.contains("<kuku_memory>"));
-            assert!(text.contains("global"));
-            assert!(text.contains("project"));
+            assert!(!text.contains("<kuku_memory>"));
             assert!(!text.contains("<kuku_current_task>"));
         }
-        other => panic!("expected one project-context text block, got {other:?}"),
-    }
-
-    match &assembly.prelude_messages[1].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_tool_guidance>"));
-            assert!(
-                text.contains("Use tools to establish evidence before concluding or modifying.")
-            );
-            assert!(text.contains("Do not guess when tools can establish the answer."));
-            assert!(text.contains("Treat tool results as evidence."));
-            assert!(text.contains(
-                "Do not claim conclusions that are not supported by tool or file evidence."
-            ));
-        }
-        other => panic!("expected one tool-guidance text block, got {other:?}"),
+        other => panic!("expected project-context text block, got {other:?}"),
     }
 
     let provenance = build_request_provenance(RequestProvenanceInput {
@@ -207,15 +220,40 @@ fn assemble_context_keeps_stable_empty_placeholders() {
     )
     .unwrap();
 
+    // [0] tool_guidance
     match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_tool_guidance>"));
+        }
+        other => panic!("expected tool-guidance text block, got {other:?}"),
+    }
+
+    // [1] global_memory with fallback
+    match &assembly.prelude_messages[1].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_global_memory>"));
+            assert!(text.contains("No global memory."));
+        }
+        other => panic!("expected global-memory text block, got {other:?}"),
+    }
+
+    // [2] project_memory with fallback
+    match &assembly.prelude_messages[2].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_project_memory>"));
+            assert!(text.contains("No project memory."));
+        }
+        other => panic!("expected project-memory text block, got {other:?}"),
+    }
+
+    // [3] project_context
+    match &assembly.prelude_messages[3].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_execution_context>"));
             assert!(text.contains("No project instructions found."));
-            assert!(text.contains("No global memory."));
-            assert!(text.contains("No project memory."));
             assert!(!text.contains("<kuku_current_task>"));
         }
-        other => panic!("expected one project-context text block, got {other:?}"),
+        other => panic!("expected project-context text block, got {other:?}"),
     }
 }
 
@@ -244,19 +282,19 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
         .prelude_messages
         .insert(1, CanonicalMessage::user_text("<kuku_system_notice>\n- Context drift: /workspace/AGENTS.md changed (sha256:old -> sha256:new)\n</kuku_system_notice>"));
 
-    assert_eq!(assembly.prelude_messages.len(), 3);
+    assert_eq!(assembly.prelude_messages.len(), 5);
     match &assembly.prelude_messages[1].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_system_notice>"));
             assert!(text.contains("Context drift:"));
         }
-        other => panic!("expected one drift-notice text block, got {other:?}"),
+        other => panic!("expected drift-notice text block, got {other:?}"),
     }
     match &assembly.prelude_messages[2].blocks[..] {
         [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_tool_guidance>"));
+            assert!(text.contains("<kuku_global_memory>"));
         }
-        other => panic!("expected tool guidance after drift notice, got {other:?}"),
+        other => panic!("expected global_memory after drift notice, got {other:?}"),
     }
 }
 

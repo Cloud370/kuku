@@ -57,7 +57,8 @@ pub struct ContextInput {
 /// Assembled system prompt, prelude messages, history, and tool schemas ready for the provider.
 pub struct ContextAssembly {
     pub system_prompt: String,
-    /// messages[0]: project_context (behavior framework) + messages[1]: tool_guidance
+    /// messages[0]: tool_guidance, messages[1]: global_memory,
+    /// messages[2]: project_memory, messages[3]: project_context
     pub prelude_messages: Vec<CanonicalMessage>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
@@ -70,8 +71,9 @@ pub struct ContextAssembly {
 }
 
 impl ContextAssembly {
-    /// Snapshot the clean prelude messages (project_context + tool_guidance) before
-    /// any turn-specific content (runtime_context) is added.
+    /// Snapshot the clean prelude messages
+    /// (tool_guidance + global_memory + project_memory + project_context)
+    /// before any turn-specific content is added.
     pub fn snapshot_prelude(&self) -> Vec<ContextMessage> {
         self.prelude_messages
             .iter()
@@ -133,7 +135,7 @@ pub fn assemble_context(
             .join("\n")
     };
 
-    // Layer 1: project_context (behavior framework) — messages[0]
+    // Layer 1: project_context (behavior framework) — messages[3]
     let project_context_text = render_project_context(
         &catalog.project_context.text,
         &ProjectContextInput {
@@ -141,11 +143,19 @@ pub fn assemble_context(
             platform: input.environment.platform.clone(),
             current_date: input.environment.current_date.clone(),
             project_instructions_rendered: project_instructions_text,
-            global_memory_rendered: global_memory_text,
-            project_memory_rendered: project_memory_text,
             model_tiers_rendered: model_tiers_text,
         },
     )?;
+
+    // Memory messages rendered from their own templates
+    let global_memory_rendered = catalog
+        .global_memory
+        .text
+        .replace("{{memory_content}}", &global_memory_text);
+    let project_memory_rendered = catalog
+        .project_memory
+        .text
+        .replace("{{memory_content}}", &project_memory_text);
 
     // Layer 2: runtime_context (dynamic catalogs + notices) — injected into current user turn
     let runtime_context = input
@@ -165,8 +175,14 @@ pub fn assemble_context(
     Ok(ContextAssembly {
         system_prompt: catalog.system.text,
         prelude_messages: vec![
-            CanonicalMessage::user_text(project_context_text),
+            // [0] tool_guidance — shared across all users/projects
             CanonicalMessage::user_text(catalog.tool_guidance.text),
+            // [1] global_memory — shared across projects for same user
+            CanonicalMessage::user_text(global_memory_rendered),
+            // [2] project_memory — project-specific memory
+            CanonicalMessage::user_text(project_memory_rendered),
+            // [3] project_context — workspace/date/models
+            CanonicalMessage::user_text(project_context_text),
         ],
         history: input.history,
         tools: input.tools,
@@ -182,6 +198,14 @@ pub fn assemble_context(
             FileSource {
                 path: catalog.tool_guidance.path,
                 hash: catalog.tool_guidance.hash,
+            },
+            FileSource {
+                path: catalog.global_memory.path,
+                hash: catalog.global_memory.hash,
+            },
+            FileSource {
+                path: catalog.project_memory.path,
+                hash: catalog.project_memory.hash,
             },
         ],
         project_instruction_sources: input.project_instructions,
@@ -217,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn a2b_assembles_project_context_as_first_prelude_message() {
+    fn a2b_assembles_four_prelude_messages() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
@@ -246,28 +270,37 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(assembly.prelude_messages.len(), 2);
-        let first = match &assembly.prelude_messages[0].blocks[..] {
-            [MessageBlock::Text(t)] => t.clone(),
-            other => panic!("expected text, got {other:?}"),
-        };
-        assert!(
-            first.contains("<kuku_project_context>"),
-            "messages[0] should be project_context, got: {first}"
-        );
-        assert!(
-            first.contains("instr"),
-            "should contain project instructions"
-        );
+        assert_eq!(assembly.prelude_messages.len(), 4);
 
-        let second = match &assembly.prelude_messages[1].blocks[..] {
+        // [0] tool_guidance
+        let msg0 = match &assembly.prelude_messages[0].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),
             other => panic!("expected text, got {other:?}"),
         };
-        assert!(
-            second.contains("<kuku_tool_guidance>"),
-            "messages[1] should be tool_guidance"
-        );
+        assert!(msg0.contains("<kuku_tool_guidance>"));
+
+        // [1] global_memory
+        let msg1 = match &assembly.prelude_messages[1].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(msg1.contains("<kuku_global_memory>"));
+        assert!(msg1.contains("mem"));
+
+        // [2] project_memory
+        let msg2 = match &assembly.prelude_messages[2].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(msg2.contains("<kuku_project_memory>"));
+
+        // [3] project_context
+        let msg3 = match &assembly.prelude_messages[3].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(msg3.contains("<kuku_project_context>"));
+        assert!(msg3.contains("instr"));
     }
 
     #[test]
