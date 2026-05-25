@@ -9,7 +9,7 @@ Memory is long-lived background context stored in markdown files. It is not a da
 | Global | `$KUKU_HOME/memory.md` | Every session |
 | Project | `$KUKU_HOME/p/<workspace>/memory.md` | Sessions under that workspace |
 
-Global memory loads first, then project memory. Both are injected into `project_context` during context rebuild.
+Global memory loads first, then project memory. Each is rendered as an independent prelude message (messages[1] and messages[2]) during context rebuild, using dedicated prompt templates.
 
 ## Format
 

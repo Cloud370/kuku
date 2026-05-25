@@ -100,9 +100,11 @@ Every model call rebuilds context from files. Nothing is cached across turns.
 
 ```text
 system prompt              (identity, hard rules, working style)
-messages[0]                project_context: instructions, memory, tiers, environment
-messages[1]                tool_guidance
-messages[2..]              history rebuilt from events.jsonl
+messages[0]                tool_guidance
+messages[1]                global_memory
+messages[2]                project_memory
+messages[3]                project_context: instructions, environment, model tiers
+messages[4..]              history rebuilt from events.jsonl
 last user turn             runtime_context (catalogs, notices) + human input
 ```
 
