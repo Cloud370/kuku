@@ -97,20 +97,20 @@ impl ContextAssembly {
     }
 }
 
-/// Restore frozen prelude messages from the first ModelRequest in event history.
-/// Returns None if no ModelRequest exists yet (first turn).
+/// Restore frozen prelude messages from the first ModelRequest that carries them.
+/// Returns None if no ModelRequest with prelude exists yet (first turn).
 pub fn restore_frozen_prelude(events: &[StoredEvent]) -> Option<Vec<CanonicalMessage>> {
-    let first_req = events.iter().find_map(|ev| match &ev.payload {
-        EventPayload::ModelRequest { context, .. } => context.as_ref(),
+    let prelude = events.iter().find_map(|ev| match &ev.payload {
+        EventPayload::ModelRequest { context, .. } => context.as_ref()?.prelude.as_ref(),
         _ => None,
     })?;
 
-    let prelude = first_req
-        .prelude
-        .iter()
-        .map(|cm| CanonicalMessage::user_text(&cm.content))
-        .collect();
-    Some(prelude)
+    Some(
+        prelude
+            .iter()
+            .map(|cm| CanonicalMessage::user_text(&cm.content))
+            .collect(),
+    )
 }
 
 /// Build a complete context assembly with A2b two-layer structure.

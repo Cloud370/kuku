@@ -29,7 +29,7 @@ pub struct RequestTools {
 /// Rendered context snapshot attached to a model request event.
 pub struct RequestContext {
     pub system: String,
-    pub prelude: Vec<ContextMessage>,
+    pub prelude: Option<Vec<ContextMessage>>,
     pub notices: Vec<ContextMessage>,
 }
 

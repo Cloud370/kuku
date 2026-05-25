@@ -298,7 +298,7 @@ fn model_request_context_survives_roundtrip() {
             }),
             context: Some(RequestContext {
                 system: "<kuku_identity>test identity</kuku_identity>".to_string(),
-                prelude: vec![
+                prelude: Some(vec![
                     ContextMessage {
                         role: "user".to_string(),
                         content:
@@ -309,7 +309,7 @@ fn model_request_context_survives_roundtrip() {
                         role: "user".to_string(),
                         content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
                     },
-                ],
+                ]),
                 notices: vec![],
             }),
             provenance: None,
@@ -323,9 +323,10 @@ fn model_request_context_survives_roundtrip() {
         EventPayload::ModelRequest { context, .. } => {
             let ctx = context.as_ref().unwrap();
             assert!(ctx.system.contains("<kuku_identity>"));
-            assert_eq!(ctx.prelude.len(), 2);
-            assert!(ctx.prelude[0].content.contains("<kuku_execution_context>"));
-            assert!(ctx.prelude[1].content.contains("<kuku_tool_guidance>"));
+            let prelude = ctx.prelude.as_ref().unwrap();
+            assert_eq!(prelude.len(), 2);
+            assert!(prelude[0].content.contains("<kuku_execution_context>"));
+            assert!(prelude[1].content.contains("<kuku_tool_guidance>"));
             assert!(ctx.notices.is_empty());
         }
         other => panic!("expected ModelRequest, got {other:?}"),
@@ -360,7 +361,7 @@ fn model_request_context_with_notices_survives_roundtrip() {
             }),
             context: Some(RequestContext {
                 system: "<kuku_identity>test identity</kuku_identity>".to_string(),
-                prelude: vec![
+                prelude: Some(vec![
                     ContextMessage {
                         role: "user".to_string(),
                         content: "<kuku_execution_context>workspace: /test</kuku_execution_context>".to_string(),
@@ -369,7 +370,7 @@ fn model_request_context_with_notices_survives_roundtrip() {
                         role: "user".to_string(),
                         content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
                     },
-                ],
+                ]),
                 notices: vec![
                     ContextMessage {
                         role: "user".to_string(),

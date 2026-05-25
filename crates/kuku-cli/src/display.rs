@@ -354,12 +354,14 @@ fn render_context(ctx: &kuku::event::types::RequestContext) -> String {
         out.push('\n');
     }
 
-    out.push_str("\n    [prelude]\n");
-    for msg in &ctx.prelude {
-        for line in msg.content.lines() {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
+    if let Some(prelude) = &ctx.prelude {
+        out.push_str("\n    [prelude]\n");
+        for msg in prelude {
+            for line in msg.content.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
 

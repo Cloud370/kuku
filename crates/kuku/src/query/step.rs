@@ -523,8 +523,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         }
     };
 
-    // Freeze prelude on first turn, restore on subsequent turns
-    if let Some(frozen) = restore_frozen_prelude(&existing_events) {
+    // Freeze prelude on first turn, restore on subsequent turns.
+    // Only the first request stores the prelude in events.jsonl; subsequent
+    // requests omit it and restore from the first.
+    let frozen = restore_frozen_prelude(&existing_events);
+    let is_first_request = frozen.is_none();
+    if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
     }
 
@@ -576,7 +580,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             }),
             context: Some(crate::event::types::RequestContext {
                 system: assembly.system_prompt.clone(),
-                prelude: prelude_snapshot,
+                prelude: if is_first_request {
+                    Some(prelude_snapshot)
+                } else {
+                    None
+                },
                 notices: notice_snapshots,
             }),
             provenance: Some(serde_json::to_value(&provenance)?),

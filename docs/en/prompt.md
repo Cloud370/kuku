@@ -55,6 +55,10 @@ Prelude messages[0..3] are frozen on the first turn. On subsequent turns they ar
 
 `tools` are at position 0 in provider-native requests. Changing the tool list invalidates all caches.
 
+### Design invariant
+
+Static content (memory, instructions, tool guidance) goes into prelude messages[0..3]. Dynamic content (notices, catalogs) goes into `runtime_context`, which is injected into the last user message. The last user message is always a cache miss — placing all dynamic content there ensures the frozen prelude prefix stays cache-stable regardless of what future features emit at runtime.
+
 ## Tags
 
 Prompt blocks use `kuku_*` namespaced tags — not generic names that risk collisions with provider sanitization:
