@@ -9,7 +9,7 @@ Memory is long-lived background context stored in markdown files. It is not a da
 | Global | `$KUKU_HOME/memory.md` | Every session |
 | Project | `$KUKU_HOME/p/<workspace>/memory.md` | Sessions under that workspace |
 
-Global memory loads first, then project memory. Both are injected into `project_context` during context rebuild.
+Global memory loads first, then project memory. Each is rendered as an independent prelude message (messages[1] and messages[2]) during context rebuild, using dedicated prompt templates.
 
 ## Format
 
@@ -97,3 +97,7 @@ When drift is detected, a `<kuku_system_notice>` is injected into `runtime_conte
 Tracked files are project instructions, global/project memory, and successful full-file `read_file` snapshots. `find_files`, `search_text`, and partial reads do not create drift baselines.
 
 A successful full-file `read_file` or tool-based write updates the acknowledged baseline for that file, clearing the drift flag for subsequent turns. Partial reads (with `offset`/`limit`) do not update the baseline.
+
+### Notice lifecycle
+
+A drift notice fires once per change event. It does not repeat across turns. When the model reads the changed file, the result persists in conversation history; the notice has served its purpose. If the file changes again later, a new notice fires. The rule is: one change, one notice, one opportunity for the model to act.

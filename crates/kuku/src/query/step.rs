@@ -1,9 +1,9 @@
 use sha2::Digest;
 
 use crate::context::{
-    assemble_context, build_request_provenance, rebuild_history, ContextInput, EnvironmentSource,
-    FileSource, HistoryRange, RequestProvenanceInput, SubagentRegistryProvenance,
-    ToolRegistryProvenance,
+    assemble_context, build_request_provenance, rebuild_history, restore_frozen_prelude,
+    ContextInput, EnvironmentSource, FileSource, HistoryRange, RequestProvenanceInput,
+    SubagentRegistryProvenance, ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -522,6 +522,16 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             return Err(error);
         }
     };
+
+    // Freeze prelude on first turn, restore on subsequent turns.
+    // Only the first request stores the prelude in events.jsonl; subsequent
+    // requests omit it and restore from the first.
+    let frozen = restore_frozen_prelude(&existing_events);
+    let is_first_request = frozen.is_none();
+    if let Some(frozen) = frozen {
+        assembly.prelude_messages = frozen;
+    }
+
     let prelude_snapshot = assembly.snapshot_prelude();
 
     inject_runtime_context(
@@ -570,7 +580,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             }),
             context: Some(crate::event::types::RequestContext {
                 system: assembly.system_prompt.clone(),
-                prelude: prelude_snapshot,
+                prelude: if is_first_request {
+                    Some(prelude_snapshot)
+                } else {
+                    None
+                },
                 notices: notice_snapshots,
             }),
             provenance: Some(serde_json::to_value(&provenance)?),

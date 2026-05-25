@@ -50,7 +50,7 @@ fn context_conditions(when: When, query_text: &str) -> When {
     when.body_contains(r#""tools""#)
         .body_contains("<kuku_execution_context>")
         .body_contains("<kuku_project_instructions>")
-        .body_contains("<kuku_memory>")
+        .body_contains("<kuku_global_memory>")
         .body_contains("<kuku_tool_guidance>")
         .body_contains(query_text)
         .matches(is_initial_request)

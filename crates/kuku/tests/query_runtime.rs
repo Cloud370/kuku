@@ -289,7 +289,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             .path("/v1/messages")
             .body_contains("<kuku_execution_context>")
             .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_global_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
         then.status(200)
@@ -361,7 +361,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
             .path("/v1/messages")
             .body_contains("<kuku_execution_context>")
             .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_global_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
         then.status(200)
@@ -429,7 +429,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
             .path("/v1/messages")
             .body_contains("<kuku_execution_context>")
             .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_global_memory>")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("run tests");
         then.status(200)
@@ -647,7 +647,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("Current date:")
             .body_contains("<kuku_project_instructions>")
             .body_contains("follow repo instructions")
-            .body_contains("<kuku_memory>")
+            .body_contains("<kuku_global_memory>")
             .body_contains("global memory entry")
             .body_contains("project memory entry")
             .body_contains("<kuku_tool_guidance>")
@@ -689,7 +689,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        5
     );
     assert_eq!(
         model_request["project_instruction_sources"]

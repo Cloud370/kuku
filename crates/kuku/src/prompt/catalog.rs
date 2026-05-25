@@ -15,6 +15,8 @@ pub struct PromptCatalog {
     pub project_context: PromptAsset,
     pub tool_guidance: PromptAsset,
     pub runtime_context: PromptAsset,
+    pub global_memory: PromptAsset,
+    pub project_memory: PromptAsset,
 }
 
 impl PromptCatalog {
@@ -26,6 +28,8 @@ impl PromptCatalog {
             project_context: load_or_fallback(dir, "project-context.md", builtin.project_context)?,
             tool_guidance: load_or_fallback(dir, "tool-guidance.md", builtin.tool_guidance)?,
             runtime_context: load_or_fallback(dir, "runtime-context.md", builtin.runtime_context)?,
+            global_memory: load_or_fallback(dir, "global-memory.md", builtin.global_memory)?,
+            project_memory: load_or_fallback(dir, "project-memory.md", builtin.project_memory)?,
         })
     }
 }
@@ -55,6 +59,20 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/prompts/runtime-context.md"
+            )),
+        ),
+        global_memory: asset(
+            "crates/kuku/prompts/global-memory.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/prompts/global-memory.md"
+            )),
+        ),
+        project_memory: asset(
+            "crates/kuku/prompts/project-memory.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/prompts/project-memory.md"
             )),
         ),
     }
@@ -100,10 +118,16 @@ mod tests {
         assert!(catalog.project_context.path.ends_with("project-context.md"));
         assert!(catalog.tool_guidance.path.ends_with("tool-guidance.md"));
         assert!(catalog.runtime_context.path.ends_with("runtime-context.md"));
+        assert!(catalog.global_memory.path.ends_with("global-memory.md"));
+        assert!(catalog.project_memory.path.ends_with("project-memory.md"));
         assert!(!catalog.system.text.trim().is_empty());
         assert!(!catalog.project_context.text.trim().is_empty());
         assert!(!catalog.tool_guidance.text.trim().is_empty());
+        assert!(!catalog.global_memory.text.trim().is_empty());
+        assert!(!catalog.project_memory.text.trim().is_empty());
         assert!(catalog.system.hash.starts_with("sha256:"));
+        assert!(catalog.global_memory.hash.starts_with("sha256:"));
+        assert!(catalog.project_memory.hash.starts_with("sha256:"));
     }
 
     #[test]

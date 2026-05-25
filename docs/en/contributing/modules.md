@@ -99,7 +99,7 @@ Must not: execute tools, bypass hard guard, treat project instructions as hard p
 
 Asset catalog and template rendering.
 
-- `PromptCatalog` owns four assets: system, project_context, tool_guidance, runtime_context.
+- `PromptCatalog` owns six assets: system, project_context, tool_guidance, runtime_context, global_memory, project_memory.
 - Templates use `{{placeholder}}` variables; `system.md` and `tool-guidance.md` are verbatim.
 - `load_from_dir()` loads external files; missing files fall back to embedded.
 - Prompt text lives in `crates/kuku/prompts/`. Rust code owns catalog, inputs, and rendering.

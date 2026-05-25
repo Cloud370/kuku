@@ -33,9 +33,11 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `request provenance` | Metadata attached to every `model.request` event: workspace, instruction/memory/prompt hashes, tool registry snapshot, subagent registry snapshot, history range. The anchor for request inspection. |
 | `canonical message` | Provider-neutral message with typed `MessageBlock`s (text, tool_use, tool_result). Converted to provider-native format by adapters. |
 | `system prompt` | Stable runtime contract: identity, hard rules, working style. Does not contain workspace, date, memory, or task-specific content. |
-| `project_context` | Behavior framework rendered into messages[0]: project instructions, execution context (workspace/platform/date), memory, model tiers. |
+| `project_context` | Behavior framework rendered into messages[3]: project instructions, execution context (workspace/platform/date), model tiers. |
 | `runtime_context` | Dynamic catalogs and notices rendered into the current user turn: agent catalog, drift notices. Separated from project_context for cache stability. |
-| `tool_guidance` | Independent tool usage guidance, rendered as a separate prelude message. |
+| `tool_guidance` | Tool usage guidance, rendered as messages[0] (first prelude message). Shared across all users and projects. |
+| `global_memory` | User-level memory rendered as messages[1]. Same user, same memory → cache hit across projects. |
+| `project_memory` | Project-level memory rendered as messages[2]. Same project, same memory → cache hit within project. |
 | `project instructions` | `AGENTS.md` / `CLAUDE.md` files loaded as the primary behavior source for a session. |
 | `memory` | Long-lived background context stored in `memory.md` files. Two layers: global (user-level) and project (workspace-level). |
 | `system notice` | Runtime-injected `<kuku_system_notice>` block. Signals tool set changes, permission posture changes, or file-backed context drift. |

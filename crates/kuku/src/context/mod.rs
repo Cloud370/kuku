@@ -4,8 +4,8 @@ pub mod provenance;
 pub mod replay;
 
 pub use assembly::{
-    assemble_context, ContextAssembly, ContextInput, EnvironmentSource, InstructionSource,
-    MemorySource, ToolSchema,
+    assemble_context, restore_frozen_prelude, ContextAssembly, ContextInput, EnvironmentSource,
+    InstructionSource, MemorySource, ToolSchema,
 };
 pub use message::{CanonicalMessage, MessageBlock, Role, ToolResult, ToolUse};
 pub use provenance::{
