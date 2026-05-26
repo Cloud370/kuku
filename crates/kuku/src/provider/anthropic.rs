@@ -41,6 +41,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u32),
         "stream": false,
         "system": request.assembly.system_prompt,
+        "cache_control": {"type": "ephemeral"},
     });
 
     if let Some(temperature) = request.temperature {
@@ -417,5 +418,14 @@ mod tests {
         let body = render_body(&minimal_request("off"));
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn render_body_includes_cache_control() {
+        let body = render_body(&minimal_request("off"));
+        let cc = body
+            .get("cache_control")
+            .expect("cache_control field should be present");
+        assert_eq!(cc["type"], "ephemeral");
     }
 }
