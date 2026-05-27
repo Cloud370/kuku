@@ -58,7 +58,10 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "pattern": {"type": "string", "description": "Regular expression pattern to search for."},
                     "path": {"type": "string", "description": "Search scope relative to the workspace. Defaults to workspace root."},
                     "include": {"type": "string", "description": "File-name glob filter."},
-                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."}
+                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
+                    "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
+                    "limit": {"type": "integer", "description": "Maximum matches to return (default: 100)."},
+                    "context": {"type": "integer", "description": "Show N lines before and after each match (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
             }),
