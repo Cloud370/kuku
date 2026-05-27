@@ -250,6 +250,8 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
+// Receives the full tool-call context so it can choose between simple, command,
+// and agent slot types without an intermediate struct.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_slot(
     tool_name: &str,

@@ -10,6 +10,8 @@ use crate::event::EventPayload;
 use crate::event::StoredEvent;
 use crate::tool::{builtin, ToolResultEnvelope};
 
+// Dispatch is the single entry point bridging tool registry, config, and event path;
+// splitting would add indirection without reducing cross-cutting complexity.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch(
     name: &str,

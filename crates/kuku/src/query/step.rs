@@ -730,7 +730,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             store.append(EventPayload::Handoff {
                 ts: now_timestamp()?,
                 summary: user_input,
-                kept_turns: 0,
+                kept_turns: pending.handoff_keep_turns,
             })?;
             store.append(EventPayload::TurnEnd {
                 turn: pending.turn,
@@ -800,6 +800,8 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
     Ok(())
 }
 
+// Assembles the full request from workspace, config, and session state; each
+// parameter reflects a distinct subsystem boundary.
 #[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,

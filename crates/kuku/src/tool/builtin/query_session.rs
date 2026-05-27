@@ -30,8 +30,8 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
 }
 
 pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
-    let result = match run_query(args, events_path) {
-        Ok(result) => result,
+    let (content, count) = match run_query(args, events_path) {
+        Ok(pair) => pair,
         Err(e) => {
             return ToolResultEnvelope::error(
                 format!("query_session failed: {e}"),
@@ -41,17 +41,17 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
     };
     ToolResultEnvelope {
         status: "ok".to_string(),
-        summary: format!("{} events returned", result.len()),
-        model_content: result,
+        summary: format!("{count} events returned"),
+        model_content: content,
         truncated: false,
         structured: None,
     }
 }
 
-fn run_query(args: &Value, events_path: &Path) -> Result<String, crate::error::Error> {
+fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate::error::Error> {
     let events = EventStore::replay(events_path)?;
     if events.is_empty() {
-        return Ok("[]".to_string());
+        return Ok(("[]".to_string(), 0));
     }
 
     let type_filter = args
@@ -111,7 +111,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<String, crate::error::E
     let mut total_chars = 2;
     for (i, event) in matched.iter().enumerate() {
         let entry = format_event(event);
-        let entry_chars = entry.len();
+        let entry_chars = entry.chars().count();
         if total_chars + entry_chars + 4 > MAX_RESULT_CHARS && i > 0 {
             output.push_str("\n... (truncated, total output cap reached)");
             break;
@@ -123,7 +123,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<String, crate::error::E
         total_chars += entry_chars + 2;
     }
     output.push_str("\n]");
-    Ok(output)
+    Ok((output, matched.len()))
 }
 
 fn build_turn_map(events: &[crate::event::StoredEvent]) -> std::collections::HashMap<u64, usize> {
@@ -186,7 +186,7 @@ fn truncate_value(key: &str, value: &Value) -> Value {
     match key {
         "text" | "model_content" | "summary" | "content" => {
             if let Some(s) = value.as_str() {
-                if s.len() > MAX_EVENT_CONTENT_CHARS {
+                if s.chars().count() > MAX_EVENT_CONTENT_CHARS {
                     Value::String(format!(
                         "{}...(truncated)",
                         s.chars().take(MAX_EVENT_CONTENT_CHARS).collect::<String>()
@@ -203,7 +203,7 @@ fn truncate_value(key: &str, value: &Value) -> Value {
 }
 
 fn truncate_json_string(s: &str) -> String {
-    if s.len() <= MAX_EVENT_CONTENT_CHARS + 100 {
+    if s.chars().count() <= MAX_EVENT_CONTENT_CHARS + 100 {
         s.to_string()
     } else {
         format!(

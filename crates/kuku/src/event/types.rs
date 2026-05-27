@@ -40,8 +40,8 @@ pub struct ContextMessage {
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Reason for triggering a context handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HandoffTriggerReason {
     #[serde(rename = "context_threshold")]
     ContextThreshold,

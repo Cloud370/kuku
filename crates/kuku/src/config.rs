@@ -53,6 +53,7 @@ pub struct Config {
     pub default_tier: String,
 }
 
+/// Configuration for session handoff behaviour (threshold, history retention).
 #[derive(Debug, Clone)]
 pub struct HandoffConfig {
     pub enabled: bool,
@@ -351,7 +352,9 @@ impl Config {
         self.tiers.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Return the handoff configuration. Currently returns defaults; will load from config file.
     pub fn handoff(&self) -> HandoffConfig {
+        // TODO: load from config file
         HandoffConfig::default()
     }
 
