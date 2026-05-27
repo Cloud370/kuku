@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 const SMALL_CONTENT_THRESHOLD: usize = 50_000;
+const MAX_HTML_BYTES: usize = 10 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 200;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
@@ -108,8 +109,31 @@ async fn fetch_html(url: &str) -> Result<String, ToolResultEnvelope> {
         ));
     }
 
-    response.text().await.map_err(|e| {
-        ToolResultEnvelope::error("failed: read error", format!("failed to read body: {e}"))
+    if let Some(Ok(len)) = response.content_length().map(usize::try_from) {
+        if len > MAX_HTML_BYTES {
+            return Err(ToolResultEnvelope::error(
+                "failed: response too large",
+                format!("HTML body is {len} bytes, exceeds {MAX_HTML_BYTES} byte limit"),
+            ));
+        }
+    }
+
+    use tokio_stream::StreamExt;
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|e| ToolResultEnvelope::error("failed: read error", format!("{e}")))?;
+        if buf.len() + chunk.len() > MAX_HTML_BYTES {
+            return Err(ToolResultEnvelope::error(
+                "failed: response too large",
+                format!("HTML body exceeds {MAX_HTML_BYTES} byte limit"),
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| {
+        ToolResultEnvelope::error("failed: encoding error", format!("invalid UTF-8: {e}"))
     })
 }
 
