@@ -100,7 +100,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         (prompt, Some(body))
     } else if prompt.starts_with('/') && !args.no_skills {
         let workspace = kuku::session::current_workspace()?;
-        let discovery_config = config_file.discovery.clone().unwrap_or_default();
+        let discovery_config = cfg.discovery.clone();
         let registry = kuku::skill::registry::SkillRegistry::builder()
             .build_with_discovery(&workspace, &discovery_config)
             .map(|b| b.build())
@@ -143,7 +143,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         q = q.no_agents();
     } else {
         let workspace = kuku::session::current_workspace()?;
-        let discovery_config = config_file.discovery.clone().unwrap_or_default();
+        let discovery_config = cfg.discovery.clone();
         let registry = SubagentRegistry::builder()
             .builtins()
             .build_with_discovery(&workspace, &discovery_config)?

@@ -518,6 +518,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         pending.skill_registry.as_mut(),
         &mut pending.skill_content_hash,
         &resolved.config,
+        &pending.config.discovery,
         &existing_events,
     )?;
 
@@ -808,6 +809,7 @@ fn build_runtime_blocks(
     mut skill_registry: Option<&mut crate::skill::registry::SkillRegistry>,
     skill_content_hash: &mut Option<String>,
     resolved_config: &crate::provider::types::ResolvedProvider,
+    discovery_config: &crate::config::DiscoveryConfig,
     existing_events: &[crate::event::StoredEvent],
 ) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
@@ -839,9 +841,8 @@ fn build_runtime_blocks(
 
     if let Some(ref mut skill_reg) = skill_registry {
         let new_registry = {
-            let discovery_config = crate::config::DiscoveryConfig::default();
             crate::skill::registry::SkillRegistry::builder()
-                .build_with_discovery(workspace, &discovery_config)
+                .build_with_discovery(workspace, discovery_config)
                 .map(|b| b.build())
                 .ok()
         };

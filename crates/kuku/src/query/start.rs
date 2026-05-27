@@ -84,9 +84,8 @@ impl Query {
         let skill_registry = if self.disable_skills {
             (None, None)
         } else {
-            let discovery_config = crate::config::DiscoveryConfig::default();
             let builder = crate::skill::registry::SkillRegistry::builder()
-                .build_with_discovery(&workspace, &discovery_config);
+                .build_with_discovery(&workspace, &config.discovery);
             match builder {
                 Ok(b) => {
                     let reg = b.build();
