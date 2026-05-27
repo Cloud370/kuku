@@ -66,89 +66,22 @@ impl SubagentRegistryBuilder {
         self
     }
 
-    /// Load Claude Code custom agents from user directory.
-    pub fn load_claude_user_agents(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".claude").join("agents");
-        if dir.exists() {
-            let loaded =
-                super::compat::claude_code::load_from_dir(&dir, DefinitionSource::ClaudeCodeUser)?;
-            for def in loaded {
-                self.add(def);
-            }
+    pub fn load_from_dir(mut self, dir: &Path, source: DefinitionSource) -> Result<Self> {
+        let defs = super::loader::load_from_dir(dir, source)?;
+        for def in defs {
+            self.add(def);
         }
         Ok(self)
     }
 
-    /// Load Claude Code custom agents from project directory.
-    pub fn load_claude_project_agents(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".claude").join("agents");
-        if dir.exists() {
-            let loaded = super::compat::claude_code::load_from_dir(
-                &dir,
-                DefinitionSource::ClaudeCodeProject,
-            )?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    /// Load OpenCode agents from user directory.
-    pub fn load_opencode_user_agents(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".opencode").join("agent");
-        if dir.exists() {
-            let loaded =
-                super::compat::opencode::load_from_dir(&dir, DefinitionSource::OpenCodeUser)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    /// Load OpenCode agents from project directory.
-    pub fn load_opencode_project_agents(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".opencode").join("agent");
-        if dir.exists() {
-            let loaded =
-                super::compat::opencode::load_from_dir(&dir, DefinitionSource::OpenCodeProject)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    /// Load kuku native agents from user directory (~/.kuku/agents/).
-    pub fn load_kuku_user_agents(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".kuku").join("agents");
-        if dir.exists() {
-            let loaded = super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuUser)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    /// Load kuku native agents from project directory (<workspace>/.kuku/agents/).
-    pub fn load_kuku_project_agents(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".kuku").join("agents");
-        if dir.exists() {
-            let loaded = super::kuku_format::load_from_dir(&dir, DefinitionSource::KukuProject)?;
-            for def in loaded {
-                self.add(def);
-            }
+    pub fn build_with_discovery(
+        mut self,
+        workspace: &Path,
+        config: &crate::config::DiscoveryConfig,
+    ) -> Result<Self> {
+        let discovered = crate::discovery::discover(workspace, config);
+        for entry in &discovered.agents {
+            self = self.load_from_dir(&entry.path, entry.scope.into())?;
         }
         Ok(self)
     }
@@ -236,17 +169,6 @@ fn compute_registry_hash(defs: &BTreeMap<String, SubagentDefinition>, names: &[S
         }
     }
     format!("sha256:{:x}", hasher.finalize())
-}
-
-fn dirs_next() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            Some(std::path::PathBuf::from(drive).join(path))
-        })
 }
 
 #[cfg(test)]

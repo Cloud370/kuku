@@ -2,7 +2,6 @@
 pub mod context;
 
 pub mod config;
-#[allow(dead_code)]
 pub(crate) mod discovery;
 pub mod error;
 pub mod event;
@@ -16,7 +15,7 @@ pub mod session;
 pub mod skill;
 pub mod subagent;
 pub(crate) mod tool;
-pub(crate) mod util;
+pub mod util;
 pub mod wire;
 
 pub use error::{Error, Result};

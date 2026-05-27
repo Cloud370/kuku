@@ -839,14 +839,11 @@ fn build_runtime_blocks(
 
     if let Some(ref mut skill_reg) = skill_registry {
         let new_registry = {
-            let builder = crate::skill::registry::SkillRegistry::builder()
-                .load_claude_user_skills()
-                .and_then(|b| b.load_claude_project_skills(workspace))
-                .and_then(|b| b.load_opencode_user_skills())
-                .and_then(|b| b.load_opencode_project_skills(workspace))
-                .and_then(|b| b.load_kuku_user_skills())
-                .and_then(|b| b.load_kuku_project_skills(workspace));
-            builder.map(|b| b.build()).ok()
+            let discovery_config = crate::config::DiscoveryConfig::default();
+            crate::skill::registry::SkillRegistry::builder()
+                .build_with_discovery(workspace, &discovery_config)
+                .map(|b| b.build())
+                .ok()
         };
 
         if let Some(new_reg) = new_registry {

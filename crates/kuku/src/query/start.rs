@@ -84,13 +84,9 @@ impl Query {
         let skill_registry = if self.disable_skills {
             (None, None)
         } else {
+            let discovery_config = crate::config::DiscoveryConfig::default();
             let builder = crate::skill::registry::SkillRegistry::builder()
-                .load_claude_user_skills()
-                .and_then(|b| b.load_claude_project_skills(&workspace))
-                .and_then(|b| b.load_opencode_user_skills())
-                .and_then(|b| b.load_opencode_project_skills(&workspace))
-                .and_then(|b| b.load_kuku_user_skills())
-                .and_then(|b| b.load_kuku_project_skills(&workspace));
+                .build_with_discovery(&workspace, &discovery_config);
             match builder {
                 Ok(b) => {
                     let reg = b.build();

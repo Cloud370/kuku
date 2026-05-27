@@ -45,10 +45,10 @@ fn build_skill_body(
     let dir = def
         .source_path
         .as_deref()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
+        .unwrap_or("")
+        .to_string();
     let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
-    let (_, body) = kuku::subagent::compat::claude_code::split_yaml_frontmatter(&content);
+    let (_, body) = kuku::util::yaml::split_yaml_frontmatter(&content);
     Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))
 }
 
@@ -63,8 +63,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let cfg = kuku::config::load_config(&config_path)
-        .and_then(|f| f.resolve())
+    let config_file = kuku::config::load_config(&config_path)
+        .map_err(|e| format!("config error: {e}"))?;
+    let cfg = config_file
+        .resolve()
         .map_err(|e| format!("config error: {e}"))?;
 
     let tier_name = args
@@ -98,13 +100,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         (prompt, Some(body))
     } else if prompt.starts_with('/') && !args.no_skills {
         let workspace = kuku::session::current_workspace()?;
+        let discovery_config = config_file.discovery.clone().unwrap_or_default();
         let registry = kuku::skill::registry::SkillRegistry::builder()
-            .load_claude_user_skills()
-            .and_then(|b| b.load_claude_project_skills(&workspace))
-            .and_then(|b| b.load_opencode_user_skills())
-            .and_then(|b| b.load_opencode_project_skills(&workspace))
-            .and_then(|b| b.load_kuku_user_skills())
-            .and_then(|b| b.load_kuku_project_skills(&workspace))
+            .build_with_discovery(&workspace, &discovery_config)
             .map(|b| b.build())
             .ok();
         match registry {
@@ -145,14 +143,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         q = q.no_agents();
     } else {
         let workspace = kuku::session::current_workspace()?;
+        let discovery_config = config_file.discovery.clone().unwrap_or_default();
         let registry = SubagentRegistry::builder()
             .builtins()
-            .load_claude_user_agents()?
-            .load_claude_project_agents(&workspace)?
-            .load_opencode_user_agents()?
-            .load_opencode_project_agents(&workspace)?
-            .load_kuku_user_agents()?
-            .load_kuku_project_agents(&workspace)?
+            .build_with_discovery(&workspace, &discovery_config)?
             .build();
         q = q.subagents(registry);
     }
@@ -472,14 +466,12 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         std::process::exit(1);
     }
 
+    let config_file = kuku::config::load_config(&config_path)
+        .map_err(|e| format!("config error: {e}"))?;
     let workspace = kuku::session::current_workspace()?;
+    let discovery_config = config_file.discovery.clone().unwrap_or_default();
     let skill_registry = kuku::skill::registry::SkillRegistry::builder()
-        .load_claude_user_skills()
-        .and_then(|b| b.load_claude_project_skills(&workspace))
-        .and_then(|b| b.load_opencode_user_skills())
-        .and_then(|b| b.load_opencode_project_skills(&workspace))
-        .and_then(|b| b.load_kuku_user_skills())
-        .and_then(|b| b.load_kuku_project_skills(&workspace))
+        .build_with_discovery(&workspace, &discovery_config)
         .map(|b| b.build())
         .ok();
 

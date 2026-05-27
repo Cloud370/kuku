@@ -1,6 +1,6 @@
 use serde_yaml::Mapping;
 
-pub(crate) fn split_yaml_frontmatter(content: &str) -> (Option<Mapping>, &str) {
+pub fn split_yaml_frontmatter(content: &str) -> (Option<Mapping>, &str) {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return (None, content);

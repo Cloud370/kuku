@@ -4,14 +4,14 @@ use crate::cli_args::{AgentsArgs, AgentsSubcommand};
 
 fn build_registry() -> Result<SubagentRegistry, Box<dyn std::error::Error>> {
     let workspace = kuku::session::current_workspace()?;
+    let config_path = kuku::session::kuku_home()?.join("config.toml");
+    let discovery_config = kuku::config::load_config(&config_path)
+        .ok()
+        .and_then(|f| f.discovery)
+        .unwrap_or_default();
     let registry = SubagentRegistry::builder()
         .builtins()
-        .load_claude_user_agents()?
-        .load_claude_project_agents(&workspace)?
-        .load_opencode_user_agents()?
-        .load_opencode_project_agents(&workspace)?
-        .load_kuku_user_agents()?
-        .load_kuku_project_agents(&workspace)?
+        .build_with_discovery(&workspace, &discovery_config)?
         .build();
     Ok(registry)
 }

@@ -62,8 +62,8 @@ fn handle_use_skill(
     let skill_dir = def
         .source_path
         .as_deref()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}/{}", def.source.base_dir(), skill_name));
+        .unwrap_or("")
+        .to_string();
 
     let skill_md_path = std::path::Path::new(&skill_dir).join("SKILL.md");
     let content = std::fs::read_to_string(&skill_md_path)?;

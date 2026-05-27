@@ -53,77 +53,22 @@ pub struct SkillRegistryBuilder {
 }
 
 impl SkillRegistryBuilder {
-    pub fn load_claude_user_skills(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".claude").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::ClaudeCodeUser)?;
-            for def in loaded {
-                self.add(def);
-            }
+    pub fn load_from_dir(mut self, dir: &Path, source: SkillSource) -> Result<Self> {
+        let defs = super::loader::load_from_dir(dir, source)?;
+        for def in defs {
+            self.add(def);
         }
         Ok(self)
     }
 
-    pub fn load_claude_project_skills(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".claude").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::ClaudeCodeProject)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    pub fn load_opencode_user_skills(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".config").join("opencode").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::OpenCodeUser)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    pub fn load_opencode_project_skills(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".opencode").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::OpenCodeProject)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    pub fn load_kuku_user_skills(mut self) -> Result<Self> {
-        let home = dirs_next().ok_or_else(|| {
-            crate::error::Error::InvalidArgument("cannot determine home directory".to_string())
-        })?;
-        let dir = home.join(".kuku").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::KukuUser)?;
-            for def in loaded {
-                self.add(def);
-            }
-        }
-        Ok(self)
-    }
-
-    pub fn load_kuku_project_skills(mut self, workspace: &Path) -> Result<Self> {
-        let dir = workspace.join(".kuku").join("skills");
-        if dir.exists() {
-            let loaded = super::loader::load_from_dir(&dir, SkillSource::KukuProject)?;
-            for def in loaded {
-                self.add(def);
-            }
+    pub fn build_with_discovery(
+        mut self,
+        workspace: &Path,
+        config: &crate::config::DiscoveryConfig,
+    ) -> Result<Self> {
+        let discovered = crate::discovery::discover(workspace, config);
+        for entry in &discovered.skills {
+            self = self.load_from_dir(&entry.path, entry.scope.into())?;
         }
         Ok(self)
     }
@@ -167,7 +112,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
                 path: def
                     .source_path
                     .clone()
-                    .unwrap_or_else(|| format!("{}/", def.source.base_dir())),
+                    .unwrap_or_else(|| def.source.as_str().to_string()),
             })
         })
         .collect();
@@ -187,7 +132,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
                 path: def
                     .source_path
                     .clone()
-                    .unwrap_or_else(|| format!("{}/", def.source.base_dir())),
+                    .unwrap_or_else(|| def.source.as_str().to_string()),
             })
         })
         .collect();
@@ -217,17 +162,6 @@ fn compute_registry_hash(defs: &BTreeMap<String, SkillDefinition>, names: &[Stri
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn dirs_next() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            Some(std::path::PathBuf::from(drive).join(path))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,7 +177,7 @@ mod tests {
     #[test]
     fn registry_hash_is_deterministic() {
         let dir = tempfile::tempdir().unwrap();
-        let skill_dir = dir.path().join(".kuku").join("skills").join("test-skill");
+        let skill_dir = dir.path().join("test-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -252,11 +186,11 @@ mod tests {
         .unwrap();
 
         let r1 = SkillRegistry::builder()
-            .load_kuku_project_skills(dir.path())
+            .load_from_dir(dir.path(), SkillSource::Project)
             .unwrap()
             .build();
         let r2 = SkillRegistry::builder()
-            .load_kuku_project_skills(dir.path())
+            .load_from_dir(dir.path(), SkillSource::Project)
             .unwrap()
             .build();
         assert_eq!(r1.hash(), r2.hash());
@@ -266,7 +200,7 @@ mod tests {
     fn names_are_sorted() {
         let dir = tempfile::tempdir().unwrap();
         for name in &["zebra", "alpha", "middle"] {
-            let skill_dir = dir.path().join(".kuku").join("skills").join(name);
+            let skill_dir = dir.path().join(name);
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
                 skill_dir.join("SKILL.md"),
@@ -276,7 +210,7 @@ mod tests {
         }
 
         let registry = SkillRegistry::builder()
-            .load_kuku_project_skills(dir.path())
+            .load_from_dir(dir.path(), SkillSource::Project)
             .unwrap()
             .build();
         assert_eq!(registry.names(), &["alpha", "middle", "zebra"]);
@@ -287,7 +221,7 @@ mod tests {
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
         for (dir, desc) in [(&dir1, "first"), (&dir2, "second")] {
-            let skill_dir = dir.path().join(".kuku").join("skills").join("dup");
+            let skill_dir = dir.path().join("dup");
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
                 skill_dir.join("SKILL.md"),
@@ -297,9 +231,9 @@ mod tests {
         }
 
         let registry = SkillRegistry::builder()
-            .load_kuku_project_skills(dir1.path())
+            .load_from_dir(dir1.path(), SkillSource::Project)
             .unwrap()
-            .load_kuku_project_skills(dir2.path())
+            .load_from_dir(dir2.path(), SkillSource::Project)
             .unwrap()
             .build();
         assert_eq!(registry.len(), 1);
@@ -311,7 +245,7 @@ mod tests {
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
         for (name, desc) in [("tdd", "v1"), ("shared", "v1")] {
-            let d = dir1.path().join(".kuku").join("skills").join(name);
+            let d = dir1.path().join(name);
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(
                 d.join("SKILL.md"),
@@ -320,7 +254,7 @@ mod tests {
             .unwrap();
         }
         for (name, desc) in [("shared", "v2"), ("fresh", "new")] {
-            let d = dir2.path().join(".kuku").join("skills").join(name);
+            let d = dir2.path().join(name);
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(
                 d.join("SKILL.md"),
@@ -329,26 +263,22 @@ mod tests {
             .unwrap();
         }
         let old = SkillRegistry::builder()
-            .load_kuku_project_skills(dir1.path())
+            .load_from_dir(dir1.path(), SkillSource::Project)
             .unwrap()
             .build();
         let new = SkillRegistry::builder()
-            .load_kuku_project_skills(dir2.path())
+            .load_from_dir(dir2.path(), SkillSource::Project)
             .unwrap()
             .build();
         let changes = detect_skill_changes(&old, &new).unwrap();
         assert_eq!(changes.added.len(), 1);
         assert_eq!(changes.added[0].name, "fresh");
         assert_eq!(changes.added[0].description, "new");
-        let expected_added = std::path::Path::new(".kuku").join("skills").join("fresh");
-        let expected_added_str = expected_added.to_string_lossy().into_owned();
-        assert!(changes.added[0].path.ends_with(&expected_added_str));
+        assert!(changes.added[0].path.contains("fresh"));
         assert_eq!(changes.removed, vec!["tdd".to_string()]);
         assert_eq!(changes.updated.len(), 1);
         assert_eq!(changes.updated[0].name, "shared");
         assert_eq!(changes.updated[0].description, "v2");
-        let expected_updated = std::path::Path::new(".kuku").join("skills").join("shared");
-        let expected_updated_str = expected_updated.to_string_lossy().into_owned();
-        assert!(changes.updated[0].path.ends_with(&expected_updated_str));
+        assert!(changes.updated[0].path.contains("shared"));
     }
 }
