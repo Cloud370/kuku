@@ -260,6 +260,8 @@ pub(super) struct PendingRun {
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
+    pub(super) handoff_triggered: bool,
+    pub(super) handoff_keep_turns: usize,
 }
 
 #[derive(Debug)]

@@ -2,7 +2,6 @@ pub mod catalog;
 pub(crate) mod render;
 
 pub use catalog::{builtin_prompt_catalog, PromptAsset, PromptCatalog};
-#[allow(unused_imports)]
 pub(crate) use catalog::{
     builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
 };

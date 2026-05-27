@@ -53,6 +53,23 @@ pub struct Config {
     pub default_tier: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct HandoffConfig {
+    pub enabled: bool,
+    pub threshold: f64,
+    pub keep_turns: usize,
+}
+
+impl Default for HandoffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 0.7,
+            keep_turns: 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TierConfig {
     pub provider: String,
@@ -332,6 +349,10 @@ impl Config {
     /// All tier names.
     pub fn tier_names(&self) -> Vec<&str> {
         self.tiers.keys().map(|s| s.as_str()).collect()
+    }
+
+    pub fn handoff(&self) -> HandoffConfig {
+        HandoffConfig::default()
     }
 
     /// All tier names with their purpose.

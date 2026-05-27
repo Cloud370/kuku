@@ -729,6 +729,8 @@ mod tests {
             pending_events: std::collections::VecDeque::new(),
             catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token: cancel_token.clone(),
+            handoff_triggered: false,
+            handoff_keep_turns: 2,
         };
 
         let stream: std::pin::Pin<
@@ -786,6 +788,8 @@ mod tests {
                 pending_events: std::collections::VecDeque::new(),
                 catalog: crate::prompt::builtin_prompt_catalog(),
                 cancel_token: cancel_token.clone(),
+                handoff_triggered: false,
+                handoff_keep_turns: 2,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

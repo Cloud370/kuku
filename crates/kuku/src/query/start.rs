@@ -139,6 +139,8 @@ impl Query {
                 tool_registry_override,
                 catalog,
                 cancel_token: cancel_token.clone(),
+                handoff_triggered: false,
+                handoff_keep_turns: 2,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

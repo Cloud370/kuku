@@ -11,6 +11,9 @@ use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
+use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
+#[allow(unused_imports)]
+use crate::prompt::builtin_session_query_guidance;
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
@@ -535,6 +538,49 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     }
 
     assembly.handoff_summary = handoff_summary;
+
+    {
+        let handoff_config = pending.config.handoff();
+        if handoff_config.enabled {
+            let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
+            let thinking_overhead: u32 = match resolved.config.think_level {
+                crate::config::ThinkLevel::Off => 0,
+                crate::config::ThinkLevel::Low => 1024,
+                crate::config::ThinkLevel::Medium => 4096,
+                crate::config::ThinkLevel::High => 16000,
+            };
+            let headroom = compute_context_headroom(
+                resolved
+                    .config
+                    .max_context_tokens
+                    .saturating_sub(thinking_overhead),
+                Some(resolved.config.max_output_tokens),
+                estimated_input,
+            );
+            let budget = (headroom.max_context_tokens
+                - headroom.reserved_output_tokens
+                - headroom.reserved_margin_tokens) as f64;
+            if budget > 0.0 {
+                let remaining = headroom.remaining_input_tokens.unwrap_or(0) as f64;
+                let used_ratio = 1.0 - (remaining / budget);
+                if used_ratio >= handoff_config.threshold {
+                    pending.handoff_triggered = true;
+                    pending.handoff_keep_turns = handoff_config.keep_turns;
+                    let instruction = if let Some(dir) = &pending.prompts_dir {
+                        load_prompt_template(dir, "handoff_instruction")
+                            .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
+                    } else {
+                        builtin_handoff_instruction().to_string()
+                    };
+                    let rt = assembly
+                        .runtime_context
+                        .get_or_insert_with(String::new);
+                    rt.push_str("\n\n");
+                    rt.push_str(&instruction);
+                }
+            }
+        }
+    }
 
     let prelude_snapshot = assembly.snapshot_prelude();
 
