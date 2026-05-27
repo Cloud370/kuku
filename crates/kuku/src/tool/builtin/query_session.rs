@@ -187,7 +187,10 @@ fn truncate_value(key: &str, value: &Value) -> Value {
         "text" | "model_content" | "summary" | "content" => {
             if let Some(s) = value.as_str() {
                 if s.len() > MAX_EVENT_CONTENT_CHARS {
-                    Value::String(format!("{}...(truncated)", &s[..MAX_EVENT_CONTENT_CHARS]))
+                    Value::String(format!(
+                        "{}...(truncated)",
+                        s.chars().take(MAX_EVENT_CONTENT_CHARS).collect::<String>()
+                    ))
                 } else {
                     value.clone()
                 }
@@ -203,7 +206,12 @@ fn truncate_json_string(s: &str) -> String {
     if s.len() <= MAX_EVENT_CONTENT_CHARS + 100 {
         s.to_string()
     } else {
-        format!("{}...(truncated)", &s[..MAX_EVENT_CONTENT_CHARS + 100])
+        format!(
+            "{}...(truncated)",
+            s.chars()
+                .take(MAX_EVENT_CONTENT_CHARS + 100)
+                .collect::<String>()
+        )
     }
 }
 
@@ -341,5 +349,50 @@ mod tests {
         let result = query_session(&json!({}), &path);
         assert_eq!(result.status, "ok");
         assert_eq!(result.model_content, "[]");
+    }
+
+    #[test]
+    fn query_session_truncates_long_content() {
+        let dir = tempdir().unwrap();
+        let long_text = "x".repeat(1000);
+        let path = write_events(
+            dir.path(),
+            &[EventPayload::UserInput {
+                turn: 1,
+                ts: ts("t"),
+                text: long_text,
+            }],
+        );
+        let result = query_session(&json!({}), &path);
+        assert_eq!(result.status, "ok");
+        // Content should be truncated: 1000 chars → 500 + "...(truncated)"
+        assert!(result.model_content.contains("...(truncated)"));
+        // The full 1000-char string should NOT appear
+        let full = "x".repeat(1000);
+        assert!(!result.model_content.contains(&full));
+    }
+
+    #[test]
+    fn query_session_output_cap_drops_earliest_events() {
+        let dir = tempdir().unwrap();
+        let big_text = "y".repeat(3000);
+        let mut payloads = Vec::new();
+        for i in 0..5 {
+            payloads.push(EventPayload::UserInput {
+                turn: 1,
+                ts: ts("t"),
+                text: format!("msg_{i}_{big_text}"),
+            });
+        }
+        let path = write_events(dir.path(), &payloads);
+        let result = query_session(&json!({}), &path);
+        assert_eq!(result.status, "ok");
+        // Total output should not drastically exceed MAX_RESULT_CHARS
+        // (some overhead for JSON structure is expected)
+        assert!(
+            result.model_content.len() < MAX_RESULT_CHARS + 2000,
+            "output too large: {} chars",
+            result.model_content.len()
+        );
     }
 }

@@ -440,7 +440,11 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
         EventPayload::PermissionDecision { decision, rule, .. } => {
             format!("{decision}  {rule}")
         }
-        EventPayload::Handoff { summary, kept_turns, .. } => {
+        EventPayload::Handoff {
+            summary,
+            kept_turns,
+            ..
+        } => {
             let preview: String = summary.chars().take(60).collect();
             if verbose {
                 format!("handoff  kept_turns={kept_turns}  {preview}")
