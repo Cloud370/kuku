@@ -621,6 +621,7 @@ mod tests {
             tiers: std::collections::BTreeMap::new(),
             providers: std::collections::BTreeMap::new(),
             default_tier: "balanced".to_string(),
+            discovery: crate::config::DiscoveryConfig::default(),
         }
     }
 

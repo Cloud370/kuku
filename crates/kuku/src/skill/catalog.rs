@@ -7,10 +7,7 @@ pub fn render_skill_catalog(registry: &SkillRegistry) -> Option<String> {
 
     let mut entries = String::new();
     for def in registry.definitions() {
-        let path = def
-            .source_path
-            .as_deref()
-            .unwrap_or(def.source.as_str());
+        let path = def.source_path.as_deref().unwrap_or(def.source.as_str());
         entries.push_str(&format!(
             "- {} — {} ({})\n",
             def.name, def.description, path,

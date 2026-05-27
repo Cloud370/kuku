@@ -250,7 +250,10 @@ mod tests {
 
     #[test]
     fn skip_dirs_are_excluded_in_dotfile_scan() {
+        let _guard = crate::env_lock().lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
         setup_dir(tmp.path(), &[".cache/skills", ".cargo/agents"]);
 
         let config = DiscoveryConfig {
@@ -259,6 +262,10 @@ mod tests {
             extra_project_paths: vec![],
         };
         let result = discover(tmp.path(), &config);
+
+        if let Some(prev) = prev_home {
+            std::env::set_var("HOME", prev);
+        }
 
         let user_skills: Vec<_> = result
             .skills

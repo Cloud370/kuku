@@ -42,11 +42,7 @@ fn build_skill_body(
     let Some(def) = registry.get(skill_name) else {
         return Ok(None);
     };
-    let dir = def
-        .source_path
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
+    let dir = def.source_path.as_deref().unwrap_or("").to_string();
     let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
     let (_, body) = kuku::util::yaml::split_yaml_frontmatter(&content);
     Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))
@@ -63,8 +59,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let config_file = kuku::config::load_config(&config_path)
-        .map_err(|e| format!("config error: {e}"))?;
+    let config_file =
+        kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
     let cfg = config_file
         .resolve()
         .map_err(|e| format!("config error: {e}"))?;
@@ -466,8 +462,8 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
         std::process::exit(1);
     }
 
-    let config_file = kuku::config::load_config(&config_path)
-        .map_err(|e| format!("config error: {e}"))?;
+    let config_file =
+        kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
     let workspace = kuku::session::current_workspace()?;
     let discovery_config = config_file.discovery.clone().unwrap_or_default();
     let skill_registry = kuku::skill::registry::SkillRegistry::builder()

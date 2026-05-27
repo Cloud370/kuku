@@ -105,7 +105,7 @@ pub fn anthropic_sse_response(msg: Value) -> String {
 }
 
 pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
-    use kuku::config::{ApiKey, Config, ProviderConfig, ThinkLevel, TierConfig};
+    use kuku::config::{ApiKey, Config, DiscoveryConfig, ProviderConfig, ThinkLevel, TierConfig};
     use std::collections::BTreeMap;
 
     let mut providers = BTreeMap::new();
@@ -135,5 +135,6 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
         tiers,
         providers,
         default_tier: "balanced".to_string(),
+        discovery: DiscoveryConfig::default(),
     }
 }

@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn malformed_yaml_returns_none() {
-        let input = "---\n:::invalid:::\n---\nbody";
+        let input = "---\n{unmatched\n---\nbody";
         let (mapping, body) = split_yaml_frontmatter(input);
         assert!(mapping.is_none());
         assert_eq!(body.trim(), "body");

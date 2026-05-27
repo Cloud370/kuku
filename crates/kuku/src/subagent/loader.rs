@@ -34,67 +34,63 @@ fn parse_definition(
     let (mapping, body) = split_yaml_frontmatter(content);
     let body = body.trim();
 
-    let (name, description, tools, max_turns, tier, tool_profile, metadata) =
-        if let Some(ref m) = mapping {
-            let name = extract_str(m, "name")
-                .or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(String::from)
-                })
-                .unwrap_or_default();
-            let description = extract_str(m, "description").unwrap_or_default();
-            let model = extract_str(m, "model");
-            let tools = extract_str_list(m, "tools")
-                .or_else(|| extract_str_list(m, "allowedTools"));
-            let max_turns = extract_u32(m, "max_turns")
-                .or_else(|| extract_u32(m, "maxTurns"))
-                .unwrap_or(10);
-            let tier = extract_str(m, "tier")
-                .or_else(|| model.as_deref().map(map_model_to_tier))
-                .unwrap_or_else(|| "balanced".to_string());
-            let tool_profile = extract_tool_profile(m)
-                .unwrap_or_else(|| infer_profile_from_tools(&tools));
-            let metadata = collect_unknown_metadata(
-                m,
-                &[
-                    "name",
-                    "description",
-                    "model",
-                    "tools",
-                    "allowedTools",
-                    "max_turns",
-                    "maxTurns",
-                    "tier",
-                    "tool_profile",
-                    "mode",
-                ],
-            );
-            (
-                name,
-                description,
-                tools,
-                max_turns,
-                tier,
-                tool_profile,
-                metadata,
-            )
-        } else {
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            (
-                name,
-                String::new(),
-                None,
-                10_u32,
-                "balanced".to_string(),
-                ToolProfile::Read,
-                serde_json::Value::Null,
-            )
-        };
+    let (name, description, tools, max_turns, tier, tool_profile, metadata) = if let Some(ref m) =
+        mapping
+    {
+        let name = extract_str(m, "name")
+            .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from))
+            .unwrap_or_default();
+        let description = extract_str(m, "description").unwrap_or_default();
+        let model = extract_str(m, "model");
+        let tools = extract_str_list(m, "tools").or_else(|| extract_str_list(m, "allowedTools"));
+        let max_turns = extract_u32(m, "max_turns")
+            .or_else(|| extract_u32(m, "maxTurns"))
+            .unwrap_or(10);
+        let tier = extract_str(m, "tier")
+            .or_else(|| model.as_deref().map(map_model_to_tier))
+            .unwrap_or_else(|| "balanced".to_string());
+        let tool_profile =
+            extract_tool_profile(m).unwrap_or_else(|| infer_profile_from_tools(&tools));
+        let metadata = collect_unknown_metadata(
+            m,
+            &[
+                "name",
+                "description",
+                "model",
+                "tools",
+                "allowedTools",
+                "max_turns",
+                "maxTurns",
+                "tier",
+                "tool_profile",
+                "mode",
+            ],
+        );
+        (
+            name,
+            description,
+            tools,
+            max_turns,
+            tier,
+            tool_profile,
+            metadata,
+        )
+    } else {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        (
+            name,
+            String::new(),
+            None,
+            10_u32,
+            "balanced".to_string(),
+            ToolProfile::Read,
+            serde_json::Value::Null,
+        )
+    };
 
     if name.is_empty() {
         return None;
@@ -197,10 +193,7 @@ fn map_model_to_tier(model: &str) -> String {
     }
 }
 
-fn collect_unknown_metadata(
-    mapping: &serde_yaml::Mapping,
-    known: &[&str],
-) -> serde_json::Value {
+fn collect_unknown_metadata(mapping: &serde_yaml::Mapping, known: &[&str]) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (k, v) in mapping {
         if let Some(key) = k.as_str() {
@@ -308,10 +301,7 @@ mod tests {
     #[test]
     fn tool_name_translation_both_conventions() {
         let tools_cc = Some(vec!["Edit".to_string(), "Bash".to_string()]);
-        assert_eq!(
-            infer_profile_from_tools(&tools_cc),
-            ToolProfile::ReadWrite
-        );
+        assert_eq!(infer_profile_from_tools(&tools_cc), ToolProfile::ReadWrite);
 
         let tools_kuku = Some(vec!["edit_file".to_string(), "write_file".to_string()]);
         assert_eq!(
