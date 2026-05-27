@@ -96,10 +96,7 @@ async fn download(url: &str) -> Result<DownloadMeta, ToolResultEnvelope> {
 
     let file_path = tmp_dir.join(&filename);
     let bytes = response.bytes().await.map_err(|e| {
-        ToolResultEnvelope::error(
-            "failed: download error",
-            format!("failed to download: {e}"),
-        )
+        ToolResultEnvelope::error("failed: download error", format!("failed to download: {e}"))
     })?;
 
     if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
@@ -186,7 +183,9 @@ mod tests {
     #[test]
     fn validate_url_rejects_credentials() {
         assert_eq!(
-            validate_url("https://user:pass@example.com").unwrap_err().status,
+            validate_url("https://user:pass@example.com")
+                .unwrap_err()
+                .status,
             "error"
         );
     }

@@ -128,11 +128,10 @@ fn html_to_markdown(url: &str, html: &str) -> Result<String, ToolResultEnvelope>
         )
     })?;
 
-    let clean_html =
-        match readability::extractor::extract(&mut html.as_bytes(), &parsed_url) {
-            Ok(product) => product.content,
-            Err(_) => html.to_string(),
-        };
+    let clean_html = match readability::extractor::extract(&mut html.as_bytes(), &parsed_url) {
+        Ok(product) => product.content,
+        Err(_) => html.to_string(),
+    };
 
     htmd::convert(&clean_html).map_err(|e| {
         ToolResultEnvelope::error(
@@ -151,22 +150,24 @@ async fn call_secondary_llm(
 ) -> Result<String, ToolResultEnvelope> {
     use tokio_stream::StreamExt;
 
-    let resolved = crate::provider::config::resolve_config(
-        crate::provider::config::ResolveConfigInput {
+    let resolved =
+        crate::provider::config::resolve_config(crate::provider::config::ResolveConfigInput {
             tier: Some(model_tier.to_string()),
             config: Some(config.clone()),
             ..Default::default()
-        },
-    )
-    .map_err(|e| {
-        ToolResultEnvelope::error(
-            "failed: resolve provider",
-            format!("cannot resolve tier '{model_tier}': {e}"),
-        )
-    })?;
+        })
+        .map_err(|e| {
+            ToolResultEnvelope::error(
+                "failed: resolve provider",
+                format!("cannot resolve tier '{model_tier}': {e}"),
+            )
+        })?;
 
     let max_chars = resolved.max_context_tokens as usize * 3;
-    let truncated: String = content.chars().take(max_chars.saturating_sub(2_000)).collect();
+    let truncated: String = content
+        .chars()
+        .take(max_chars.saturating_sub(2_000))
+        .collect();
     let user_text = format!("{prompt}\n\n---\n\n{truncated}");
 
     let assembly = crate::context::ContextAssembly {
@@ -273,8 +274,7 @@ mod tests {
             "prompt": "summarize",
             "model_tier": "invalid"
         });
-        let result =
-            tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
+        let result = tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
         assert_eq!(result.status, "error");
         assert!(result.model_content.contains("model_tier"));
     }
@@ -309,6 +309,9 @@ mod tests {
     fn html_to_markdown_converts_basic_html() {
         let html = "<html><body><h1>Title</h1><p>Paragraph</p></body></html>";
         let md = html_to_markdown("https://example.com", html).unwrap();
-        assert!(md.contains("Paragraph"), "md should contain Paragraph, got: {md}");
+        assert!(
+            md.contains("Paragraph"),
+            "md should contain Paragraph, got: {md}"
+        );
     }
 }

@@ -36,18 +36,9 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let include = args.get("include").and_then(Value::as_str);
     let view = args.get("view").and_then(Value::as_str).unwrap_or("files");
-    let offset = args
-        .get("offset")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(100) as usize;
-    let context = args
-        .get("context")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
+    let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+    let context = args.get("context").and_then(Value::as_u64).unwrap_or(0) as usize;
     if !matches!(view, "files" | "lines" | "count") {
         return ToolResultEnvelope::error(
             format!("failed: invalid view: {view}"),
@@ -84,9 +75,7 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     }
     if view == "lines" {
         files.sort_by(|left, right| {
-            let left_mtime = fs::metadata(&left.absolute)
-                .and_then(|m| m.modified())
-                .ok();
+            let left_mtime = fs::metadata(&left.absolute).and_then(|m| m.modified()).ok();
             let right_mtime = fs::metadata(&right.absolute)
                 .and_then(|m| m.modified())
                 .ok();

@@ -249,6 +249,7 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_slot(
     tool_name: &str,
     tool_id: String,

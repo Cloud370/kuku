@@ -71,8 +71,7 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
 mod tests {
     use super::*;
 
-    fn test_config_and_catalog(
-    ) -> (crate::config::Config, crate::prompt::PromptCatalog) {
+    fn test_config_and_catalog() -> (crate::config::Config, crate::prompt::PromptCatalog) {
         let catalog = crate::prompt::catalog::builtin_prompt_catalog();
         let toml_str = crate::config::generate_default();
         let file: crate::config::ConfigFile = toml::from_str(toml_str).unwrap();
