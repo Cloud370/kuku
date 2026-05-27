@@ -172,7 +172,13 @@ fn extract_filename(url: &str, headers: &wreq::header::HeaderMap) -> String {
 fn sanitize_filename(name: &str) -> String {
     let filtered: String = name
         .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\' && *c != ':')
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'
+                )
+        })
         .take(255)
         .collect();
     if filtered == ".." || filtered == "." {
@@ -244,5 +250,30 @@ mod tests {
         let headers = wreq::header::HeaderMap::new();
         let name = extract_filename("https://example.com/", &headers);
         assert!(name.starts_with("fetch_"));
+    }
+
+    #[test]
+    fn sanitize_filename_dot_dot_returns_download() {
+        assert_eq!(sanitize_filename(".."), "download");
+    }
+
+    #[test]
+    fn sanitize_filename_dot_returns_download() {
+        assert_eq!(sanitize_filename("."), "download");
+    }
+
+    #[test]
+    fn sanitize_filename_normal() {
+        assert_eq!(sanitize_filename("normal.txt"), "normal.txt");
+    }
+
+    #[test]
+    fn sanitize_filename_strips_slashes() {
+        assert_eq!(sanitize_filename("../etc/passwd"), "..etcpasswd");
+    }
+
+    #[test]
+    fn sanitize_filename_strips_angle_brackets() {
+        assert_eq!(sanitize_filename("file<1>.txt"), "file1.txt");
     }
 }
