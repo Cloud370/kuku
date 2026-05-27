@@ -863,7 +863,8 @@ mod tests {
         }
 
         let events = EventStore::replay(&events_path).unwrap();
-        let history = crate::context::rebuild_history(&events);
+        let (summary, history) = crate::context::rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(history.len(), 2);
         let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));

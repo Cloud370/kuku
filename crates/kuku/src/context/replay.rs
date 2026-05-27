@@ -20,11 +20,30 @@ struct ResponseGroup {
 }
 
 /// Reconstruct conversation history messages from a session's stored events.
-pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
+/// Returns `(handoff_summary, messages)` where `handoff_summary` is the text
+/// from the most recent Handoff event (if any), and `messages` contains only
+/// events after that handoff.
+pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<CanonicalMessage>) {
+    let handoff_pos = events
+        .iter()
+        .enumerate()
+        .rfind(|(_, e)| matches!(e.payload, EventPayload::Handoff { .. }));
+
+    let (summary, effective) = match handoff_pos {
+        Some((idx, event)) => {
+            let summary = match &event.payload {
+                EventPayload::Handoff { summary, .. } => Some(summary.clone()),
+                _ => None,
+            };
+            (summary, &events[idx + 1..])
+        }
+        None => (None, events),
+    };
+
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();
 
-    for event in events {
+    for event in effective {
         match &event.payload {
             EventPayload::UserInput { text, .. } => {
                 flush_group(&mut messages, &mut current_group);
@@ -104,7 +123,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
     }
 
     flush_group(&mut messages, &mut current_group);
-    messages
+    (summary, messages)
 }
 
 fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) {
@@ -273,8 +292,10 @@ mod tests {
             turn_end(6, 2),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("first"),
                 CanonicalMessage::assistant(vec![MessageBlock::Text("first answer".to_string())]),
@@ -295,8 +316,10 @@ mod tests {
             turn_end(6, 1),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("inspect"),
                 CanonicalMessage::assistant(vec![
@@ -332,8 +355,10 @@ mod tests {
             turn_end(7, 1),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("inspect"),
                 CanonicalMessage::assistant(vec![
@@ -382,8 +407,10 @@ mod tests {
             turn_end(6, 1),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("inspect"),
                 CanonicalMessage::assistant(vec![
@@ -442,8 +469,10 @@ mod tests {
             turn_end(3, 1),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("hi"),
                 CanonicalMessage::assistant(vec![
@@ -489,8 +518,10 @@ mod tests {
             turn_end(6, 1),
         ];
 
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(
-            rebuild_history(&events),
+            history,
             vec![
                 CanonicalMessage::user_text("inspect"),
                 CanonicalMessage::assistant(vec![
@@ -516,5 +547,66 @@ mod tests {
                 ]),
             ]
         );
+    }
+
+    fn handoff_event(id: u64, summary: &str) -> StoredEvent {
+        event(
+            id,
+            EventPayload::Handoff {
+                ts: "2026-05-27T00:00:01Z".to_string(),
+                summary: summary.to_string(),
+                kept_turns: 2,
+            },
+        )
+    }
+
+    #[test]
+    fn rebuild_history_returns_none_summary_when_no_handoff() {
+        let events = vec![
+            user_input(1, 1, "hello"),
+            model_response(2, 1, "req_1", "hi", "end_turn", None),
+            turn_end(3, 1),
+        ];
+        let (summary, history) = rebuild_history(&events);
+        assert!(summary.is_none());
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn rebuild_history_returns_summary_and_skips_pre_handoff() {
+        let events = vec![
+            user_input(1, 1, "old question"),
+            model_response(2, 1, "req_1", "old answer", "end_turn", None),
+            turn_end(3, 1),
+            handoff_event(4, "## Goal\nDo stuff"),
+            user_input(5, 2, "new question"),
+            model_response(6, 2, "req_2", "new answer", "end_turn", None),
+            turn_end(7, 2),
+        ];
+        let (summary, history) = rebuild_history(&events);
+        assert_eq!(summary.as_deref(), Some("## Goal\nDo stuff"));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], CanonicalMessage::user_text("new question"));
+    }
+
+    #[test]
+    fn rebuild_history_uses_last_handoff_when_multiple() {
+        let events = vec![
+            user_input(1, 1, "first"),
+            model_response(2, 1, "req_1", "answer1", "end_turn", None),
+            turn_end(3, 1),
+            handoff_event(4, "first summary"),
+            user_input(5, 2, "second"),
+            model_response(6, 2, "req_2", "answer2", "end_turn", None),
+            turn_end(7, 2),
+            handoff_event(8, "second summary"),
+            user_input(9, 3, "third"),
+            model_response(10, 3, "req_3", "answer3", "end_turn", None),
+            turn_end(11, 3),
+        ];
+        let (summary, history) = rebuild_history(&events);
+        assert_eq!(summary.as_deref(), Some("second summary"));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], CanonicalMessage::user_text("third"));
     }
 }
