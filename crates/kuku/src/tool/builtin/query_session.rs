@@ -1,0 +1,351 @@
+use std::path::Path;
+
+use serde_json::{json, Value};
+
+use crate::event::{EventPayload, EventStore};
+use crate::tool::ToolResultEnvelope;
+
+const MAX_RESULT_CHARS: usize = 8_000;
+const MAX_EVENT_CONTENT_CHARS: usize = 500;
+const DEFAULT_LIMIT: usize = 20;
+
+pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        name: "query_session".to_string(),
+        description: "Query historical session events that are no longer in your visible conversation context. DO NOT use this tool if the information you need is already present in the messages above. Only call when you need to recall details from earlier in the session that have been handed off or are otherwise outside your current context window.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "search": { "type": "string", "description": "Text to search for in event content" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff"], "description": "Filter by event type" },
+                "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
+                "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
+                "limit": { "type": "integer", "description": "Max events to return (default 20)" }
+            }
+        }),
+        read_only: true,
+        max_result_chars: MAX_RESULT_CHARS,
+        risk: "read".to_string(),
+    }
+}
+
+pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
+    let result = match run_query(args, events_path) {
+        Ok(result) => result,
+        Err(e) => {
+            return ToolResultEnvelope::error(
+                format!("query_session failed: {e}"),
+                format!("error querying session: {e}"),
+            );
+        }
+    };
+    ToolResultEnvelope {
+        status: "ok".to_string(),
+        summary: format!("{} events returned", result.len()),
+        model_content: result,
+        truncated: false,
+        structured: None,
+    }
+}
+
+fn run_query(args: &Value, events_path: &Path) -> Result<String, crate::error::Error> {
+    let events = EventStore::replay(events_path)?;
+    if events.is_empty() {
+        return Ok("[]".to_string());
+    }
+
+    let type_filter = args
+        .get("type")
+        .and_then(Value::as_str)
+        .map(normalize_type_filter);
+    let search = args.get("search").and_then(Value::as_str);
+    let from_turn = args
+        .get("from_turn")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let to_turn = args
+        .get("to_turn")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_LIMIT as u64) as usize;
+
+    let turn_map = build_turn_map(&events);
+
+    let mut matched = Vec::new();
+    for event in events.iter().rev() {
+        if matched.len() >= limit {
+            break;
+        }
+
+        let Some(&turn_idx) = turn_map.get(&event.id) else {
+            continue;
+        };
+        if turn_idx < from_turn {
+            continue;
+        }
+        if let Some(to) = to_turn {
+            if turn_idx > to {
+                continue;
+            }
+        }
+
+        if let Some(ref filter) = type_filter {
+            if !event_type_matches(&event.payload, filter) {
+                continue;
+            }
+        }
+
+        if let Some(query) = search {
+            let serialized = serde_json::to_string(&event.payload).unwrap_or_default();
+            if !serialized.to_lowercase().contains(&query.to_lowercase()) {
+                continue;
+            }
+        }
+
+        matched.push(event);
+    }
+
+    matched.reverse();
+
+    let mut output = String::from("[\n");
+    let mut total_chars = 2;
+    for (i, event) in matched.iter().enumerate() {
+        let entry = format_event(event);
+        let entry_chars = entry.len();
+        if total_chars + entry_chars + 4 > MAX_RESULT_CHARS && i > 0 {
+            output.push_str("\n... (truncated, total output cap reached)");
+            break;
+        }
+        if i > 0 {
+            output.push_str(",\n");
+        }
+        output.push_str(&entry);
+        total_chars += entry_chars + 2;
+    }
+    output.push_str("\n]");
+    Ok(output)
+}
+
+fn build_turn_map(events: &[crate::event::StoredEvent]) -> std::collections::HashMap<u64, usize> {
+    let mut map = std::collections::HashMap::new();
+    let mut current_turn: usize = 0;
+    let mut seen_turn_end = false;
+
+    for event in events.iter().rev() {
+        map.insert(event.id, current_turn);
+        if matches!(event.payload, EventPayload::TurnEnd { .. }) {
+            if seen_turn_end {
+                current_turn += 1;
+            }
+            seen_turn_end = true;
+        }
+    }
+    map
+}
+
+fn normalize_type_filter(raw: &str) -> String {
+    match raw {
+        "UserInput" => "user.input".to_string(),
+        "ModelResponse" => "model.response".to_string(),
+        "ToolCall" => "tool.call".to_string(),
+        "ToolResult" => "tool.result".to_string(),
+        "Handoff" => "handoff".to_string(),
+        other => other.to_lowercase(),
+    }
+}
+
+fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
+    let type_tag = match payload {
+        EventPayload::UserInput { .. } => "user.input",
+        EventPayload::ModelResponse { .. } => "model.response",
+        EventPayload::ToolCall { .. } => "tool.call",
+        EventPayload::ToolResult { .. } => "tool.result",
+        EventPayload::Handoff { .. } => "handoff",
+        EventPayload::HandoffTrigger { .. } => "handoff.trigger",
+        _ => return false,
+    };
+    type_tag == filter
+}
+
+fn format_event(event: &crate::event::StoredEvent) -> String {
+    let mut json = serde_json::json!({
+        "id": event.id,
+    });
+    if let Ok(payload_json) = serde_json::to_value(&event.payload) {
+        if let Some(obj) = payload_json.as_object() {
+            for (k, v) in obj {
+                let display_value = truncate_value(k, v);
+                json[k] = display_value;
+            }
+        }
+    }
+    truncate_json_string(&serde_json::to_string(&json).unwrap_or_default())
+}
+
+fn truncate_value(key: &str, value: &Value) -> Value {
+    match key {
+        "text" | "model_content" | "summary" | "content" => {
+            if let Some(s) = value.as_str() {
+                if s.len() > MAX_EVENT_CONTENT_CHARS {
+                    Value::String(format!(
+                        "{}...(truncated)",
+                        &s[..MAX_EVENT_CONTENT_CHARS]
+                    ))
+                } else {
+                    value.clone()
+                }
+            } else {
+                value.clone()
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn truncate_json_string(s: &str) -> String {
+    if s.len() <= MAX_EVENT_CONTENT_CHARS + 100 {
+        s.to_string()
+    } else {
+        format!("{}...(truncated)", &s[..MAX_EVENT_CONTENT_CHARS + 100])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{EventPayload, EventStore};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn write_events(dir: &Path, payloads: &[EventPayload]) -> std::path::PathBuf {
+        let path = dir.join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        for payload in payloads {
+            store.append(payload.clone()).unwrap();
+        }
+        path
+    }
+
+    fn ts(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn query_session_filters_by_type() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: ts("t"),
+                    request_id: "r1".into(),
+                    text: "hi".into(),
+                    thinking: None,
+                    stop_reason: "end_turn".into(),
+                    tool_call_count: None,
+                    usage: json!({}),
+                },
+                EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+            ],
+        );
+        let result = query_session(&json!({"type": "UserInput"}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("hello"));
+        assert!(!result.model_content.contains("\"hi\""));
+    }
+
+    #[test]
+    fn query_session_text_search() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "build auth".into(),
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "fix bug".into(),
+                },
+            ],
+        );
+        let result = query_session(&json!({"search": "auth"}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("build auth"));
+        assert!(!result.model_content.contains("fix bug"));
+    }
+
+    #[test]
+    fn query_session_respects_limit() {
+        let dir = tempdir().unwrap();
+        let mut payloads = Vec::new();
+        for i in 0..30 {
+            payloads.push(EventPayload::UserInput {
+                turn: 1,
+                ts: ts("t"),
+                text: format!("msg {i}"),
+            });
+        }
+        let path = write_events(dir.path(), &payloads);
+        let result = query_session(&json!({"limit": 5}), &path);
+        assert_eq!(result.status, "ok");
+        let count = result.model_content.matches("\"id\":").count();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn query_session_turn_filtering() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "first turn".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 2,
+                    ts: ts("t"),
+                    text: "second turn".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+            ],
+        );
+        let result = query_session(&json!({"from_turn": 0, "to_turn": 0}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("second turn"));
+        assert!(!result.model_content.contains("first turn"));
+    }
+
+    #[test]
+    fn query_session_empty_events() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let result = query_session(&json!({}), &path);
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.model_content, "[]");
+    }
+}

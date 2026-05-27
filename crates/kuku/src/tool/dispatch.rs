@@ -21,6 +21,7 @@ pub(crate) async fn dispatch(
     tool_call_id: Option<&str>,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
+    events_path: &Path,
 ) -> ToolResultEnvelope {
     match name {
         "agent" => ToolResultEnvelope::error(
@@ -47,6 +48,7 @@ pub(crate) async fn dispatch(
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
+        "query_session" => builtin::query_session(args, events_path),
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -144,6 +146,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(found.status, "ok");
@@ -159,6 +162,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(read.status, "ok");
@@ -175,6 +179,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(searched.status, "ok");
@@ -191,6 +196,7 @@ mod tests {
             Some("tool_command"),
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(gated.status, "blocked");
@@ -206,6 +212,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(unknown.status, "error");
@@ -230,6 +237,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(edited.status, "ok");
@@ -250,6 +258,7 @@ mod tests {
             None,
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(written.status, "ok");
@@ -278,6 +287,7 @@ mod tests {
             Some("tool_edit"),
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(result.status, "blocked");
@@ -298,6 +308,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(remember.status, "blocked");
@@ -315,6 +326,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
+            dir.path(),
         )
         .await;
         assert_eq!(forget.status, "blocked");
@@ -358,6 +370,7 @@ mod tests {
                 None,
                 &config,
                 &catalog,
+                workspace,
             )
             .await
         });

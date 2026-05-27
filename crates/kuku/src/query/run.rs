@@ -331,6 +331,7 @@ impl Run {
                     self.slot_event_tx.clone(),
                     pending.config.clone(),
                     pending.catalog.clone(),
+                    pending.events_path.clone(),
                 );
                 self.slots.insert(slot.tool_call_id.clone(), slot);
                 Ok(Some(UiEvent::ToolStart {
@@ -587,6 +588,7 @@ impl Run {
             self.slot_event_tx.clone(),
             pending.config.clone(),
             pending.catalog.clone(),
+            pending.events_path.clone(),
         );
         self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));

@@ -439,6 +439,7 @@ pub(super) async fn advance_pending(
                         slot_event_tx,
                         pending.config.clone(),
                         pending.catalog.clone(),
+                        pending.events_path.clone(),
                     );
                     return Ok(PendingStep::Pending {
                         pending: Box::new(pending),

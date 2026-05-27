@@ -112,6 +112,7 @@ pub(super) async fn execute_tool_call(
         Some(&tool_call.id),
         &pending.config,
         &pending.catalog,
+        &pending.events_path,
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;
