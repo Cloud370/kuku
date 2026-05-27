@@ -8,6 +8,10 @@ mod context {
     pub use kuku::context::ContextAssembly;
 }
 
+mod prompt {
+    pub use kuku::prompt::PromptCatalog;
+}
+
 mod error {
     pub use kuku::{Error, Result};
 }

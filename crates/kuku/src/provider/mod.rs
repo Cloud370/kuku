@@ -21,7 +21,7 @@ pub(crate) type ProviderChunkStream =
 
 pub(crate) async fn stream_provider(
     config: &ResolvedProvider,
-    request: &ProviderRequest,
+    request: &ProviderRequest<'_>,
 ) -> Result<ProviderChunkStream, ProviderFailure> {
     match config.kind {
         ProviderKind::Anthropic => anthropic::stream(config, request).await,

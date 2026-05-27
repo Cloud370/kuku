@@ -74,16 +74,18 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
     }
 }
 
-pub(crate) fn render_body(request: &ProviderRequest) -> Value {
+pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let mut input_items = Vec::new();
 
     for message in &request.assembly.prelude_messages {
         input_items.extend(convert_to_input_items(message));
     }
     if let Some(summary) = &request.assembly.handoff_summary {
+        let template = &request.catalog.handoff_context.text;
+        let content = template.replace("{{handoff_summary}}", summary);
         input_items.push(json!({
             "role": "user",
-            "content": format!("<kuku_handoff_summary>\n{}\n</kuku_handoff_summary>", summary),
+            "content": content,
         }));
     }
     for message in &request.assembly.history {
@@ -134,7 +136,7 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
 
 pub(crate) async fn stream(
     config: &ResolvedProvider,
-    request: &ProviderRequest,
+    request: &ProviderRequest<'_>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
     let mut body = render_body(request);
     body["stream"] = json!(true);

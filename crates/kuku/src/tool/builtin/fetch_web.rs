@@ -185,6 +185,7 @@ async fn call_secondary_llm(
     };
     let request = crate::provider::types::ProviderRequest {
         assembly,
+        catalog,
         model: resolved.model.clone(),
         max_output_tokens: Some(resolved.max_output_tokens),
         temperature: None,

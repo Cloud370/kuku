@@ -20,7 +20,7 @@ pub(crate) fn messages_url(base_url: &str) -> String {
     }
 }
 
-pub(crate) fn render_body(request: &ProviderRequest) -> Value {
+pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let mut messages = request
         .assembly
         .prelude_messages
@@ -28,9 +28,11 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         .map(convert_canonical_message)
         .collect::<Vec<_>>();
     if let Some(summary) = &request.assembly.handoff_summary {
+        let template = &request.catalog.handoff_context.text;
+        let content = template.replace("{{handoff_summary}}", summary);
         messages.push(json!({
             "role": "user",
-            "content": format!("<kuku_handoff_summary>\n{}\n</kuku_handoff_summary>", summary),
+            "content": content,
         }));
     }
     messages.extend(
@@ -133,7 +135,7 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
 
 pub(crate) async fn stream(
     config: &ResolvedProvider,
-    request: &ProviderRequest,
+    request: &ProviderRequest<'_>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
     let mut body = render_body(request);
     body["stream"] = json!(true);
@@ -369,9 +371,10 @@ impl AnthropicSseParser {
 mod tests {
     use super::*;
     use crate::context::ContextAssembly;
+    use crate::prompt::PromptCatalog;
     use crate::provider::types::ProviderRequest;
 
-    fn minimal_request(think_level: &str) -> ProviderRequest {
+    fn minimal_request<'a>(think_level: &str, catalog: &'a PromptCatalog) -> ProviderRequest<'a> {
         ProviderRequest {
             assembly: ContextAssembly {
                 system_prompt: "test".into(),
@@ -384,6 +387,7 @@ mod tests {
                 runtime_context: None,
                 handoff_summary: None,
             },
+            catalog,
             model: "test-model".into(),
             max_output_tokens: Some(1024),
             temperature: None,
@@ -399,7 +403,8 @@ mod tests {
 
     #[test]
     fn render_body_adaptive_thinking_high() {
-        let body = render_body(&minimal_request("high"));
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let body = render_body(&minimal_request("high", &catalog));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
         assert_eq!(body["output_config"]["effort"], "max");
@@ -408,28 +413,32 @@ mod tests {
 
     #[test]
     fn render_body_adaptive_thinking_medium() {
-        let body = render_body(&minimal_request("medium"));
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let body = render_body(&minimal_request("medium", &catalog));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
     }
 
     #[test]
     fn render_body_adaptive_thinking_low() {
-        let body = render_body(&minimal_request("low"));
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let body = render_body(&minimal_request("low", &catalog));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "low");
     }
 
     #[test]
     fn render_body_no_thinking_when_off() {
-        let body = render_body(&minimal_request("off"));
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let body = render_body(&minimal_request("off", &catalog));
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
     }
 
     #[test]
     fn render_body_includes_cache_control() {
-        let body = render_body(&minimal_request("off"));
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let body = render_body(&minimal_request("off", &catalog));
         let cc = body
             .get("cache_control")
             .expect("cache_control field should be present");

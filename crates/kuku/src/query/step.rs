@@ -14,9 +14,7 @@ use crate::notice::{
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
-use crate::prompt::{
-    builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
-};
+use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
@@ -521,7 +519,6 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         &mut pending.skill_content_hash,
         &resolved.config,
         &existing_events,
-        pending.prompts_dir.as_deref(),
     )?;
 
     let mut assembly = match assemble_context(
@@ -539,7 +536,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             model_tiers,
             runtime_blocks,
         },
-        catalog,
+        &catalog,
     ) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -671,6 +668,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     let request = crate::provider::types::ProviderRequest {
         assembly,
+        catalog: &catalog,
         model: resolved.config.model.clone(),
         max_output_tokens: Some(max_output),
         temperature: pending.query.temperature,
@@ -811,7 +809,6 @@ fn build_runtime_blocks(
     skill_content_hash: &mut Option<String>,
     resolved_config: &crate::provider::types::ResolvedProvider,
     existing_events: &[crate::event::StoredEvent],
-    prompts_dir: Option<&std::path::Path>,
 ) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
     let thinking_overhead: u32 = match resolved_config.think_level {
@@ -909,19 +906,6 @@ fn build_runtime_blocks(
         parts.push(format!(
             "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
         ));
-    }
-
-    let has_handoff = existing_events
-        .iter()
-        .any(|e| matches!(e.payload, EventPayload::Handoff { .. }));
-    if has_handoff {
-        let guidance = if let Some(dir) = prompts_dir {
-            load_prompt_template(dir, "session_query_guidance")
-                .unwrap_or_else(|_| builtin_session_query_guidance().to_string())
-        } else {
-            builtin_session_query_guidance().to_string()
-        };
-        parts.push(guidance);
     }
 
     let runtime_blocks = if parts.is_empty() {

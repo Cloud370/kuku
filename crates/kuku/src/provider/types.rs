@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::context::ContextAssembly;
+use crate::prompt::PromptCatalog;
 
 /// Public provider selector for the query builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,8 +77,9 @@ pub(crate) struct ResolvedProvider {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ProviderRequest {
+pub(crate) struct ProviderRequest<'a> {
     pub(crate) assembly: ContextAssembly,
+    pub(crate) catalog: &'a PromptCatalog,
     pub(crate) model: String,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,

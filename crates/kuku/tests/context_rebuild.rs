@@ -81,7 +81,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
         },
-        builtin_prompt_catalog(),
+        &builtin_prompt_catalog(),
     )
     .unwrap();
 
@@ -217,7 +217,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
         },
-        builtin_prompt_catalog(),
+        &builtin_prompt_catalog(),
     )
     .unwrap();
 
@@ -275,7 +275,7 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
         },
-        builtin_prompt_catalog(),
+        &builtin_prompt_catalog(),
     )
     .unwrap();
 

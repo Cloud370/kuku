@@ -18,6 +18,8 @@ pub struct PromptCatalog {
     pub global_memory: PromptAsset,
     pub project_memory: PromptAsset,
     pub fetch_web: PromptAsset,
+    /// Handoff context template with session query guidance and summary placeholder.
+    pub handoff_context: PromptAsset,
 }
 
 impl PromptCatalog {
@@ -32,6 +34,7 @@ impl PromptCatalog {
             global_memory: load_or_fallback(dir, "global-memory.md", builtin.global_memory)?,
             project_memory: load_or_fallback(dir, "project-memory.md", builtin.project_memory)?,
             fetch_web: load_or_fallback(dir, "fetch-web.md", builtin.fetch_web)?,
+            handoff_context: load_or_fallback(dir, "handoff-context.md", builtin.handoff_context)?,
         })
     }
 }
@@ -50,13 +53,6 @@ pub fn builtin_handoff_instruction() -> &'static str {
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/prompts/handoff_instruction.md"
-    ))
-}
-
-pub fn builtin_session_query_guidance() -> &'static str {
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/prompts/session_query_guidance.md"
     ))
 }
 
@@ -104,6 +100,13 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
         fetch_web: asset(
             "crates/kuku/prompts/fetch-web.md",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/fetch-web.md")),
+        ),
+        handoff_context: asset(
+            "crates/kuku/prompts/handoff-context.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/prompts/handoff-context.md"
+            )),
         ),
     }
 }
@@ -157,6 +160,9 @@ mod tests {
         assert!(!catalog.project_memory.text.trim().is_empty());
         assert!(catalog.fetch_web.path.ends_with("fetch-web.md"));
         assert!(!catalog.fetch_web.text.trim().is_empty());
+        assert!(catalog.handoff_context.path.ends_with("handoff-context.md"));
+        assert!(!catalog.handoff_context.text.trim().is_empty());
+        assert!(catalog.handoff_context.text.contains("{{handoff_summary}}"));
         assert!(catalog.system.hash.starts_with("sha256:"));
         assert!(catalog.global_memory.hash.starts_with("sha256:"));
         assert!(catalog.project_memory.hash.starts_with("sha256:"));

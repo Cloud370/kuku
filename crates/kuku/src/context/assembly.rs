@@ -119,7 +119,7 @@ pub fn restore_frozen_prelude(events: &[StoredEvent]) -> Option<Vec<CanonicalMes
 /// Build a complete context assembly with A2b two-layer structure.
 pub fn assemble_context(
     input: ContextInput,
-    catalog: crate::prompt::PromptCatalog,
+    catalog: &crate::prompt::PromptCatalog,
 ) -> Result<ContextAssembly> {
     let project_instructions_text = if input.project_instructions.is_empty() {
         "No project instructions found.".to_string()
@@ -192,10 +192,10 @@ pub fn assemble_context(
     }
 
     Ok(ContextAssembly {
-        system_prompt: catalog.system.text,
+        system_prompt: catalog.system.text.clone(),
         prelude_messages: vec![
             // [0] tool_guidance — shared across all users/projects
-            CanonicalMessage::user_text(catalog.tool_guidance.text),
+            CanonicalMessage::user_text(catalog.tool_guidance.text.clone()),
             // [1] global_memory — shared across projects for same user
             CanonicalMessage::user_text(global_memory_rendered),
             // [2] project_memory — project-specific memory
@@ -207,24 +207,24 @@ pub fn assemble_context(
         tools: input.tools,
         prompt_asset_sources: vec![
             FileSource {
-                path: catalog.system.path,
-                hash: catalog.system.hash,
+                path: catalog.system.path.clone(),
+                hash: catalog.system.hash.clone(),
             },
             FileSource {
-                path: catalog.project_context.path,
-                hash: catalog.project_context.hash,
+                path: catalog.project_context.path.clone(),
+                hash: catalog.project_context.hash.clone(),
             },
             FileSource {
-                path: catalog.tool_guidance.path,
-                hash: catalog.tool_guidance.hash,
+                path: catalog.tool_guidance.path.clone(),
+                hash: catalog.tool_guidance.hash.clone(),
             },
             FileSource {
-                path: catalog.global_memory.path,
-                hash: catalog.global_memory.hash,
+                path: catalog.global_memory.path.clone(),
+                hash: catalog.global_memory.hash.clone(),
             },
             FileSource {
-                path: catalog.project_memory.path,
-                hash: catalog.project_memory.hash,
+                path: catalog.project_memory.path.clone(),
+                hash: catalog.project_memory.hash.clone(),
             },
         ],
         project_instruction_sources: input.project_instructions,
@@ -286,7 +286,7 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
             },
-            builtin_prompt_catalog(),
+            &builtin_prompt_catalog(),
         )
         .unwrap();
 
@@ -342,7 +342,7 @@ mod tests {
                     "<kuku_agent_catalog><agent name=\"r\"/></kuku_agent_catalog>".into(),
                 ),
             },
-            builtin_prompt_catalog(),
+            &builtin_prompt_catalog(),
         )
         .unwrap();
 
@@ -386,7 +386,7 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
             },
-            builtin_prompt_catalog(),
+            &builtin_prompt_catalog(),
         )
         .unwrap();
         assert!(assembly.runtime_context.is_none());

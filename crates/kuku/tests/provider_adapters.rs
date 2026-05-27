@@ -9,6 +9,10 @@ mod context {
     };
 }
 
+mod prompt {
+    pub use kuku::prompt::{builtin_prompt_catalog, PromptCatalog};
+}
+
 mod provider {
     #[allow(dead_code)]
     pub mod types {
@@ -87,6 +91,7 @@ use context::{
     CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource, MessageBlock,
     Role, ToolResult, ToolSchema, ToolUse,
 };
+use prompt::PromptCatalog;
 use provider::anthropic::{messages_url, render_body as render_anthropic_body};
 use provider::chunk::ProviderChunk;
 use provider::openai_compat::{chat_completions_url, render_body as render_openai_body};
@@ -95,6 +100,10 @@ use provider::openai_responses::{
 };
 use provider::types::ProviderRequest;
 use serde_json::json;
+
+fn test_catalog() -> PromptCatalog {
+    kuku::prompt::builtin_prompt_catalog()
+}
 
 fn sample_assembly() -> ContextAssembly {
     ContextAssembly {
@@ -248,9 +257,11 @@ fn anthropic_messages_url_normalizes_v1_suffix() {
 
 #[test]
 fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
+    let catalog = test_catalog();
     let body = render_anthropic_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_drift_notice(),
+        catalog: &catalog,
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -277,9 +288,11 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
 
 #[test]
 fn anthropic_render_body_preserves_layer_order() {
+    let catalog = test_catalog();
     let body = render_anthropic_body(&ProviderRequest {
         stream: false,
         assembly: sample_assembly(),
+        catalog: &catalog,
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -309,9 +322,11 @@ fn anthropic_render_body_preserves_layer_order() {
 
 #[test]
 fn anthropic_render_body_includes_tools_and_native_tool_results() {
+    let catalog = test_catalog();
     let tool_body = render_anthropic_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_tool_schema(),
+        catalog: &catalog,
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -325,6 +340,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
     let history_body = render_anthropic_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_tool_history(),
+        catalog: &catalog,
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -372,9 +388,11 @@ fn responses_url_appends_path() {
 
 #[test]
 fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
+    let catalog = test_catalog();
     let body = render_openai_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_drift_notice(),
+        catalog: &catalog,
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -402,9 +420,11 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
 
 #[test]
 fn openai_render_body_preserves_layer_order() {
+    let catalog = test_catalog();
     let body = render_openai_body(&ProviderRequest {
         stream: false,
         assembly: sample_assembly(),
+        catalog: &catalog,
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -427,9 +447,11 @@ fn openai_render_body_preserves_layer_order() {
 
 #[test]
 fn openai_render_body_includes_tools_and_role_tool_messages() {
+    let catalog = test_catalog();
     let tool_body = render_openai_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_tool_schema(),
+        catalog: &catalog,
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -447,6 +469,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
     let history_body = render_openai_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_tool_history(),
+        catalog: &catalog,
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -602,9 +625,11 @@ data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_inde
 
 #[test]
 fn render_responses_body_basic_text() {
+    let catalog = test_catalog();
     let assembly = sample_assembly();
     let request = ProviderRequest {
         assembly,
+        catalog: &catalog,
         model: "gpt-5.4".to_string(),
         max_output_tokens: Some(100),
         temperature: None,
@@ -628,9 +653,11 @@ fn render_responses_body_basic_text() {
 
 #[test]
 fn render_responses_body_with_tools() {
+    let catalog = test_catalog();
     let assembly = assembly_with_tool_schema();
     let request = ProviderRequest {
         assembly,
+        catalog: &catalog,
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -651,9 +678,11 @@ fn render_responses_body_with_tools() {
 
 #[test]
 fn render_responses_body_with_reasoning() {
+    let catalog = test_catalog();
     let assembly = sample_assembly();
     let request = ProviderRequest {
         assembly,
+        catalog: &catalog,
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,

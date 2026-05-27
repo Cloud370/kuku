@@ -6,6 +6,10 @@ mod context {
     pub use kuku::context::ContextAssembly;
 }
 
+mod prompt {
+    pub use kuku::prompt::PromptCatalog;
+}
+
 mod provider {
     #[allow(dead_code)]
     pub mod types {
