@@ -257,6 +257,7 @@ pub(super) struct PendingRun {
     pub(super) skill_body: Option<String>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+    pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
 }

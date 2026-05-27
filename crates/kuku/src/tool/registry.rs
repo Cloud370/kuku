@@ -147,6 +147,20 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             80_000,
             "command",
         ),
+        tool(
+            "fetch_url",
+            "Download a URL to a temp directory and return metadata (status, content_type, size).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to download."}
+                },
+                "required": ["url"]
+            }),
+            true,
+            80_000,
+            "read",
+        ),
     ];
     if agent_enabled {
         tools.push(builtin::agent_definition());
@@ -215,6 +229,7 @@ mod tests {
                 "remember_memory",
                 "forget_memory",
                 "run_command",
+                "fetch_url",
             ]
         );
         assert_eq!(registry[0].risk, "read");
@@ -245,7 +260,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -254,7 +269,7 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
     }
 
     #[test]
@@ -262,7 +277,7 @@ mod tests {
         let registry = builtin_registry(false, true);
         let names = tool_names(&registry);
         assert!(names.contains(&"use_skill".to_string()));
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

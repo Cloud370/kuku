@@ -1,5 +1,6 @@
 pub(crate) mod common;
 mod edit_file;
+mod fetch_url;
 mod find_files;
 mod memory;
 mod read_file;
@@ -11,6 +12,7 @@ mod write_file;
 mod test_helpers;
 
 pub(crate) use edit_file::edit_file;
+pub(crate) use fetch_url::fetch_url;
 pub(crate) use find_files::find_files;
 pub(crate) use memory::{forget_memory_with_home, remember_memory_with_home};
 pub(crate) use read_file::read_file;
