@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::error::Result;
+use crate::util::yaml::split_yaml_frontmatter;
 
 use super::super::definition::{DefinitionSource, SubagentDefinition};
 
@@ -106,21 +107,6 @@ fn parse_claude_code_agent(
 
     def.hash = def.compute_hash();
     Ok(Some(def))
-}
-
-pub fn split_yaml_frontmatter(content: &str) -> (Option<serde_yaml::Mapping>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, content);
-    }
-    let after_first = &trimmed[3..];
-    let Some(end) = after_first.find("\n---") else {
-        return (None, content);
-    };
-    let yaml_str = &after_first[..end];
-    let body = &after_first[end + 4..];
-    let mapping = serde_yaml::from_str::<serde_yaml::Mapping>(yaml_str).ok();
-    (mapping, body)
 }
 
 pub(crate) fn map_claude_model_to_tier(model: &str) -> String {

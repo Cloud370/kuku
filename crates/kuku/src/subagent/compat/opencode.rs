@@ -28,7 +28,7 @@ fn parse_opencode_agent(
     source: DefinitionSource,
 ) -> Result<Option<SubagentDefinition>> {
     let content = std::fs::read_to_string(path)?;
-    let (frontmatter, body) = super::claude_code::split_yaml_frontmatter(&content);
+    let (frontmatter, body) = crate::util::yaml::split_yaml_frontmatter(&content);
 
     let mut def = SubagentDefinition {
         name: String::new(),

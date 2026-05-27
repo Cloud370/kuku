@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::subagent::compat::claude_code::split_yaml_frontmatter;
+use crate::util::yaml::split_yaml_frontmatter;
 
 use super::definition::{SkillDefinition, SkillSource};
 

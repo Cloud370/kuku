@@ -2,7 +2,8 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::compat::claude_code::split_yaml_frontmatter;
+use crate::util::yaml::split_yaml_frontmatter;
+
 use super::definition::{DefinitionSource, SubagentDefinition, ToolProfile};
 
 pub(crate) fn load_from_dir(
