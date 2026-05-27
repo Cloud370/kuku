@@ -59,10 +59,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<String, crate::error::E
         .and_then(Value::as_str)
         .map(normalize_type_filter);
     let search = args.get("search").and_then(Value::as_str);
-    let from_turn = args
-        .get("from_turn")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
+    let from_turn = args.get("from_turn").and_then(Value::as_u64).unwrap_or(0) as usize;
     let to_turn = args
         .get("to_turn")
         .and_then(Value::as_u64)
@@ -190,10 +187,7 @@ fn truncate_value(key: &str, value: &Value) -> Value {
         "text" | "model_content" | "summary" | "content" => {
             if let Some(s) = value.as_str() {
                 if s.len() > MAX_EVENT_CONTENT_CHARS {
-                    Value::String(format!(
-                        "{}...(truncated)",
-                        &s[..MAX_EVENT_CONTENT_CHARS]
-                    ))
+                    Value::String(format!("{}...(truncated)", &s[..MAX_EVENT_CONTENT_CHARS]))
                 } else {
                     value.clone()
                 }

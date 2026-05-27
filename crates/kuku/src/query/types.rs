@@ -671,10 +671,7 @@ mod tests {
     fn handoff_close_tag_split_across_chunks() {
         let mut state = HandoffDetector::new();
         assert_eq!(state.process("text<kuku_handoff>body"), None);
-        assert_eq!(
-            state.process("more</kuku_hand"),
-            None
-        );
+        assert_eq!(state.process("more</kuku_hand"), None);
         assert_eq!(state.process("off>rest"), None);
         assert_eq!(state.finish(), Some("bodymore".to_string()));
     }

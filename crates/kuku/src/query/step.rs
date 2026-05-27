@@ -11,11 +11,11 @@ use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
-use crate::prompt::{
-    builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
-};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
+};
+use crate::prompt::{
+    builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
 };
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
@@ -602,9 +602,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                     } else {
                         builtin_handoff_instruction().to_string()
                     };
-                    let rt = assembly
-                        .runtime_context
-                        .get_or_insert_with(String::new);
+                    let rt = assembly.runtime_context.get_or_insert_with(String::new);
                     rt.push_str("\n\n");
                     rt.push_str(&instruction);
                 }
@@ -802,6 +800,7 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
     turn: u64,
