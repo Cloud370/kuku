@@ -1,3 +1,5 @@
+//! File revert plan computation and execution for turn rollbacks.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -5,6 +7,7 @@ use crate::event::{EventPayload, RollbackScope, StoredEvent};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
+/// Plan for reverting files to their state before a target turn.
 pub struct RevertPlan {
     pub restores: Vec<FileRestore>,
     pub deletes: Vec<PathBuf>,
@@ -12,6 +15,7 @@ pub struct RevertPlan {
     pub sensitive_files: Vec<PathBuf>,
 }
 
+/// A single file to be restored to its previous content.
 pub struct FileRestore {
     pub path: PathBuf,
     pub old_content: String,
@@ -19,12 +23,14 @@ pub struct FileRestore {
     pub new_content_on_plan: String,
 }
 
+/// The currently active (non-undone) rollback in a session.
 pub struct ActiveRollback {
     pub rollback_event_id: u64,
     pub target_turn: u64,
     pub scope: RollbackScope,
 }
 
+/// A user turn entry for the interactive undo selection list.
 pub struct UserTurnEntry {
     pub turn: u64,
     pub ts: String,
@@ -38,6 +44,7 @@ enum FileStateAt {
     Unrecoverable,
 }
 
+/// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
     let mut undone_ids: HashSet<u64> = HashSet::new();
     let mut active_rollback: Option<(u64, u64, RollbackScope)> = None;
@@ -110,6 +117,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
         .collect()
 }
 
+/// Compute which files need to be reverted to restore state before a target turn.
 pub fn compute_file_revert_plan(
     events: &[StoredEvent],
     target_turn: u64,
@@ -152,6 +160,9 @@ pub fn compute_file_revert_plan(
     let mut sensitive_files = Vec::new();
 
     for file_path in modified_files.keys() {
+        if is_system_dir_path(file_path) {
+            continue;
+        }
         let target_state = find_file_state_at(events, file_path, turn_end_pos);
         let disk_path = workspace.join(file_path);
 
@@ -190,6 +201,13 @@ pub fn compute_file_revert_plan(
         unrecoverable,
         sensitive_files,
     }
+}
+
+fn is_system_dir_path(path: &str) -> bool {
+    let normalized = crate::tool::builtin::common::normalize_path_sep(path);
+    normalized
+        .split('/')
+        .any(|part| part == ".git" || part == ".ssh")
 }
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
@@ -258,6 +276,7 @@ fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usiz
     }
 }
 
+/// Find the most recent non-undone rollback in the event stream.
 pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
     let mut undone_ids: HashSet<u64> = HashSet::new();
     let mut last: Option<ActiveRollback> = None;
@@ -289,6 +308,7 @@ pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
     last
 }
 
+/// List user turns in reverse chronological order for undo selection.
 pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
     let mut current_turn: Option<u64> = None;
     let mut file_turns: HashSet<u64> = HashSet::new();
@@ -329,6 +349,7 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
     turns
 }
 
+/// Count turns with file modifications after a given turn.
 pub fn count_file_turns_after(events: &[StoredEvent], after_turn: u64) -> usize {
     let mut file_turns: HashSet<u64> = HashSet::new();
     let mut current_turn: Option<u64> = None;
@@ -355,6 +376,7 @@ pub fn count_file_turns_after(events: &[StoredEvent], after_turn: u64) -> usize 
     file_turns.len()
 }
 
+/// Execute a file revert plan: backup, restore, and delete files.
 pub fn apply_file_revert(
     plan: &RevertPlan,
     workspace: &Path,

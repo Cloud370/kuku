@@ -64,10 +64,12 @@ pub enum RollbackScope {
 }
 
 impl RollbackScope {
+    /// Whether this scope skips conversation events during rebuild.
     pub fn affects_conversation(&self) -> bool {
         matches!(self, Self::ConversationOnly | Self::Both)
     }
 
+    /// Whether this scope triggers file revert operations.
     pub fn affects_files(&self) -> bool {
         matches!(self, Self::FilesOnly | Self::Both)
     }

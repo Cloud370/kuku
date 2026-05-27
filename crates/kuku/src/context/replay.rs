@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::event::{EventPayload, StoredEvent};
-
-use super::revert::filter_rolled_back_events;
-
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
+use super::revert::filter_rolled_back_events;
+use crate::event::{EventPayload, StoredEvent};
 
 struct PendingToolCall {
     index: u64,
