@@ -462,7 +462,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let existing_events = EventStore::replay(&pending.events_path)?;
-    let (_handoff_summary, history) = rebuild_history(&existing_events);
+    let (handoff_summary, history) = rebuild_history(&existing_events);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
@@ -533,6 +533,8 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
     }
+
+    assembly.handoff_summary = handoff_summary;
 
     let prelude_snapshot = assembly.snapshot_prelude();
 

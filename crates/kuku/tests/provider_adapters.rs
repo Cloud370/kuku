@@ -146,6 +146,7 @@ fn sample_assembly() -> ContextAssembly {
             content: "remember the user prefers concise answers".to_string(),
         }],
         runtime_context: None,
+        handoff_summary: None,
     }
 }
 
@@ -229,6 +230,7 @@ fn assembly_with_tool_history() -> ContextAssembly {
         project_instruction_sources: Vec::new(),
         memory_sources: Vec::new(),
         runtime_context: None,
+        handoff_summary: None,
     }
 }
 

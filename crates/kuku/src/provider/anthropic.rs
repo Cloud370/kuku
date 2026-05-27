@@ -376,6 +376,7 @@ mod tests {
                 project_instruction_sources: vec![],
                 memory_sources: vec![],
                 runtime_context: None,
+                handoff_summary: None,
             },
             model: "test-model".into(),
             max_output_tokens: Some(1024),
