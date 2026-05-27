@@ -500,6 +500,57 @@ pub fn generate_default() -> &'static str {
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/default-config.toml"))
 }
 
+/// Detect missing config sections via struct deserialization, then inject
+/// defaults using `toml_edit` to preserve user comments and formatting.
+pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
+    let file: ConfigFile = toml::from_str(raw)
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
+
+    if file.handoff.is_some() {
+        return Ok((raw.to_string(), false));
+    }
+
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
+
+    inject_handoff_section(&mut doc);
+
+    Ok((doc.to_string(), true))
+}
+
+fn inject_handoff_section(doc: &mut toml_edit::DocumentMut) {
+    let mut section = toml_edit::Table::new();
+    *section.decor_mut() = toml_edit::Decor::new(
+        "\n\n# Context handoff: inject summary when context usage exceeds threshold.\n",
+        "",
+    );
+    section["enabled"] = toml_edit::value(true);
+    section["threshold"] = toml_edit::value(0.7);
+    section["keep_turns"] = toml_edit::value(2);
+
+    doc["handoff"] = toml_edit::Item::Table(section);
+}
+
+/// Load config from disk, patch missing sections, write back atomically if changed.
+/// Returns the resolved ConfigFile. Preserves user comments via `toml_edit`.
+pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
+    let (patched, changed) = config_patch_defaults(&raw)?;
+    if changed {
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let mut temp = tempfile::NamedTempFile::new_in(dir)
+            .map_err(|error| Error::ConfigLoad(format!("cannot create temp file: {error}")))?;
+        std::io::Write::write_all(&mut temp, patched.as_bytes())
+            .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
+        temp.persist(path)
+            .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+    }
+    toml::from_str(&patched)
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+}
+
 /// Modify a single value in a config file by dot-notation key.
 ///
 /// Validates the modified config structurally (cross-references, types, enum values).
@@ -1059,5 +1110,155 @@ api_key = "test-key"
         assert!(!file.provider.is_empty());
         assert!(file.discovery.is_some());
         assert!(file.handoff.is_some());
+    }
+}
+
+#[cfg(test)]
+mod patch_defaults_tests {
+    use super::*;
+
+    const FULL_CONFIG: &str = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[handoff]
+enabled = true
+threshold = 0.8
+keep_turns = 3
+"#;
+
+    #[test]
+    fn no_change_when_complete() {
+        let (patched, changed) = config_patch_defaults(FULL_CONFIG).unwrap();
+        assert!(!changed);
+        assert_eq!(patched, FULL_CONFIG);
+    }
+
+    #[test]
+    fn fills_missing_handoff() {
+        let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+"#;
+        let (patched, changed) = config_patch_defaults(input).unwrap();
+        assert!(changed);
+        let file: ConfigFile = toml::from_str(&patched).unwrap();
+        assert!(file.handoff.is_some());
+        let h = file.handoff.unwrap();
+        assert!(h.enabled);
+        assert!((h.threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(h.keep_turns, 2);
+    }
+
+    #[test]
+    fn preserves_user_comments() {
+        let input = r#"# My custom config
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+"#;
+        let (patched, _) = config_patch_defaults(input).unwrap();
+        assert!(patched.contains("# My custom config"));
+    }
+
+    #[test]
+    fn preserves_existing_handoff_values() {
+        let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[handoff]
+enabled = false
+threshold = 0.5
+keep_turns = 5
+"#;
+        let (patched, changed) = config_patch_defaults(input).unwrap();
+        assert!(!changed);
+        let file: ConfigFile = toml::from_str(&patched).unwrap();
+        let h = file.handoff.unwrap();
+        assert!(!h.enabled);
+        assert!((h.threshold - 0.5).abs() < f64::EPSILON);
+        assert_eq!(h.keep_turns, 5);
+    }
+
+    #[test]
+    fn rejects_invalid_toml() {
+        let result = config_patch_defaults("not [valid toml");
+        assert!(result.is_err());
     }
 }
