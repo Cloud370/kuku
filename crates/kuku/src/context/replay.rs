@@ -1,6 +1,8 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
-use crate::event::{EventPayload, RollbackScope, StoredEvent};
+use crate::event::{EventPayload, StoredEvent};
+
+use super::revert::filter_rolled_back_events;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 
@@ -17,88 +19,6 @@ struct ResponseGroup {
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
-}
-
-fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
-    let mut undone_ids: HashSet<u64> = HashSet::new();
-    let mut active_rollback: Option<(u64, u64, RollbackScope)> = None;
-
-    for event in events {
-        match &event.payload {
-            EventPayload::TurnRollbackUndo {
-                rollback_event_id, ..
-            } => {
-                undone_ids.insert(*rollback_event_id);
-                if active_rollback
-                    .as_ref()
-                    .is_some_and(|(_, rb_id, _)| rb_id == rollback_event_id)
-                {
-                    active_rollback = None;
-                }
-            }
-            EventPayload::TurnRollback {
-                target_turn,
-                scope,
-                ..
-            } => {
-                if !undone_ids.contains(&event.id) {
-                    active_rollback = Some((*target_turn, event.id, scope.clone()));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let skipped_turns: HashSet<u64> = match &active_rollback {
-        Some((target_turn, _, scope)) if scope.affects_conversation() => {
-            events
-                .iter()
-                .filter_map(|e| {
-                    if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                        if *turn >= *target_turn {
-                            Some(*turn)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        _ => HashSet::new(),
-    };
-
-    let mut current_turn: Option<u64> = None;
-    events
-        .iter()
-        .filter(|event| {
-            match &event.payload {
-                EventPayload::TurnStart { turn, .. } => {
-                    current_turn = Some(*turn);
-                    !skipped_turns.contains(turn)
-                }
-                EventPayload::TurnEnd { turn, .. }
-                | EventPayload::UserInput { turn, .. }
-                | EventPayload::ModelResponse { turn, .. }
-                | EventPayload::ToolCall { turn, .. }
-                | EventPayload::ToolResult { turn, .. }
-                | EventPayload::ModelRequest { turn, .. }
-                | EventPayload::ModelError { turn, .. }
-                | EventPayload::PermissionRequest { turn, .. }
-                | EventPayload::PermissionDecision { turn, .. } => {
-                    !skipped_turns.contains(turn)
-                }
-                EventPayload::Handoff { .. } | EventPayload::HandoffTrigger { .. } => {
-                    match current_turn {
-                        Some(t) => !skipped_turns.contains(&t),
-                        None => true,
-                    }
-                }
-                _ => true,
-            }
-        })
-        .collect()
 }
 
 /// Reconstruct conversation history messages from a session's stored events.
@@ -279,7 +199,8 @@ mod tests {
     use crate::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::{filter_rolled_back_events, rebuild_history};
+    use super::rebuild_history;
+    use crate::context::revert::filter_rolled_back_events;
     use crate::event::RollbackScope;
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
