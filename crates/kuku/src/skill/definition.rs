@@ -2,42 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SkillSource {
-    #[serde(rename = "kuku:user")]
-    KukuUser,
-    #[serde(rename = "kuku:project")]
-    KukuProject,
-    #[serde(rename = "claude_code:user")]
-    ClaudeCodeUser,
-    #[serde(rename = "claude_code:project")]
-    ClaudeCodeProject,
-    #[serde(rename = "opencode:user")]
-    OpenCodeUser,
-    #[serde(rename = "opencode:project")]
-    OpenCodeProject,
+    #[serde(rename = "user")]
+    User,
+    #[serde(rename = "project")]
+    Project,
 }
 
 impl SkillSource {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::KukuUser => "kuku:user",
-            Self::KukuProject => "kuku:project",
-            Self::ClaudeCodeUser => "claude_code:user",
-            Self::ClaudeCodeProject => "claude_code:project",
-            Self::OpenCodeUser => "opencode:user",
-            Self::OpenCodeProject => "opencode:project",
+            Self::User => "user",
+            Self::Project => "project",
         }
     }
+}
 
-    pub fn base_dir(&self) -> &'static str {
-        match self {
-            Self::ClaudeCodeUser => "~/.claude/skills",
-            Self::ClaudeCodeProject => ".claude/skills",
-            Self::OpenCodeUser => "~/.config/opencode/skills",
-            Self::OpenCodeProject => ".opencode/skills",
-            Self::KukuUser => "~/.kuku/skills",
-            Self::KukuProject => ".kuku/skills",
+impl From<crate::discovery::Scope> for SkillSource {
+    fn from(scope: crate::discovery::Scope) -> Self {
+        match scope {
+            crate::discovery::Scope::User => Self::User,
+            crate::discovery::Scope::Project => Self::Project,
         }
     }
 }
@@ -96,7 +82,7 @@ mod tests {
             name: name.into(),
             description: "Test skill".into(),
             instructions: "Do the thing.".into(),
-            source: SkillSource::KukuProject,
+            source: SkillSource::Project,
             hash: String::new(),
             source_path: None,
             allowed_tools: None,
@@ -130,21 +116,30 @@ mod tests {
     fn skill_hash_excludes_source_and_path() {
         let mut def = minimal_skill("tdd");
         let h1 = def.compute_hash();
-        def.source = SkillSource::ClaudeCodeUser;
+        def.source = SkillSource::User;
         def.source_path = Some("/some/path".into());
         assert_eq!(h1, def.compute_hash());
     }
 
     #[test]
-    fn skill_source_as_str_matches_serde() {
-        assert_eq!(SkillSource::KukuUser.as_str(), "kuku:user");
-        assert_eq!(SkillSource::KukuProject.as_str(), "kuku:project");
-        assert_eq!(SkillSource::ClaudeCodeUser.as_str(), "claude_code:user");
+    fn serde_round_trip() {
+        let sources = [SkillSource::User, SkillSource::Project];
+        for src in sources {
+            let json = serde_json::to_string(&src).unwrap();
+            let back: SkillSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(src, back);
+        }
+    }
+
+    #[test]
+    fn serde_values() {
         assert_eq!(
-            SkillSource::ClaudeCodeProject.as_str(),
-            "claude_code:project"
+            serde_json::to_string(&SkillSource::User).unwrap(),
+            "\"user\""
         );
-        assert_eq!(SkillSource::OpenCodeUser.as_str(), "opencode:user");
-        assert_eq!(SkillSource::OpenCodeProject.as_str(), "opencode:project");
+        assert_eq!(
+            serde_json::to_string(&SkillSource::Project).unwrap(),
+            "\"project\""
+        );
     }
 }

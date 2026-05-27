@@ -1,6 +1,6 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, Config, ProviderConfig, ResolvedThinking, ThinkLevel, TierConfig,
+        ApiKey, Config, DiscoveryConfig, ProviderConfig, ResolvedThinking, ThinkLevel, TierConfig,
     };
 }
 
@@ -71,6 +71,7 @@ fn default_config() -> Config {
         tiers,
         providers,
         default_tier: "balanced".to_string(),
+        discovery: config::DiscoveryConfig::default(),
     }
 }
 
@@ -150,6 +151,7 @@ fn explicit_tier_selects_different_tier() {
         tiers,
         providers,
         default_tier: "balanced".to_string(),
+        discovery: config::DiscoveryConfig::default(),
     };
 
     let resolved = resolve_config(ResolveConfigInput {

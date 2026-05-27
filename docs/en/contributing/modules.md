@@ -125,7 +125,7 @@ Context drift detection and system notice rendering.
 
 Definitions, registry, catalog rendering, child session spawn.
 
-- `SubagentRegistry` loads from builtins + compatibility imports.
+- `SubagentRegistry` loads from builtins + discovery-based scanning of configured and auto-detected directories.
 - Catalog is injected into `runtime_context`; full definitions only go to child sessions.
 - Child sessions use the same query pipeline with a constrained tool registry.
 - V1: shallow only (child sessions do not register the `agent` tool).

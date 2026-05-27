@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::subagent::compat::claude_code::split_yaml_frontmatter;
+use crate::util::yaml::split_yaml_frontmatter;
 
 use super::definition::{SkillDefinition, SkillSource};
 
@@ -93,7 +93,7 @@ fn parse_skill(content: &str, skill_dir: &Path, source: &SkillSource) -> Result<
         name,
         description,
         instructions: body.trim().to_string(),
-        source: source.clone(),
+        source: *source,
         hash: String::new(),
         source_path: Some(skill_dir.display().to_string()),
         allowed_tools,
@@ -189,7 +189,7 @@ mod tests {
         create_skill(dir.path(), "tdd", "Write tests first.");
         create_skill(dir.path(), "review", "Review carefully.");
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert_eq!(defs.len(), 2);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"tdd"));
@@ -202,7 +202,7 @@ mod tests {
         std::fs::write(dir.path().join("not-a-dir.md"), "ignored").unwrap();
         create_skill(dir.path(), "real", "Real skill.");
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "real");
     }
@@ -214,7 +214,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("README.md"), "no SKILL.md here").unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty());
     }
 
@@ -228,7 +228,7 @@ mod tests {
             "---\nname: custom\ndescription: Custom skill\nallowed-tools:\n  - read_file\n  - search_text\ndisallowed-tools:\n  - run_command\nmax-turns: 10\nmodel: strong\nlicense: MIT\ncompatibility: linux/macos\n---\n\nInstructions here.\n",
         ).unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuUser).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::User).unwrap();
         assert_eq!(defs.len(), 1);
         let def = &defs[0];
         assert_eq!(def.name, "custom");
@@ -252,7 +252,7 @@ mod tests {
         )
         .unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "my-skill");
     }
@@ -264,7 +264,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "---\nname: bad\n---\n\nBody.\n").unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty(), "should skip skill with empty description");
     }
 
@@ -275,7 +275,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "Just plain text.\n").unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty());
     }
 
@@ -290,7 +290,7 @@ mod tests {
         )
         .unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty(), "should reject uppercase name");
     }
 
@@ -305,7 +305,7 @@ mod tests {
         )
         .unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty(), "should reject name not matching directory");
     }
 
@@ -321,7 +321,7 @@ mod tests {
         )
         .unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert!(defs.is_empty(), "should reject name > 64 chars");
     }
 
@@ -336,7 +336,7 @@ mod tests {
         )
         .unwrap();
 
-        let defs = load_from_dir(dir.path(), SkillSource::KukuProject).unwrap();
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].metadata["author"], "someone");
         assert_eq!(defs[0].metadata["version"], 2);

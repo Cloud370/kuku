@@ -34,19 +34,7 @@ pub fn render_agent_catalog(registry: &SubagentRegistry) -> Option<String> {
 
 /// Render the full agent definition block for a child session's user message.
 pub fn render_agent_definition_block(def: &super::definition::SubagentDefinition) -> String {
-    let path = def
-        .source_path
-        .as_deref()
-        .unwrap_or_else(|| match def.source.as_str() {
-            "builtin" => "(builtin)",
-            "claude_code:user" => "~/.claude/agents/",
-            "claude_code:project" => ".claude/agents/",
-            "kuku:user" => "~/.kuku/agents/",
-            "kuku:project" => ".kuku/agents/",
-            "opencode:user" => "~/.config/opencode/agents/",
-            "opencode:project" => ".opencode/agents/",
-            s => s,
-        });
+    let path = def.source_path.as_deref().unwrap_or(def.source.as_str());
     format!(
         "<!-- loaded: {path} -->\n\n{instructions}",
         path = path,

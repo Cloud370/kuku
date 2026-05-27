@@ -1,6 +1,5 @@
 pub mod catalog;
-pub mod compat;
 pub mod definition;
-pub(crate) mod kuku_format;
+pub(crate) mod loader;
 pub mod registry;
 pub mod session;

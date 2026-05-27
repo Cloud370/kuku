@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -20,6 +22,33 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub provider: BTreeMap<String, ProviderEntry>,
+
+    #[serde(default)]
+    pub discovery: Option<DiscoveryConfig>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(default = "default_true")]
+    pub auto_discover: bool,
+    #[serde(default)]
+    pub extra_user_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub extra_project_paths: Vec<PathBuf>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            auto_discover: true,
+            extra_user_paths: Vec::new(),
+            extra_project_paths: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +80,7 @@ pub struct Config {
     pub tiers: BTreeMap<String, TierConfig>,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub default_tier: String,
+    pub discovery: DiscoveryConfig,
 }
 
 /// Configuration for session handoff behaviour (threshold, history retention).
@@ -141,6 +171,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
             default_model: None,
             model: BTreeMap::new(),
             provider: BTreeMap::new(),
+            discovery: None,
         });
     }
     let text = std::fs::read_to_string(path)
@@ -203,10 +234,13 @@ impl ConfigFile {
             .clone()
             .unwrap_or_else(|| "balanced".to_string());
 
+        let discovery = self.discovery.clone().unwrap_or_default();
+
         Ok(Config {
             tiers,
             providers,
             default_tier,
+            discovery,
         })
     }
 
@@ -833,5 +867,89 @@ api_key = "$_KUKU_TEST_SHOW_KEY"
 
         let error = show_redacted(&path).unwrap_err();
         assert!(error.to_string().contains("invalid config"));
+    }
+}
+
+#[cfg(test)]
+mod discovery_config_tests {
+    use super::*;
+
+    #[test]
+    fn discovery_config_from_toml() {
+        let toml = r#"
+[discovery]
+auto_discover = false
+extra_user_paths = ["/opt/skills"]
+extra_project_paths = [".custom/agents"]
+"#;
+        let file: ConfigFile = toml::from_str(toml).unwrap();
+        let disc = file.discovery.unwrap();
+        assert!(!disc.auto_discover);
+        assert_eq!(disc.extra_user_paths.len(), 1);
+        assert_eq!(disc.extra_project_paths.len(), 1);
+    }
+
+    #[test]
+    fn discovery_config_defaults_when_absent() {
+        let toml = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+"#;
+        let file: ConfigFile = toml::from_str(toml).unwrap();
+        let disc = file.discovery.unwrap_or_default();
+        assert!(disc.auto_discover);
+        assert!(disc.extra_user_paths.is_empty());
+    }
+
+    #[test]
+    fn discovery_config_propagated_to_resolved_config() {
+        let toml = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[discovery]
+auto_discover = false
+"#;
+        let file: ConfigFile = toml::from_str(toml).unwrap();
+        let config = file.resolve().unwrap();
+        assert!(!config.discovery.auto_discover);
     }
 }

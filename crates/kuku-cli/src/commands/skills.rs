@@ -4,13 +4,13 @@ use crate::cli_args::{SkillsArgs, SkillsSubcommand};
 
 fn build_registry() -> Result<SkillRegistry, Box<dyn std::error::Error>> {
     let workspace = kuku::session::current_workspace()?;
+    let config_path = kuku::session::kuku_home()?.join("config.toml");
+    let discovery_config = kuku::config::load_config(&config_path)
+        .ok()
+        .and_then(|f| f.discovery)
+        .unwrap_or_default();
     let registry = SkillRegistry::builder()
-        .load_claude_user_skills()?
-        .load_claude_project_skills(&workspace)?
-        .load_opencode_user_skills()?
-        .load_opencode_project_skills(&workspace)?
-        .load_kuku_user_skills()?
-        .load_kuku_project_skills(&workspace)?
+        .build_with_discovery(&workspace, &discovery_config)?
         .build();
     Ok(registry)
 }

@@ -21,6 +21,11 @@ async fn main() {
             eprintln!("error: use `kuku server` instead of `kuku-cli server`");
             std::process::exit(1);
         }
+        #[cfg(feature = "server")]
+        Some(Command::Web(_args)) => {
+            eprintln!("error: use `kuku web` instead of `kuku-cli web`");
+            std::process::exit(1);
+        }
         None => kuku_cli::commands::run::interactive(None).await,
     };
 

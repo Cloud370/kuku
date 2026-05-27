@@ -53,34 +53,31 @@ impl ToolProfile {
 }
 
 /// Where this subagent definition was loaded from.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DefinitionSource {
     #[serde(rename = "builtin")]
     Builtin,
-    #[serde(rename = "kuku:user")]
-    KukuUser,
-    #[serde(rename = "kuku:project")]
-    KukuProject,
-    #[serde(rename = "claude_code:user")]
-    ClaudeCodeUser,
-    #[serde(rename = "claude_code:project")]
-    ClaudeCodeProject,
-    #[serde(rename = "opencode:user")]
-    OpenCodeUser,
-    #[serde(rename = "opencode:project")]
-    OpenCodeProject,
+    #[serde(rename = "user")]
+    User,
+    #[serde(rename = "project")]
+    Project,
 }
 
 impl DefinitionSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Builtin => "builtin",
-            Self::KukuUser => "kuku:user",
-            Self::KukuProject => "kuku:project",
-            Self::ClaudeCodeUser => "claude_code:user",
-            Self::ClaudeCodeProject => "claude_code:project",
-            Self::OpenCodeUser => "opencode:user",
-            Self::OpenCodeProject => "opencode:project",
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
+}
+
+impl From<crate::discovery::Scope> for DefinitionSource {
+    fn from(scope: crate::discovery::Scope) -> Self {
+        match scope {
+            crate::discovery::Scope::User => Self::User,
+            crate::discovery::Scope::Project => Self::Project,
         }
     }
 }
@@ -188,8 +185,16 @@ mod tests {
     }
 
     #[test]
-    fn definition_source_kuku_variants() {
-        assert_eq!(DefinitionSource::KukuUser.as_str(), "kuku:user");
-        assert_eq!(DefinitionSource::KukuProject.as_str(), "kuku:project");
+    fn definition_source_serde_round_trip() {
+        let sources = [
+            DefinitionSource::Builtin,
+            DefinitionSource::User,
+            DefinitionSource::Project,
+        ];
+        for src in sources {
+            let json = serde_json::to_string(&src).unwrap();
+            let back: DefinitionSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(src, back);
+        }
     }
 }

@@ -85,12 +85,7 @@ impl Query {
             (None, None)
         } else {
             let builder = crate::skill::registry::SkillRegistry::builder()
-                .load_claude_user_skills()
-                .and_then(|b| b.load_claude_project_skills(&workspace))
-                .and_then(|b| b.load_opencode_user_skills())
-                .and_then(|b| b.load_opencode_project_skills(&workspace))
-                .and_then(|b| b.load_kuku_user_skills())
-                .and_then(|b| b.load_kuku_project_skills(&workspace));
+                .build_with_discovery(&workspace, &config.discovery);
             match builder {
                 Ok(b) => {
                     let reg = b.build();

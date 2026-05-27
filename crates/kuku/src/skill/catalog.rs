@@ -7,11 +7,7 @@ pub fn render_skill_catalog(registry: &SkillRegistry) -> Option<String> {
 
     let mut entries = String::new();
     for def in registry.definitions() {
-        let path = def
-            .source_path
-            .as_deref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}/", def.source.base_dir()));
+        let path = def.source_path.as_deref().unwrap_or(def.source.as_str());
         entries.push_str(&format!(
             "- {} — {} ({})\n",
             def.name, def.description, path,
@@ -40,7 +36,10 @@ mod tests {
         .unwrap();
 
         let registry = crate::skill::registry::SkillRegistry::builder()
-            .load_kuku_project_skills(dir.path())
+            .load_from_dir(
+                &dir.path().join(".kuku").join("skills"),
+                crate::skill::definition::SkillSource::Project,
+            )
             .unwrap()
             .build();
         let catalog = render_skill_catalog(&registry).expect("should render");
