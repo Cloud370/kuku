@@ -123,7 +123,9 @@ impl From<RawHandoffConfig> for HandoffConfig {
     }
 }
 
-fn deserialize_handoff<'de, D>(deserializer: D) -> std::result::Result<Option<HandoffConfig>, D::Error>
+fn deserialize_handoff<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<HandoffConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -497,7 +499,10 @@ impl ApiKey {
 /// Generate a default config file content as a TOML string.
 /// Used by the host on first run.
 pub fn generate_default() -> &'static str {
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/default-config.toml"))
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/default-config.toml"
+    ))
 }
 
 /// Detect missing config sections via struct deserialization, then inject
@@ -547,8 +552,7 @@ pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
         temp.persist(path)
             .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
     }
-    toml::from_str(&patched)
-        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+    toml::from_str(&patched).map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
 }
 
 /// Modify a single value in a config file by dot-notation key.
