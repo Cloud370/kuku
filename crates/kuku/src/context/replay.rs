@@ -118,6 +118,8 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
             | EventPayload::PermissionDecision { .. }
             | EventPayload::HandoffTrigger { .. }
             | EventPayload::Handoff { .. }
+            | EventPayload::TurnRollback { .. }
+            | EventPayload::TurnRollbackUndo { .. }
             | EventPayload::Unknown(_) => {}
         }
     }
