@@ -415,7 +415,6 @@ impl HandoffDetector {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn finish(self) -> Option<String> {
         match self.state {
             DetectorState::Done => Some(self.handoff_text),

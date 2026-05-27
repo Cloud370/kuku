@@ -112,6 +112,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         stop_reason,
         tool_calls,
         usage,
+        handoff_detector,
         ..
     } = state;
 
@@ -148,6 +149,33 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
             usage: serde_json::to_value(&usage).unwrap_or_default(),
         })?;
+
+        if let Some(detector) = handoff_detector {
+            if let Some(summary) = detector.finish() {
+                let trimmed = summary.trim().to_string();
+                let final_summary = if trimmed.is_empty() {
+                    EventStore::replay(&pending.events_path)?
+                        .iter()
+                        .rev()
+                        .find_map(|e| match &e.payload {
+                            EventPayload::UserInput { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "handoff summary unavailable".to_string())
+                } else {
+                    trimmed
+                };
+                store.append(EventPayload::HandoffTrigger {
+                    ts: now_timestamp()?,
+                    trigger: crate::event::HandoffTriggerReason::ContextThreshold,
+                })?;
+                store.append(EventPayload::Handoff {
+                    ts: now_timestamp()?,
+                    summary: final_summary,
+                    kept_turns: pending.handoff_keep_turns,
+                })?;
+            }
+        }
 
         if !has_tool_calls {
             store.append(EventPayload::TurnEnd {
@@ -680,6 +708,41 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                 None
             },
         }))),
+        Err(failure)
+            if matches!(
+                failure.kind,
+                crate::provider::types::ProviderFailureKind::ContextTooLarge
+            ) =>
+        {
+            let user_input = existing_events
+                .iter()
+                .rev()
+                .find_map(|e| match &e.payload {
+                    EventPayload::UserInput { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let mut store = EventStore::open(&pending.events_path)?;
+            store.append(EventPayload::HandoffTrigger {
+                ts: now_timestamp()?,
+                trigger: crate::event::HandoffTriggerReason::OverflowError,
+            })?;
+            store.append(EventPayload::Handoff {
+                ts: now_timestamp()?,
+                summary: user_input,
+                kept_turns: 0,
+            })?;
+            store.append(EventPayload::TurnEnd {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+            })?;
+            Err(crate::error::Error::Provider {
+                kind: failure.kind,
+                message: failure.message,
+                provider: Some(resolved.config.kind.as_str().to_string()),
+                model: Some(resolved.config.model.clone()),
+            })
+        }
         Err(failure) => {
             lead_events.push(UiEvent::Error {
                 code: provider_failure_kind(&failure.kind).to_string(),
