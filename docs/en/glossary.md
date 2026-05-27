@@ -102,8 +102,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `child session` | Isolated session created under `sessions/child_<parent>_<N>/`. Has its own `events.jsonl`, constrained tool registry, and capped permissions. |
 | `depth guard` | Hard limit on subagent nesting: maximum 2 levels (parent → child → grandchild). Checked via `child_session_count` in `PendingRun`; a tool call that would exceed depth is blocked with status `"blocked"` and a descriptive summary. |
 | `agent catalog` | Short XML block listing available subagents (name, description, tier, tool_profile, hash). Injected into `runtime_context`. Does not include full instructions. |
-| `subagent registry` | Loaded set of `SubagentDefinition`s from builtins + compatibility imports. Content-hashed for drift detection. |
-| `compatibility import` | Read-only conversion of external agent definitions (Claude Code, OpenCode) into `SubagentDefinition`. Never mutates source files. |
+| `subagent registry` | Loaded set of `SubagentDefinition`s from builtins + discovery-based scanning of configured and auto-detected directories. Content-hashed for drift detection. |
 
 ## Extension
 
@@ -114,7 +113,7 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `MCP` | (planned) Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. |
 | `skill` | A packaged capability (instructions, scripts, references) that extends the current session. Follows the Agent Skills specification. Discovered through a catalog, loaded on demand via `use_skill`. See [skills.md](core/skills.md). |
 | `SkillDefinition` | Internal representation of a skill: name, description, instructions, source, hash, source_path, allowed_tools, disallowed_tools, max_turns, model, license, compatibility, metadata. |
-| `SkillRegistry` | Loaded set of `SkillDefinition`s from user and project directories (kuku, Claude Code, OpenCode). Content-hashed for drift detection. Metadata injected into `runtime_context` at startup. |
+| `SkillRegistry` | Loaded set of `SkillDefinition`s from user and project directories via pattern-based discovery scanning. Content-hashed for drift detection. Metadata injected into `runtime_context` at startup. |
 | `use_skill` | Built-in tool that loads a skill's full `SKILL.md` body into the current session on demand. Reads from disk for hot-reload support. |
 | `skill catalog` | XML block listing available skills (name, description, source, hash). Injected into `runtime_context` after the agent catalog. Does not include full instructions. |
 | `plugin` | (planned) Synonym for `package`. A plugin is a package that may include hooks, skills, tools, or MCP servers. |

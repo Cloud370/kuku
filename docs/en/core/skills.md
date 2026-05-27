@@ -79,14 +79,12 @@ Three-stage loading to minimize context usage:
 
 The model sees the catalog at startup. It calls `use_skill` to load full instructions. It uses existing tools (`read_file`, `run_command`) to access resources.
 
-## SkillRegistry 
-`SkillRegistry` loads skill definitions from multiple sources. Same pattern as `SubagentRegistry`.
+## SkillRegistry
+`SkillRegistry` loads skill definitions via pattern-based discovery scanning. Same pattern as `SubagentRegistry`.
 
 ```rust
 let registry = SkillRegistry::builder()
-    .load_builtin_skills()?
-    .load_kuku_user_skills()?
-    .load_kuku_project_skills(&workspace)?
+    .build_with_discovery(&workspace, &discovery_config)?
     .build();
 ```
 

@@ -12,7 +12,7 @@ user agents with the same name.
     description: Pre-commit code review with file/line evidence
     model: balanced
     tools: [find_files, read_file, search_text]
-    max_turns: 5
+    max_turns: 10
     ---
 
     You are a thorough code reviewer. For every finding, cite the file
@@ -26,7 +26,7 @@ user agents with the same name.
 | `description` | yes | — | When-to-use summary for catalog |
 | `model` | no | `balanced` | `strong` / `balanced` / `light` |
 | `tools` | no | inherit | Tool names. Omit = inherit parent. `[]` = no tools. |
-| `max_turns` | no | `5` | Maximum turns before forced stop |
+| `max_turns` | no | `10` | Maximum turns before forced stop |
 
 ## Tools
 
@@ -53,8 +53,10 @@ Child sessions inherit the parent's permission mode:
 
 The hard guard always applies and cannot be overridden.
 
-## Compatibility
+## Discovery
 
-Agents in `.claude/agents/*.md` are auto-imported. Fields `model`, `tools`,
-`maxTurns`, and `description` map to kuku equivalents. Unknown fields are
-preserved in metadata.
+Agents are discovered automatically via pattern-based scanning of user and
+project directories. The unified loader accepts all known frontmatter key
+formats (`max_turns`/`maxTurns`, `tools`/`allowedTools`). Unknown fields are
+preserved in metadata. Custom paths can be added via `[discovery]` in
+`config.toml`.
