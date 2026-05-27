@@ -25,6 +25,9 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub discovery: Option<DiscoveryConfig>,
+
+    #[serde(default, deserialize_with = "deserialize_handoff")]
+    pub handoff: Option<HandoffConfig>,
 }
 
 fn default_true() -> bool {
@@ -81,10 +84,11 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     pub default_tier: String,
     pub discovery: DiscoveryConfig,
+    pub handoff: HandoffConfig,
 }
 
 /// Configuration for session handoff behaviour (threshold, history retention).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandoffConfig {
     pub enabled: bool,
     pub threshold: f64,
@@ -99,6 +103,32 @@ impl Default for HandoffConfig {
             keep_turns: 2,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct RawHandoffConfig {
+    enabled: Option<bool>,
+    threshold: Option<f64>,
+    keep_turns: Option<usize>,
+}
+
+impl From<RawHandoffConfig> for HandoffConfig {
+    fn from(raw: RawHandoffConfig) -> Self {
+        let defaults = HandoffConfig::default();
+        Self {
+            enabled: raw.enabled.unwrap_or(defaults.enabled),
+            threshold: raw.threshold.unwrap_or(defaults.threshold),
+            keep_turns: raw.keep_turns.unwrap_or(defaults.keep_turns),
+        }
+    }
+}
+
+fn deserialize_handoff<'de, D>(deserializer: D) -> std::result::Result<Option<HandoffConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<RawHandoffConfig>::deserialize(deserializer)?;
+    Ok(raw.map(HandoffConfig::from))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +202,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
             model: BTreeMap::new(),
             provider: BTreeMap::new(),
             discovery: None,
+            handoff: None,
         });
     }
     let text = std::fs::read_to_string(path)
@@ -236,11 +267,24 @@ impl ConfigFile {
 
         let discovery = self.discovery.clone().unwrap_or_default();
 
+        let handoff = self.handoff.clone().unwrap_or_default();
+        if !(0.0..=1.0).contains(&handoff.threshold) {
+            return Err(Error::ConfigLoad(
+                "handoff.threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if handoff.keep_turns == 0 {
+            return Err(Error::ConfigLoad(
+                "handoff.keep_turns must be >= 1".to_string(),
+            ));
+        }
+
         Ok(Config {
             tiers,
             providers,
             default_tier,
             discovery,
+            handoff,
         })
     }
 
@@ -386,10 +430,9 @@ impl Config {
         self.tiers.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Return the handoff configuration. Currently returns defaults; will load from config file.
+    /// Return the handoff configuration.
     pub fn handoff(&self) -> HandoffConfig {
-        // TODO: load from config file
-        HandoffConfig::default()
+        self.handoff.clone()
     }
 
     /// All tier names with their purpose.
@@ -951,5 +994,98 @@ auto_discover = false
         let file: ConfigFile = toml::from_str(toml).unwrap();
         let config = file.resolve().unwrap();
         assert!(!config.discovery.auto_discover);
+    }
+}
+
+#[cfg(test)]
+mod handoff_config_tests {
+    use super::*;
+
+    const VALID_CONFIG: &str = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+"#;
+
+    #[test]
+    fn handoff_config_round_trip() {
+        let toml_str = format!(
+            "{VALID_CONFIG}\n[handoff]\nenabled = false\nthreshold = 0.5\nkeep_turns = 3\n"
+        );
+        let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+        let h = file.handoff.as_ref().unwrap();
+        assert!(!h.enabled);
+        assert!((h.threshold - 0.5).abs() < f64::EPSILON);
+        assert_eq!(h.keep_turns, 3);
+
+        let serialized = toml::to_string(&file).unwrap();
+        let file2: ConfigFile = toml::from_str(&serialized).unwrap();
+        assert_eq!(file.handoff, file2.handoff);
+    }
+
+    #[test]
+    fn handoff_config_defaults_when_absent() {
+        let file: ConfigFile = toml::from_str(VALID_CONFIG).unwrap();
+        assert!(file.handoff.is_none());
+        let config = file.resolve().unwrap();
+        assert!(config.handoff.enabled);
+        assert!((config.handoff.threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(config.handoff.keep_turns, 2);
+    }
+
+    #[test]
+    fn handoff_config_partial() {
+        let toml_str = format!("{VALID_CONFIG}\n[handoff]\nenabled = false\n");
+        let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+        let config = file.resolve().unwrap();
+        assert!(!config.handoff.enabled);
+        assert!((config.handoff.threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(config.handoff.keep_turns, 2);
+    }
+
+    #[test]
+    fn handoff_config_invalid_threshold() {
+        let toml_str = format!("{VALID_CONFIG}\n[handoff]\nthreshold = 1.5\n");
+        let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+        let err = file.resolve().unwrap_err();
+        assert!(err.to_string().contains("threshold"));
+    }
+
+    #[test]
+    fn handoff_config_zero_keep_turns() {
+        let toml_str = format!("{VALID_CONFIG}\n[handoff]\nkeep_turns = 0\n");
+        let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+        let err = file.resolve().unwrap_err();
+        assert!(err.to_string().contains("keep_turns"));
+    }
+
+    #[test]
+    fn handoff_propagation() {
+        let toml_str = format!(
+            "{VALID_CONFIG}\n[handoff]\nenabled = false\nthreshold = 0.5\nkeep_turns = 3\n"
+        );
+        let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+        let config = file.resolve().unwrap();
+        assert!(!config.handoff.enabled);
+        assert!((config.handoff.threshold - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.handoff.keep_turns, 3);
     }
 }

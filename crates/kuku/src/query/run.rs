@@ -622,6 +622,7 @@ mod tests {
             providers: std::collections::BTreeMap::new(),
             default_tier: "balanced".to_string(),
             discovery: crate::config::DiscoveryConfig::default(),
+            handoff: crate::config::HandoffConfig::default(),
         }
     }
 

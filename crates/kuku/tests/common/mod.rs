@@ -282,7 +282,9 @@ impl Drop for TestEnv {
 /// Builder overrides (.model(), .base_url(), .api_key()) take precedence at resolution time.
 #[allow(dead_code)]
 pub fn test_config() -> kuku::config::Config {
-    use kuku::config::{ApiKey, Config, DiscoveryConfig, ProviderConfig, ThinkLevel, TierConfig};
+    use kuku::config::{
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
+    };
     use std::collections::BTreeMap;
 
     let mut tiers = BTreeMap::new();
@@ -321,5 +323,6 @@ pub fn test_config() -> kuku::config::Config {
         providers,
         default_tier: "balanced".to_string(),
         discovery: DiscoveryConfig::default(),
+        handoff: HandoffConfig::default(),
     }
 }
