@@ -1,6 +1,6 @@
 # Tools
 
-Eight built-in tools, plus the `agent` tool when subagents are enabled.
+Eleven built-in tools, plus the `agent` tool when subagents are enabled and `use_skill` when skills are enabled.
 
 ## Naming
 
@@ -12,7 +12,10 @@ Eight built-in tools, plus the `agent` tool when subagents are enabled.
 |------|--------------|---------------|------|
 | `find_files` | — | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
-| `search_text` | `pattern` | `path`, `include`, `view` | `read` |
+| `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
+| `fetch_url` | `url` | — | `read` |
+| `fetch_web` | `url`, `prompt`, `model_tier` | — | `read` |
+| `query_session` | — | `search`, `type`, `from_turn`, `to_turn`, `limit` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | — | `edit` |
 | `run_command` | `command`, `timeout`, `brief` | — | `command` |
@@ -30,7 +33,7 @@ Read a file with `line<TAB>text` line numbers. `offset`/`limit` for pagination. 
 
 ### `search_text`
 
-Regex search over file content. `view`: `files` (file list), `lines` (matching lines), `count` (per-file counts). Default `files`.
+Regex search over file content. `view`: `files` (file list), `lines` (matching lines), `count` (per-file counts). Default `files`. `offset`/`limit` for paginating large result sets (default: 0/100). `context` shows N lines before and after each match (only with `view=lines`, default: 0).
 
 ### `edit_file`
 
@@ -43,6 +46,18 @@ Write complete file content — create or overwrite. Overwrites require a prior 
 ### `run_command`
 
 Execute a local command. `timeout` in seconds, required. Default cwd is workspace. `brief` describes the command in 3-5 words. stdout/stderr are merged.
+
+### `fetch_url`
+
+Download a file from a URL to a temp directory (`/tmp/kuku-fetch/`). Returns metadata: status code, content-type, size, and file path. Enforces a 50MB size limit and rejects URLs with embedded credentials or non-HTTP(S) schemes. Read-only — does not modify workspace files.
+
+### `fetch_web`
+
+Fetch a web page, extract readable content via readability, convert to Markdown, and optionally summarize with a secondary LLM call. Content under 50KB is returned directly; larger pages are summarized using the specified `model_tier`. Results are cached (200 entries, 5-minute TTL). HTML body limited to 10MB.
+
+### `query_session`
+
+Query historical session events that have scrolled out of the current context window. Only useful after a context handoff. Filters: `type` (UserInput, ModelResponse, ToolCall, ToolResult, Handoff, HandoffTrigger), `search` (full-text keyword), `from_turn`/`to_turn` (relative turn range, 0 = most recent), `limit` (default 20). Individual event content is truncated to 500 chars; total output capped at 8000 chars. Read-only.
 
 ### `remember_memory` / `forget_memory`
 

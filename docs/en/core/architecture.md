@@ -96,7 +96,7 @@ while let Some(event) = run.next().await? {
 
 ## Context assembly (A2b)
 
-Every model call rebuilds context from files. Nothing is cached across turns.
+Every model call rebuilds context from files. Nothing is cached across turns at the SDK level. Provider-level caching (e.g. Anthropic's `cache_control: ephemeral`) is handled independently by each provider adapter and reduces token cost without affecting SDK rebuild semantics.
 
 ```text
 system prompt              (identity, hard rules, working style)

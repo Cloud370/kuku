@@ -17,7 +17,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff", "HandoffTrigger"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" }
@@ -150,6 +150,7 @@ fn normalize_type_filter(raw: &str) -> String {
         "ToolCall" => "tool.call".to_string(),
         "ToolResult" => "tool.result".to_string(),
         "Handoff" => "handoff".to_string(),
+        "HandoffTrigger" => "handoff.trigger".to_string(),
         other => other.to_lowercase(),
     }
 }

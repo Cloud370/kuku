@@ -19,6 +19,7 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `tool` | `call`, `result` |
 | `permission` | `request`, `decision` |
 | `policy` | `loaded` |
+| `handoff` | `trigger`, (root) |
 
 ## Index
 
@@ -36,6 +37,8 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `permission.request` | A tool awaiting authorization. | no | `permission.decision` |
 | `permission.decision` | Gate outcome: allow, deny, or deferred to host. | no | `permission.request` |
 | `turn.end` | A turn ends. | no | `turn.start` |
+| `handoff.trigger` | Context handoff activated: records trigger reason. | no | `handoff` |
+| `handoff` | Handoff summary: text content and number of kept turns. | no (used to build `handoff_summary`) | `handoff.trigger` |
 
 `model.request` provenance records the sources needed to inspect a request: instruction and memory hashes, prompt asset hashes, history range, tool/subagent registry snapshots, resolved provider/model, params, and context budget. It is not a stored provider raw request body.
 
@@ -67,3 +70,4 @@ Events marked `contributes` are folded into `messages[]` during context rebuild.
 - `tool.result` events become user `tool_result` blocks paired to their `tool.call`.
 - If a `tool.call` has no matching `tool.result` (crash), a synthetic `status:"cancelled"` result is inserted.
 - `turn.end` and `user.input` both flush the current response group before proceeding.
+- A `handoff` event truncates the rebuild window: only events after the most recent `handoff` enter `messages[]`. The `handoff.summary` text is returned as `handoff_summary` for the provider to render into context.

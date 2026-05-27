@@ -18,8 +18,9 @@ turn.start
 2. Rebuild `messages[]`. See [architecture.md](architecture.md#context-assembly-a2b) for the full assembly order.
 3. Append `model.request` with resolved provider, model, params, and provenance.
 4. Call model, stream text to host. On completion, append `model.response`.
-5. If `end_turn`: append `turn.end`, stop.
-6. If `tool_use`: collect all tool calls, append all `tool.call`, run permission gate, execute, append all `tool.result` in original order, loop to step 2.
+5. If handoff is enabled and context usage exceeds the threshold (default 70%), the handoff instruction was already injected before the model call. After streaming, if the response contains a `<kuku_handoff>` document (detected character-by-character by `HandoffDetector`), write `handoff.trigger` and `handoff` events.
+6. If `end_turn`: append `turn.end`, stop.
+7. If `tool_use`: collect all tool calls, append all `tool.call`, run permission gate, execute, append all `tool.result` in original order, loop to step 2.
 
 ## Response group
 

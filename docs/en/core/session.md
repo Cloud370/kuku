@@ -73,6 +73,15 @@ Every session has one of three statuses (`SessionStatus`):
 | `Done` | No active lock and last event is `turn.end` |
 | `Interrupted` | No active lock and last event is not `turn.end` (or no events) |
 
+### Context handoff
+
+When estimated context usage exceeds a configurable threshold (default 70%), the runtime injects a handoff instruction into the model's context. The model generates a structured `<kuku_handoff>` document summarising goal, progress, decisions, and next steps. The runtime extracts this document and writes two events to `events.jsonl`:
+
+1. `handoff.trigger` — records the trigger reason (`context_threshold`, `overflow_error`, or `user`).
+2. `handoff` — stores the summary text and the number of recent turns kept.
+
+On the next model call, `rebuild_history()` reads the most recent `handoff` event, returns its `summary` as `handoff_summary`, and discards all events before that handoff from the conversation history. The provider adapter renders the summary into the context, which includes guidance for using the `query_session` tool to retrieve details from the discarded history.
+
 ### Listing sessions
 
 `list_sessions(kuku_home, Option<&Path>)` returns `Vec<SessionSummary>` with session ID, workspace, title (first `user.input`), created_at, turn count, status, mtime, and size. Pass `None` for workspace to list across all workspaces. Results are sorted by mtime descending.
