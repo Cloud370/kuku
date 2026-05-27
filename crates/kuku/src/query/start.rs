@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::config::load_config;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::session::{
@@ -29,7 +28,7 @@ impl Query {
         let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path) {
             (Some(cfg), _) => Arc::new(cfg),
             (None, Some(path)) => {
-                let file = load_config(path)?;
+                let file = crate::config::load_and_patch_config(path)?;
                 Arc::new(file.resolve()?)
             }
             (None, None) => {

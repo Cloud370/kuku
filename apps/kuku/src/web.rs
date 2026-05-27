@@ -99,7 +99,7 @@ async fn setup_server(
         return Err(format!("config file not found: {}", config_path.display()).into());
     }
 
-    let config = kuku::config::load_config(&config_path).and_then(|f| f.resolve())?;
+    let config = kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve())?;
 
     let config_store = Arc::new(arc_swap::ArcSwap::from_pointee(config));
     let _watcher =

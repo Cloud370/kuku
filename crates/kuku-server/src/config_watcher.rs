@@ -36,7 +36,7 @@ impl ConfigWatcher {
                     continue;
                 }
 
-                match kuku::config::load_config(&config_path).and_then(|f| f.resolve()) {
+                match kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve()) {
                     Ok(new_config) => {
                         config_store.store(Arc::new(new_config));
                         last_mtime = Some(mtime);
