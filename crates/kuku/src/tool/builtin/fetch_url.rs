@@ -95,6 +95,16 @@ async fn download(url: &str) -> Result<DownloadMeta, ToolResultEnvelope> {
     })?;
 
     let file_path = tmp_dir.join(&filename);
+
+    if let Some(len) = response.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(ToolResultEnvelope::error(
+                "failed: file too large",
+                format!("download exceeds 50MB limit ({len} bytes, reported by server)"),
+            ));
+        }
+    }
+
     let bytes = response.bytes().await.map_err(|e| {
         ToolResultEnvelope::error("failed: download error", format!("failed to download: {e}"))
     })?;

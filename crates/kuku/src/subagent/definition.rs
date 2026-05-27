@@ -7,10 +7,10 @@ pub enum ToolProfile {
     #[serde(rename = "none")]
     #[default]
     None,
-    /// Read-only inspection: find_files, read_file, search_text.
+    /// Read-only inspection.
     #[serde(rename = "read")]
     Read,
-    /// Full read + write + command: all 8 built-in tools.
+    /// Full read + write + command.
     /// Write operations go through permission gate; commands ask→deny in child sessions.
     #[serde(rename = "read_write")]
     ReadWrite,
@@ -145,6 +145,8 @@ mod tests {
         assert!(tools.contains(&"find_files"));
         assert!(tools.contains(&"read_file"));
         assert!(tools.contains(&"search_text"));
+        assert!(tools.contains(&"fetch_url"));
+        assert!(tools.contains(&"fetch_web"));
         assert!(!tools.contains(&"edit_file"));
         assert!(!tools.contains(&"run_command"));
     }
@@ -152,6 +154,8 @@ mod tests {
     #[test]
     fn tool_profile_allowed_tools_read_write() {
         let tools = ToolProfile::ReadWrite.allowed_tools();
+        assert!(tools.contains(&"fetch_url"));
+        assert!(tools.contains(&"fetch_web"));
         assert!(tools.contains(&"edit_file"));
         assert!(tools.contains(&"write_file"));
         assert!(tools.contains(&"run_command"));

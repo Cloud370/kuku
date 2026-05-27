@@ -102,18 +102,28 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
             continue;
         };
         searched_file_count += 1;
-        let lines: Vec<String> = content.lines().map(String::from).collect();
-        for (index, line) in lines.iter().enumerate() {
-            if regex.is_match(line) {
-                matches.push(SearchMatch {
-                    path: file.relative.clone(),
-                    line_number: index + 1,
-                    line: trim_search_line(line),
-                });
-            }
-        }
         if context > 0 && view == "lines" {
+            let lines: Vec<String> = content.lines().map(String::from).collect();
+            for (index, line) in lines.iter().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(SearchMatch {
+                        path: file.relative.clone(),
+                        line_number: index + 1,
+                        line: trim_search_line(line),
+                    });
+                }
+            }
             file_lines.insert(file.relative.clone(), lines);
+        } else {
+            for (index, line) in content.lines().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(SearchMatch {
+                        path: file.relative.clone(),
+                        line_number: index + 1,
+                        line: trim_search_line(line),
+                    });
+                }
+            }
         }
     }
 
