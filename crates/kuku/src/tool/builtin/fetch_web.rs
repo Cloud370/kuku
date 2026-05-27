@@ -181,6 +181,7 @@ async fn call_secondary_llm(
         project_instruction_sources: vec![],
         memory_sources: vec![],
         runtime_context: None,
+        handoff_summary: None,
     };
     let request = crate::provider::types::ProviderRequest {
         assembly,

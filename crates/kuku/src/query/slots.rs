@@ -18,6 +18,7 @@ pub(crate) fn spawn_simple_slot(
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
+    events_path: PathBuf,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -33,7 +34,7 @@ pub(crate) fn spawn_simple_slot(
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
-                &tool_name, &args, &workspace, &kuku_home, &[], 0, None, &config, &catalog,
+                &tool_name, &args, &workspace, &kuku_home, &[], 0, None, &config, &catalog, &events_path,
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
@@ -249,6 +250,8 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
+// Receives the full tool-call context so it can choose between simple, command,
+// and agent slot types without an intermediate struct.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_slot(
     tool_name: &str,
@@ -260,6 +263,7 @@ pub(crate) fn dispatch_tool_slot(
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
+    events_path: PathBuf,
 ) -> (ExecSlot, ToolKind) {
     if tool_name == "run_command" {
         let slot = spawn_command_slot(tool_id, args, summary, workspace, event_tx);
@@ -275,6 +279,7 @@ pub(crate) fn dispatch_tool_slot(
             event_tx,
             config,
             catalog,
+            events_path,
         );
         (slot, ToolKind::Simple)
     }

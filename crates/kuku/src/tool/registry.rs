@@ -181,6 +181,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             "read",
         ),
     ];
+    tools.push(builtin::query_session::query_session_definition());
     if agent_enabled {
         tools.push(builtin::agent_definition());
     }
@@ -250,6 +251,7 @@ mod tests {
                 "run_command",
                 "fetch_url",
                 "fetch_web",
+                "query_session",
             ]
         );
         assert_eq!(registry[0].risk, "read");
@@ -280,7 +282,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -289,7 +291,7 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
     }
 
     #[test]
@@ -297,7 +299,7 @@ mod tests {
         let registry = builtin_registry(false, true);
         let names = tool_names(&registry);
         assert!(names.contains(&"use_skill".to_string()));
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

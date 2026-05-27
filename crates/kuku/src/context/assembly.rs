@@ -68,6 +68,9 @@ pub struct ContextAssembly {
     /// Runtime context text injected into the current user turn (before human input).
     /// None if no runtime blocks are present.
     pub runtime_context: Option<String>,
+    /// Handoff summary from the most recent handoff event, if any.
+    /// Set by the caller after `rebuild_history()` returns it.
+    pub handoff_summary: Option<String>,
 }
 
 impl ContextAssembly {
@@ -227,6 +230,7 @@ pub fn assemble_context(
         project_instruction_sources: input.project_instructions,
         memory_sources,
         runtime_context,
+        handoff_summary: None,
     })
 }
 

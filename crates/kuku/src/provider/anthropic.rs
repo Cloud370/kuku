@@ -27,6 +27,12 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         .iter()
         .map(convert_canonical_message)
         .collect::<Vec<_>>();
+    if let Some(summary) = &request.assembly.handoff_summary {
+        messages.push(json!({
+            "role": "user",
+            "content": format!("<kuku_handoff_summary>\n{}\n</kuku_handoff_summary>", summary),
+        }));
+    }
     messages.extend(
         request
             .assembly
@@ -376,6 +382,7 @@ mod tests {
                 project_instruction_sources: vec![],
                 memory_sources: vec![],
                 runtime_context: None,
+                handoff_summary: None,
             },
             model: "test-model".into(),
             max_output_tokens: Some(1024),

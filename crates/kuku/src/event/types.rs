@@ -40,6 +40,18 @@ pub struct ContextMessage {
     pub content: String,
 }
 
+/// Reason for triggering a context handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandoffTriggerReason {
+    #[serde(rename = "context_threshold")]
+    ContextThreshold,
+    #[serde(rename = "overflow_error")]
+    OverflowError,
+    /// Manual handoff requested by the user.
+    #[serde(rename = "user")]
+    User,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 // ModelRequest is the largest variant; boxing adds indirection with no benefit for a serialization data enum.
@@ -169,8 +181,86 @@ pub enum EventPayload {
     #[serde(rename = "turn.end")]
     TurnEnd { turn: u64, ts: String },
 
+    #[serde(rename = "handoff.trigger")]
+    HandoffTrigger {
+        ts: String,
+        trigger: HandoffTriggerReason,
+    },
+
+    #[serde(rename = "handoff")]
+    Handoff {
+        ts: String,
+        summary: String,
+        kept_turns: usize,
+    },
+
     /// Unknown event type — raw JSON preserved for display, excluded from messages[].
     /// Not deserialized by serde; created manually in two-step deserialization.
     #[serde(skip)]
     Unknown(Value),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_trigger_round_trip() {
+        let event = StoredEvent {
+            id: 42,
+            payload: EventPayload::HandoffTrigger {
+                ts: "2026-05-27T00:00:00Z".to_string(),
+                trigger: HandoffTriggerReason::ContextThreshold,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, back);
+    }
+
+    #[test]
+    fn handoff_round_trip() {
+        let event = StoredEvent {
+            id: 43,
+            payload: EventPayload::Handoff {
+                ts: "2026-05-27T00:00:01Z".to_string(),
+                summary: "## Goal\nBuild feature X".to_string(),
+                kept_turns: 2,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, back);
+    }
+
+    #[test]
+    fn handoff_trigger_reason_variants_serialize_correctly() {
+        let cases = [
+            (
+                HandoffTriggerReason::ContextThreshold,
+                r#""context_threshold""#,
+            ),
+            (HandoffTriggerReason::OverflowError, r#""overflow_error""#),
+            (HandoffTriggerReason::User, r#""user""#),
+        ];
+        for (variant, expected) in &cases {
+            assert_eq!(serde_json::to_string(variant).unwrap(), *expected);
+            let back: HandoffTriggerReason = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, *variant);
+        }
+    }
+
+    #[test]
+    fn handoff_event_type_tag_is_handoff() {
+        let event = StoredEvent {
+            id: 1,
+            payload: EventPayload::Handoff {
+                ts: "t".to_string(),
+                summary: "s".to_string(),
+                kept_turns: 0,
+            },
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "handoff");
+    }
 }

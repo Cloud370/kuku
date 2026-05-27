@@ -331,6 +331,7 @@ impl Run {
                     self.slot_event_tx.clone(),
                     pending.config.clone(),
                     pending.catalog.clone(),
+                    pending.events_path.clone(),
                 );
                 self.slots.insert(slot.tool_call_id.clone(), slot);
                 Ok(Some(UiEvent::ToolStart {
@@ -385,6 +386,14 @@ impl Run {
                 }
                 ProviderChunk::TextDelta { text } => {
                     streaming.accumulated_text.push_str(&text);
+                    if let Some(ref mut detector) = streaming.handoff_detector {
+                        if let Some(user_text) = detector.process(&text) {
+                            if !user_text.is_empty() {
+                                return Ok(Some(UiEvent::TextDelta { text: user_text }));
+                            }
+                        }
+                        return Ok(None);
+                    }
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
@@ -579,6 +588,7 @@ impl Run {
             self.slot_event_tx.clone(),
             pending.config.clone(),
             pending.catalog.clone(),
+            pending.events_path.clone(),
         );
         self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));
@@ -729,6 +739,8 @@ mod tests {
             pending_events: std::collections::VecDeque::new(),
             catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token: cancel_token.clone(),
+            handoff_triggered: false,
+            handoff_keep_turns: 2,
         };
 
         let stream: std::pin::Pin<
@@ -755,6 +767,7 @@ mod tests {
             provider_request_id: None,
             usage: None,
             lead_events: Vec::new(),
+            handoff_detector: None,
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
@@ -786,6 +799,8 @@ mod tests {
                 pending_events: std::collections::VecDeque::new(),
                 catalog: crate::prompt::builtin_prompt_catalog(),
                 cancel_token: cancel_token.clone(),
+                handoff_triggered: false,
+                handoff_keep_turns: 2,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,
@@ -863,7 +878,8 @@ mod tests {
         }
 
         let events = EventStore::replay(&events_path).unwrap();
-        let history = crate::context::rebuild_history(&events);
+        let (summary, history) = crate::context::rebuild_history(&events);
+        assert!(summary.is_none());
         assert_eq!(history.len(), 2);
         let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));

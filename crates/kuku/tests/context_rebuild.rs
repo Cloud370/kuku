@@ -34,7 +34,8 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         .unwrap();
 
     let events = EventStore::replay(&events_path).unwrap();
-    let history = rebuild_history(&events);
+    let (summary, history) = rebuild_history(&events);
+    assert!(summary.is_none());
     assert_eq!(
         history,
         vec![
@@ -370,7 +371,8 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         })
         .unwrap();
 
-    let history = rebuild_history(&EventStore::replay(&events_path).unwrap());
+    let (summary, history) = rebuild_history(&EventStore::replay(&events_path).unwrap());
+    assert!(summary.is_none());
     assert_eq!(
         history,
         vec![

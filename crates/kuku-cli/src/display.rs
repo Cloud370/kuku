@@ -393,6 +393,8 @@ fn event_type_name(payload: &EventPayload) -> &'static str {
         EventPayload::ToolResult { .. } => "tool.result",
         EventPayload::PolicyLoaded { .. } => "policy.loaded",
         EventPayload::TurnEnd { .. } => "turn.end",
+        EventPayload::HandoffTrigger { .. } => "handoff.trigger",
+        EventPayload::Handoff { .. } => "handoff",
         EventPayload::Unknown(_) => "unknown",
     }
 }
@@ -437,6 +439,18 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
         }
         EventPayload::PermissionDecision { decision, rule, .. } => {
             format!("{decision}  {rule}")
+        }
+        EventPayload::Handoff {
+            summary,
+            kept_turns,
+            ..
+        } => {
+            let preview: String = summary.chars().take(60).collect();
+            if verbose {
+                format!("handoff  kept_turns={kept_turns}  {preview}")
+            } else {
+                format!("handoff  {preview}")
+            }
         }
         _ => String::new(),
     }

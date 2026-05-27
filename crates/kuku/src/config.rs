@@ -53,6 +53,24 @@ pub struct Config {
     pub default_tier: String,
 }
 
+/// Configuration for session handoff behaviour (threshold, history retention).
+#[derive(Debug, Clone)]
+pub struct HandoffConfig {
+    pub enabled: bool,
+    pub threshold: f64,
+    pub keep_turns: usize,
+}
+
+impl Default for HandoffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 0.7,
+            keep_turns: 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TierConfig {
     pub provider: String,
@@ -332,6 +350,12 @@ impl Config {
     /// All tier names.
     pub fn tier_names(&self) -> Vec<&str> {
         self.tiers.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Return the handoff configuration. Currently returns defaults; will load from config file.
+    pub fn handoff(&self) -> HandoffConfig {
+        // TODO: load from config file
+        HandoffConfig::default()
     }
 
     /// All tier names with their purpose.

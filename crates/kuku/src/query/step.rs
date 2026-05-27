@@ -14,6 +14,9 @@ use crate::notice::{
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
+use crate::prompt::{
+    builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
+};
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
@@ -109,6 +112,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         stop_reason,
         tool_calls,
         usage,
+        handoff_detector,
         ..
     } = state;
 
@@ -145,6 +149,33 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
             usage: serde_json::to_value(&usage).unwrap_or_default(),
         })?;
+
+        if let Some(detector) = handoff_detector {
+            if let Some(summary) = detector.finish() {
+                let trimmed = summary.trim().to_string();
+                let final_summary = if trimmed.is_empty() {
+                    EventStore::replay(&pending.events_path)?
+                        .iter()
+                        .rev()
+                        .find_map(|e| match &e.payload {
+                            EventPayload::UserInput { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "handoff summary unavailable".to_string())
+                } else {
+                    trimmed
+                };
+                store.append(EventPayload::HandoffTrigger {
+                    ts: now_timestamp()?,
+                    trigger: crate::event::HandoffTriggerReason::ContextThreshold,
+                })?;
+                store.append(EventPayload::Handoff {
+                    ts: now_timestamp()?,
+                    summary: final_summary,
+                    kept_turns: pending.handoff_keep_turns,
+                })?;
+            }
+        }
 
         if !has_tool_calls {
             store.append(EventPayload::TurnEnd {
@@ -408,6 +439,7 @@ pub(super) async fn advance_pending(
                         slot_event_tx,
                         pending.config.clone(),
                         pending.catalog.clone(),
+                        pending.events_path.clone(),
                     );
                     return Ok(PendingStep::Pending {
                         pending: Box::new(pending),
@@ -462,7 +494,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
 
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let existing_events = EventStore::replay(&pending.events_path)?;
-    let history = rebuild_history(&existing_events);
+    let (handoff_summary, history) = rebuild_history(&existing_events);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
@@ -489,6 +521,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         &mut pending.skill_content_hash,
         &resolved.config,
         &existing_events,
+        pending.prompts_dir.as_deref(),
     )?;
 
     let mut assembly = match assemble_context(
@@ -532,6 +565,49 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     let is_first_request = frozen.is_none();
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
+    }
+
+    assembly.handoff_summary = handoff_summary;
+
+    {
+        let handoff_config = pending.config.handoff();
+        if handoff_config.enabled {
+            let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
+            let thinking_overhead: u32 = match resolved.config.think_level {
+                crate::config::ThinkLevel::Off => 0,
+                crate::config::ThinkLevel::Low => 1024,
+                crate::config::ThinkLevel::Medium => 4096,
+                crate::config::ThinkLevel::High => 16000,
+            };
+            let headroom = compute_context_headroom(
+                resolved
+                    .config
+                    .max_context_tokens
+                    .saturating_sub(thinking_overhead),
+                Some(resolved.config.max_output_tokens),
+                estimated_input,
+            );
+            let budget = (headroom.max_context_tokens
+                - headroom.reserved_output_tokens
+                - headroom.reserved_margin_tokens) as f64;
+            if budget > 0.0 {
+                let remaining = headroom.remaining_input_tokens.unwrap_or(0) as f64;
+                let used_ratio = 1.0 - (remaining / budget);
+                if used_ratio >= handoff_config.threshold {
+                    pending.handoff_triggered = true;
+                    pending.handoff_keep_turns = handoff_config.keep_turns;
+                    let instruction = if let Some(dir) = &pending.prompts_dir {
+                        load_prompt_template(dir, "handoff_instruction")
+                            .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
+                    } else {
+                        builtin_handoff_instruction().to_string()
+                    };
+                    let rt = assembly.runtime_context.get_or_insert_with(String::new);
+                    rt.push_str("\n\n");
+                    rt.push_str(&instruction);
+                }
+            }
+        }
     }
 
     let prelude_snapshot = assembly.snapshot_prelude();
@@ -612,6 +688,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         provider: resolved.config.kind.as_str().to_string(),
     });
 
+    let handoff_active = pending.handoff_triggered;
     match crate::provider::stream_provider(&resolved.config, &request).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             pending,
@@ -625,7 +702,47 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             provider_request_id: None,
             usage: None,
             lead_events,
+            handoff_detector: if handoff_active {
+                Some(crate::query::types::HandoffDetector::new())
+            } else {
+                None
+            },
         }))),
+        Err(failure)
+            if matches!(
+                failure.kind,
+                crate::provider::types::ProviderFailureKind::ContextTooLarge
+            ) =>
+        {
+            let user_input = existing_events
+                .iter()
+                .rev()
+                .find_map(|e| match &e.payload {
+                    EventPayload::UserInput { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let mut store = EventStore::open(&pending.events_path)?;
+            store.append(EventPayload::HandoffTrigger {
+                ts: now_timestamp()?,
+                trigger: crate::event::HandoffTriggerReason::OverflowError,
+            })?;
+            store.append(EventPayload::Handoff {
+                ts: now_timestamp()?,
+                summary: user_input,
+                kept_turns: pending.handoff_keep_turns,
+            })?;
+            store.append(EventPayload::TurnEnd {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+            })?;
+            Err(crate::error::Error::Provider {
+                kind: failure.kind,
+                message: failure.message,
+                provider: Some(resolved.config.kind.as_str().to_string()),
+                model: Some(resolved.config.model.clone()),
+            })
+        }
         Err(failure) => {
             lead_events.push(UiEvent::Error {
                 code: provider_failure_kind(&failure.kind).to_string(),
@@ -683,6 +800,9 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
     Ok(())
 }
 
+// Assembles the full request from workspace, config, and session state; each
+// parameter reflects a distinct subsystem boundary.
+#[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
     turn: u64,
@@ -691,6 +811,7 @@ fn build_runtime_blocks(
     skill_content_hash: &mut Option<String>,
     resolved_config: &crate::provider::types::ResolvedProvider,
     existing_events: &[crate::event::StoredEvent],
+    prompts_dir: Option<&std::path::Path>,
 ) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
     let thinking_overhead: u32 = match resolved_config.think_level {
@@ -788,6 +909,19 @@ fn build_runtime_blocks(
         parts.push(format!(
             "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
         ));
+    }
+
+    let has_handoff = existing_events
+        .iter()
+        .any(|e| matches!(e.payload, EventPayload::Handoff { .. }));
+    if has_handoff {
+        let guidance = if let Some(dir) = prompts_dir {
+            load_prompt_template(dir, "session_query_guidance")
+                .unwrap_or_else(|_| builtin_session_query_guidance().to_string())
+        } else {
+            builtin_session_query_guidance().to_string()
+        };
+        parts.push(guidance);
     }
 
     let runtime_blocks = if parts.is_empty() {

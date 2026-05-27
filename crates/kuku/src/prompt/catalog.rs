@@ -36,6 +36,30 @@ impl PromptCatalog {
     }
 }
 
+pub fn load_prompt_template(dir: &Path, name: &str) -> crate::error::Result<String> {
+    let path = dir.join(format!("{name}.md"));
+    std::fs::read_to_string(&path).map_err(|e| {
+        crate::error::Error::PromptRender(format!(
+            "failed to load prompt template {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+pub fn builtin_handoff_instruction() -> &'static str {
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/prompts/handoff_instruction.md"
+    ))
+}
+
+pub fn builtin_session_query_guidance() -> &'static str {
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/prompts/session_query_guidance.md"
+    ))
+}
+
 pub fn builtin_prompt_catalog() -> PromptCatalog {
     PromptCatalog {
         system: asset(
