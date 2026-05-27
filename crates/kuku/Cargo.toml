@@ -19,12 +19,18 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "r
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream"] }
+wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 sha2 = "0.10"
 regex = "1"
+readability = { version = "0.3", default-features = false }
+htmd = "0.5"
+lru = "0.18"
+url = "2"
 toml = "0.8"
 toml_edit = "0.25"
 tempfile = "3"
 
 [dev-dependencies]
 httpmock = "0.7"
+tokio-test = "0.4"

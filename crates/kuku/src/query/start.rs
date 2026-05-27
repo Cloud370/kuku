@@ -105,6 +105,12 @@ impl Query {
         crate::session::acquire_lock(&lock_path)?;
         let (slot_event_tx, slot_event_rx) =
             tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
+        let catalog = if let Some(dir) = &prompts_dir {
+            crate::prompt::PromptCatalog::load_from_dir(dir)
+                .unwrap_or_else(|_| crate::prompt::builtin_prompt_catalog())
+        } else {
+            crate::prompt::builtin_prompt_catalog()
+        };
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -131,6 +137,7 @@ impl Query {
                 skill_content_hash: skill_registry.1,
                 child_session_count: 0,
                 tool_registry_override,
+                catalog,
                 cancel_token: cancel_token.clone(),
             })),
             slots: std::collections::HashMap::new(),

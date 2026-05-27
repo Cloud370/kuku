@@ -10,6 +10,7 @@ use crate::event::EventPayload;
 use crate::event::StoredEvent;
 use crate::tool::{builtin, ToolResultEnvelope};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch(
     name: &str,
     args: &Value,
@@ -18,6 +19,8 @@ pub(crate) async fn dispatch(
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
+    config: &crate::config::Config,
+    catalog: &crate::prompt::PromptCatalog,
 ) -> ToolResultEnvelope {
     match name {
         "agent" => ToolResultEnvelope::error(
@@ -27,6 +30,8 @@ pub(crate) async fn dispatch(
         "find_files" => builtin::find_files(args, workspace),
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
+        "fetch_url" => builtin::fetch_url(args, workspace).await,
+        "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
         "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
@@ -65,6 +70,14 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config_and_catalog() -> (crate::config::Config, crate::prompt::PromptCatalog) {
+        let catalog = crate::prompt::catalog::builtin_prompt_catalog();
+        let toml_str = crate::config::generate_default();
+        let file: crate::config::ConfigFile = toml::from_str(toml_str).unwrap();
+        let config = file.resolve().unwrap();
+        (config, catalog)
+    }
 
     fn read_event(id: u64, dir: &std::path::Path, path: &str, content: &[u8]) -> StoredEvent {
         let canonical = dir.join(path).canonicalize().unwrap();
@@ -119,6 +132,7 @@ mod tests {
     async fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
+        let (config, catalog) = test_config_and_catalog();
 
         let found = dispatch(
             "find_files",
@@ -128,6 +142,8 @@ mod tests {
             &[],
             1,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(found.status, "ok");
@@ -141,6 +157,8 @@ mod tests {
             &[],
             2,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(read.status, "ok");
@@ -155,6 +173,8 @@ mod tests {
             &[],
             3,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(searched.status, "ok");
@@ -169,6 +189,8 @@ mod tests {
             &[denied],
             4,
             Some("tool_command"),
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(gated.status, "blocked");
@@ -182,6 +204,8 @@ mod tests {
             &[],
             5,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(unknown.status, "error");
@@ -194,6 +218,7 @@ mod tests {
         let original = b"hello\nworld\n";
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
         let read = read_event(17, dir.path(), "a.txt", original);
+        let (config, catalog) = test_config_and_catalog();
 
         let edited = dispatch(
             "edit_file",
@@ -203,6 +228,8 @@ mod tests {
             std::slice::from_ref(&read),
             18,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(edited.status, "ok");
@@ -221,6 +248,8 @@ mod tests {
             &[read_after_edit],
             20,
             None,
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(written.status, "ok");
@@ -237,6 +266,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
         let read = read_event(17, dir.path(), "a.txt", original);
         let denied = denied_event("tool_edit");
+        let (config, catalog) = test_config_and_catalog();
 
         let result = dispatch(
             "edit_file",
@@ -246,6 +276,8 @@ mod tests {
             &[read, denied],
             18,
             Some("tool_edit"),
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(result.status, "blocked");
@@ -264,6 +296,8 @@ mod tests {
             &[memory_denied],
             19,
             Some("tool_memory"),
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(remember.status, "blocked");
@@ -279,6 +313,8 @@ mod tests {
             &[memory_denied2],
             20,
             Some("tool_memory"),
+            &config,
+            &catalog,
         )
         .await;
         assert_eq!(forget.status, "blocked");
@@ -304,6 +340,7 @@ mod tests {
         )
         .unwrap();
 
+        let (config, catalog) = test_config_and_catalog();
         let previous = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", runtime_home.path());
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -319,6 +356,8 @@ mod tests {
                 &[],
                 1,
                 None,
+                &config,
+                &catalog,
             )
             .await
         });

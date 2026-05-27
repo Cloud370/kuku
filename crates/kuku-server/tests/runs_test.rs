@@ -3,7 +3,7 @@ mod common;
 use common::mock_provider;
 
 async fn wait_for_server(base_url: &str) {
-    let client = reqwest::Client::new();
+    let client = wreq::Client::new();
     for _ in 0..50 {
         if let Ok(resp) = client.get(format!("{base_url}/health")).send().await {
             if resp.status().is_success() {
@@ -20,7 +20,7 @@ async fn full_run_lifecycle() {
     let mock = mock_provider::start_mock_provider().await;
     mock_provider::mock_text_response(&mock, "Hello from server!");
 
-    let warmup = reqwest::Client::new();
+    let warmup = wreq::Client::new();
     let _ = warmup
         .post(format!("http://127.0.0.1:{}/v1/messages", mock.port()))
         .send()
@@ -30,7 +30,7 @@ async fn full_run_lifecycle() {
     let server = common::TestServer::start(config).await;
     wait_for_server(&server.base_url).await;
 
-    let client = reqwest::Client::builder()
+    let client = wreq::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap();
@@ -80,7 +80,7 @@ async fn cancel_nonexistent_run_returns_not_found() {
     let server = common::TestServer::start(config).await;
     wait_for_server(&server.base_url).await;
 
-    let client = reqwest::Client::new();
+    let client = wreq::Client::new();
     let resp = client
         .delete(format!("{}/runs/nonexistent", server.base_url))
         .send()
@@ -100,7 +100,7 @@ async fn invalid_workspace_returns_error() {
     let server = common::TestServer::start(config).await;
     wait_for_server(&server.base_url).await;
 
-    let client = reqwest::Client::new();
+    let client = wreq::Client::new();
     let resp = client
         .post(format!("{}/runs", server.base_url))
         .json(&serde_json::json!({

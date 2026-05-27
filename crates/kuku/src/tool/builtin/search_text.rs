@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +36,9 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let include = args.get("include").and_then(Value::as_str);
     let view = args.get("view").and_then(Value::as_str).unwrap_or("files");
+    let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+    let context = args.get("context").and_then(Value::as_u64).unwrap_or(0) as usize;
     if !matches!(view, "files" | "lines" | "count") {
         return ToolResultEnvelope::error(
             format!("failed: invalid view: {view}"),
@@ -69,9 +73,20 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
             format!("error reading search path: {path}"),
         );
     }
-    files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    if view == "lines" {
+        files.sort_by(|left, right| {
+            let left_mtime = fs::metadata(&left.absolute).and_then(|m| m.modified()).ok();
+            let right_mtime = fs::metadata(&right.absolute)
+                .and_then(|m| m.modified())
+                .ok();
+            right_mtime.cmp(&left_mtime)
+        });
+    } else {
+        files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    }
 
     let mut matches = Vec::new();
+    let mut file_lines: HashMap<String, Vec<String>> = HashMap::new();
     let mut skipped_file_count = 0_usize;
     let mut searched_file_count = 0_usize;
     for file in &files {
@@ -87,35 +102,73 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
             continue;
         };
         searched_file_count += 1;
-        for (index, line) in content.lines().enumerate() {
-            if regex.is_match(line) {
-                matches.push(SearchMatch {
-                    path: file.relative.clone(),
-                    line_number: index + 1,
-                    line: trim_search_line(line),
-                });
+        if context > 0 && view == "lines" {
+            let lines: Vec<String> = content.lines().map(String::from).collect();
+            for (index, line) in lines.iter().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(SearchMatch {
+                        path: file.relative.clone(),
+                        line_number: index + 1,
+                        line: trim_search_line(line),
+                    });
+                }
+            }
+            file_lines.insert(file.relative.clone(), lines);
+        } else {
+            for (index, line) in content.lines().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(SearchMatch {
+                        path: file.relative.clone(),
+                        line_number: index + 1,
+                        line: trim_search_line(line),
+                    });
+                }
             }
         }
     }
 
-    let model_lines = render_search_lines(view, &matches);
-    let (model_content, truncated) = join_bounded_strings(
-        &model_lines,
-        SEARCH_TEXT_MAX_CHARS,
-        "(Results are truncated. Use a narrower path/include pattern or view=files/count.)",
-    );
-    let file_count = unique_match_file_count(&matches);
-    let summary = if truncated {
+    let total_match_count = matches.len();
+    let sliced: Vec<_> = matches.into_iter().skip(offset).take(limit).collect();
+    let has_more = offset + sliced.len() < total_match_count;
+
+    let model_lines = if view == "lines" && context > 0 {
+        render_lines_with_context(&sliced, &file_lines, context)
+    } else {
+        render_search_lines(view, &sliced)
+    };
+    let truncation_message = if has_more {
+        format!(
+            "Showing {} of {} matches. Use offset={} to see more.",
+            sliced.len(),
+            total_match_count,
+            offset + limit,
+        )
+    } else {
+        "(Results are truncated. Use a narrower path/include pattern or view=files/count.)"
+            .to_string()
+    };
+    let (model_content, truncated) =
+        join_bounded_strings(&model_lines, SEARCH_TEXT_MAX_CHARS, &truncation_message);
+    let file_count = unique_match_file_count(&sliced);
+    let summary = if has_more {
+        format!(
+            "Showing {} of {} matches in {} files, view={}",
+            sliced.len(),
+            total_match_count,
+            file_count,
+            view
+        )
+    } else if truncated {
         format!(
             "{} matches in {} files, view={}, results truncated",
-            matches.len(),
+            sliced.len(),
             file_count,
             view
         )
     } else {
         format!(
             "{} matches in {} files, view={}",
-            matches.len(),
+            sliced.len(),
             file_count,
             view
         )
@@ -126,14 +179,18 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
         "path": path,
         "include": include,
         "view": view,
-        "match_count": matches.len(),
+        "match_count": sliced.len(),
+        "total_match_count": total_match_count,
         "file_count": file_count,
         "searched_file_count": searched_file_count,
         "skipped_file_count": skipped_file_count,
         "blocked_file_count": blocked_file_count,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
     });
 
-    if truncated {
+    if truncated || has_more {
         ToolResultEnvelope::ok_truncated(summary, model_content, structured)
     } else {
         ToolResultEnvelope::ok(summary, model_content, structured)
@@ -232,6 +289,48 @@ fn render_search_lines(view: &str, matches: &[SearchMatch]) -> Vec<String> {
             paths
         }
     }
+}
+
+fn render_lines_with_context(
+    matches: &[SearchMatch],
+    file_lines: &HashMap<String, Vec<String>>,
+    context: usize,
+) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut prev_end: Option<(String, usize)> = None;
+
+    for m in matches {
+        let lines = match file_lines.get(&m.path) {
+            Some(l) => l,
+            None => {
+                output.push(format!("{}:{}: {}", m.path, m.line_number, m.line));
+                continue;
+            }
+        };
+
+        let start = m.line_number.saturating_sub(context).max(1);
+        let end = (m.line_number + context).min(lines.len());
+
+        if let Some((ref prev_path, prev_end_line)) = prev_end {
+            if prev_path != &m.path || start > prev_end_line + 1 {
+                output.push("--".to_string());
+            }
+        }
+
+        for line_num in start..=end {
+            let idx = line_num - 1;
+            let content = lines.get(idx).map(|s| s.as_str()).unwrap_or("");
+            if line_num == m.line_number {
+                output.push(format!("{}:{}: {}", m.path, line_num, content));
+            } else {
+                output.push(format!("{}:{}- {}", m.path, line_num, content));
+            }
+        }
+
+        prev_end = Some((m.path.clone(), end));
+    }
+
+    output
 }
 
 fn trim_search_line(line: &str) -> String {
@@ -348,5 +447,80 @@ mod tests {
         let result = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
         assert!(result.model_content.contains("src/main.rs"));
         assert!(!result.model_content.contains("target"));
+    }
+
+    #[test]
+    fn search_text_pagination_offset_and_limit() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "line1\nTODO a\nline3\nTODO b\nline5\nTODO c\n",
+        )
+        .unwrap();
+
+        let page1 = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "lines", "limit": 2}),
+            dir.path(),
+        );
+        assert_eq!(page1.status, "ok");
+        assert_eq!(page1.structured.as_ref().unwrap()["match_count"], 2);
+        assert_eq!(page1.structured.as_ref().unwrap()["total_match_count"], 3);
+        assert_eq!(page1.structured.as_ref().unwrap()["has_more"], true);
+
+        let page2 = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "lines", "offset": 2, "limit": 2}),
+            dir.path(),
+        );
+        assert_eq!(page2.status, "ok");
+        assert_eq!(page2.structured.as_ref().unwrap()["match_count"], 1);
+        assert_eq!(page2.structured.as_ref().unwrap()["has_more"], false);
+    }
+
+    #[test]
+    fn search_text_context_lines() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "use std::env;\n\nfn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+
+        let result = search_text(
+            &serde_json::json!({"pattern": "fn main", "view": "lines", "context": 1}),
+            dir.path(),
+        );
+        assert_eq!(result.status, "ok");
+        let lines: Vec<&str> = result.model_content.lines().collect();
+        assert!(lines.iter().any(|l| l.contains("fn main")));
+        assert!(lines.iter().any(|l| l.ends_with("- ")));
+    }
+
+    #[test]
+    fn search_text_context_ignored_for_non_lines_view() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("a.txt"), "TODO match\n").unwrap();
+
+        let result = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "files", "context": 5}),
+            dir.path(),
+        );
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.model_content, "a.txt");
+    }
+
+    #[test]
+    fn search_text_files_view_preserves_alphabetical_order() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("z.txt"), "TODO z\n").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "TODO a\n").unwrap();
+        std::fs::write(dir.path().join("m.txt"), "TODO m\n").unwrap();
+
+        let result = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "files"}),
+            dir.path(),
+        );
+        assert_eq!(result.status, "ok");
+        let files: Vec<&str> = result.model_content.lines().collect();
+        assert_eq!(files, vec!["a.txt", "m.txt", "z.txt"]);
     }
 }

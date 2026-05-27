@@ -406,6 +406,8 @@ pub(super) async fn advance_pending(
                         pending.workspace.clone(),
                         pending.kuku_home.clone(),
                         slot_event_tx,
+                        pending.config.clone(),
+                        pending.catalog.clone(),
                     );
                     return Ok(PendingStep::Pending {
                         pending: Box::new(pending),

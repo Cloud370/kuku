@@ -33,5 +33,5 @@ home = { workspace = true }
 
 [dev-dependencies]
 httpmock = "0.7"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+wreq = { version = "6.0.0-rc.28", features = ["json", "stream"] }
 tempfile = "3"

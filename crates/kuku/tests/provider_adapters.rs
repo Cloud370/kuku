@@ -34,6 +34,14 @@ mod provider {
         ));
     }
 
+    #[allow(dead_code)]
+    pub mod http_client {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/http_client.rs"
+        ));
+    }
+
     use futures_core::Stream;
     use std::pin::Pin;
     #[allow(dead_code)]

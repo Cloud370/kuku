@@ -58,7 +58,10 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "pattern": {"type": "string", "description": "Regular expression pattern to search for."},
                     "path": {"type": "string", "description": "Search scope relative to the workspace. Defaults to workspace root."},
                     "include": {"type": "string", "description": "File-name glob filter."},
-                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."}
+                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
+                    "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
+                    "limit": {"type": "integer", "description": "Maximum matches to return (default: 100)."},
+                    "context": {"type": "integer", "description": "Show N lines before and after each match (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
             }),
@@ -147,6 +150,36 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             80_000,
             "command",
         ),
+        tool(
+            "fetch_url",
+            "Download a URL to a temp directory and return metadata (status, content_type, size).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to download."}
+                },
+                "required": ["url"]
+            }),
+            true,
+            80_000,
+            "read",
+        ),
+        tool(
+            "fetch_web",
+            "Fetch a URL and return its content converted to Markdown for LLM consumption. Large pages are summarized using the specified model tier.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch."},
+                    "prompt": {"type": "string", "description": "How to process the content."},
+                    "model_tier": {"type": "string", "description": "Model tier for summarization. Use a tier name from the configured model tiers (see <kuku_models> in context)."}
+                },
+                "required": ["url", "prompt", "model_tier"]
+            }),
+            true,
+            80_000,
+            "read",
+        ),
     ];
     if agent_enabled {
         tools.push(builtin::agent_definition());
@@ -215,6 +248,8 @@ mod tests {
                 "remember_memory",
                 "forget_memory",
                 "run_command",
+                "fetch_url",
+                "fetch_web",
             ]
         );
         assert_eq!(registry[0].risk, "read");
@@ -245,7 +280,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -254,7 +289,7 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 10);
     }
 
     #[test]
@@ -262,7 +297,7 @@ mod tests {
         let registry = builtin_registry(false, true);
         let names = tool_names(&registry);
         assert!(names.contains(&"use_skill".to_string()));
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

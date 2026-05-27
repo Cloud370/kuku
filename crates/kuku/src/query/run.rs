@@ -329,6 +329,8 @@ impl Run {
                     pending.workspace.clone(),
                     pending.kuku_home.clone(),
                     self.slot_event_tx.clone(),
+                    pending.config.clone(),
+                    pending.catalog.clone(),
                 );
                 self.slots.insert(slot.tool_call_id.clone(), slot);
                 Ok(Some(UiEvent::ToolStart {
@@ -575,6 +577,8 @@ impl Run {
             pending.workspace.clone(),
             pending.kuku_home.clone(),
             self.slot_event_tx.clone(),
+            pending.config.clone(),
+            pending.catalog.clone(),
         );
         self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));
@@ -723,6 +727,7 @@ mod tests {
             child_session_count: 0,
             tool_registry_override: None,
             pending_events: std::collections::VecDeque::new(),
+            catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token: cancel_token.clone(),
         };
 
@@ -779,6 +784,7 @@ mod tests {
                 child_session_count: 0,
                 tool_registry_override: None,
                 pending_events: std::collections::VecDeque::new(),
+                catalog: crate::prompt::builtin_prompt_catalog(),
                 cancel_token: cancel_token.clone(),
             })),
             slots: std::collections::HashMap::new(),

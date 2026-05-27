@@ -6,7 +6,7 @@ use super::types::ProviderFailure;
 use super::ProviderChunkStream;
 
 pub(crate) fn stream_sse_events(
-    response: reqwest::Response,
+    response: wreq::Response,
     mut on_frame: impl FnMut(&str) -> Vec<ProviderChunk> + Send + 'static,
 ) -> ProviderChunkStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
@@ -19,7 +19,7 @@ pub(crate) fn stream_sse_events(
 }
 
 async fn run_sse_loop(
-    response: reqwest::Response,
+    response: wreq::Response,
     on_frame: &mut (impl FnMut(&str) -> Vec<ProviderChunk> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
 ) {

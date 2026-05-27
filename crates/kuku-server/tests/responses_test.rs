@@ -8,7 +8,7 @@ async fn invalid_interaction_id_returns_error() {
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
-    let client = reqwest::Client::new();
+    let client = wreq::Client::new();
     let resp = client
         .post(format!("{}/runs/fake_run/responses", server.base_url))
         .json(&serde_json::json!({
@@ -30,7 +30,7 @@ async fn invalid_choice_returns_error() {
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
-    let client = reqwest::Client::new();
+    let client = wreq::Client::new();
     let resp = client
         .post(format!("{}/runs/fake_run/responses", server.base_url))
         .json(&serde_json::json!({

@@ -183,7 +183,7 @@ async fn executes_find_files_and_continues_to_final_response() {
         EventPayload::ModelRequest {
             ref tools,
             ..
-        } if tools.as_ref().is_some_and(|t| t.count == Some(10))
+        } if tools.as_ref().is_some_and(|t| t.count == Some(12))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"remember_memory".to_string())))
             && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"forget_memory".to_string())))

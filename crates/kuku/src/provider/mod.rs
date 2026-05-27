@@ -2,6 +2,7 @@ pub(crate) mod anthropic;
 pub(crate) mod chunk;
 pub(crate) mod config;
 pub(crate) mod error;
+pub(crate) mod http_client;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
 pub(crate) mod sse;

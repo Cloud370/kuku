@@ -17,6 +17,7 @@ pub struct PromptCatalog {
     pub runtime_context: PromptAsset,
     pub global_memory: PromptAsset,
     pub project_memory: PromptAsset,
+    pub fetch_web: PromptAsset,
 }
 
 impl PromptCatalog {
@@ -30,6 +31,7 @@ impl PromptCatalog {
             runtime_context: load_or_fallback(dir, "runtime-context.md", builtin.runtime_context)?,
             global_memory: load_or_fallback(dir, "global-memory.md", builtin.global_memory)?,
             project_memory: load_or_fallback(dir, "project-memory.md", builtin.project_memory)?,
+            fetch_web: load_or_fallback(dir, "fetch-web.md", builtin.fetch_web)?,
         })
     }
 }
@@ -74,6 +76,10 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
                 env!("CARGO_MANIFEST_DIR"),
                 "/prompts/project-memory.md"
             )),
+        ),
+        fetch_web: asset(
+            "crates/kuku/prompts/fetch-web.md",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/fetch-web.md")),
         ),
     }
 }
@@ -125,6 +131,8 @@ mod tests {
         assert!(!catalog.tool_guidance.text.trim().is_empty());
         assert!(!catalog.global_memory.text.trim().is_empty());
         assert!(!catalog.project_memory.text.trim().is_empty());
+        assert!(catalog.fetch_web.path.ends_with("fetch-web.md"));
+        assert!(!catalog.fetch_web.text.trim().is_empty());
         assert!(catalog.system.hash.starts_with("sha256:"));
         assert!(catalog.global_memory.hash.starts_with("sha256:"));
         assert!(catalog.project_memory.hash.starts_with("sha256:"));

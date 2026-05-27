@@ -1,4 +1,4 @@
-use reqwest::Client;
+use super::http_client;
 use serde_json::{json, Value};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
@@ -132,7 +132,7 @@ pub(crate) async fn stream(
     let mut body = render_body(request);
     body["stream"] = json!(true);
     let url = messages_url(&config.base_url);
-    let client = Client::new();
+    let client = http_client::api_client();
 
     let response = client
         .post(url)

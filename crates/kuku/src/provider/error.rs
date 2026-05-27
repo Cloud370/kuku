@@ -21,7 +21,7 @@ pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFa
     }
 }
 
-pub(crate) fn transport_error(error: &reqwest::Error) -> ProviderFailure {
+pub(crate) fn transport_error(error: &wreq::Error) -> ProviderFailure {
     ProviderFailure {
         kind: ProviderFailureKind::Transport,
         message: sanitize_transport_message(error),
@@ -35,7 +35,7 @@ fn sanitize_http_message(status: u16, body: &str) -> String {
     format!("HTTP {status}: {}", truncate(body, 200))
 }
 
-fn sanitize_transport_message(error: &reqwest::Error) -> String {
+fn sanitize_transport_message(error: &wreq::Error) -> String {
     if error.is_timeout() {
         "request timed out".to_string()
     } else if error.is_connect() {

@@ -16,6 +16,8 @@ pub(crate) fn spawn_simple_slot(
     workspace: PathBuf,
     kuku_home: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
+    config: std::sync::Arc<crate::config::Config>,
+    catalog: crate::prompt::PromptCatalog,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -31,7 +33,7 @@ pub(crate) fn spawn_simple_slot(
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
-                &tool_name, &args, &workspace, &kuku_home, &[], 0, None,
+                &tool_name, &args, &workspace, &kuku_home, &[], 0, None, &config, &catalog,
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
@@ -247,6 +249,7 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_slot(
     tool_name: &str,
     tool_id: String,
@@ -255,6 +258,8 @@ pub(crate) fn dispatch_tool_slot(
     workspace: PathBuf,
     kuku_home: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
+    config: std::sync::Arc<crate::config::Config>,
+    catalog: crate::prompt::PromptCatalog,
 ) -> (ExecSlot, ToolKind) {
     if tool_name == "run_command" {
         let slot = spawn_command_slot(tool_id, args, summary, workspace, event_tx);
@@ -268,6 +273,8 @@ pub(crate) fn dispatch_tool_slot(
             workspace,
             kuku_home,
             event_tx,
+            config,
+            catalog,
         );
         (slot, ToolKind::Simple)
     }
