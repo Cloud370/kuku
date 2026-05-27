@@ -1,4 +1,4 @@
-use reqwest::Client;
+use super::http_client;
 use serde_json::{json, Value};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
@@ -184,7 +184,7 @@ pub(crate) async fn stream(
     body["stream"] = json!(true);
     body["stream_options"] = json!({"include_usage": true});
     let url = chat_completions_url(&config.base_url);
-    let client = Client::new();
+    let client = http_client::api_client();
 
     let response = client
         .post(url)

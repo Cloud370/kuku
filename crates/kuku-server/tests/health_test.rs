@@ -8,7 +8,8 @@ async fn health_returns_ok_and_version() {
     let config = mock_provider::make_test_config(mock.port());
     let server = common::TestServer::start(config).await;
 
-    let resp = reqwest::get(format!("{}/health", server.base_url))
+    let resp = wreq::get(format!("{}/health", server.base_url))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
