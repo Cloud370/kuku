@@ -22,8 +22,6 @@ pub(crate) async fn dispatch(
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
 ) -> ToolResultEnvelope {
-    let _ = config;
-    let _ = catalog;
     match name {
         "agent" => ToolResultEnvelope::error(
             "agent tool must be executed via subagent handler".to_string(),
@@ -33,6 +31,7 @@ pub(crate) async fn dispatch(
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
+        "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
         "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {

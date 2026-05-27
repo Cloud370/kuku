@@ -161,6 +161,22 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             80_000,
             "read",
         ),
+        tool(
+            "fetch_web",
+            "Fetch a URL and return its content converted to Markdown for LLM consumption. Large pages are summarized using the specified model tier.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch."},
+                    "prompt": {"type": "string", "description": "How to process the content."},
+                    "model_tier": {"type": "string", "enum": ["light", "balanced", "strong"], "description": "Model tier for summarization."}
+                },
+                "required": ["url", "prompt", "model_tier"]
+            }),
+            true,
+            80_000,
+            "read",
+        ),
     ];
     if agent_enabled {
         tools.push(builtin::agent_definition());
@@ -230,6 +246,7 @@ mod tests {
                 "forget_memory",
                 "run_command",
                 "fetch_url",
+                "fetch_web",
             ]
         );
         assert_eq!(registry[0].risk, "read");
@@ -260,7 +277,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -269,7 +286,7 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
     }
 
     #[test]
@@ -277,7 +294,7 @@ mod tests {
         let registry = builtin_registry(false, true);
         let names = tool_names(&registry);
         assert!(names.contains(&"use_skill".to_string()));
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

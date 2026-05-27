@@ -8,7 +8,6 @@ pub(crate) fn api_client() -> Client {
         .expect("default HTTP client builds")
 }
 
-#[allow(dead_code)]
 pub(crate) fn fetch_client() -> Client {
     Client::builder()
         .emulation(Emulation::Chrome136)

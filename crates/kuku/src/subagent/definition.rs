@@ -29,11 +29,13 @@ impl ToolProfile {
     pub fn allowed_tools(&self) -> &'static [&'static str] {
         match self {
             Self::None => &[],
-            Self::Read => &["find_files", "read_file", "search_text"],
+            Self::Read => &["find_files", "read_file", "search_text", "fetch_url", "fetch_web"],
             Self::ReadWrite => &[
                 "find_files",
                 "read_file",
                 "search_text",
+                "fetch_url",
+                "fetch_web",
                 "edit_file",
                 "write_file",
                 "remember_memory",
