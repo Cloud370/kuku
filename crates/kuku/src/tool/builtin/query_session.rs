@@ -17,10 +17,11 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff", "HandoffTrigger"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff", "HandoffTrigger", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
-                "limit": { "type": "integer", "description": "Max events to return (default 20)" }
+                "limit": { "type": "integer", "description": "Max events to return (default 20)" },
+                "skip_rolled_back": { "type": "boolean", "description": "Skip events in rolled-back turns (default: true)", "default": true }
             }
         }),
         read_only: true,
@@ -49,10 +50,24 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
 }
 
 fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate::error::Error> {
-    let events = EventStore::replay(events_path)?;
-    if events.is_empty() {
+    let all_events = EventStore::replay(events_path)?;
+    if all_events.is_empty() {
         return Ok(("[]".to_string(), 0));
     }
+
+    let skip_rolled_back = args
+        .get("skip_rolled_back")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let events: Vec<crate::event::StoredEvent> = if skip_rolled_back {
+        crate::context::filter_rolled_back_events(&all_events)
+            .into_iter()
+            .cloned()
+            .collect()
+    } else {
+        all_events
+    };
 
     let type_filter = args
         .get("type")
@@ -151,6 +166,8 @@ fn normalize_type_filter(raw: &str) -> String {
         "ToolResult" => "tool.result".to_string(),
         "Handoff" => "handoff".to_string(),
         "HandoffTrigger" => "handoff.trigger".to_string(),
+        "TurnRollback" => "turn.rollback".to_string(),
+        "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
         other => other.to_lowercase(),
     }
 }
@@ -163,7 +180,17 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         EventPayload::ToolResult { .. } => "tool.result",
         EventPayload::Handoff { .. } => "handoff",
         EventPayload::HandoffTrigger { .. } => "handoff.trigger",
-        _ => return false,
+        EventPayload::TurnRollback { .. } => "turn.rollback",
+        EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
+        EventPayload::SessionMeta { .. }
+        | EventPayload::TurnStart { .. }
+        | EventPayload::TurnEnd { .. }
+        | EventPayload::ModelRequest { .. }
+        | EventPayload::ModelError { .. }
+        | EventPayload::PolicyLoaded { .. }
+        | EventPayload::PermissionRequest { .. }
+        | EventPayload::PermissionDecision { .. }
+        | EventPayload::Unknown(_) => return false,
     };
     type_tag == filter
 }
@@ -388,12 +415,130 @@ mod tests {
         let path = write_events(dir.path(), &payloads);
         let result = query_session(&json!({}), &path);
         assert_eq!(result.status, "ok");
-        // Total output should not drastically exceed MAX_RESULT_CHARS
-        // (some overhead for JSON structure is expected)
         assert!(
             result.model_content.len() < MAX_RESULT_CHARS + 2000,
             "output too large: {} chars",
             result.model_content.len()
         );
+    }
+
+    #[test]
+    fn query_session_skip_rolled_back_filters_events() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::TurnStart {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "original".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnStart {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 2,
+                    ts: ts("t"),
+                    text: "rolled back".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnRollback {
+                    turn: 3,
+                    ts: ts("t"),
+                    target_turn: 2,
+                    scope: crate::event::RollbackScope::ConversationOnly,
+                },
+            ],
+        );
+        let result = query_session(&json!({"skip_rolled_back": true}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("original"));
+        assert!(!result.model_content.contains("rolled back"));
+    }
+
+    #[test]
+    fn query_session_skip_rolled_back_false_returns_all() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::TurnStart {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "original".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnStart {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 2,
+                    ts: ts("t"),
+                    text: "rolled back".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnRollback {
+                    turn: 3,
+                    ts: ts("t"),
+                    target_turn: 2,
+                    scope: crate::event::RollbackScope::ConversationOnly,
+                },
+            ],
+        );
+        let result = query_session(&json!({"skip_rolled_back": false}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("original"));
+        assert!(result.model_content.contains("rolled back"));
+    }
+
+    #[test]
+    fn query_session_type_filter_turn_rollback() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::TurnRollback {
+                    turn: 2,
+                    ts: ts("t"),
+                    target_turn: 1,
+                    scope: crate::event::RollbackScope::Both,
+                },
+            ],
+        );
+        let result = query_session(
+            &json!({"type": "TurnRollback", "skip_rolled_back": false}),
+            &path,
+        );
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("turn.rollback"));
+        assert!(!result.model_content.contains("hello"));
     }
 }
