@@ -486,6 +486,15 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             break;
         }
 
+        if prompt == "/undo" {
+            let workspace = kuku::session::current_workspace()?;
+            let home = kuku::session::kuku_home()?;
+            if let Err(e) = crate::commands::undo::run_undo(&workspace, &home) {
+                eprintln!("undo error: {e}");
+            }
+            continue;
+        }
+
         let (user_prompt, skill_body) = if prompt.starts_with('/') {
             if let Some(ref registry) = skill_registry {
                 let (skill_name, rest) = parse_slash_command(&prompt);
