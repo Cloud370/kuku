@@ -80,6 +80,12 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
     for message in &request.assembly.prelude_messages {
         input_items.extend(convert_to_input_items(message));
     }
+    if let Some(summary) = &request.assembly.handoff_summary {
+        input_items.push(json!({
+            "role": "user",
+            "content": format!("<kuku_handoff_summary>\n{}\n</kuku_handoff_summary>", summary),
+        }));
+    }
     for message in &request.assembly.history {
         input_items.extend(convert_to_input_items(message));
     }

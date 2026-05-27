@@ -27,6 +27,12 @@ pub(crate) fn render_body(request: &ProviderRequest) -> Value {
         .iter()
         .map(convert_canonical_message)
         .collect::<Vec<_>>();
+    if let Some(summary) = &request.assembly.handoff_summary {
+        messages.push(json!({
+            "role": "user",
+            "content": format!("<kuku_handoff_summary>\n{}\n</kuku_handoff_summary>", summary),
+        }));
+    }
     messages.extend(
         request
             .assembly

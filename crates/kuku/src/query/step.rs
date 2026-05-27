@@ -11,9 +11,9 @@ use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
-use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
-#[allow(unused_imports)]
-use crate::prompt::builtin_session_query_guidance;
+use crate::prompt::{
+    builtin_handoff_instruction, builtin_session_query_guidance, load_prompt_template,
+};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
@@ -521,6 +521,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         &mut pending.skill_content_hash,
         &resolved.config,
         &existing_events,
+        pending.prompts_dir.as_deref(),
     )?;
 
     let mut assembly = match assemble_context(
@@ -809,6 +810,7 @@ fn build_runtime_blocks(
     skill_content_hash: &mut Option<String>,
     resolved_config: &crate::provider::types::ResolvedProvider,
     existing_events: &[crate::event::StoredEvent],
+    prompts_dir: Option<&std::path::Path>,
 ) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
     let thinking_overhead: u32 = match resolved_config.think_level {
@@ -906,6 +908,19 @@ fn build_runtime_blocks(
         parts.push(format!(
             "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
         ));
+    }
+
+    let has_handoff = existing_events
+        .iter()
+        .any(|e| matches!(e.payload, EventPayload::Handoff { .. }));
+    if has_handoff {
+        let guidance = if let Some(dir) = prompts_dir {
+            load_prompt_template(dir, "session_query_guidance")
+                .unwrap_or_else(|_| builtin_session_query_guidance().to_string())
+        } else {
+            builtin_session_query_guidance().to_string()
+        };
+        parts.push(guidance);
     }
 
     let runtime_blocks = if parts.is_empty() {
