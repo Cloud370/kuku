@@ -41,6 +41,16 @@ pub struct ContextMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandoffTriggerReason {
+    #[serde(rename = "context_threshold")]
+    ContextThreshold,
+    #[serde(rename = "overflow_error")]
+    OverflowError,
+    #[serde(rename = "user")]
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 // ModelRequest is the largest variant; boxing adds indirection with no benefit for a serialization data enum.
 #[allow(clippy::large_enum_variant)]
@@ -168,6 +178,19 @@ pub enum EventPayload {
 
     #[serde(rename = "turn.end")]
     TurnEnd { turn: u64, ts: String },
+
+    #[serde(rename = "handoff.trigger")]
+    HandoffTrigger {
+        ts: String,
+        trigger: HandoffTriggerReason,
+    },
+
+    #[serde(rename = "handoff")]
+    Handoff {
+        ts: String,
+        summary: String,
+        kept_turns: usize,
+    },
 
     /// Unknown event type — raw JSON preserved for display, excluded from messages[].
     /// Not deserialized by serde; created manually in two-step deserialization.

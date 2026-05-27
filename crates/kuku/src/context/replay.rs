@@ -97,6 +97,8 @@ pub fn rebuild_history(events: &[StoredEvent]) -> Vec<CanonicalMessage> {
             | EventPayload::PolicyLoaded { .. }
             | EventPayload::PermissionRequest { .. }
             | EventPayload::PermissionDecision { .. }
+            | EventPayload::HandoffTrigger { .. }
+            | EventPayload::Handoff { .. }
             | EventPayload::Unknown(_) => {}
         }
     }
