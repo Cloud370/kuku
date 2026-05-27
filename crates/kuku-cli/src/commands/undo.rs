@@ -66,10 +66,7 @@ fn handle_new_rollback(
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    let choice: usize = input
-        .trim()
-        .parse()
-        .map_err(|_| "invalid selection")?;
+    let choice: usize = input.trim().parse().map_err(|_| "invalid selection")?;
     if choice == 0 || choice > display_count {
         return Err("selection out of range".into());
     }
@@ -129,7 +126,7 @@ fn handle_new_rollback(
     })?;
 
     if let Some(ref plan) = plan {
-        let warnings = apply_file_revert(plan, workspace, &session_dir, rb_event.id)?;
+        let warnings = apply_file_revert(plan, workspace, session_dir, rb_event.id)?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
@@ -258,10 +255,7 @@ fn select_scope(file_turn_count: usize) -> Result<RollbackScope, Box<dyn std::er
     }
 }
 
-fn display_plan_preview(
-    plan: &kuku::context::RevertPlan,
-    workspace: &Path,
-) {
+fn display_plan_preview(plan: &kuku::context::RevertPlan, workspace: &Path) {
     if plan.restores.is_empty() && plan.deletes.is_empty() && plan.unrecoverable.is_empty() {
         println!("\nNo file changes to revert.");
         return;
@@ -284,7 +278,10 @@ fn display_plan_preview(
     }
     for unrec in &plan.unrecoverable {
         let relative = unrec.strip_prefix(workspace).unwrap_or(unrec);
-        println!("  unrecoverable: {} (no full snapshot available)", relative.display());
+        println!(
+            "  unrecoverable: {} (no full snapshot available)",
+            relative.display()
+        );
     }
 }
 

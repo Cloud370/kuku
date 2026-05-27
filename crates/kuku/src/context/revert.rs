@@ -56,66 +56,56 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
                 }
             }
             EventPayload::TurnRollback {
-                target_turn,
-                scope,
-                ..
-            } => {
-                if !undone_ids.contains(&event.id) {
-                    active_rollback = Some((*target_turn, event.id, scope.clone()));
-                }
+                target_turn, scope, ..
+            } if !undone_ids.contains(&event.id) => {
+                active_rollback = Some((*target_turn, event.id, scope.clone()));
             }
             _ => {}
         }
     }
 
     let skipped_turns: HashSet<u64> = match &active_rollback {
-        Some((target_turn, _, scope)) if scope.affects_conversation() => {
-            events
-                .iter()
-                .filter_map(|e| {
-                    if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                        if *turn >= *target_turn {
-                            Some(*turn)
-                        } else {
-                            None
-                        }
+        Some((target_turn, _, scope)) if scope.affects_conversation() => events
+            .iter()
+            .filter_map(|e| {
+                if let EventPayload::TurnStart { turn, .. } = &e.payload {
+                    if *turn >= *target_turn {
+                        Some(*turn)
                     } else {
                         None
                     }
-                })
-                .collect()
-        }
+                } else {
+                    None
+                }
+            })
+            .collect(),
         _ => HashSet::new(),
     };
 
     let mut current_turn: Option<u64> = None;
     events
         .iter()
-        .filter(|event| {
-            match &event.payload {
-                EventPayload::TurnStart { turn, .. } => {
-                    current_turn = Some(*turn);
-                    !skipped_turns.contains(turn)
-                }
-                EventPayload::TurnEnd { turn, .. }
-                | EventPayload::UserInput { turn, .. }
-                | EventPayload::ModelResponse { turn, .. }
-                | EventPayload::ToolCall { turn, .. }
-                | EventPayload::ToolResult { turn, .. }
-                | EventPayload::ModelRequest { turn, .. }
-                | EventPayload::ModelError { turn, .. }
-                | EventPayload::PermissionRequest { turn, .. }
-                | EventPayload::PermissionDecision { turn, .. } => {
-                    !skipped_turns.contains(turn)
-                }
-                EventPayload::Handoff { .. } | EventPayload::HandoffTrigger { .. } => {
-                    match current_turn {
-                        Some(t) => !skipped_turns.contains(&t),
-                        None => true,
-                    }
-                }
-                _ => true,
+        .filter(|event| match &event.payload {
+            EventPayload::TurnStart { turn, .. } => {
+                current_turn = Some(*turn);
+                !skipped_turns.contains(turn)
             }
+            EventPayload::TurnEnd { turn, .. }
+            | EventPayload::UserInput { turn, .. }
+            | EventPayload::ModelResponse { turn, .. }
+            | EventPayload::ToolCall { turn, .. }
+            | EventPayload::ToolResult { turn, .. }
+            | EventPayload::ModelRequest { turn, .. }
+            | EventPayload::ModelError { turn, .. }
+            | EventPayload::PermissionRequest { turn, .. }
+            | EventPayload::PermissionDecision { turn, .. } => !skipped_turns.contains(turn),
+            EventPayload::Handoff { .. } | EventPayload::HandoffTrigger { .. } => {
+                match current_turn {
+                    Some(t) => !skipped_turns.contains(&t),
+                    None => true,
+                }
+            }
+            _ => true,
         })
         .collect()
 }
@@ -147,14 +137,9 @@ pub fn compute_file_revert_plan(
         {
             if let Some(kind) = s["kind"].as_str() {
                 if REVERTABLE_KINDS.contains(&kind) {
-                    if let Some(path) = s["canonical_path"]
-                        .as_str()
-                        .or_else(|| s["path"].as_str())
+                    if let Some(path) = s["canonical_path"].as_str().or_else(|| s["path"].as_str())
                     {
-                        modified_files
-                            .entry(path.to_string())
-                            .or_default()
-                            .push(i);
+                        modified_files.entry(path.to_string()).or_default().push(i);
                     }
                 }
             }
@@ -170,18 +155,14 @@ pub fn compute_file_revert_plan(
         let target_state = find_file_state_at(events, file_path, turn_end_pos);
         let disk_path = workspace.join(file_path);
 
-        let file_name = disk_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
+        let file_name = disk_path.file_name().unwrap_or_default().to_string_lossy();
         if crate::tool::builtin::common::is_sensitive_file_name(&file_name) {
             sensitive_files.push(disk_path.clone());
         }
 
         match target_state {
             FileStateAt::Exists(old_content) => {
-                let old_hash =
-                    crate::tool::builtin::common::content_hash(old_content.as_bytes());
+                let old_hash = crate::tool::builtin::common::content_hash(old_content.as_bytes());
                 let new_content = std::fs::read_to_string(&disk_path).unwrap_or_default();
                 if old_content != new_content {
                     restores.push(FileRestore {
@@ -212,9 +193,9 @@ pub fn compute_file_revert_plan(
 }
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
-    if let Some(pos) = events.iter().rposition(|e| {
-        matches!(&e.payload, EventPayload::TurnEnd { turn, .. } if *turn == target_turn)
-    }) {
+    if let Some(pos) = events.iter().rposition(
+        |e| matches!(&e.payload, EventPayload::TurnEnd { turn, .. } if *turn == target_turn),
+    ) {
         return pos;
     }
     if let Some(pos) = events.iter().position(|e| {
@@ -228,11 +209,7 @@ fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
     events.len().saturating_sub(1)
 }
 
-fn find_file_state_at(
-    events: &[StoredEvent],
-    canonical_path: &str,
-    at_pos: usize,
-) -> FileStateAt {
+fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usize) -> FileStateAt {
     for event in events[..=at_pos].iter().rev() {
         if let EventPayload::ToolResult {
             structured: Some(s),
@@ -267,10 +244,8 @@ fn find_file_state_at(
                 Some("file_content") => {
                     found_read = true;
                 }
-                Some(kind) if REVERTABLE_KINDS.contains(&kind) => {
-                    if !found_read {
-                        return FileStateAt::NotExists;
-                    }
+                Some(kind) if REVERTABLE_KINDS.contains(&kind) && !found_read => {
+                    return FileStateAt::NotExists;
                 }
                 _ => {}
             }
@@ -300,17 +275,13 @@ pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
                 }
             }
             EventPayload::TurnRollback {
-                target_turn,
-                scope,
-                ..
-            } => {
-                if !undone_ids.contains(&event.id) {
-                    last = Some(ActiveRollback {
-                        rollback_event_id: event.id,
-                        target_turn: *target_turn,
-                        scope: scope.clone(),
-                    });
-                }
+                target_turn, scope, ..
+            } if !undone_ids.contains(&event.id) => {
+                last = Some(ActiveRollback {
+                    rollback_event_id: event.id,
+                    target_turn: *target_turn,
+                    scope: scope.clone(),
+                });
             }
             _ => {}
         }
@@ -482,13 +453,7 @@ mod tests {
         }
     }
 
-    fn tool_result_read(
-        id: u64,
-        turn: u64,
-        path: &str,
-        content: &str,
-        full: bool,
-    ) -> StoredEvent {
+    fn tool_result_read(id: u64, turn: u64, path: &str, content: &str, full: bool) -> StoredEvent {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
@@ -513,12 +478,7 @@ mod tests {
         }
     }
 
-    fn tool_result_write(
-        id: u64,
-        turn: u64,
-        path: &str,
-        content: &str,
-    ) -> StoredEvent {
+    fn tool_result_write(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
@@ -539,12 +499,7 @@ mod tests {
         }
     }
 
-    fn tool_result_memory_write(
-        id: u64,
-        turn: u64,
-        path: &str,
-        content: &str,
-    ) -> StoredEvent {
+    fn tool_result_memory_write(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
@@ -565,12 +520,7 @@ mod tests {
         }
     }
 
-    fn tool_result_forget_memory(
-        id: u64,
-        turn: u64,
-        path: &str,
-        content: &str,
-    ) -> StoredEvent {
+    fn tool_result_forget_memory(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
@@ -851,20 +801,14 @@ mod tests {
         let plan = compute_file_revert_plan(&events, 1, dir.path());
         let _warnings = apply_file_revert(&plan, dir.path(), dir.path(), 99).unwrap();
         assert!(!dir.path().join("new.txt").exists());
-        assert!(dir
-            .path()
-            .join("pre-revert-99")
-            .join("new.txt")
-            .exists());
+        assert!(dir.path().join("pre-revert-99").join("new.txt").exists());
     }
 
     // find_active_rollback tests
 
     #[test]
     fn active_rollback_found() {
-        let events = vec![
-            rb(10, 5, 3, RollbackScope::Both),
-        ];
+        let events = vec![rb(10, 5, 3, RollbackScope::Both)];
         let active = find_active_rollback(&events).unwrap();
         assert_eq!(active.rollback_event_id, 10);
         assert_eq!(active.target_turn, 3);
@@ -872,10 +816,7 @@ mod tests {
 
     #[test]
     fn active_rollback_undone_returns_none() {
-        let events = vec![
-            rb(10, 5, 3, RollbackScope::Both),
-            rb_undo(11, 6, 10),
-        ];
+        let events = vec![rb(10, 5, 3, RollbackScope::Both), rb_undo(11, 6, 10)];
         assert!(find_active_rollback(&events).is_none());
     }
 

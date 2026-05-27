@@ -628,12 +628,7 @@ mod tests {
         )
     }
 
-    fn rollback(
-        id: u64,
-        turn: u64,
-        target_turn: u64,
-        scope: RollbackScope,
-    ) -> StoredEvent {
+    fn rollback(id: u64, turn: u64, target_turn: u64, scope: RollbackScope) -> StoredEvent {
         event(
             id,
             EventPayload::TurnRollback {
@@ -668,11 +663,7 @@ mod tests {
 
     #[test]
     fn no_rollback_returns_all() {
-        let events = vec![
-            turn_start(1, 1),
-            user_input(2, 1, "a"),
-            turn_end(3, 1),
-        ];
+        let events = vec![turn_start(1, 1), user_input(2, 1, "a"), turn_end(3, 1)];
         assert_eq!(filter_rolled_back_events(&events).len(), 3);
     }
 
