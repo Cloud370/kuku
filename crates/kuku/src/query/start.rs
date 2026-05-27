@@ -37,6 +37,8 @@ impl Query {
                 ));
             }
         };
+        let handoff_keep_turns = config.handoff().keep_turns;
+
         let session_id = match self.session_id.as_deref() {
             Some(session_id) => {
                 validate_session_id(session_id)?;
@@ -134,7 +136,7 @@ impl Query {
                 catalog,
                 cancel_token: cancel_token.clone(),
                 handoff_triggered: false,
-                handoff_keep_turns: 2,
+                handoff_keep_turns,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,
