@@ -52,7 +52,7 @@ pub fn load_prompt_template(dir: &Path, name: &str) -> crate::error::Result<Stri
 pub fn builtin_handoff_instruction() -> &'static str {
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/prompts/handoff_instruction.md"
+        "/prompts/handoff-instruction.md"
     ))
 }
 

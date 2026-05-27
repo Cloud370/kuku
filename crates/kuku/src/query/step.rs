@@ -594,7 +594,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                     pending.handoff_triggered = true;
                     pending.handoff_keep_turns = handoff_config.keep_turns;
                     let instruction = if let Some(dir) = &pending.prompts_dir {
-                        load_prompt_template(dir, "handoff_instruction")
+                        load_prompt_template(dir, "handoff-instruction")
                             .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
                     } else {
                         builtin_handoff_instruction().to_string()
