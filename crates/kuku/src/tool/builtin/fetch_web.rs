@@ -26,16 +26,9 @@ pub(crate) async fn fetch_web(
     let Some(model_tier) = args.get("model_tier").and_then(Value::as_str) else {
         return ToolResultEnvelope::error(
             "failed: missing model_tier",
-            "fetch_web requires model_tier (light/balanced/strong)",
+            "fetch_web requires model_tier — use a tier name from your configured model tiers",
         );
     };
-
-    if !matches!(model_tier, "light" | "balanced" | "strong") {
-        return ToolResultEnvelope::error(
-            format!("failed: invalid model_tier: {model_tier}"),
-            "model_tier must be one of: light, balanced, strong",
-        );
-    }
 
     if let Err(e) = super::fetch_url::validate_url(url) {
         return e;
@@ -156,6 +149,12 @@ async fn call_secondary_llm(
             config: Some(config.clone()),
             ..Default::default()
         })
+        .or_else(|_| {
+            crate::provider::config::resolve_config(crate::provider::config::ResolveConfigInput {
+                config: Some(config.clone()),
+                ..Default::default()
+            })
+        })
         .map_err(|e| {
             ToolResultEnvelope::error(
                 "failed: resolve provider",
@@ -267,12 +266,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_model_tier_rejects_invalid() {
+    fn validate_model_tier_is_required() {
         let (config, catalog) = test_context();
         let args = serde_json::json!({
             "url": "https://example.com",
             "prompt": "summarize",
-            "model_tier": "invalid"
         });
         let result = tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
         assert_eq!(result.status, "error");

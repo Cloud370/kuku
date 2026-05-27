@@ -172,7 +172,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                 "properties": {
                     "url": {"type": "string", "description": "The URL to fetch."},
                     "prompt": {"type": "string", "description": "How to process the content."},
-                    "model_tier": {"type": "string", "enum": ["light", "balanced", "strong"], "description": "Model tier for summarization."}
+                    "model_tier": {"type": "string", "description": "Model tier for summarization. Use a tier name from the configured model tiers (see <kuku_models> in context)."}
                 },
                 "required": ["url", "prompt", "model_tier"]
             }),
