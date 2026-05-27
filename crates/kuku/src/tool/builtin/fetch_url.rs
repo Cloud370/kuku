@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use serde_json::Value;
+use tokio::io::AsyncWriteExt;
+use tokio_stream::StreamExt;
 
 use crate::tool::ToolResultEnvelope;
 
@@ -105,26 +107,38 @@ async fn download(url: &str) -> Result<DownloadMeta, ToolResultEnvelope> {
         }
     }
 
-    let bytes = response.bytes().await.map_err(|e| {
-        ToolResultEnvelope::error("failed: download error", format!("failed to download: {e}"))
+    let mut stream = response.bytes_stream();
+    let mut file = tokio::fs::File::create(&file_path).await.map_err(|e| {
+        ToolResultEnvelope::error("failed: write error", format!("failed to create file: {e}"))
     })?;
 
-    if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err(ToolResultEnvelope::error(
-            "failed: file too large",
-            format!("download exceeds 50MB limit ({} bytes)", bytes.len()),
-        ));
+    let mut total: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            ToolResultEnvelope::error(
+                "failed: download error",
+                format!("failed to read chunk: {e}"),
+            )
+        })?;
+        total += chunk.len() as u64;
+        if total > MAX_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return Err(ToolResultEnvelope::error(
+                "failed: file too large",
+                format!("download exceeds 50MB limit ({total} bytes)"),
+            ));
+        }
+        file.write_all(&chunk).await.map_err(|e| {
+            ToolResultEnvelope::error("failed: write error", format!("failed to write file: {e}"))
+        })?;
     }
-
-    std::fs::write(&file_path, &bytes).map_err(|e| {
-        ToolResultEnvelope::error("failed: write error", format!("failed to write file: {e}"))
-    })?;
 
     Ok(DownloadMeta {
         file_path: file_path.to_string_lossy().into_owned(),
         status,
         content_type,
-        size: bytes.len() as u64,
+        size: total,
     })
 }
 
@@ -156,10 +170,16 @@ fn extract_filename(url: &str, headers: &wreq::header::HeaderMap) -> String {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let filtered: String = name
+        .chars()
         .filter(|c| !c.is_control() && *c != '/' && *c != '\\' && *c != ':')
         .take(255)
-        .collect()
+        .collect();
+    if filtered == ".." || filtered == "." {
+        String::from("download")
+    } else {
+        filtered
+    }
 }
 
 #[cfg(test)]

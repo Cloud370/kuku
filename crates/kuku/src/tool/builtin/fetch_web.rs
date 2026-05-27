@@ -217,8 +217,6 @@ async fn call_secondary_llm(
     Ok(response_text)
 }
 
-// --- LRU Cache ---
-
 struct CacheEntry {
     content: String,
     inserted_at: Instant,
