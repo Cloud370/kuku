@@ -385,6 +385,14 @@ impl Run {
                 }
                 ProviderChunk::TextDelta { text } => {
                     streaming.accumulated_text.push_str(&text);
+                    if let Some(ref mut detector) = streaming.handoff_detector {
+                        if let Some(user_text) = detector.process(&text) {
+                            if !user_text.is_empty() {
+                                return Ok(Some(UiEvent::TextDelta { text: user_text }));
+                            }
+                        }
+                        return Ok(None);
+                    }
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
@@ -757,6 +765,7 @@ mod tests {
             provider_request_id: None,
             usage: None,
             lead_events: Vec::new(),
+            handoff_detector: None,
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);

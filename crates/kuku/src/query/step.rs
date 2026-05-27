@@ -660,6 +660,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         provider: resolved.config.kind.as_str().to_string(),
     });
 
+    let handoff_active = pending.handoff_triggered;
     match crate::provider::stream_provider(&resolved.config, &request).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             pending,
@@ -673,6 +674,11 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             provider_request_id: None,
             usage: None,
             lead_events,
+            handoff_detector: if handoff_active {
+                Some(crate::query::types::HandoffDetector::new())
+            } else {
+                None
+            },
         }))),
         Err(failure) => {
             lead_events.push(UiEvent::Error {
