@@ -173,11 +173,7 @@ fn sanitize_filename(name: &str) -> String {
     let filtered: String = name
         .chars()
         .filter(|c| {
-            !c.is_control()
-                && !matches!(
-                    *c,
-                    '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'
-                )
+            !c.is_control() && !matches!(*c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
         })
         .take(255)
         .collect();
