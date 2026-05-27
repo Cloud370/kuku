@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, RollbackScope, StoredEvent};
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 
@@ -19,12 +19,96 @@ struct ResponseGroup {
     tool_results: BTreeMap<String, ToolResult>,
 }
 
+fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
+    let mut undone_ids: HashSet<u64> = HashSet::new();
+    let mut active_rollback: Option<(u64, u64, RollbackScope)> = None;
+
+    for event in events {
+        match &event.payload {
+            EventPayload::TurnRollbackUndo {
+                rollback_event_id, ..
+            } => {
+                undone_ids.insert(*rollback_event_id);
+                if active_rollback
+                    .as_ref()
+                    .is_some_and(|(_, rb_id, _)| rb_id == rollback_event_id)
+                {
+                    active_rollback = None;
+                }
+            }
+            EventPayload::TurnRollback {
+                target_turn,
+                scope,
+                ..
+            } => {
+                if !undone_ids.contains(&event.id) {
+                    active_rollback = Some((*target_turn, event.id, scope.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let skipped_turns: HashSet<u64> = match &active_rollback {
+        Some((target_turn, _, scope)) if scope.affects_conversation() => {
+            events
+                .iter()
+                .filter_map(|e| {
+                    if let EventPayload::TurnStart { turn, .. } = &e.payload {
+                        if *turn >= *target_turn {
+                            Some(*turn)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => HashSet::new(),
+    };
+
+    let mut current_turn: Option<u64> = None;
+    events
+        .iter()
+        .filter(|event| {
+            match &event.payload {
+                EventPayload::TurnStart { turn, .. } => {
+                    current_turn = Some(*turn);
+                    !skipped_turns.contains(turn)
+                }
+                EventPayload::TurnEnd { turn, .. }
+                | EventPayload::UserInput { turn, .. }
+                | EventPayload::ModelResponse { turn, .. }
+                | EventPayload::ToolCall { turn, .. }
+                | EventPayload::ToolResult { turn, .. }
+                | EventPayload::ModelRequest { turn, .. }
+                | EventPayload::ModelError { turn, .. }
+                | EventPayload::PermissionRequest { turn, .. }
+                | EventPayload::PermissionDecision { turn, .. } => {
+                    !skipped_turns.contains(turn)
+                }
+                EventPayload::Handoff { .. } | EventPayload::HandoffTrigger { .. } => {
+                    match current_turn {
+                        Some(t) => !skipped_turns.contains(&t),
+                        None => true,
+                    }
+                }
+                _ => true,
+            }
+        })
+        .collect()
+}
+
 /// Reconstruct conversation history messages from a session's stored events.
 /// Returns `(handoff_summary, messages)` where `handoff_summary` is the text
 /// from the most recent Handoff event (if any), and `messages` contains only
 /// events after that handoff.
 pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<CanonicalMessage>) {
-    let handoff_pos = events
+    let filtered = filter_rolled_back_events(events);
+
+    let handoff_pos = filtered
         .iter()
         .enumerate()
         .rfind(|(_, e)| matches!(e.payload, EventPayload::Handoff { .. }));
@@ -35,9 +119,9 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                 EventPayload::Handoff { summary, .. } => Some(summary.clone()),
                 _ => None,
             };
-            (summary, &events[idx + 1..])
+            (summary, &filtered[idx + 1..])
         }
-        None => (None, events),
+        None => (None, filtered.as_slice()),
     };
 
     let mut messages = Vec::new();
@@ -195,7 +279,8 @@ mod tests {
     use crate::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::rebuild_history;
+    use super::{filter_rolled_back_events, rebuild_history};
+    use crate::event::RollbackScope;
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent { id, payload }
@@ -610,5 +695,213 @@ mod tests {
         assert_eq!(summary.as_deref(), Some("second summary"));
         assert_eq!(history.len(), 2);
         assert_eq!(history[0], CanonicalMessage::user_text("third"));
+    }
+
+    fn turn_start(id: u64, turn: u64) -> StoredEvent {
+        event(
+            id,
+            EventPayload::TurnStart {
+                turn,
+                ts: "t".to_string(),
+            },
+        )
+    }
+
+    fn rollback(
+        id: u64,
+        turn: u64,
+        target_turn: u64,
+        scope: RollbackScope,
+    ) -> StoredEvent {
+        event(
+            id,
+            EventPayload::TurnRollback {
+                turn,
+                ts: "t".to_string(),
+                target_turn,
+                scope,
+            },
+        )
+    }
+
+    fn rollback_undo(id: u64, turn: u64, rb_id: u64) -> StoredEvent {
+        event(
+            id,
+            EventPayload::TurnRollbackUndo {
+                turn,
+                ts: "t".to_string(),
+                rollback_event_id: rb_id,
+            },
+        )
+    }
+
+    fn extract_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
+        events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::UserInput { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_rollback_returns_all() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+        ];
+        assert_eq!(filter_rolled_back_events(&events).len(), 3);
+    }
+
+    #[test]
+    fn both_scope_skips_target_and_later_turns() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            turn_start(7, 3),
+            user_input(8, 3, "c"),
+            turn_end(9, 3),
+            rollback(10, 4, 2, RollbackScope::Both),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a"]);
+    }
+
+    #[test]
+    fn conversation_only_skips_turns() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            rollback(7, 3, 2, RollbackScope::ConversationOnly),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a"]);
+    }
+
+    #[test]
+    fn files_only_keeps_conversation() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            rollback(7, 3, 2, RollbackScope::FilesOnly),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn undo_restores_events() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            rollback(7, 3, 2, RollbackScope::ConversationOnly),
+            rollback_undo(8, 4, 7),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn rollback_before_handoff_removes_handoff() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            handoff_event(4, "old summary"),
+            turn_start(5, 2),
+            user_input(6, 2, "b"),
+            turn_end(7, 2),
+            rollback(8, 3, 1, RollbackScope::ConversationOnly),
+        ];
+        let (summary, msgs) = rebuild_history(&events);
+        assert!(summary.is_none());
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn rollback_after_handoff_keeps_summary() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            handoff_event(4, "summary of turn 1"),
+            turn_start(5, 2),
+            user_input(6, 2, "b"),
+            turn_end(7, 2),
+            turn_start(8, 3),
+            user_input(9, 3, "c"),
+            turn_end(10, 3),
+            rollback(11, 4, 3, RollbackScope::ConversationOnly),
+        ];
+        let (summary, msgs) = rebuild_history(&events);
+        assert_eq!(summary.as_deref(), Some("summary of turn 1"));
+        let texts: Vec<_> = msgs
+            .iter()
+            .filter_map(|m| {
+                if let MessageBlock::Text(t) = &m.blocks[0] {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(texts, vec!["b"]);
+    }
+
+    #[test]
+    fn consecutive_rollbacks_last_wins() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            turn_start(7, 3),
+            user_input(8, 3, "c"),
+            turn_end(9, 3),
+            rollback(10, 4, 2, RollbackScope::ConversationOnly),
+            rollback(11, 5, 3, RollbackScope::ConversationOnly),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn undo_first_of_two_rollbacks_second_still_active() {
+        let events = vec![
+            turn_start(1, 1),
+            user_input(2, 1, "a"),
+            turn_end(3, 1),
+            turn_start(4, 2),
+            user_input(5, 2, "b"),
+            turn_end(6, 2),
+            turn_start(7, 3),
+            user_input(8, 3, "c"),
+            turn_end(9, 3),
+            rollback(10, 4, 2, RollbackScope::ConversationOnly),
+            rollback(11, 5, 3, RollbackScope::ConversationOnly),
+            rollback_undo(12, 6, 10),
+        ];
+        let f = filter_rolled_back_events(&events);
+        assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
     }
 }
