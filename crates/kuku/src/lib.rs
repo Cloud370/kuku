@@ -2,6 +2,8 @@
 pub mod context;
 
 pub mod config;
+#[allow(dead_code)]
+pub(crate) mod discovery;
 pub mod error;
 pub mod event;
 pub(crate) mod notice;

@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -20,6 +22,33 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub provider: BTreeMap<String, ProviderEntry>,
+
+    #[serde(default)]
+    pub discovery: Option<DiscoveryConfig>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(default = "default_true")]
+    pub auto_discover: bool,
+    #[serde(default)]
+    pub extra_user_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub extra_project_paths: Vec<PathBuf>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            auto_discover: true,
+            extra_user_paths: Vec::new(),
+            extra_project_paths: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,6 +170,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
             default_model: None,
             model: BTreeMap::new(),
             provider: BTreeMap::new(),
+            discovery: None,
         });
     }
     let text = std::fs::read_to_string(path)
