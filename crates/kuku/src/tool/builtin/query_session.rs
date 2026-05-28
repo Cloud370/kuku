@@ -60,13 +60,12 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
         .and_then(Value::as_bool)
         .unwrap_or(true);
 
-    let events: Vec<crate::event::StoredEvent> = if skip_rolled_back {
-        crate::context::filter_rolled_back_events(&all_events)
-            .into_iter()
-            .cloned()
-            .collect()
+    let filtered_refs;
+    let events: &[&crate::event::StoredEvent] = if skip_rolled_back {
+        filtered_refs = crate::context::revert::filter_rolled_back_events(&all_events);
+        &filtered_refs
     } else {
-        all_events
+        &[]
     };
 
     let type_filter = args
@@ -84,10 +83,16 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_LIMIT as u64) as usize;
 
-    let turn_map = build_turn_map(&events);
+    let turn_map = build_turn_map(&all_events);
+
+    let iter: Box<dyn Iterator<Item = &crate::event::StoredEvent>> = if skip_rolled_back {
+        Box::new(events.iter().rev().copied())
+    } else {
+        Box::new(all_events.iter().rev())
+    };
 
     let mut matched = Vec::new();
-    for event in events.iter().rev() {
+    for event in iter {
         if matched.len() >= limit {
             break;
         }
