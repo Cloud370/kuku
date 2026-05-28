@@ -16,5 +16,6 @@ pub use provenance::{
 pub use replay::rebuild_history;
 pub use revert::{
     apply_file_revert, compute_file_revert_plan, count_file_turns_after, filter_rolled_back_events,
-    find_active_rollback, list_user_turns, ActiveRollback, FileRestore, RevertPlan, UserTurnEntry,
+    find_active_rollback, list_user_turns, rollback_turn, undo_rollback, ActiveRollback,
+    FileRestore, RevertPlan, RollbackResult, UndoRollbackResult, UserTurnEntry,
 };

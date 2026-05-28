@@ -3,7 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::event::{EventPayload, RollbackScope, StoredEvent};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
@@ -439,6 +442,181 @@ pub fn apply_file_revert(
     Ok(warnings)
 }
 
+/// Result of a rollback operation.
+pub struct RollbackResult {
+    /// ID of the appended TurnRollback event.
+    pub rollback_event_id: u64,
+    /// Number of files restored to their previous content.
+    pub files_restored: usize,
+    /// Number of files deleted (were created after target turn).
+    pub files_deleted: usize,
+    /// Non-fatal warnings (e.g., file changed since plan computed).
+    pub warnings: Vec<String>,
+}
+
+/// Result of an undo-rollback operation.
+pub struct UndoRollbackResult {
+    /// ID of the rollback event that was undone.
+    pub rollback_event_id: u64,
+    /// Whether files were actually restored from backup.
+    pub files_restored: bool,
+    /// Whether the conversation was restored (always true).
+    pub conversation_restored: bool,
+    /// Non-fatal warnings (e.g., files skipped due to safety rules).
+    pub warnings: Vec<String>,
+}
+
+/// Roll back a conversation turn: append a TurnRollback event and optionally revert files.
+pub fn rollback_turn(
+    events_path: &Path,
+    workspace: &Path,
+    session_dir: &Path,
+    target_turn: u64,
+    scope: RollbackScope,
+) -> crate::Result<RollbackResult> {
+    let events = EventStore::replay(events_path)?;
+
+    let next_turn = events
+        .iter()
+        .filter_map(|e| {
+            if let EventPayload::TurnStart { turn, .. } = &e.payload {
+                Some(*turn)
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let affects_files = scope.affects_files();
+    let mut store = EventStore::open(events_path)?;
+    let rb_event = store.append(EventPayload::TurnRollback {
+        turn: next_turn,
+        ts: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default(),
+        target_turn,
+        scope,
+    })?;
+
+    let mut files_restored = 0;
+    let mut files_deleted = 0;
+    let mut warnings = Vec::new();
+    if affects_files {
+        let plan = compute_file_revert_plan(&events, target_turn, workspace);
+        files_restored = plan.restores.len();
+        files_deleted = plan.deletes.len();
+        let w = apply_file_revert(&plan, workspace, session_dir, rb_event.id)?;
+        warnings = w;
+    }
+
+    Ok(RollbackResult {
+        rollback_event_id: rb_event.id,
+        files_restored,
+        files_deleted,
+        warnings,
+    })
+}
+
+/// Undo an active rollback: restore files from backup and append a TurnRollbackUndo event.
+pub fn undo_rollback(
+    events_path: &Path,
+    workspace: &Path,
+    session_dir: &Path,
+) -> crate::Result<UndoRollbackResult> {
+    let check_events = EventStore::replay(events_path)?;
+    let active = find_active_rollback(&check_events).ok_or(
+        crate::error::Error::InvalidArgument("no active rollback found".into()),
+    )?;
+
+    let file_turn_count = count_file_turns_after(&check_events, active.target_turn);
+
+    let restore_files = match &active.scope {
+        RollbackScope::ConversationOnly => true,
+        RollbackScope::FilesOnly => {
+            if file_turn_count > 0 {
+                return Err(crate::error::Error::InvalidArgument(format!(
+                    "cannot undo files_only rollback: {file_turn_count} turn(s) with file changes since rollback target"
+                )));
+            }
+            true
+        }
+        RollbackScope::Both => file_turn_count == 0,
+    };
+
+    let mut files_restored = false;
+    let mut warnings = Vec::new();
+    if restore_files && active.scope.affects_files() {
+        let backup_dir = session_dir.join(format!("pre-revert-{}", active.rollback_event_id));
+        if backup_dir.exists() {
+            restore_dir_recursive(&backup_dir, &backup_dir, workspace)?;
+            files_restored = true;
+        } else {
+            warnings.push(format!(
+                "backup directory not found: pre-revert-{}",
+                active.rollback_event_id
+            ));
+        }
+    } else if active.scope == RollbackScope::Both && file_turn_count > 0 {
+        warnings.push(format!(
+            "{file_turn_count} turn(s) with file changes since rollback; files kept as-is"
+        ));
+    }
+    let next_turn = check_events
+        .iter()
+        .filter_map(|e| {
+            if let EventPayload::TurnStart { turn, .. } = &e.payload {
+                Some(*turn)
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::TurnRollbackUndo {
+        turn: next_turn,
+        ts: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default(),
+        rollback_event_id: active.rollback_event_id,
+    })?;
+
+    Ok(UndoRollbackResult {
+        rollback_event_id: active.rollback_event_id,
+        files_restored,
+        conversation_restored: true,
+        warnings,
+    })
+}
+
+fn restore_dir_recursive(
+    base: &Path,
+    current: &Path,
+    workspace: &Path,
+) -> Result<(), std::io::Error> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            restore_dir_recursive(base, &path, workspace)?;
+        } else {
+            let relative = path
+                .strip_prefix(base)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            let target = workspace.join(relative);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,73 +670,25 @@ mod tests {
                     "raw_text_after": content,
                     "cached": false,
                     "is_full_file_snapshot": full,
-                    "content_hash": "sha256:abc",
-                    "start_line": 1,
-                    "line_count": content.lines().count(),
                 })),
             },
         }
     }
 
-    fn tool_result_write(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
+    fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> StoredEvent {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
                 turn,
                 ts: "t".into(),
-                tool_call_id: "tc2".into(),
+                tool_call_id: tc.into(),
                 status: "ok".into(),
                 summary: String::new(),
                 model_content: String::new(),
                 truncated: false,
-                structured: Some(json!({
-                    "kind": "file_write",
-                    "canonical_path": path,
-                    "raw_text_after": content,
-                    "content_hash_after": "sha256:def",
-                })),
-            },
-        }
-    }
-
-    fn tool_result_memory_write(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
-        StoredEvent {
-            id,
-            payload: EventPayload::ToolResult {
-                turn,
-                ts: "t".into(),
-                tool_call_id: "tc3".into(),
-                status: "ok".into(),
-                summary: String::new(),
-                model_content: String::new(),
-                truncated: false,
-                structured: Some(json!({
-                    "kind": "memory_write",
-                    "canonical_path": path,
-                    "raw_text_after": content,
-                    "content_hash_after": "sha256:ghi",
-                })),
-            },
-        }
-    }
-
-    fn tool_result_forget_memory(id: u64, turn: u64, path: &str, content: &str) -> StoredEvent {
-        StoredEvent {
-            id,
-            payload: EventPayload::ToolResult {
-                turn,
-                ts: "t".into(),
-                tool_call_id: "tc4".into(),
-                status: "ok".into(),
-                summary: String::new(),
-                model_content: String::new(),
-                truncated: false,
-                structured: Some(json!({
-                    "kind": "forget_memory",
-                    "canonical_path": path,
-                    "raw_text_after": content,
-                    "content_hash_after": "sha256:jkl",
-                })),
+                structured: Some(
+                    json!({"kind": kind, "canonical_path": path, "raw_text_after": content}),
+                ),
             },
         }
     }
@@ -679,7 +809,7 @@ mod tests {
             tool_result_read(2, 1, "a.txt", "v1", true),
             te(3, 1),
             ts(4, 2),
-            tool_result_write(5, 2, "a.txt", "v2"),
+            tr(5, 2, "tc2", "file_write", "a.txt", "v2"),
             te(6, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -696,7 +826,7 @@ mod tests {
             ts(1, 1),
             te(2, 1),
             ts(3, 2),
-            tool_result_write(4, 2, "new.txt", "new"),
+            tr(4, 2, "tc2", "file_write", "new.txt", "new"),
             te(5, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -713,7 +843,7 @@ mod tests {
             tool_result_read(2, 1, "b.txt", "partial", false),
             te(3, 1),
             ts(4, 2),
-            tool_result_write(5, 2, "b.txt", "changed"),
+            tr(5, 2, "tc2", "file_write", "b.txt", "changed"),
             te(6, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -729,7 +859,7 @@ mod tests {
             tool_result_read(2, 1, "memory.md", "old", true),
             te(3, 1),
             ts(4, 2),
-            tool_result_memory_write(5, 2, "memory.md", "new"),
+            tr(5, 2, "tc3", "memory_write", "memory.md", "new"),
             te(6, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -746,7 +876,7 @@ mod tests {
             tool_result_read(2, 1, "memory.md", "old", true),
             te(3, 1),
             ts(4, 2),
-            tool_result_forget_memory(5, 2, "memory.md", "new"),
+            tr(5, 2, "tc4", "forget_memory", "memory.md", "new"),
             te(6, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -770,7 +900,7 @@ mod tests {
             ts(1, 1),
             te(2, 1),
             ts(3, 2),
-            tool_result_write(4, 2, ".env", "secret"),
+            tr(4, 2, "tc2", "file_write", ".env", "secret"),
             te(5, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -796,7 +926,7 @@ mod tests {
             tool_result_read(2, 1, "a.txt", "v1", true),
             te(3, 1),
             ts(4, 2),
-            tool_result_write(5, 2, "a.txt", "v2"),
+            tr(5, 2, "tc2", "file_write", "a.txt", "v2"),
             te(6, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -817,7 +947,7 @@ mod tests {
             ts(1, 1),
             te(2, 1),
             ts(3, 2),
-            tool_result_write(4, 2, "new.txt", "new"),
+            tr(4, 2, "tc2", "file_write", "new.txt", "new"),
             te(5, 2),
         ];
         let plan = compute_file_revert_plan(&events, 1, dir.path());
@@ -869,10 +999,10 @@ mod tests {
             ts(1, 1),
             te(2, 1),
             ts(3, 2),
-            tool_result_write(4, 2, "a.txt", "v1"),
+            tr(4, 2, "tc2", "file_write", "a.txt", "v1"),
             te(5, 2),
             ts(6, 3),
-            tool_result_write(7, 3, "b.txt", "v2"),
+            tr(7, 3, "tc2", "file_write", "b.txt", "v2"),
             te(8, 3),
         ];
         assert_eq!(count_file_turns_after(&events, 1), 2);
