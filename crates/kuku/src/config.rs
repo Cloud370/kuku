@@ -544,13 +544,20 @@ pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
     let (patched, changed) = config_patch_defaults(&raw)?;
     if changed {
-        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let mut temp = tempfile::NamedTempFile::new_in(dir)
-            .map_err(|error| Error::ConfigLoad(format!("cannot create temp file: {error}")))?;
-        std::io::Write::write_all(&mut temp, patched.as_bytes())
-            .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
-        temp.persist(path)
-            .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+        // Guard against concurrent edits: only write back if the file hasn't
+        // changed since we read it, so we don't overwrite user modifications.
+        if let Ok(current) = std::fs::read_to_string(path) {
+            if current == raw {
+                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|error| {
+                    Error::ConfigLoad(format!("cannot create temp file: {error}"))
+                })?;
+                std::io::Write::write_all(&mut temp, patched.as_bytes())
+                    .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
+                temp.persist(path)
+                    .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+            }
+        }
     }
     toml::from_str(&patched).map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
 }
@@ -1113,7 +1120,10 @@ api_key = "test-key"
         assert!(!file.model.is_empty());
         assert!(!file.provider.is_empty());
         assert!(file.discovery.is_some());
-        assert!(file.handoff.is_some());
+        let h = file.handoff.unwrap();
+        assert!(h.enabled);
+        assert!((h.threshold - 0.7).abs() < f64::EPSILON);
+        assert_eq!(h.keep_turns, 2);
     }
 }
 
