@@ -52,6 +52,29 @@ pub enum HandoffTriggerReason {
     User,
 }
 
+/// Scope of a turn rollback operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RollbackScope {
+    #[serde(rename = "conversation_only")]
+    ConversationOnly,
+    #[serde(rename = "files_only")]
+    FilesOnly,
+    #[serde(rename = "both")]
+    Both,
+}
+
+impl RollbackScope {
+    /// Whether this scope skips conversation events during rebuild.
+    pub fn affects_conversation(&self) -> bool {
+        matches!(self, Self::ConversationOnly | Self::Both)
+    }
+
+    /// Whether this scope triggers file revert operations.
+    pub fn affects_files(&self) -> bool {
+        matches!(self, Self::FilesOnly | Self::Both)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 // ModelRequest is the largest variant; boxing adds indirection with no benefit for a serialization data enum.
@@ -194,6 +217,21 @@ pub enum EventPayload {
         kept_turns: usize,
     },
 
+    #[serde(rename = "turn.rollback")]
+    TurnRollback {
+        turn: u64,
+        ts: String,
+        target_turn: u64,
+        scope: RollbackScope,
+    },
+
+    #[serde(rename = "turn.rollback.undo")]
+    TurnRollbackUndo {
+        turn: u64,
+        ts: String,
+        rollback_event_id: u64,
+    },
+
     /// Unknown event type — raw JSON preserved for display, excluded from messages[].
     /// Not deserialized by serde; created manually in two-step deserialization.
     #[serde(skip)]
@@ -262,5 +300,83 @@ mod tests {
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "handoff");
+    }
+
+    #[test]
+    fn rollback_scope_variants_serialize_correctly() {
+        let cases = [
+            (RollbackScope::ConversationOnly, r#""conversation_only""#),
+            (RollbackScope::FilesOnly, r#""files_only""#),
+            (RollbackScope::Both, r#""both""#),
+        ];
+        for (variant, expected) in &cases {
+            assert_eq!(serde_json::to_string(variant).unwrap(), *expected);
+            let back: RollbackScope = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, *variant);
+        }
+    }
+
+    #[test]
+    fn turn_rollback_round_trip() {
+        let event = StoredEvent {
+            id: 50,
+            payload: EventPayload::TurnRollback {
+                turn: 5,
+                ts: "2026-05-28T00:00:00Z".to_string(),
+                target_turn: 3,
+                scope: RollbackScope::Both,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, back);
+    }
+
+    #[test]
+    fn turn_rollback_undo_round_trip() {
+        let event = StoredEvent {
+            id: 51,
+            payload: EventPayload::TurnRollbackUndo {
+                turn: 6,
+                ts: "2026-05-28T00:01:00Z".to_string(),
+                rollback_event_id: 50,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, back);
+    }
+
+    #[test]
+    fn turn_rollback_event_type_tag() {
+        let event = StoredEvent {
+            id: 1,
+            payload: EventPayload::TurnRollback {
+                turn: 1,
+                ts: "t".to_string(),
+                target_turn: 1,
+                scope: RollbackScope::ConversationOnly,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["type"],
+            "turn.rollback"
+        );
+    }
+
+    #[test]
+    fn turn_rollback_undo_event_type_tag() {
+        let event = StoredEvent {
+            id: 1,
+            payload: EventPayload::TurnRollbackUndo {
+                turn: 1,
+                ts: "t".to_string(),
+                rollback_event_id: 0,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["type"],
+            "turn.rollback.undo"
+        );
     }
 }

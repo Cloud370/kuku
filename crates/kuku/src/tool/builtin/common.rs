@@ -160,7 +160,7 @@ pub(crate) fn normalize_path_sep(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-pub(super) fn is_blocked_relative_path(path: &str) -> bool {
+pub(crate) fn is_blocked_relative_path(path: &str) -> bool {
     let normalized = normalize_path_sep(path);
     normalized
         .split('/')
@@ -202,7 +202,7 @@ pub(crate) fn content_hash(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
-pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let temp_path = path.with_extension(format!(
         "{}.tmp",
         path.extension()
