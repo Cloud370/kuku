@@ -15,17 +15,18 @@ Eleven built-in tools, plus the `agent` tool when subagents are enabled and `use
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | — | `read` |
 | `fetch_web` | `url`, `prompt`, `model_tier` | — | `read` |
-| `query_session` | — | `search`, `type`, `from_turn`, `to_turn`, `limit` | `read` |
+| `query_session` | — | `search`, `type`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | — | `edit` |
 | `run_command` | `command`, `timeout`, `brief` | — | `command` |
 | `remember_memory` | `scope`, `kind`, `text` | — | `edit` |
 | `forget_memory` | `scope`, `text` | — | `edit` |
 | `agent` | `name`, `prompt` | — | `read` |
+| `use_skill` | `skill_name` | — | `read` |
 
 ### `find_files`
 
-Browse the file tree. `pattern` is a file glob (`*.md`, `docs/**/*.md`). `max_depth` limits recursion. Returns relative paths.
+Browse the file tree. `pattern` is a file glob (`*.md`, `docs/**/*.md`). `max_depth` limits recursion. Automatically excludes `target/`, `node_modules/`, and other build directories. Returns relative paths.
 
 ### `read_file`
 
@@ -33,7 +34,7 @@ Read a file with `line<TAB>text` line numbers. `offset`/`limit` for pagination. 
 
 ### `search_text`
 
-Regex search over file content. `view`: `files` (file list), `lines` (matching lines), `count` (per-file counts). Default `files`. `offset`/`limit` for paginating large result sets (default: 0/100). `context` shows N lines before and after each match (only with `view=lines`, default: 0).
+Regex search over file content. `view`: `files` (file list), `lines` (matching lines), `count` (per-file counts). Default `files`. `offset`/`limit` for paginating large result sets (default: 0/100). `context` shows N lines before and after each match (only with `view=lines`, default: 0). Automatically excludes `target/`, `node_modules/` directories.
 
 ### `edit_file`
 
@@ -57,7 +58,7 @@ Fetch a web page, extract readable content via readability, convert to Markdown,
 
 ### `query_session`
 
-Query historical session events that have scrolled out of the current context window. Only useful after a context handoff. Filters: `type` (UserInput, ModelResponse, ToolCall, ToolResult, Handoff, HandoffTrigger), `search` (full-text keyword), `from_turn`/`to_turn` (relative turn range, 0 = most recent), `limit` (default 20). Individual event content is truncated to 500 chars; total output capped at 8000 chars. Read-only.
+Query historical session events that have scrolled out of the current context window. Only useful after a context handoff. Filters: `type` (UserInput, ModelResponse, ToolCall, ToolResult, Handoff, HandoffTrigger, TurnRollback, TurnRollbackUndo), `search` (full-text keyword), `from_turn`/`to_turn` (relative turn range, 0 = most recent), `limit` (default 20). When `skip_rolled_back` is true (default), events from rolled-back turns are excluded. Individual event content is truncated to 500 chars; total output capped at 8000 chars. Read-only.
 
 ### `remember_memory` / `forget_memory`
 
@@ -66,6 +67,10 @@ Append or remove a bullet in `memory.md`. `scope`: `global` or `project`. `kind`
 ### `agent`
 
 Dispatch a task to a named subagent in an isolated child session. Available agents are listed in the catalog injected into `runtime_context`.
+
+### `use_skill`
+
+Load a skill's full instructions into the current session. `skill_name` references an entry from the skill catalog. Reads from disk for hot-reload support.
 
 ## Declaration
 

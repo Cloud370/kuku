@@ -15,10 +15,10 @@ turn.start
 ## Per turn
 
 1. Append `turn.start` and `user.input`.
-2. Rebuild `messages[]`. See [architecture.md](architecture.md#context-assembly-a2b) for the full assembly order.
+2. Rebuild `messages[]`. `rebuild_history()` first filters out events from rolled-back turns via `filter_rolled_back_events()`. See [architecture.md](architecture.md#context-assembly-a2b) for the full assembly order.
 3. Append `model.request` with resolved provider, model, params, and provenance.
 4. Call model, stream text to host. On completion, append `model.response`.
-5. If handoff is enabled and context usage exceeds the threshold (default 70%), the handoff instruction was already injected before the model call. After streaming, if the response contains a `<kuku_handoff>` document (detected character-by-character by `HandoffDetector`), write `handoff.trigger` and `handoff` events.
+5. If handoff is enabled and context usage exceeds the threshold (default 70%, configured via `[handoff]` in config.toml), the handoff instruction was already injected before the model call. After streaming, if the response contains a `<kuku_handoff>` document (detected character-by-character by `HandoffDetector`), write `handoff.trigger` and `handoff` events.
 6. If `end_turn`: append `turn.end`, stop.
 7. If `tool_use`: collect all tool calls, append all `tool.call`, run permission gate, execute, append all `tool.result` in original order, loop to step 2.
 
@@ -74,3 +74,13 @@ enters history, so the model sees what was produced before interruption.
 | Waiting for permission | Deny all pending, write `tool.result {status:"blocked"}`, then `turn.end` |
 | Executing tools | Running tools write `cancelled`; completed tools kept; `turn.end` |
 | Idle | Direct `turn.end` |
+
+## Rollback
+
+`rollback_turn()` rolls back to a previous turn. It appends a `turn.rollback` event (never physically deletes history) and optionally reverts files. `undo_rollback()` reverses the operation by restoring files from the `pre-revert-{id}/` backup and appending `turn.rollback.undo`.
+
+Three scopes: `ConversationOnly` (filters turns from context rebuild), `FilesOnly` (reverts file changes), `Both`. File revert uses existing `tool.result` snapshots — zero extra storage.
+
+Before context rebuild, `filter_rolled_back_events()` removes events belonging to rolled-back turns. This runs after rollback markers are processed but before the handoff truncation window, so rolling back past a handoff precisely restores the compressed turns.
+
+See [session.md](session.md#turn-rollback) for the full lifecycle and CLI interaction.

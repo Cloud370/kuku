@@ -10,7 +10,7 @@ SDK owns runtime facts, session state, context rebuild, provider adapters, tool 
 crates/kuku/src/
 ├── lib.rs              pub mod declarations, re-exports
 ├── query/              public API: Query builder, Run state machine, slot dispatch
-├── context/            rebuild messages from files + events
+├── context/            rebuild messages from files + events, revert (rollback planning, file revert)
 ├── provider/           model API adapters (Anthropic, OpenAI), SSE parsing
 ├── tool/               tool definitions, registry, dispatch, builtins, streaming output
 ├── permission/         runtime gate, hard guard, policy matching
@@ -18,7 +18,8 @@ crates/kuku/src/
 ├── event/              event types, events.jsonl read/write, fast scan helpers
 ├── prompt/             prompt assets, catalog, template rendering
 ├── skill/              skill definitions, catalog, loader, registry
-├── config.rs           tiers, providers, config.toml parsing
+├── config.rs           tiers, providers, HandoffConfig, config.toml parsing and patching
+├── discovery.rs        agent and skill auto-discovery
 ├── subagent/           definitions, registry, catalog, child sessions
 ├── notice/             context drift detection, system notices
 ├── wire.rs             UiEvent → NDJSON wire format serialization
@@ -32,14 +33,14 @@ Each module has a clear boundary of what it may and may not depend on.
 | Module | Owns | May depend on | Must not |
 |--------|------|--------------|----------|
 | `query/` | Agent loop, Run state machine, UiEvent stream | All other modules | — |
-| `context/` | Message rebuild, provenance, assembly | `event/`, `prompt/`, `config/` | Provider, tool execution, permission |
+| `context/` | Message rebuild, provenance, assembly, revert | `event/`, `prompt/`, `config/`, `tool/` (common utils) | Provider, permission |
 | `provider/` | Protocol conversion (Anthropic, OpenAI) | Canonical messages, tool schemas, config | Session, event store, permission |
 | `tool/` | Definitions, registry, dispatch, built-in tools | `event/`, `context/` (ToolSchema) | Provider protocol, slot scheduling |
 | `permission/` | Gate decisions, hard guard, policy.md | `event/` | Tool execution, provider, session |
 | `session/` | Path derivation, writer lock, session list/delete | `event/` (via scan helpers) | Provider, model state |
 | `event/` | Event types, store append/replay, fast scan helpers | — | Provider, tools, permission |
 | `prompt/` | Asset catalog, template rendering | — | Runtime decisions, session state |
-| `config/` | Config parsing, validation, tiers | — | Provider, tools, session |
+| `config.rs` | Config parsing, validation, tiers, HandoffConfig, config_patch_defaults | — | Provider, tools, session |
 | `skill/` | Skill definitions, catalog, loader, registry | `prompt/` | Runtime decisions, session state |
 | `subagent/` | Definitions, registry, catalog, child spawn | `tool/`, `query/`, `session/` | — |
 | `notice/` | Drift detection, system notice rendering | `event/`, `prompt/` | — |
@@ -58,9 +59,10 @@ $KUKU_HOME/
 ├── p/<workspace-path>/       per-project data
 │   ├── memory.md             project memory
 │   ├── policy.md             project permission rules
-│   ├── runtime/locks/         writer locks (transient)
 │   └── sessions/<id>/
+│       ├── lock              writer lock (pid + timestamp)
 │       ├── events.jsonl
+│       ├── pre-revert-<id>/  file backups from rollback (when present)
 │       └── subs/             child sessions
 ```
 

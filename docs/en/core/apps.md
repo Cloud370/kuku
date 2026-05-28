@@ -29,7 +29,8 @@ kuku events <session-id>               # show events
 kuku list                              # list sessions (current workspace)
 kuku list -a                           # list all workspaces
 kuku delete <session-id>               # delete a session (with confirmation)
-kuku config show                       # show config
+kuku config show                       # show config (redacted)
+kuku config validate                   # validate config and report errors
 kuku config set model.balanced.think high
 kuku init                              # initialize directory structure
 kuku prompts show / export <dir>       # prompt assets
@@ -40,6 +41,14 @@ kuku server --password <pw>            # with auth
 ```
 
 No subcommand → interactive mode.
+
+### REPL commands
+
+Inside interactive mode (`kuku run`), slash commands are available:
+
+| Command | Effect |
+|---------|--------|
+| `/undo` | Roll back to a previous turn (interactive scope picker, file preview, confirmation) |
 
 ## Server
 

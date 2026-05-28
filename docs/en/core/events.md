@@ -13,7 +13,7 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | Domain | Actions |
 |--------|---------|
 | `session` | `meta` |
-| `turn` | `start`, `end` |
+| `turn` | `start`, `end`, `rollback`, `rollback.undo` |
 | `user` | `input` |
 | `model` | `request`, `response`, `error` |
 | `tool` | `call`, `result` |
@@ -37,6 +37,8 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `permission.request` | A tool awaiting authorization. | no | `permission.decision` |
 | `permission.decision` | Gate outcome: allow, deny, or deferred to host. | no | `permission.request` |
 | `turn.end` | A turn ends. | no | `turn.start` |
+| `turn.rollback` | Turn rollback marker: records `target_turn` and `scope` (ConversationOnly, FilesOnly, Both). History is never physically deleted. | no | `turn.rollback.undo` |
+| `turn.rollback.undo` | Undoes a rollback. References the `rollback_event_id`. Restores files from backup if safe. | no | `turn.rollback` |
 | `handoff.trigger` | Context handoff activated: records trigger reason. | no | `handoff` |
 | `handoff` | Handoff summary: text content and number of kept turns. | no (used to build `handoff_summary`) | `handoff.trigger` |
 
@@ -63,7 +65,7 @@ The runtime emits `UiEvent` to the host and writes `EventPayload` to `events.jso
 
 ## Context rebuild
 
-Events marked `contributes` are folded into `messages[]` during context rebuild. The rebuild processes events in file order, grouping by `request_id`:
+Events marked `contributes` are folded into `messages[]` during context rebuild. Before rebuild, `filter_rolled_back_events()` excludes events from turns that are currently rolled back (respecting scope and undo state). The rebuild then processes remaining events in file order, grouping by `request_id`:
 
 - A `model.response` and its following `tool.call[]` + `tool.result[]` (same `request_id`) form a response group.
 - Text and thinking become assistant content blocks. `tool.call` events become `tool_use` blocks in the same assistant message.

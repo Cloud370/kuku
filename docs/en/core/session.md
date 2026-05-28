@@ -6,7 +6,9 @@ Sessions are scoped to a `workspace`. A session under `/home/user/projects/my-ap
 
 ```text
 $KUKU_HOME/p/<workspace-path>/sessions/<id>/
+├── lock                   writer lock (pid + timestamp)
 ├── events.jsonl
+├── pre-revert-<id>/       file backups from rollback (when present)
 └── subs/                  (child sessions, if subagents ran)
 ```
 
@@ -75,12 +77,28 @@ Every session has one of three statuses (`SessionStatus`):
 
 ### Context handoff
 
-When estimated context usage exceeds a configurable threshold (default 70%), the runtime injects a handoff instruction into the model's context. The model generates a structured `<kuku_handoff>` document summarising goal, progress, decisions, and next steps. The runtime extracts this document and writes two events to `events.jsonl`:
+When estimated context usage exceeds a configurable threshold (default 70%), the runtime injects a handoff instruction into the model's context. Threshold and behavior are configured via the `[handoff]` section in `config.toml` (`enabled`, `threshold`, `keep_turns`). See `default-config.toml` for defaults. The model generates a structured `<kuku_handoff>` document summarising goal, progress, decisions, and next steps. The runtime extracts this document and writes two events to `events.jsonl`:
 
 1. `handoff.trigger` — records the trigger reason (`context_threshold`, `overflow_error`, or `user`).
 2. `handoff` — stores the summary text and the number of recent turns kept.
 
 On the next model call, `rebuild_history()` reads the most recent `handoff` event, returns its `summary` as `handoff_summary`, and discards all events before that handoff from the conversation history. The provider adapter renders the summary into the context, which includes guidance for using the `query_session` tool to retrieve details from the discarded history.
+
+### Turn rollback
+
+Users can roll back to a previous turn via the SDK (`rollback_turn()`) or the CLI `/undo` command. Rollback uses append-only marker events — history is never physically deleted.
+
+Three scope variants control what a rollback affects:
+
+| Scope | Behaviour |
+|-------|-----------|
+| `ConversationOnly` | Filters rolled-back turns from context rebuild; files unchanged |
+| `FilesOnly` | Reverts file changes to the target turn's state; conversation history unchanged |
+| `Both` | Reverts both conversation and files |
+
+File revert reconstructs target state from existing `tool.result` snapshots (the `raw_text_after` field written by `file_edit` and `write_file`), so no extra storage is needed. Before reverting, current file contents are backed up to `pre-revert-{event_id}/` inside the session directory, enabling `undo_rollback()` to restore them.
+
+Interaction with handoff: rolling back past a handoff event removes the handoff summary from context, precisely restoring the compressed turns. Rolling back after a handoff preserves it.
 
 ### Listing sessions
 

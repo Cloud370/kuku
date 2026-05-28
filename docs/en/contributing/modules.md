@@ -31,12 +31,13 @@ Public API and agent loop orchestration. The only module that may depend on ever
 - `scan_session_meta(path)` — parse first line, return `created_at`.
 - `scan_turn_count(path)` — byte-scan for `"type":"turn.start"`, no JSON parse.
 - `scan_last_event_type(path)` — seek to end-4KB, parse last line, return known type tag.
+- Event types include `TurnRollback` and `TurnRollbackUndo` with `RollbackScope` enum (ConversationOnly, FilesOnly, Both).
 
 No database abstraction, no event bus, no WAL. This module should be small, boring, hard to misuse.
 
 ## session/
 
-Path derivation, writer lock, session listing and deletion, status tracking.
+Path derivation, writer lock, session listing and deletion, status tracking. Submodules: `id.rs` (session ID generation/validation), `list.rs` (session listing), `paths.rs` (path derivation).
 
 - `$KUKU_HOME` from env or default.
 - Project home: `$KUKU_HOME/p/<canonical-workspace-path>/`.
@@ -63,7 +64,9 @@ Outputs:
 - `ContextAssembly` with system prompt, prelude messages, history, tools, runtime context
 - `RequestProvenance` with hashes for instructions, memory, prompts, tool registry, subagent registry
 
-Must not: call a provider, execute a tool, decide permissions, cache anything across turns.
+**context/revert** — rollback planning, file revert execution, rollback state tracking. Depends on `event/` (replay) and `tool/builtin/common` (`is_sensitive_file_name`, `content_hash`).
+
+Must not: call a provider, decide permissions, cache anything across turns.
 
 ## provider/
 
@@ -80,7 +83,7 @@ Must not: own session state, execute tools, decide permissions, write to events.
 Definitions, registry, dispatch, and built-in implementations.
 
 - `ToolDefinition`: name, description, input_schema, read_only, max_result_chars, risk.
-- `builtin_registry(agent_enabled)` returns 8 or 9 tools in fixed order.
+- `builtin_registry` returns 11 base tools; `agent` and `use_skill` are conditionally appended (max 13).
 - All results use unified `ToolResultEnvelope`: `{status, summary, model_content, truncated, structured}`.
 - Tool schemas are stable and fixed-order. No per-request pruning.
 
@@ -112,6 +115,10 @@ Typed config parsing, validation, and writing.
 - `api_key` field: `$VAR` for env reference, otherwise literal.
 - Config returned to host is redacted by default.
 - Writes are atomic: temp file + rename, with version check for conflicts.
+- `HandoffConfig` manages handoff thresholds (enabled, threshold, keep_turns).
+- `DiscoveryConfig` controls auto-discovery of skills and agents (auto_discover, extra_user_paths, extra_project_paths).
+- `config_patch_defaults()` auto-fills missing `[handoff]` section with defaults while preserving user comments.
+- `load_and_patch_config()` combines load + patch + atomic write with concurrent-edit guard.
 
 ## notice/
 

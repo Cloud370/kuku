@@ -20,6 +20,10 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `tool.result` | Event recording the outcome of a `tool.call`: status (`ok`, `error`, `blocked`, `cancelled`), summary, model_content, truncated, structured. |
 | `turn.start` | Event marking the beginning of a turn. |
 | `turn.end` | Event marking the end of a turn. |
+| `turn.rollback` | Append-only event recording a turn rollback. Fields: `target_turn`, `scope`. History is never physically deleted. |
+| `turn.rollback.undo` | Event that reverses a rollback. References the `rollback_event_id`. Restores files from backup if safe. |
+| `rollback scope` | Enum controlling what a rollback affects: `ConversationOnly` (history only), `FilesOnly` (files only), `Both`. |
+| `revert plan` | Computed before file revert execution. Determines which files to restore (from `tool.result` snapshots), delete (created after target turn), or flag as unrecoverable. |
 | `response group` | A `model.response` and its immediately following `tool.call[]` events, treated as one assistant message during context rebuild. |
 | `SessionSummary` | Metadata struct for a listed session: session_id, workspace, title, created_at, turn_count, status, mtime, size. Extracted from disk without full event replay. |
 | `SessionStatus` | Enum classifying a session's state: `Active` (lock + live PID), `Done` (last event is `turn.end`), `Interrupted` (otherwise). |
@@ -90,6 +94,8 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 | `think level` | Thinking/reasoning setting: `off` / `low` / `medium` / `high`. Controls provider-level reasoning effort. `high` maps to Anthropic `effort:"max"`. |
 | `config.toml` | Typed configuration file at `$KUKU_HOME/config.toml`. Defines providers and model tiers. Loaded once per session. |
 | `provider config` | A `[provider.X]` section declaring format, base_url, and api_key for one model provider. |
+| `handoff config` | `[handoff]` section in config.toml. Fields: `enabled` (bool, default true), `threshold` (0.0–1.0, default 0.7), `keep_turns` (>=1, default 2). Auto-patched into existing configs on load. |
+| `discovery config` | `[discovery]` section in config.toml. Fields: `auto_discover` (bool, default true), `extra_user_paths` (additional user-level scan paths), `extra_project_paths` (additional project-level scan paths). Controls auto-discovery of skills and agents. |
 
 ## Subagent
 
