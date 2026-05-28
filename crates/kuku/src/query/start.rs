@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::config::load_config;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::session::{
@@ -29,7 +28,7 @@ impl Query {
         let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path) {
             (Some(cfg), _) => Arc::new(cfg),
             (None, Some(path)) => {
-                let file = load_config(path)?;
+                let file = crate::config::load_and_patch_config(path)?;
                 Arc::new(file.resolve()?)
             }
             (None, None) => {
@@ -38,6 +37,8 @@ impl Query {
                 ));
             }
         };
+        let handoff_keep_turns = config.handoff().keep_turns;
+
         let session_id = match self.session_id.as_deref() {
             Some(session_id) => {
                 validate_session_id(session_id)?;
@@ -135,7 +136,7 @@ impl Query {
                 catalog,
                 cancel_token: cancel_token.clone(),
                 handoff_triggered: false,
-                handoff_keep_turns: 2,
+                handoff_keep_turns,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

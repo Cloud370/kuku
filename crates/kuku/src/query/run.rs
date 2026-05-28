@@ -622,6 +622,7 @@ mod tests {
             providers: std::collections::BTreeMap::new(),
             default_tier: "balanced".to_string(),
             discovery: crate::config::DiscoveryConfig::default(),
+            handoff: crate::config::HandoffConfig::default(),
         }
     }
 
@@ -741,7 +742,7 @@ mod tests {
             catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token: cancel_token.clone(),
             handoff_triggered: false,
-            handoff_keep_turns: 2,
+            handoff_keep_turns: test_config().handoff().keep_turns,
         };
 
         let stream: std::pin::Pin<
@@ -801,7 +802,7 @@ mod tests {
                 catalog: crate::prompt::builtin_prompt_catalog(),
                 cancel_token: cancel_token.clone(),
                 handoff_triggered: false,
-                handoff_keep_turns: 2,
+                handoff_keep_turns: test_config().handoff().keep_turns,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

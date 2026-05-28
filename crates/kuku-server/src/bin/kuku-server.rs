@@ -45,7 +45,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let config = match kuku::config::load_config(&config_path).and_then(|f| f.resolve()) {
+    let config = match kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: failed to load config: {e}");

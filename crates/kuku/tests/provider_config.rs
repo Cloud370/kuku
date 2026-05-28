@@ -1,6 +1,7 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, ProviderConfig, ResolvedThinking, ThinkLevel, TierConfig,
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ResolvedThinking,
+        ThinkLevel, TierConfig,
     };
 }
 
@@ -72,6 +73,7 @@ fn default_config() -> Config {
         providers,
         default_tier: "balanced".to_string(),
         discovery: config::DiscoveryConfig::default(),
+        handoff: config::HandoffConfig::default(),
     }
 }
 
@@ -129,7 +131,7 @@ fn explicit_tier_selects_different_tier() {
         "light".to_string(),
         TierConfig {
             provider: "anthropic".to_string(),
-            model: "claude-haiku-4-5".to_string(),
+            model: "claude-haiku-4-5-20251001".to_string(),
             think: ThinkLevel::Off,
             context_window: 200_000,
             max_output_tokens: 32_000,
@@ -152,6 +154,7 @@ fn explicit_tier_selects_different_tier() {
         providers,
         default_tier: "balanced".to_string(),
         discovery: config::DiscoveryConfig::default(),
+        handoff: config::HandoffConfig::default(),
     };
 
     let resolved = resolve_config(ResolveConfigInput {
@@ -161,7 +164,7 @@ fn explicit_tier_selects_different_tier() {
     })
     .unwrap();
 
-    assert_eq!(resolved.model, "claude-haiku-4-5");
+    assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
     assert_eq!(resolved.think_level, ThinkLevel::Off);
     assert_eq!(resolved.max_output_tokens, 32_000);
 }

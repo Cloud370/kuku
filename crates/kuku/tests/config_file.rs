@@ -68,7 +68,7 @@ max_output_tokens = 48000
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -151,7 +151,7 @@ model = "claude-sonnet-4-6"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 
 [provider.anthropic]
 format = "anthropic"
@@ -182,7 +182,7 @@ model = "claude-sonnet-4-6"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 
 [provider.anthropic]
 format = "anthropic"
