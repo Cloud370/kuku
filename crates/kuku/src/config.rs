@@ -676,7 +676,7 @@ purpose = "general purpose"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -851,7 +851,7 @@ purpose = "general purpose"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -895,7 +895,7 @@ purpose = "general purpose"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -966,7 +966,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -997,7 +997,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -1033,7 +1033,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -1136,7 +1136,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -1174,7 +1174,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -1209,7 +1209,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
@@ -1238,7 +1238,7 @@ think = "medium"
 
 [model.light]
 provider = "anthropic"
-model = "claude-haiku-4-5"
+model = "claude-haiku-4-5-20251001"
 think = "off"
 
 [provider.anthropic]
