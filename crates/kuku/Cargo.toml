@@ -32,6 +32,7 @@ toml_edit = "0.25"
 tempfile = "3"
 
 [features]
+default = ["test_support"]
 test_support = []
 
 [dev-dependencies]
