@@ -7,6 +7,7 @@ pub mod error;
 pub mod event;
 pub(crate) mod notice;
 pub mod permission;
+pub mod plugin;
 pub mod prompt;
 pub use prompt::{builtin_prompt_catalog, PromptCatalog};
 pub(crate) mod provider;
