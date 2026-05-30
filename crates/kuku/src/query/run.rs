@@ -8,9 +8,10 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_permission_decision, display_summary, execute_tool_call, now_timestamp,
-    permission_candidate, permission_rule,
+    append_permission_decision, display_summary, now_timestamp, permission_candidate,
+    permission_rule,
 };
+use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
     StreamingChunkState, UiEvent,
@@ -106,7 +107,7 @@ impl Run {
                                     }));
                                 }
                             };
-                            super::helpers::write_tool_result(
+                            super::tool_exec::write_tool_result(
                                 &slot,
                                 &status,
                                 &summary,
@@ -294,17 +295,7 @@ impl Run {
             crate::permission::GateDecisionKind::Ask => Ok(None),
             crate::permission::GateDecisionKind::Allow => {
                 if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
-                    let choice = if matches!(
-                        decision.source,
-                        crate::permission::GateSource::ProjectPolicy
-                    ) {
-                        PermissionChoice::Project
-                    } else if matches!(decision.source, crate::permission::GateSource::SessionGrant)
-                    {
-                        PermissionChoice::Session
-                    } else {
-                        PermissionChoice::Once
-                    };
+                    let choice = super::helpers::gate_choice(&decision.source);
                     append_permission_decision(
                         &pending.events_path,
                         pending.turn,
@@ -323,7 +314,7 @@ impl Run {
                     tool_call,
                     display_summary,
                 } = pending.queued_tool_calls.pop_front().unwrap();
-                let hook_result = super::helpers::run_tool_pre_hooks(
+                let hook_result = run_tool_pre_hooks(
                     &mut *pending,
                     &tool_call.name,
                     &tool_call.args,
@@ -339,18 +330,19 @@ impl Run {
                         result: None,
                     }));
                 }
-                let (slot, tool_kind) = super::slots::dispatch_tool_slot(
-                    &tool_call.name,
-                    tool_call.id.clone(),
-                    hook_result.args,
-                    display_summary.clone(),
-                    pending.workspace.clone(),
-                    pending.kuku_home.clone(),
-                    self.slot_event_tx.clone(),
-                    pending.config.clone(),
-                    pending.catalog.clone(),
-                    pending.events_path.clone(),
-                );
+                let (slot, tool_kind) =
+                    super::slots::dispatch_tool_slot(&super::slots::SlotDispatchArgs {
+                        tool_name: tool_call.name.clone(),
+                        tool_id: tool_call.id.clone(),
+                        args: hook_result.args,
+                        summary: display_summary.clone(),
+                        workspace: pending.workspace.clone(),
+                        kuku_home: pending.kuku_home.clone(),
+                        event_tx: self.slot_event_tx.clone(),
+                        config: pending.config.clone(),
+                        catalog: pending.catalog.clone(),
+                        events_path: pending.events_path.clone(),
+                    });
                 self.slots.insert(slot.tool_call_id.clone(), slot);
                 Ok(Some(UiEvent::ToolStart {
                     id: tool_call.id,
@@ -595,7 +587,7 @@ impl Run {
                 result: result.structured,
             }));
         }
-        let hook_result = super::helpers::run_tool_pre_hooks(
+        let hook_result = run_tool_pre_hooks(
             &mut pending,
             &tool_call.name,
             &tool_call.args,
@@ -613,18 +605,18 @@ impl Run {
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
-        let (slot, tool_kind) = super::slots::dispatch_tool_slot(
-            &tool_call.name,
-            tool_call.id.clone(),
-            hook_result.args,
-            summary.clone(),
-            pending.workspace.clone(),
-            pending.kuku_home.clone(),
-            self.slot_event_tx.clone(),
-            pending.config.clone(),
-            pending.catalog.clone(),
-            pending.events_path.clone(),
-        );
+        let (slot, tool_kind) = super::slots::dispatch_tool_slot(&super::slots::SlotDispatchArgs {
+            tool_name: tool_call.name.clone(),
+            tool_id: tool_call.id.clone(),
+            args: hook_result.args,
+            summary: summary.clone(),
+            workspace: pending.workspace.clone(),
+            kuku_home: pending.kuku_home.clone(),
+            event_tx: self.slot_event_tx.clone(),
+            config: pending.config.clone(),
+            catalog: pending.catalog.clone(),
+            events_path: pending.events_path.clone(),
+        });
         self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));
         Ok(Some(UiEvent::ToolStart {
@@ -657,8 +649,12 @@ async fn run_session_end_hooks(output: &super::types::RunOutput, turn: u64) {
     )
     .await
     {
-        let _ =
-            super::helpers::record_plugin_hooks(&output.session_dir, turn, "session.end", &results);
+        let _ = super::tool_exec::record_plugin_hooks(
+            &output.session_dir,
+            turn,
+            "session.end",
+            &results,
+        );
     }
 }
 
@@ -676,6 +672,7 @@ pub(super) fn find_tool_definition<'a>(
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
+    use crate::query::types::CumulativeUsage;
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -701,6 +698,42 @@ mod tests {
             slot_event_rx,
             cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
             lock_path: std::path::PathBuf::new(),
+        }
+    }
+
+    fn make_test_pending(
+        events_path: std::path::PathBuf,
+        dir: &std::path::Path,
+        cancel_token: std::sync::Arc<tokio::sync::Notify>,
+    ) -> PendingRun {
+        PendingRun {
+            session_id: "test".to_string(),
+            query: crate::query::types::Query::new("test"),
+            events_path,
+            kuku_home: dir.to_path_buf(),
+            workspace: dir.to_path_buf(),
+            policy_path: dir.join("policy.md"),
+            turn: 1,
+            request_num: 1,
+            cumulative: CumulativeUsage::default(),
+            resolved: None,
+            queued_tool_calls: std::collections::VecDeque::new(),
+            config: std::sync::Arc::new(test_config()),
+            prompts_dir: None,
+            subagent_registry: None,
+            skill_registry: None,
+            skill_content_hash: None,
+            skill_body: None,
+            child_session_count: 0,
+            tool_registry_override: None,
+            pending_events: std::collections::VecDeque::new(),
+            catalog: crate::prompt::builtin_prompt_catalog(),
+            cancel_token,
+            handoff_triggered: false,
+            handoff_keep_turns: test_config().handoff().keep_turns,
+            plugin_registry: None,
+            hook_context: Vec::new(),
+            force_continue_count: 0,
         }
     }
 
@@ -777,38 +810,7 @@ mod tests {
             token_clone.notify_waiters();
         });
 
-        let pending = PendingRun {
-            session_id: "test".to_string(),
-            query: crate::query::types::Query::new("test"),
-            events_path: events_path.clone(),
-            kuku_home: dir.path().to_path_buf(),
-            workspace: dir.path().to_path_buf(),
-            policy_path: dir.path().join("policy.md"),
-            turn: 1,
-            request_num: 1,
-            cumulative_input_tokens: 0,
-            cumulative_output_tokens: 0,
-            cumulative_cache_read_input_tokens: 0,
-            cumulative_cache_creation_input_tokens: 0,
-            resolved: None,
-            queued_tool_calls: std::collections::VecDeque::new(),
-            config: std::sync::Arc::new(test_config()),
-            prompts_dir: None,
-            subagent_registry: None,
-            skill_registry: None,
-            skill_content_hash: None,
-            skill_body: None,
-            child_session_count: 0,
-            tool_registry_override: None,
-            pending_events: std::collections::VecDeque::new(),
-            catalog: crate::prompt::builtin_prompt_catalog(),
-            cancel_token: cancel_token.clone(),
-            handoff_triggered: false,
-            handoff_keep_turns: test_config().handoff().keep_turns,
-            plugin_registry: None,
-            hook_context: Vec::new(),
-            force_continue_count: 0,
-        };
+        let pending = make_test_pending(events_path.clone(), dir.path(), cancel_token.clone());
 
         let stream: std::pin::Pin<
             Box<
@@ -840,38 +842,11 @@ mod tests {
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
         let _run = Run {
             session_id: "test".to_string(),
-            state: RunState::Pending(Box::new(PendingRun {
-                session_id: "test".to_string(),
-                query: crate::query::types::Query::new("test"),
-                events_path: events_path.clone(),
-                kuku_home: dir.path().to_path_buf(),
-                workspace: dir.path().to_path_buf(),
-                policy_path: dir.path().join("policy.md"),
-                turn: 1,
-                request_num: 1,
-                cumulative_input_tokens: 0,
-                cumulative_output_tokens: 0,
-                cumulative_cache_read_input_tokens: 0,
-                cumulative_cache_creation_input_tokens: 0,
-                resolved: None,
-                queued_tool_calls: std::collections::VecDeque::new(),
-                config: std::sync::Arc::new(test_config()),
-                prompts_dir: None,
-                subagent_registry: None,
-                skill_registry: None,
-                skill_content_hash: None,
-                skill_body: None,
-                child_session_count: 0,
-                tool_registry_override: None,
-                pending_events: std::collections::VecDeque::new(),
-                catalog: crate::prompt::builtin_prompt_catalog(),
-                cancel_token: cancel_token.clone(),
-                handoff_triggered: false,
-                handoff_keep_turns: test_config().handoff().keep_turns,
-                plugin_registry: None,
-                hook_context: Vec::new(),
-                force_continue_count: 0,
-            })),
+            state: RunState::Pending(Box::new(make_test_pending(
+                events_path.clone(),
+                dir.path(),
+                cancel_token.clone(),
+            ))),
             slots: std::collections::HashMap::new(),
             slot_event_tx,
             slot_event_rx,

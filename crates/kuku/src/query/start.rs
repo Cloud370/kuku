@@ -114,7 +114,12 @@ impl Query {
                         return Err(crate::error::Error::PluginValidation(reason));
                     }
                 }
-                super::helpers::record_plugin_hooks(&events_path, turn, "session.start", &results)?;
+                super::tool_exec::record_plugin_hooks(
+                    &events_path,
+                    turn,
+                    "session.start",
+                    &results,
+                )?;
             }
         }
 
@@ -160,10 +165,7 @@ impl Query {
                 policy_path,
                 turn,
                 request_num: 0,
-                cumulative_input_tokens: 0,
-                cumulative_output_tokens: 0,
-                cumulative_cache_read_input_tokens: 0,
-                cumulative_cache_creation_input_tokens: 0,
+                cumulative: super::types::CumulativeUsage::default(),
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 pending_events: std::collections::VecDeque::new(),

@@ -250,36 +250,41 @@ pub(crate) fn spawn_command_slot(
     }
 }
 
-// Receives the full tool-call context so it can choose between simple, command,
-// and agent slot types without an intermediate struct.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn dispatch_tool_slot(
-    tool_name: &str,
-    tool_id: String,
-    args: serde_json::Value,
-    summary: String,
-    workspace: PathBuf,
-    kuku_home: PathBuf,
-    event_tx: mpsc::Sender<(String, SlotEvent)>,
-    config: std::sync::Arc<crate::config::Config>,
-    catalog: crate::prompt::PromptCatalog,
-    events_path: PathBuf,
-) -> (ExecSlot, ToolKind) {
-    if tool_name == "run_command" {
-        let slot = spawn_command_slot(tool_id, args, summary, workspace, event_tx);
+pub(crate) struct SlotDispatchArgs {
+    pub(crate) tool_name: String,
+    pub(crate) tool_id: String,
+    pub(crate) args: serde_json::Value,
+    pub(crate) summary: String,
+    pub(crate) workspace: PathBuf,
+    pub(crate) kuku_home: PathBuf,
+    pub(crate) event_tx: mpsc::Sender<(String, SlotEvent)>,
+    pub(crate) config: std::sync::Arc<crate::config::Config>,
+    pub(crate) catalog: crate::prompt::PromptCatalog,
+    pub(crate) events_path: PathBuf,
+}
+
+pub(crate) fn dispatch_tool_slot(args: &SlotDispatchArgs) -> (ExecSlot, ToolKind) {
+    if args.tool_name == "run_command" {
+        let slot = spawn_command_slot(
+            args.tool_id.clone(),
+            args.args.clone(),
+            args.summary.clone(),
+            args.workspace.clone(),
+            args.event_tx.clone(),
+        );
         (slot, ToolKind::Command { pid: None })
     } else {
         let slot = spawn_simple_slot(
-            tool_id,
-            tool_name.to_string(),
-            args,
-            summary,
-            workspace,
-            kuku_home,
-            event_tx,
-            config,
-            catalog,
-            events_path,
+            args.tool_id.clone(),
+            args.tool_name.clone(),
+            args.args.clone(),
+            args.summary.clone(),
+            args.workspace.clone(),
+            args.kuku_home.clone(),
+            args.event_tx.clone(),
+            args.config.clone(),
+            args.catalog.clone(),
+            args.events_path.clone(),
         );
         (slot, ToolKind::Simple)
     }
