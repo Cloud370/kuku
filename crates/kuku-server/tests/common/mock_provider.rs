@@ -114,7 +114,7 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
-            format: "anthropic".to_string(),
+            format: kuku::config::ProviderFormat::Anthropic,
             base_url: format!("http://127.0.0.1:{mock_port}"),
             api_key: ApiKey::Plaintext("test-key".to_string()),
         },

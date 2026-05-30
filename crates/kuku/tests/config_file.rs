@@ -101,7 +101,10 @@ fn full_config_round_trip() {
     assert_eq!(light.think, ThinkLevel::Off);
     assert_eq!(light.max_output_tokens, 32_000);
 
-    assert_eq!(cfg.provider("anthropic").unwrap().format, "anthropic");
+    assert_eq!(
+        cfg.provider("anthropic").unwrap().format.as_str(),
+        "anthropic"
+    );
 
     let display = cfg.redacted_display();
     assert!(!display.contains("sk-ant-123"));
@@ -226,9 +229,8 @@ api_key = "key"
 "#,
     )
     .unwrap();
-    let file = load_config(&path).unwrap();
-    let err = file.resolve().unwrap_err();
-    assert!(err.to_string().contains("format 'grpc' is not supported"));
+    let err = load_config(&path).unwrap_err();
+    assert!(err.to_string().contains("grpc"));
 }
 
 #[test]

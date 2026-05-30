@@ -304,7 +304,7 @@ pub fn test_config() -> kuku::config::Config {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
-            format: "anthropic".to_string(),
+            format: kuku::config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
             api_key: ApiKey::Plaintext("unused".to_string()),
         },
@@ -312,7 +312,7 @@ pub fn test_config() -> kuku::config::Config {
     providers.insert(
         "openai".to_string(),
         ProviderConfig {
-            format: "openai-chat".to_string(),
+            format: kuku::config::ProviderFormat::OpenAiChat,
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: ApiKey::Plaintext("unused".to_string()),
         },
