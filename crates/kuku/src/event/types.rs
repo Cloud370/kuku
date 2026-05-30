@@ -232,6 +232,20 @@ pub enum EventPayload {
         rollback_event_id: u64,
     },
 
+    #[serde(rename = "plugin.hook")]
+    PluginHook {
+        turn: u64,
+        ts: String,
+        event: String,
+        package: String,
+        command: String,
+        exit_code: i32,
+        blocked: bool,
+        duration_ms: u64,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        output_summary: String,
+    },
+
     /// Unknown event type — raw JSON preserved for display, excluded from messages[].
     /// Not deserialized by serde; created manually in two-step deserialization.
     #[serde(skip)]
@@ -378,5 +392,45 @@ mod tests {
             serde_json::to_value(&event).unwrap()["type"],
             "turn.rollback.undo"
         );
+    }
+
+    #[test]
+    fn plugin_hook_round_trip() {
+        let event = StoredEvent {
+            id: 60,
+            payload: EventPayload::PluginHook {
+                turn: 3,
+                ts: "2026-05-31T00:00:00Z".to_string(),
+                event: "tool.pre_execute".to_string(),
+                package: "safety-guard".to_string(),
+                command: "hooks/check.sh".to_string(),
+                exit_code: 2,
+                blocked: true,
+                duration_ms: 150,
+                output_summary: "blocked: rm -rf".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, back);
+    }
+
+    #[test]
+    fn plugin_hook_event_type_tag() {
+        let event = StoredEvent {
+            id: 1,
+            payload: EventPayload::PluginHook {
+                turn: 1,
+                ts: "t".to_string(),
+                event: "e".to_string(),
+                package: "p".to_string(),
+                command: "c".to_string(),
+                exit_code: 0,
+                blocked: false,
+                duration_ms: 0,
+                output_summary: String::new(),
+            },
+        };
+        assert_eq!(serde_json::to_value(&event).unwrap()["type"], "plugin.hook");
     }
 }

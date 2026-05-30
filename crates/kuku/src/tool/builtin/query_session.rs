@@ -195,6 +195,7 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         | EventPayload::PolicyLoaded { .. }
         | EventPayload::PermissionRequest { .. }
         | EventPayload::PermissionDecision { .. }
+        | EventPayload::PluginHook { .. }
         | EventPayload::Unknown(_) => return false,
     };
     type_tag == filter
