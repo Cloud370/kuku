@@ -150,7 +150,7 @@ The host owns command parsing and UI. The SDK owns skill loading and context inj
 | tauri | Slash command UI |
 
 ## Relationship to extension system 
-Skills are native to the SDK because they are simple (load .md files, inject context). The future extension/package system can bundle skills alongside MCP servers, custom tools, and hooks. The skill format defined here is a subset of the future package format.
+Skills are native to the SDK because they are simple (load .md files, inject context). The package system bundles skills alongside hooks and MCP servers. The skill format defined here is a subset of the package format.
 
 ```text
 .kuku/skills/tdd/SKILL.md           ← stage 1: bare skill

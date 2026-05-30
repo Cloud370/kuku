@@ -114,15 +114,15 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 
 | Canonical Name | Definition |
 |---------------|------------|
-| `package` | (planned) Extension container: manifest, capabilities, resources. Not part of core runtime. |
-| `hook` | (planned) Extension point allowing packages to intercept runtime events. |
-| `MCP` | (planned) Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. |
+| `package` | (design) Extension container: `kuku.toml` manifest, hooks, skills, and `.mcp.json`. Loaded from built-in, user, or project tiers. See [plugin-system.md](extension/plugin-system.md). |
+| `hook` | (design) External process that intercepts runtime events. Receives context via stdin JSON, returns structured output via stdout. Eleven lifecycle events defined. See [plugin-system.md](extension/plugin-system.md). |
+| `MCP` | (planned) Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. Implementation in `kuku-mcp` crate. |
 | `skill` | A packaged capability (instructions, scripts, references) that extends the current session. Follows the Agent Skills specification. Discovered through a catalog, loaded on demand via `use_skill`. See [skills.md](core/skills.md). |
 | `SkillDefinition` | Internal representation of a skill: name, description, instructions, source, hash, source_path, allowed_tools, disallowed_tools, max_turns, model, license, compatibility, metadata. |
 | `SkillRegistry` | Loaded set of `SkillDefinition`s from user and project directories via pattern-based discovery scanning. Content-hashed for drift detection. Metadata injected into `runtime_context` at startup. |
 | `use_skill` | Built-in tool that loads a skill's full `SKILL.md` body into the current session on demand. Reads from disk for hot-reload support. |
 | `skill catalog` | XML block listing available skills (name, description, source, hash). Injected into `runtime_context` after the agent catalog. Does not include full instructions. |
-| `plugin` | (planned) Synonym for `package`. A plugin is a package that may include hooks, skills, tools, or MCP servers. |
+| `plugin` | (design) Synonym for `package`. A plugin is a package that may include hooks, skills, or MCP servers. See [plugin-system.md](extension/plugin-system.md). |
 | `host overlay` | Host-specific prompt layer (CLI, TUI, WebUI). Complements but does not redefine the system prompt. |
 
 ## Public API

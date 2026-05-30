@@ -1,6 +1,6 @@
 # SDK Evolution
 
-<!-- status: design -->
+<!-- status: partial -->
 
 Planned changes to the SDK public API. Each change is independent and can be implemented in any order.
 
@@ -27,32 +27,17 @@ ToolRegistry {
 
 MCP is not implemented in the SDK. A future `mcp-client` extension package implements `ExternalToolSource` for MCP servers.
 
-## Extension system (planned)
+## Extension system (design)
 
-A package loader that discovers and loads extensions from `.kuku/packages/`.
+The plugin system is spec'd in [plugin-system.md](../extension/plugin-system.md). This section summarizes the integration points for the SDK.
 
-```text
-.kuku/packages/tdd-suite/
-├── kuku.toml           # manifest
-├── skills/             # skills
-├── mcp-config.json     # MCP server config
-└── tools/              # custom tools
-```
+Packages are discovered from `.kuku/packages/` (project), `~/.kuku/packages/` (user), and `<kuku-bin>/packages/` (built-in). Each is a directory with a `kuku.toml` manifest and optional `hooks/`, `skills/`, and `.mcp.json`.
 
-```toml
-# kuku.toml
-[package]
-name = "tdd-suite"
-version = "0.1.0"
+Hooks are external processes: kuku spawns them, pipes event context as stdin JSON, reads structured output from stdout. Eleven lifecycle events cover six boundaries: session, turn, tool, model, permission, and context.
 
-[skills]
-tdd = "skills/tdd.md"
+Skills inside packages use the same `SkillRegistry` as standalone skills. No migration required.
 
-[mcp]
-servers = ["mcp-config.json"]
-```
-
-The extension system is SDK core infrastructure. Skills are native to the SDK. MCP, hooks, and custom tools are extension types loaded through this system.
+MCP servers use standard `.mcp.json` format. The `kuku-mcp` crate manages connections and implements `ExternalToolSource`.
 
 ## Implementation order
 

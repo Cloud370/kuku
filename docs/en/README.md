@@ -4,7 +4,7 @@ Canonical concept names are in [glossary.md](glossary.md).
 
 This is the canonical public docs index. The project homepage is [README.md](../README.md).
 
-**Status**: `implemented` = implemented today; `partial` = implemented behavior plus planned pieces; `design` = spec finalized, implementation planned; `extension design` = intentionally outside core runtime.
+**Status**: `implemented` = implemented today; `partial` = implemented behavior plus planned pieces; `design` = spec finalized, implementation planned; `planned` = recognized need, design not yet started; `extension design` = intentionally outside core runtime.
 
 ## Core
 
@@ -26,6 +26,14 @@ SDK owns runtime facts and semantics. Host apps own input, output, layout, and i
 | [apps.md](core/apps.md) | Host app architecture, HTTP API, NDJSON streaming | partial |
 | [skills.md](core/skills.md) | Skills format, SkillRegistry, progressive disclosure | implemented |
 | [evolution.md](core/evolution.md) | SDK evolution: InteractionRequest, wire format, extensions (5/8 phases done) | partial |
+
+## Extension
+
+Extension points outside the core runtime.
+
+| File | What it covers | Status |
+|------|----------------|--------|
+| [plugin-system.md](extension/plugin-system.md) | Package system: hooks, lifecycle events, kuku.toml schema, execution protocol | design |
 
 ## Reference
 
