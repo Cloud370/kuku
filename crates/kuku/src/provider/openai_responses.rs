@@ -346,7 +346,8 @@ impl OpenAiResponsesSseParser {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
+#[allow(dead_code)] // included via include!() in integration tests
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
     let mut parser = OpenAiResponsesSseParser::new();
     for frame in body.split("\n\n") {
