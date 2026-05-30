@@ -44,32 +44,6 @@ pub struct PluginRegistryProvenance {
     pub count: usize,
 }
 
-/// Inputs for building request provenance metadata.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RequestProvenanceInput {
-    pub request_id: String,
-    pub tier: String,
-    pub workspace: String,
-    pub platform: String,
-    pub current_date: String,
-    pub project_instruction_sources: Vec<FileSource>,
-    pub memory_sources: Vec<FileSource>,
-    pub prompt_asset_sources: Vec<FileSource>,
-    pub history_range: HistoryRange,
-    pub tool_registry: ToolRegistryProvenance,
-    pub subagent_registry: Option<SubagentRegistryProvenance>,
-    pub skill_registry: Option<SkillRegistryProvenance>,
-    pub plugin_registry: Option<PluginRegistryProvenance>,
-    pub provider_format: String,
-    pub provider: String,
-    pub model: String,
-    pub request_params: Value,
-    pub token_estimate: Option<u64>,
-    pub context_budget_tier: String,
-    pub max_context_tokens: Option<u32>,
-    pub remaining_input_tokens: Option<u32>,
-}
-
 /// Captured provenance metadata for a provider request, stored in events.jsonl.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
@@ -99,40 +73,13 @@ pub struct RequestProvenance {
     pub remaining_input_tokens: Option<u32>,
 }
 
-/// Build request provenance from the given inputs.
-pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvenance {
-    RequestProvenance {
-        request_id: input.request_id,
-        tier: input.tier,
-        workspace: input.workspace,
-        platform: input.platform,
-        current_date: input.current_date,
-        project_instruction_sources: input.project_instruction_sources,
-        memory_sources: input.memory_sources,
-        prompt_asset_sources: input.prompt_asset_sources,
-        history_range: input.history_range,
-        tool_registry: input.tool_registry,
-        subagent_registry: input.subagent_registry,
-        skill_registry: input.skill_registry,
-        plugin_registry: input.plugin_registry,
-        provider_format: input.provider_format,
-        provider: input.provider,
-        model: input.model,
-        request_params: input.request_params,
-        token_estimate: input.token_estimate,
-        context_budget_tier: input.context_budget_tier,
-        max_context_tokens: input.max_context_tokens,
-        remaining_input_tokens: input.remaining_input_tokens,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::{
-        build_request_provenance, FileSource, HistoryRange, RequestProvenanceInput,
-        SubagentRegistryProvenance, ToolRegistryProvenance,
+        FileSource, HistoryRange, RequestProvenance, SubagentRegistryProvenance,
+        ToolRegistryProvenance,
     };
 
     fn source(path: &str, hash: &str) -> FileSource {
@@ -166,7 +113,7 @@ mod tests {
             tool_count: 2,
         };
 
-        let provenance = build_request_provenance(RequestProvenanceInput {
+        let provenance = RequestProvenance {
             request_id: "req_1".to_string(),
             tier: "balanced".to_string(),
             workspace: "/workspace".to_string(),
@@ -188,7 +135,7 @@ mod tests {
             context_budget_tier: "roomy".to_string(),
             max_context_tokens: Some(200_000),
             remaining_input_tokens: Some(170_000),
-        });
+        };
 
         let debug = format!("{provenance:?}");
         assert!(!debug.contains("provider_raw_body"));
@@ -249,7 +196,7 @@ mod tests {
             hash: "sha256-subagent".to_string(),
             names: vec!["review".to_string(), "explore".to_string()],
         };
-        let provenance = build_request_provenance(RequestProvenanceInput {
+        let provenance = RequestProvenance {
             request_id: "req_1".to_string(),
             tier: "balanced".to_string(),
             workspace: "/workspace".to_string(),
@@ -278,7 +225,7 @@ mod tests {
             context_budget_tier: "normal".to_string(),
             max_context_tokens: None,
             remaining_input_tokens: None,
-        });
+        };
 
         let json = serde_json::to_value(&provenance).unwrap();
         let sub = &json["subagent_registry"];
@@ -287,7 +234,7 @@ mod tests {
         assert_eq!(sub["names"][1], "explore");
 
         // When subagent_registry is None, it should be absent from JSON.
-        let provenance_none = build_request_provenance(RequestProvenanceInput {
+        let provenance_none = RequestProvenance {
             request_id: "req_2".to_string(),
             tier: "strong".to_string(),
             workspace: "/ws".to_string(),
@@ -316,7 +263,7 @@ mod tests {
             context_budget_tier: "normal".to_string(),
             max_context_tokens: None,
             remaining_input_tokens: None,
-        });
+        };
         let json_none = serde_json::to_value(&provenance_none).unwrap();
         assert!(json_none.get("subagent_registry").is_none());
     }

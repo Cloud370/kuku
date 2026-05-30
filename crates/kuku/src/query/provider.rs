@@ -1,9 +1,9 @@
 use sha2::Digest;
 
 use crate::context::{
-    assemble_context, build_request_provenance, rebuild_history, restore_frozen_prelude,
-    ContextInput, EnvironmentSource, FileSource, HistoryRange, RequestProvenanceInput,
-    SubagentRegistryProvenance, ToolRegistryProvenance,
+    assemble_context, rebuild_history, restore_frozen_prelude, ContextInput, EnvironmentSource,
+    FileSource, HistoryRange, RequestProvenance, SubagentRegistryProvenance,
+    ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -566,7 +566,7 @@ fn build_model_request_provenance(
         "temperature": pending.query.temperature,
     });
 
-    build_request_provenance(RequestProvenanceInput {
+    RequestProvenance {
         request_id,
         tier: tier_name,
         workspace: pending.workspace.display().to_string(),
@@ -626,7 +626,7 @@ fn build_model_request_provenance(
         context_budget_tier: headroom.tier.as_str().to_string(),
         max_context_tokens: Some(headroom.max_context_tokens),
         remaining_input_tokens: headroom.remaining_input_tokens,
-    })
+    }
 }
 
 fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
