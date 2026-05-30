@@ -114,15 +114,18 @@ Canonical names for kuku concepts. When writing or editing docs, use these names
 
 | Canonical Name | Definition |
 |---------------|------------|
-| `package` | (design) Extension container: `kuku.toml` manifest, hooks, skills, and `.mcp.json`. Loaded from built-in, user, or project tiers. See [plugin-system.md](extension/plugin-system.md). |
-| `hook` | (design) External process that intercepts runtime events. Receives context via stdin JSON, returns structured output via stdout. Eleven lifecycle events defined. See [plugin-system.md](extension/plugin-system.md). |
+| `package` | Extension container: `kuku.toml` manifest, hooks, skills, and `.mcp.json`. Loaded from user or project tiers. See [plugin-system.md](extension/plugin-system.md). |
+| `hook` | External process that intercepts runtime events. Receives context via stdin JSON, returns structured output via stdout. Six lifecycle events implemented (eleven planned). See [plugin-system.md](extension/plugin-system.md). |
+| `plugin` | Synonym for `package`. A plugin is a package that may include hooks, skills, or MCP servers. See [plugin-system.md](extension/plugin-system.md). |
+| `plugin config` | `[plugin]` section in config.toml. Fields: `enabled` (bool, default true for new installs, false for auto-patched existing configs). Controls whether hook execution from `.kuku/packages/` is active. |
+| `plugin.hook` | Event recording a hook execution outcome: event type, package name, exit code, blocked status, duration, output summary. Written to `events.jsonl` for non-zero exit codes, blocks, and timeouts. |
+| `matcher` | Boolean expression for conditional hook execution. Supports `==`, `!=`, `contains` with `&&`, `||`, and parentheses. Variables are event-dependent (e.g. `tool_name`, `args.command`). |
 | `MCP` | (planned) Model Context Protocol integration. External tools and resources exposed through the MCP protocol, gated through the standard tool registry and permission model. Implementation in `kuku-mcp` crate. |
 | `skill` | A packaged capability (instructions, scripts, references) that extends the current session. Follows the Agent Skills specification. Discovered through a catalog, loaded on demand via `use_skill`. See [skills.md](core/skills.md). |
 | `SkillDefinition` | Internal representation of a skill: name, description, instructions, source, hash, source_path, allowed_tools, disallowed_tools, max_turns, model, license, compatibility, metadata. |
 | `SkillRegistry` | Loaded set of `SkillDefinition`s from user and project directories via pattern-based discovery scanning. Content-hashed for drift detection. Metadata injected into `runtime_context` at startup. |
 | `use_skill` | Built-in tool that loads a skill's full `SKILL.md` body into the current session on demand. Reads from disk for hot-reload support. |
 | `skill catalog` | XML block listing available skills (name, description, source, hash). Injected into `runtime_context` after the agent catalog. Does not include full instructions. |
-| `plugin` | (design) Synonym for `package`. A plugin is a package that may include hooks, skills, or MCP servers. See [plugin-system.md](extension/plugin-system.md). |
 | `host overlay` | Host-specific prompt layer (CLI, TUI, WebUI). Complements but does not redefine the system prompt. |
 
 ## Public API

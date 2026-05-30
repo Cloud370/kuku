@@ -27,13 +27,13 @@ ToolRegistry {
 
 MCP is not implemented in the SDK. A future `mcp-client` extension package implements `ExternalToolSource` for MCP servers.
 
-## Extension system (design)
+## Extension system (implemented)
 
-The plugin system is spec'd in [plugin-system.md](../extension/plugin-system.md). This section summarizes the integration points for the SDK.
+The plugin system is implemented in the `plugin/` module and spec'd in [plugin-system.md](../extension/plugin-system.md). This section summarizes the integration points for the SDK.
 
-Packages are discovered from `.kuku/packages/` (project), `~/.kuku/packages/` (user), and `<kuku-bin>/packages/` (built-in). Each is a directory with a `kuku.toml` manifest and optional `hooks/`, `skills/`, and `.mcp.json`.
+Packages are discovered from `.kuku/packages/` (project) and `~/.kuku/packages/` (user). Each is a directory with a `kuku.toml` manifest and optional `hooks/` and `skills/`.
 
-Hooks are external processes: kuku spawns them, pipes event context as stdin JSON, reads structured output from stdout. Eleven lifecycle events cover six boundaries: session, turn, tool, model, permission, and context.
+Hooks are external processes: kuku spawns them, pipes event context as stdin JSON, reads structured output from stdout. Six lifecycle events are implemented: `session.start`, `session.end`, `tool.pre_execute`, `tool.post_execute`, `model.pre_request`, `model.post_response`. Five more are planned: `turn.start`, `turn.end`, `tool.registered`, `permission.check`, `context.assembly`.
 
 Skills inside packages use the same `SkillRegistry` as standalone skills. No migration required.
 
@@ -48,6 +48,6 @@ MCP servers use standard `.mcp.json` format. The `kuku-mcp` crate manages connec
 | 3 | Wire format (`to_wire()`) | SDK | ✅ |
 | 4 | `kuku-server` (HTTP API, NDJSON) | Host | ✅ |
 | 5 | `apps/web` (frontend SPA) | Host | ✅ |
-| 6 | Extension system + ExternalToolSource | SDK |
+| 6 | Extension system + ExternalToolSource | SDK | ✅ |
 | 7 | MCP extension package | Extension |
 | 8 | `apps/tauri` | Host |

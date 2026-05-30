@@ -18,7 +18,8 @@ crates/kuku/src/
 ├── event/              event types, events.jsonl read/write, fast scan helpers
 ├── prompt/             prompt assets, catalog, template rendering
 ├── skill/              skill definitions, catalog, loader, registry
-├── config.rs           tiers, providers, HandoffConfig, config.toml parsing and patching
+├── plugin/             manifest, matcher, hook execution, package discovery, registry
+├── config.rs           tiers, providers, HandoffConfig, PluginConfig, config.toml parsing and patching
 ├── discovery.rs        agent and skill auto-discovery
 ├── subagent/           definitions, registry, catalog, child sessions
 ├── notice/             context drift detection, system notices
@@ -42,6 +43,7 @@ Each module has a clear boundary of what it may and may not depend on.
 | `prompt/` | Asset catalog, template rendering | — | Runtime decisions, session state |
 | `config.rs` | Config parsing, validation, tiers, HandoffConfig, config_patch_defaults | — | Provider, tools, session |
 | `skill/` | Skill definitions, catalog, loader, registry | `prompt/` | Runtime decisions, session state |
+| `plugin/` | Manifest parsing, matcher expressions, hook execution, package discovery, registry | `event/`, `config/`, `skill/` | Provider, permission |
 | `subagent/` | Definitions, registry, catalog, child spawn | `tool/`, `query/`, `session/` | — |
 | `notice/` | Drift detection, system notice rendering | `event/`, `prompt/` | — |
 | `error.rs` | Typed error enum | — | — |

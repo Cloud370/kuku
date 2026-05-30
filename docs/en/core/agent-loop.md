@@ -75,6 +75,23 @@ enters history, so the model sees what was produced before interruption.
 | Executing tools | Running tools write `cancelled`; completed tools kept; `turn.end` |
 | Idle | Direct `turn.end` |
 
+## Plugin hooks
+
+Plugin hooks fire at six lifecycle points within the agent loop. Hooks are external processes discovered from `.kuku/packages/` (see [plugin-system.md](../extension/plugin-system.md) for the full protocol).
+
+| Hook event | Fires at | Can block | Can modify |
+|-----------|----------|:---------:|:----------:|
+| `session.start` | Session creation, before first turn | ✓ (exit code 2 aborts session) | output (additional_context) |
+| `session.end` | After `turn.end`, before `UiEvent::Done` | — | output |
+| `tool.pre_execute` | After permission gate, before tool execution | ✓ (exit code 2 blocks tool) | args (updated_args), output |
+| `tool.post_execute` | After tool execution completes | — | output (additional_context) |
+| `model.pre_request` | Context assembled, before provider call | — | output (additional_context) |
+| `model.post_response` | Provider returns, before event persistence | — | output; exit code 2 = force-continue (max 3×) |
+
+`session.start` hooks fire once at session creation. `session.end` hooks fire once before the session closes. Tool hooks fire on all five dispatch paths (agent, use_skill, regular, queued permission, apply_choice). `model.post_response` with exit code 2 injects `additional_context` and re-enters the provider call loop.
+
+Non-zero exits, blocks, and timeouts are recorded as `plugin.hook` events in `events.jsonl` for audit.
+
 ## Rollback
 
 `rollback_turn()` rolls back to a previous turn. It appends a `turn.rollback` event (never physically deletes history) and optionally reverts files. `undo_rollback()` reverses the operation by restoring files from the `pre-revert-{id}/` backup and appending `turn.rollback.undo`.

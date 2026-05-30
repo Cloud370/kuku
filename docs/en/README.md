@@ -33,7 +33,7 @@ Extension points outside the core runtime.
 
 | File | What it covers | Status |
 |------|----------------|--------|
-| [plugin-system.md](extension/plugin-system.md) | Package system: hooks, lifecycle events, kuku.toml schema, execution protocol | design |
+| [plugin-system.md](extension/plugin-system.md) | Package system: hooks, lifecycle events, kuku.toml schema, execution protocol | implemented |
 
 ## Reference
 

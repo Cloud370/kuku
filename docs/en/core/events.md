@@ -20,6 +20,7 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `permission` | `request`, `decision` |
 | `policy` | `loaded` |
 | `handoff` | `trigger`, (root) |
+| `plugin` | `hook` |
 
 ## Index
 
@@ -41,6 +42,7 @@ Lowercase, dot-separated. Stable domains and a fixed action vocabulary — no sy
 | `turn.rollback.undo` | Undoes a rollback. References the `rollback_event_id`. Restores files from backup if safe. | no | `turn.rollback` |
 | `handoff.trigger` | Context handoff activated: records trigger reason. | no | `handoff` |
 | `handoff` | Handoff summary: text content and number of kept turns. | no (used to build `handoff_summary`) | `handoff.trigger` |
+| `plugin.hook` | Plugin hook execution outcome: event type, package, exit code, blocked, duration, output summary. Written for non-zero exit, blocks, and timeouts. | no | — |
 
 `model.request` provenance records the sources needed to inspect a request: instruction and memory hashes, prompt asset hashes, history range, tool/subagent registry snapshots, resolved provider/model, params, and context budget. It is not a stored provider raw request body.
 

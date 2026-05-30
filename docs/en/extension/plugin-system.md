@@ -1,6 +1,6 @@
 # Plugin System
 
-<!-- status: design -->
+<!-- status: implemented -->
 
 A package loader that discovers and activates extensions from `.kuku/packages/`. Packages bundle hooks, skills, and MCP server configurations. The runtime executes hooks as external processes — language-agnostic, auditable, and isolated.
 
@@ -21,7 +21,7 @@ A package loader that discovers and activates extensions from `.kuku/packages/`.
 ├── kuku.toml          # manifest — the single source of truth
 ├── hooks/             # executable hook scripts
 ├── skills/            # Agent Skills spec — auto-discovered
-├── .mcp.json          # standard MCP configuration (optional)
+├── .mcp.json          # standard MCP configuration (optional, planned)
 └── bin/               # auxiliary binaries and scripts
 ```
 
@@ -29,11 +29,11 @@ A package loader that discovers and activates extensions from `.kuku/packages/`.
 
 Three tiers, resolved highest-priority-first:
 
-| Tier | Location | Scope |
-|------|----------|-------|
-| Built-in | `<kuku-bin>/packages/` | Shipped with the kuku binary |
-| User | `~/.kuku/packages/` | All projects for one user |
-| Project | `.kuku/packages/` | One project, committed to git |
+| Tier | Location | Scope | Status |
+|------|----------|-------|--------|
+| Built-in | `<kuku-bin>/packages/` | Shipped with the kuku binary | planned |
+| User | `~/.kuku/packages/` | All projects for one user | implemented |
+| Project | `.kuku/packages/` | One project, committed to git | implemented |
 
 Project overrides user. User overrides built-in.
 
@@ -41,21 +41,21 @@ Skills are auto-discovered from `skills/` directories within loaded packages. No
 
 ## Lifecycle Events
 
-Eleven events cover six boundaries of the agent loop: session, turn, tool, model, permission, and context.
+Eleven events cover six boundaries of the agent loop: session, turn, tool, model, permission, and context. Six are implemented; five are planned.
 
-| # | Event | Triggers when | Block | Modify input | Modify output | Force continue |
-|---|-------|--------------|:-----:|:------------:|:-------------:|:--------------:|
-| 1 | `session.start` | Session created, before first turn | ✓ | — | ✓ | — |
-| 2 | `session.end` | Session about to close | — | — | ✓ | — |
-| 3 | `turn.start` | Each turn begins | — | — | ✓ | — |
-| 4 | `turn.end` | Each turn completes | — | — | ✓ | — |
-| 5 | `tool.registered` | Tool added to registry | ✓ | ✓ | — | — |
-| 6 | `tool.pre_execute` | Before tool execution (after permission gate) | ✓ | ✓ | — | — |
-| 7 | `tool.post_execute` | After tool execution completes | — | — | ✓ | — |
-| 8 | `model.pre_request` | Context assembled, before provider call | — | ✓ | — | — |
-| 9 | `model.post_response` | Provider returns, before event persistence | — | — | ✓ | ✓ |
-| 10 | `permission.check` | Permission gate decision point | — | ✓ | — | — |
-| 11 | `context.assembly` | Context rebuild complete | — | ✓ | — | — |
+| # | Event | Triggers when | Block | Modify input | Modify output | Force continue | Status |
+|---|-------|--------------|:-----:|:------------:|:-------------:|:--------------:|--------|
+| 1 | `session.start` | Session created, before first turn | ✓ | — | ✓ | — | implemented |
+| 2 | `session.end` | Session about to close | — | — | ✓ | — | implemented |
+| 3 | `turn.start` | Each turn begins | — | — | ✓ | — | planned |
+| 4 | `turn.end` | Each turn completes | — | — | ✓ | — | planned |
+| 5 | `tool.registered` | Tool added to registry | ✓ | ✓ | — | — | planned |
+| 6 | `tool.pre_execute` | Before tool execution (after permission gate) | ✓ | ✓ | — | — | implemented |
+| 7 | `tool.post_execute` | After tool execution completes | — | — | ✓ | — | implemented |
+| 8 | `model.pre_request` | Context assembled, before provider call | — | ✓ | — | — | implemented |
+| 9 | `model.post_response` | Provider returns, before event persistence | — | — | ✓ | ✓ | implemented |
+| 10 | `permission.check` | Permission gate decision point | — | ✓ | — | — | planned |
+| 11 | `context.assembly` | Context rebuild complete | — | ✓ | — | — | planned |
 
 **Block** (exit code 2): prevents the operation from proceeding.
 **Modify input**: alters parameters, messages, or tool schemas before the operation.
@@ -74,10 +74,11 @@ repository = "https://github.com/user/kuku-security"
 
 [[hooks]]
 event = "tool.pre_execute"           # required: event name
-command = "hooks/pre-check.sh"       # command or url (one required)
+command = "hooks/pre-check.sh"       # command (url variant planned)
 matcher = 'tool_name == "run_command"'  # optional: filter expression
 timeout_seconds = 30                 # optional: default 30 s, hard cap 600 s
 chain = false                        # optional: receive prior hook's output
+env = ["MY_TOKEN"]                   # optional: additional env vars to pass through
 
 [[hooks]]
 event = "session.start"
@@ -105,16 +106,23 @@ When `events` is used, `event` must be absent. The hook receives the triggering 
 contains         string containment
 
 # Available variables (event-dependent)
+event            always: the triggering event name
 tool_name        tool.* events
-args.<field>     tool call arguments
-source           session.start, session.end
+tool_call_id     tool.* events
+args.<field>     tool call arguments (flattened)
+status           tool.post_execute
+summary          tool.post_execute
+tier             model.pre_request
+text             model.post_response
+stop_reason      model.post_response
+source           (planned) session.start, session.end
 ```
 
 If `matcher` is absent, the hook fires on every occurrence of the event.
 
 ## Hook Execution Protocol
 
-Hooks are spawned once per event invocation — a new process for each trigger. This keeps the protocol stateless: the stdin JSON is the complete input, stdout is the complete output, and the process exits when done. Hooks that need persistent state (caches, connection pools) can use a background HTTP server and the `url` hook variant.
+Hooks are spawned once per event invocation — a new process for each trigger. This keeps the protocol stateless: the stdin JSON is the complete input, stdout is the complete output, and the process exits when done. Hooks that need persistent state (caches, connection pools) can use a background HTTP server (the `url` hook variant is planned).
 
 ### stdin
 
@@ -147,7 +155,7 @@ Event-specific fields vary by event type. `tool.*` events carry `tool_name`, `to
 | `updated_args` | object | `tool.pre_execute` | Replace tool arguments |
 | `updated_result` | object | `tool.post_execute` | Replace tool result |
 | `additional_context` | string | all | Injected into the next model turn |
-| `permission_override` | `"allow"` or `"deny"` | `permission.check` | Override the permission decision |
+| `permission_override` | `"allow"` or `"deny"` | `permission.check` (planned) | Override the permission decision |
 
 ### exit code
 
@@ -167,6 +175,10 @@ Hook processes receive only a filtered subset of the parent environment. The fol
 | `KUKU_WORKSPACE` | Absolute path to the workspace root |
 | `KUKU_PACKAGE_DIR` | Absolute path to the package root directory |
 | `PATH` | Inherited from parent |
+| `HOME` | Inherited from parent |
+| `USERPROFILE` | Inherited from parent (Windows) |
+| `LANG` | Inherited from parent |
+| `LC_ALL` | Inherited from parent |
 
 All other variables (including `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, and other secrets) are **not** passed to hook processes. Hooks that need credentials must source them independently.
 
@@ -194,7 +206,7 @@ stdout exceeding 100 KB (approx. 25k tokens) is truncated. The full output is wr
 
 The truncated result carries the file path so the model can read it if needed.
 
-## MCP Integration
+## MCP Integration (planned)
 
 MCP servers are declared in standard `.mcp.json` format at the package root. kuku discovers these files during package loading and delegates connection management to the `kuku-mcp` crate.
 

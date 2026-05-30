@@ -8,6 +8,7 @@ Typed error enum covering all SDK failures.
 
 - Provider errors: auth, rate limit, context overflow, network, invalid request.
 - Tool errors: invalid arguments, permission blocked, execution failure.
+- Plugin errors: manifest parse/validation, hook timeout, hook spawn failure.
 - I/O and config errors.
 - `Result<T>` is `Result<T, crate::error::Error>`.
 
@@ -116,8 +117,9 @@ Typed config parsing, validation, and writing.
 - Config returned to host is redacted by default.
 - Writes are atomic: temp file + rename, with version check for conflicts.
 - `HandoffConfig` manages handoff thresholds (enabled, threshold, keep_turns).
+- `PluginConfig` controls plugin hook execution (`enabled` bool, default true for new installs, false for auto-patched configs).
 - `DiscoveryConfig` controls auto-discovery of skills and agents (auto_discover, extra_user_paths, extra_project_paths).
-- `config_patch_defaults()` auto-fills missing `[handoff]` section with defaults while preserving user comments.
+- `config_patch_defaults()` auto-fills missing `[handoff]` and `[plugin]` sections with defaults while preserving user comments.
 - `load_and_patch_config()` combines load + patch + atomic write with concurrent-edit guard.
 
 ## notice/
@@ -136,6 +138,22 @@ Definitions, registry, catalog rendering, child session spawn.
 - Catalog is injected into `runtime_context`; full definitions only go to child sessions.
 - Child sessions use the same query pipeline with a constrained tool registry.
 - V1: shallow only (child sessions do not register the `agent` tool).
+
+## plugin/
+
+Plugin package discovery, manifest parsing, matcher expressions, hook execution, and registry.
+
+- `PluginRegistry` is built at session start via `builder().load_packages().build()`.
+- Two-tier discovery: `~/.kuku/packages/` (user) and `.kuku/packages/` (project). Project overrides user on name collision.
+- `kuku.toml` manifest declares `[package]` identity and `[[hooks]]` with event, command, matcher, timeout, chain, env.
+- Package names validated against `^[a-z][a-z0-9-]{0,63}$`. Event names validated against the implemented set.
+- Matcher expressions: recursive-descent parser for `==`, `!=`, `contains` with `&&`, `||`, parentheses.
+- Hook execution: `env_clear` with selective passthrough, stdin JSON, stdout JSON parsing, timeout with SIGTERM→SIGKILL.
+- Exit code 2 = block. Exit code 2 on `model.post_response` = force-continue (max 3 times).
+- stdout overflow at 100 KB: truncated in-memory, full output written to `hook_overflow/`.
+- `PluginHook` events persisted to `events.jsonl` for non-zero exit codes, blocks, and timeouts.
+- Registry hash (SHA-256) included in `model.request` provenance.
+- Plugin-bundled skills auto-discovered into `SkillRegistry`.
 
 ## Streaming boundaries
 
@@ -160,6 +178,7 @@ Every `model.request` must record:
 - History event range (first, last, message count)
 - Tool registry (hash, names, count)
 - Subagent registry (hash, names, if present)
+- Plugin registry (hash, names, count, if present)
 - Resolved provider, model, params, token estimate
 
 No rendered prompt snapshot is stored. Inspection views rebuild from provenance + current files.
