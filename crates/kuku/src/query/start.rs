@@ -92,6 +92,32 @@ impl Query {
             None
         };
 
+        if let Some(ref plugin_reg) = plugin_registry_opt {
+            let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::SessionStart);
+            if !hooks.is_empty() {
+                let input = crate::plugin::executor::HookInput {
+                    event: "session.start".to_string(),
+                    session_dir: events_path.parent().unwrap().to_string_lossy().to_string(),
+                    extra: serde_json::json!({}),
+                };
+                let session_dir = events_path.parent().unwrap().to_path_buf();
+                let results =
+                    crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace)
+                        .await?;
+                for r in &results {
+                    if r.output.block || r.exit_code == 2 {
+                        let reason = if r.stderr.is_empty() {
+                            "blocked by plugin hook".to_string()
+                        } else {
+                            r.stderr.clone()
+                        };
+                        return Err(crate::error::Error::PluginValidation(reason));
+                    }
+                }
+                super::helpers::record_plugin_hooks(&events_path, turn, "session.start", &results)?;
+            }
+        }
+
         let skill_registry = if self.disable_skills {
             (None, None)
         } else {

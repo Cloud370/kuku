@@ -487,6 +487,36 @@ pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Valu
     u32::try_from(total).ok().filter(|&v| v > 0)
 }
 
+pub(super) fn record_plugin_hooks(
+    events_path: &std::path::Path,
+    turn: u64,
+    hook_event_name: &str,
+    results: &[crate::plugin::executor::HookExecResult],
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    for r in results {
+        if r.exit_code != 0 || r.output.block || r.timed_out {
+            store.append(EventPayload::PluginHook {
+                turn,
+                ts: now_timestamp()?,
+                event: hook_event_name.to_string(),
+                package: r.package_name.clone(),
+                command: String::new(),
+                exit_code: r.exit_code,
+                blocked: r.output.block,
+                duration_ms: r.duration_ms,
+                output_summary: r
+                    .output
+                    .additional_context
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_string(),
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::extract_input_tokens;

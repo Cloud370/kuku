@@ -80,6 +80,12 @@ async fn run_tool_pre_hooks(
     let workspace = pending.workspace.clone();
     let results =
         crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace).await?;
+    super::helpers::record_plugin_hooks(
+        &pending.events_path,
+        pending.turn,
+        "tool.pre_execute",
+        &results,
+    )?;
 
     let mut updated_args = tool_args.clone();
     for r in &results {
@@ -178,6 +184,12 @@ async fn execute_inline_tool(
                     pending.hook_context.push(ctx.clone());
                 }
             }
+            super::helpers::record_plugin_hooks(
+                &pending.events_path,
+                pending.turn,
+                "tool.post_execute",
+                &hook_results,
+            )?;
         }
     }
 
@@ -307,6 +319,12 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                         pending.hook_context.push(ctx.clone());
                     }
                 }
+                super::helpers::record_plugin_hooks(
+                    &pending.events_path,
+                    pending.turn,
+                    "model.post_response",
+                    &results,
+                )?;
                 if pending.request_num < MAX_REQUEST_LOOP
                     && results.iter().any(|r| r.exit_code == 2)
                 {
@@ -721,6 +739,29 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         &existing_events,
     )?;
 
+    let runtime_blocks = if pending.turn == 1 {
+        if let Some(ref plugin_reg) = pending.plugin_registry {
+            if !plugin_reg.is_empty() {
+                let pkg_names = plugin_reg.names().join(", ");
+                let notice = format!(
+                    "Plugins loaded: {pkg_names}. \
+                     If not relevant to your current task, ignore."
+                );
+                let wrapped = format!("<kuku_system_notice>\n{notice}\n</kuku_system_notice>");
+                Some(match runtime_blocks {
+                    Some(existing) => format!("{existing}\n\n{wrapped}"),
+                    None => wrapped,
+                })
+            } else {
+                runtime_blocks
+            }
+        } else {
+            runtime_blocks
+        }
+    } else {
+        runtime_blocks
+    };
+
     let mut assembly = match assemble_context(
         ContextInput {
             environment: EnvironmentSource {
@@ -853,6 +894,12 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
                     pending.hook_context.push(ctx.clone());
                 }
             }
+            super::helpers::record_plugin_hooks(
+                &pending.events_path,
+                pending.turn,
+                "model.pre_request",
+                &results,
+            )?;
         }
     }
 

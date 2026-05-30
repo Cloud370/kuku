@@ -72,7 +72,6 @@ impl PluginRegistryBuilder {
     pub fn build(self) -> crate::error::Result<PluginRegistry> {
         let mut packages = BTreeMap::new();
         let mut hooks: BTreeMap<HookEvent, Vec<HookInstance>> = BTreeMap::new();
-        let mut all_instances = Vec::new();
 
         for pkg in &self.packages {
             let instances = super::hook::build_hook_instances(&pkg.manifest, &pkg.root, &pkg.name)?;
@@ -80,12 +79,11 @@ impl PluginRegistryBuilder {
             for inst in &instances {
                 hooks.entry(inst.event).or_default().push(inst.clone());
             }
-            all_instances.extend(instances);
             packages.insert(pkg.name.clone(), pkg.clone());
         }
 
         let skill_dirs = super::loader::collect_skill_dirs(&self.packages);
-        let hash = compute_registry_hash(&packages, &all_instances);
+        let hash = compute_registry_hash(&packages);
         let names: Vec<String> = packages.keys().cloned().collect();
 
         Ok(PluginRegistry {
@@ -98,22 +96,12 @@ impl PluginRegistryBuilder {
     }
 }
 
-fn compute_registry_hash(
-    packages: &BTreeMap<String, LoadedPackage>,
-    instances: &[HookInstance],
-) -> String {
+fn compute_registry_hash(packages: &BTreeMap<String, LoadedPackage>) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    for (name, pkg) in packages {
-        hasher.update(name.as_bytes());
-        hasher.update(b"|");
-        hasher.update(pkg.manifest.package.version.as_bytes());
-        hasher.update(b"\n");
-    }
-    for inst in instances {
-        hasher.update(inst.command.to_string_lossy().as_bytes());
-        hasher.update(b"|");
-        hasher.update(inst.event.as_str().as_bytes());
+    for pkg in packages.values() {
+        let manifest_hash = super::manifest::compute_manifest_hash(&pkg.manifest);
+        hasher.update(manifest_hash.as_bytes());
         hasher.update(b"\n");
     }
     format!("sha256:{:x}", hasher.finalize())

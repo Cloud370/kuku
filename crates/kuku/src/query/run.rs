@@ -206,13 +206,21 @@ impl Run {
                             session_dir: output.session_dir.to_string_lossy().to_string(),
                             extra: serde_json::json!({}),
                         };
-                        let _ = crate::plugin::executor::execute_hooks(
+                        if let Ok(results) = crate::plugin::executor::execute_hooks(
                             hooks,
                             &input,
                             &output.session_dir,
                             &output.workspace,
                         )
-                        .await;
+                        .await
+                        {
+                            let _ = super::helpers::record_plugin_hooks(
+                                &output.session_dir,
+                                turn,
+                                "session.end",
+                                &results,
+                            );
+                        }
                     }
                 }
                 self.state = RunState::Done(None);
@@ -255,13 +263,21 @@ impl Run {
                                     session_dir: output.session_dir.to_string_lossy().to_string(),
                                     extra: serde_json::json!({}),
                                 };
-                                let _ = crate::plugin::executor::execute_hooks(
+                                if let Ok(results) = crate::plugin::executor::execute_hooks(
                                     hooks,
                                     &input,
                                     &output.session_dir,
                                     &output.workspace,
                                 )
-                                .await;
+                                .await
+                                {
+                                    let _ = super::helpers::record_plugin_hooks(
+                                        &output.session_dir,
+                                        turn,
+                                        "session.end",
+                                        &results,
+                                    );
+                                }
                             }
                         }
                         self.state = RunState::Done(None);
@@ -383,6 +399,12 @@ impl Run {
                             &workspace,
                         )
                         .await?;
+                        super::helpers::record_plugin_hooks(
+                            &pending.events_path,
+                            pending.turn,
+                            "tool.pre_execute",
+                            &results,
+                        )?;
                         if results.iter().any(|r| r.output.block) {
                             return Ok(Some(UiEvent::ToolEnd {
                                 id: tool_call.id,
