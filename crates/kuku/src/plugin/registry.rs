@@ -15,6 +15,14 @@ pub struct PluginRegistry {
     names: Vec<String>,
 }
 
+impl PartialEq for PluginRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+    }
+}
+
+impl Eq for PluginRegistry {}
+
 impl PluginRegistry {
     pub fn builder() -> PluginRegistryBuilder {
         PluginRegistryBuilder::default()

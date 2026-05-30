@@ -41,6 +41,9 @@ pub struct RunOutput {
     pub text: String,
     pub usage: Option<crate::provider::types::ProviderUsage>,
     pub turn: u64,
+    pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
+    pub(super) session_dir: std::path::PathBuf,
+    pub(super) workspace: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -262,6 +265,8 @@ pub(super) struct PendingRun {
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,
+    pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
+    pub(super) hook_context: Vec<String>,
 }
 
 #[derive(Debug)]
