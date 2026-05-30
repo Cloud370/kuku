@@ -255,12 +255,7 @@ mod tests {
     #[test]
     fn done_wire_format() {
         let event = UiEvent::Done {
-            output: RunOutput {
-                session_id: "s1".to_string(),
-                text: "done".to_string(),
-                usage: None,
-                turn: 1,
-            },
+            output: RunOutput::new("s1".to_string(), "done".to_string(), None, 1),
             usage: None,
             turn: 1,
         };

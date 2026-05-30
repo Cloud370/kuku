@@ -39,11 +39,7 @@ pub fn discover_packages(kuku_home: &Path, workspace: &Path) -> Result<Vec<Loade
     Ok(packages)
 }
 
-fn scan_packages_dir(
-    dir: &Path,
-    tier: Tier,
-    packages: &mut Vec<LoadedPackage>,
-) -> Result<()> {
+fn scan_packages_dir(dir: &Path, tier: Tier, packages: &mut Vec<LoadedPackage>) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(());
     };
@@ -132,11 +128,7 @@ command = "hooks/a.sh"
         std::fs::create_dir_all(workspace.join(".kuku/packages")).unwrap();
 
         setup_package(&home.join("packages"), "user-pkg", "1.0.0");
-        setup_package(
-            &workspace.join(".kuku/packages"),
-            "proj-pkg",
-            "2.0.0",
-        );
+        setup_package(&workspace.join(".kuku/packages"), "proj-pkg", "2.0.0");
 
         let pkgs = discover_packages(&home, &workspace).unwrap();
         assert_eq!(pkgs.len(), 2);
@@ -157,11 +149,7 @@ command = "hooks/a.sh"
         std::fs::create_dir_all(workspace.join(".kuku/packages")).unwrap();
 
         setup_package(&home.join("packages"), "shared", "1.0.0");
-        setup_package(
-            &workspace.join(".kuku/packages"),
-            "shared",
-            "2.0.0",
-        );
+        setup_package(&workspace.join(".kuku/packages"), "shared", "2.0.0");
 
         let pkgs = discover_packages(&home, &workspace).unwrap();
         assert_eq!(pkgs.len(), 1);
@@ -172,8 +160,7 @@ command = "hooks/a.sh"
     #[test]
     fn nonexistent_dir_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkgs =
-            discover_packages(&tmp.path().join("nope"), &tmp.path().join("nope")).unwrap();
+        let pkgs = discover_packages(&tmp.path().join("nope"), &tmp.path().join("nope")).unwrap();
         assert!(pkgs.is_empty());
     }
 

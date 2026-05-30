@@ -109,6 +109,7 @@ pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn compute_manifest_hash(manifest: &PackageManifest) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -134,6 +135,8 @@ pub fn compute_manifest_hash(manifest: &PackageManifest) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn valid_toml() -> &'static str {

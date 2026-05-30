@@ -728,6 +728,14 @@ purpose = "quick tasks"
 format = "anthropic"
 base_url = "https://api.anthropic.com"
 api_key = "test-key-anthropic"
+
+[handoff]
+enabled = true
+threshold = 0.7
+keep_turns = 2
+
+[plugin]
+enabled = true
 "#;
 
     #[test]
@@ -1193,6 +1201,9 @@ api_key = "test-key"
 enabled = true
 threshold = 0.8
 keep_turns = 3
+
+[plugin]
+enabled = true
 "#;
 
     #[test]
@@ -1295,6 +1306,9 @@ api_key = "test-key"
 enabled = false
 threshold = 0.5
 keep_turns = 5
+
+[plugin]
+enabled = true
 "#;
         let (patched, changed) = config_patch_defaults(input).unwrap();
         assert!(!changed);

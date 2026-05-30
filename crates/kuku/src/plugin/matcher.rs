@@ -161,7 +161,7 @@ impl Parser {
             let word: String = self.input[self.pos..self.pos + 8].iter().collect();
             if word.starts_with("contains") {
                 let next = self.input.get(self.pos + 8);
-                if next.map_or(true, |c| c.is_ascii_whitespace()) {
+                if next.is_none_or(|c| c.is_ascii_whitespace()) {
                     self.pos += 8;
                     return Ok(CmpOp::Contains);
                 }
@@ -271,8 +271,7 @@ mod tests {
 
     #[test]
     fn parse_parens() {
-        let expr =
-            parse(r#"(tool_name == "a" || tool_name == "b") && source == "s""#).unwrap();
+        let expr = parse(r#"(tool_name == "a" || tool_name == "b") && source == "s""#).unwrap();
         assert!(evaluate(
             &expr,
             &vars(&[("tool_name", "a"), ("source", "s")])

@@ -219,6 +219,7 @@ pub(crate) enum SlotEvent {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
@@ -431,6 +432,26 @@ impl HandoffDetector {
                 }
             }
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl RunOutput {
+    pub(crate) fn new(
+        session_id: String,
+        text: String,
+        usage: Option<crate::provider::types::ProviderUsage>,
+        turn: u64,
+    ) -> Self {
+        Self {
+            session_id,
+            text,
+            usage,
+            turn,
+            plugin_registry: None,
+            session_dir: std::path::PathBuf::new(),
+            workspace: std::path::PathBuf::new(),
         }
     }
 }

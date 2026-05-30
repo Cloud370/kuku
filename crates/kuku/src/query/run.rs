@@ -199,8 +199,7 @@ impl Run {
             }
             PendingStep::Done(output, usage, turn) => {
                 if let Some(ref plugin_reg) = output.plugin_registry {
-                    let hooks =
-                        plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
+                    let hooks = plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
                     if !hooks.is_empty() {
                         let input = crate::plugin::executor::HookInput {
                             event: "session.end".to_string(),
@@ -248,15 +247,12 @@ impl Run {
                     }
                     PendingStep::Done(output, usage, turn) => {
                         if let Some(ref plugin_reg) = output.plugin_registry {
-                            let hooks = plugin_reg
-                                .hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
+                            let hooks =
+                                plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
                             if !hooks.is_empty() {
                                 let input = crate::plugin::executor::HookInput {
                                     event: "session.end".to_string(),
-                                    session_dir: output
-                                        .session_dir
-                                        .to_string_lossy()
-                                        .to_string(),
+                                    session_dir: output.session_dir.to_string_lossy().to_string(),
                                     extra: serde_json::json!({}),
                                 };
                                 let _ = crate::plugin::executor::execute_hooks(
@@ -617,8 +613,7 @@ impl Run {
             }));
         }
         if let Some(ref plugin_reg) = pending.plugin_registry {
-            let hooks =
-                plugin_reg.hooks_for(crate::plugin::hook::HookEvent::ToolPreExecute);
+            let hooks = plugin_reg.hooks_for(crate::plugin::hook::HookEvent::ToolPreExecute);
             if !hooks.is_empty() {
                 let input = crate::plugin::executor::HookInput {
                     event: "tool.pre_execute".to_string(),
@@ -636,13 +631,9 @@ impl Run {
                 };
                 let session_dir = pending.events_path.parent().unwrap().to_path_buf();
                 let workspace = pending.workspace.clone();
-                let results = crate::plugin::executor::execute_hooks(
-                    hooks,
-                    &input,
-                    &session_dir,
-                    &workspace,
-                )
-                .await?;
+                let results =
+                    crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace)
+                        .await?;
                 if results.iter().any(|r| r.output.block) {
                     self.state = RunState::Pending(Box::new(pending));
                     return Ok(Some(UiEvent::ToolEnd {
@@ -701,6 +692,7 @@ mod tests {
             default_tier: "balanced".to_string(),
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
+            plugin: crate::config::PluginConfig::default(),
         }
     }
 
@@ -821,6 +813,8 @@ mod tests {
             cancel_token: cancel_token.clone(),
             handoff_triggered: false,
             handoff_keep_turns: test_config().handoff().keep_turns,
+            plugin_registry: None,
+            hook_context: Vec::new(),
         };
 
         let stream: std::pin::Pin<
@@ -881,6 +875,8 @@ mod tests {
                 cancel_token: cancel_token.clone(),
                 handoff_triggered: false,
                 handoff_keep_turns: test_config().handoff().keep_turns,
+                plugin_registry: None,
+                hook_context: Vec::new(),
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

@@ -19,6 +19,7 @@ pub struct HookInput {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct HookExecResult {
     pub output: HookOutput,
     pub exit_code: i32,
@@ -54,8 +55,7 @@ pub async fn execute_hooks(
             }
         }
 
-        let result =
-            execute_single_hook(hook, &hook_input, session_dir, workspace, index).await?;
+        let result = execute_single_hook(hook, &hook_input, session_dir, workspace, index).await?;
 
         merged = merge_outputs(&[merged, result.output.clone()]);
 
@@ -124,7 +124,6 @@ async fn execute_single_hook(
             return Err(Error::PluginHookSpawn(hook.command.clone(), e));
         }
         Err(_) => {
-            timed_out = true;
             let _ = child.start_kill();
             tokio::time::sleep(SIGTERM_GRACE).await;
             let _ = child.kill().await;

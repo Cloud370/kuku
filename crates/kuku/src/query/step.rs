@@ -281,7 +281,6 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 {
                     // force-continue: inject hook_context and re-enter provider call
                     if !pending.hook_context.is_empty() {
-                        let hook_text = pending.hook_context.join("\n");
                         pending.hook_context.clear();
                         // Inject into messages via a synthetic user message
                         pending.pending_events.push_back(UiEvent::TextDelta {
@@ -486,13 +485,8 @@ pub(super) async fn advance_pending(
                 }),
             });
         } else if queued.tool_call.name == "use_skill" {
-            let hook_result = run_tool_pre_hooks(
-                &mut pending,
-                "use_skill",
-                &queued.tool_call.args,
-                &id,
-            )
-            .await?;
+            let hook_result =
+                run_tool_pre_hooks(&mut pending, "use_skill", &queued.tool_call.args, &id).await?;
             if let Some(block) = hook_result.block {
                 return return_blocked_tool(
                     pending,
@@ -822,8 +816,7 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
             };
             let sd = pending.events_path.parent().unwrap().to_path_buf();
             let ws = pending.workspace.clone();
-            let results =
-                crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+            let results = crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
             for r in &results {
                 if let Some(ref ctx) = r.output.additional_context {
                     pending.hook_context.push(ctx.clone());

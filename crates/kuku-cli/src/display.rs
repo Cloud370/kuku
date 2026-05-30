@@ -397,6 +397,7 @@ fn event_type_name(payload: &EventPayload) -> &'static str {
         EventPayload::Handoff { .. } => "handoff",
         EventPayload::TurnRollback { .. } => "turn.rollback",
         EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
+        EventPayload::PluginHook { .. } => "plugin.hook",
         EventPayload::Unknown(_) => "unknown",
     }
 }

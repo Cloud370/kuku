@@ -122,8 +122,8 @@ fn resolve_events(decl: &HookDecl) -> Result<Vec<HookEvent>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::manifest::{HookDecl, PackageManifest, PackageMeta};
+    use super::*;
 
     fn manifest_with_hook(event: &str, command: &str) -> PackageManifest {
         PackageManifest {

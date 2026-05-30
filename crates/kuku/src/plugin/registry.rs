@@ -75,8 +75,7 @@ impl PluginRegistryBuilder {
         let mut all_instances = Vec::new();
 
         for pkg in &self.packages {
-            let instances =
-                super::hook::build_hook_instances(&pkg.manifest, &pkg.root, &pkg.name)?;
+            let instances = super::hook::build_hook_instances(&pkg.manifest, &pkg.root, &pkg.name)?;
 
             for inst in &instances {
                 hooks.entry(inst.event).or_default().push(inst.clone());
@@ -160,7 +159,7 @@ mod tests {
     #[test]
     fn hooks_grouped_by_event() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_dir = tmp.path().join("packages").join("test-pkg");
+        let pkg_dir = tmp.path().join(".kuku").join("packages").join("test-pkg");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(
             pkg_dir.join("kuku.toml"),
