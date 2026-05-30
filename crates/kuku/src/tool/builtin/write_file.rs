@@ -7,7 +7,8 @@ use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, resolve_write_path, write_atomically,
+    content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief,
+    resolve_write_path, write_atomically,
 };
 
 struct WriteRequest {
@@ -38,21 +39,10 @@ pub(crate) fn write_file(
                 format!("path is not a file: {}", request.path),
             );
         }
-        let bytes = match fs::read(&resolved.path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return ToolResultEnvelope::error(
-                    format!("failed: {error}"),
-                    format!("error reading file: {}", request.path),
-                )
-            }
+        let (_content, bytes) = match read_file_as_utf8(&resolved.path) {
+            Ok(result) => result,
+            Err(err) => return err,
         };
-        if String::from_utf8(bytes.clone()).is_err() {
-            return ToolResultEnvelope::error(
-                format!("failed: file is not valid UTF-8: {}", resolved.relative),
-                format!("file is not valid UTF-8: {}", resolved.relative),
-            );
-        }
         let current_hash = content_hash(&bytes);
         let Some(snapshot) = find_write_snapshot(prior_events, &resolved.path, true, None) else {
             return ToolResultEnvelope::error(
@@ -131,22 +121,11 @@ fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
             "write_file requires content",
         ));
     };
-    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing brief",
-            "write_file requires brief",
-        ));
-    };
-    if brief.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: brief is empty",
-            "brief must not be empty",
-        ));
-    }
+    let brief = require_brief("write_file", args)?;
     Ok(WriteRequest {
         path: path.to_string(),
         content: content.to_string(),
-        _brief: brief.to_string(),
+        _brief: brief,
     })
 }
 

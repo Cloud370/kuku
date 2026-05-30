@@ -170,7 +170,7 @@ pub fn compute_file_revert_plan(
         let disk_path = workspace.join(file_path);
 
         let file_name = disk_path.file_name().unwrap_or_default().to_string_lossy();
-        if crate::tool::builtin::common::is_sensitive_file_name(&file_name) {
+        if crate::util::path::is_sensitive_file_name(&file_name) {
             sensitive_files.push(disk_path.clone());
         }
 
@@ -207,7 +207,7 @@ pub fn compute_file_revert_plan(
 }
 
 fn is_system_dir_path(path: &str) -> bool {
-    let normalized = crate::tool::builtin::common::normalize_path_sep(path);
+    let normalized = crate::util::path::normalize_path_sep(path);
     normalized
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")

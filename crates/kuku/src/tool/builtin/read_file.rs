@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
@@ -8,7 +7,7 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     content_hash, find_covering_read, join_bounded_strings, optional_positive_usize,
-    requested_line_count, resolve_path,
+    read_file_as_utf8, requested_line_count, resolve_path,
 };
 
 const READ_FILE_MAX_CHARS: usize = 80_000;
@@ -40,23 +39,9 @@ pub(crate) fn read_file(
         );
     }
 
-    let bytes = match fs::read(&resolved.path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: {error}"),
-                format!("error reading file: {}", request.path),
-            )
-        }
-    };
-    let content = match String::from_utf8(bytes.clone()) {
-        Ok(content) => content,
-        Err(_) => {
-            return ToolResultEnvelope::error(
-                format!("failed: file is not valid UTF-8: {}", resolved.relative),
-                format!("file is not valid UTF-8: {}", resolved.relative),
-            )
-        }
+    let (content, bytes) = match read_file_as_utf8(&resolved.path) {
+        Ok(result) => result,
+        Err(err) => return err,
     };
 
     let hash = content_hash(&bytes);

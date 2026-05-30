@@ -7,9 +7,10 @@ use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
 
+use crate::util::path::is_blocked_relative_path;
+
 use super::common::{
-    glob_match, is_blocked_relative_path, is_default_excluded_dir, join_bounded_strings,
-    relative_path, resolve_path,
+    glob_match, is_default_excluded_dir, join_bounded_strings, relative_path, resolve_path,
 };
 
 const SEARCH_TEXT_MAX_CHARS: usize = 80_000;
