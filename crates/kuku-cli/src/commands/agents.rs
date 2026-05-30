@@ -1,6 +1,7 @@
 use kuku::subagent::registry::SubagentRegistry;
 
 use crate::cli_args::{AgentsArgs, AgentsSubcommand};
+use crate::display::util::truncate;
 
 fn build_registry() -> Result<SubagentRegistry, Box<dyn std::error::Error>> {
     let workspace = kuku::session::current_workspace()?;
@@ -56,12 +57,4 @@ pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(max).collect::<String>())
-    }
 }

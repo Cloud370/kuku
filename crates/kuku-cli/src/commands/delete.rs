@@ -22,13 +22,13 @@ pub async fn run(args: DeleteArgs) -> Result<(), Box<dyn std::error::Error>> {
                 s.turn_count,
                 s.status,
             );
-            print!("Type 'yes' to confirm: ");
+            print!("Confirm? [y/N]: ");
             use std::io::Write;
             std::io::stdout().flush()?;
 
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
-            if input.trim() == "yes" {
+            if matches!(input.trim(), "y" | "") {
                 delete_session(&home, workspace.as_deref(), &args.session_id)?;
                 println!("deleted {}", args.session_id);
             } else {
