@@ -7,7 +7,7 @@ use crate::context::{
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
-use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
+use crate::notice::types::{ContextHeadroom, Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
@@ -127,19 +127,20 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     assembly.handoff_summary = handoff_summary;
 
+    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
+    let thinking_overhead = resolved.config.think_level.overhead_tokens();
+    let headroom = compute_context_headroom(
+        resolved
+            .config
+            .max_context_tokens
+            .saturating_sub(thinking_overhead),
+        Some(resolved.config.max_output_tokens),
+        estimated_input,
+    );
+
     {
         let handoff_config = pending.config.handoff();
         if handoff_config.enabled {
-            let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
-            let thinking_overhead = resolved.config.think_level.overhead_tokens();
-            let headroom = compute_context_headroom(
-                resolved
-                    .config
-                    .max_context_tokens
-                    .saturating_sub(thinking_overhead),
-                Some(resolved.config.max_output_tokens),
-                estimated_input,
-            );
             let budget = (headroom.max_context_tokens
                 - headroom.reserved_output_tokens
                 - headroom.reserved_margin_tokens) as f64;
@@ -231,8 +232,16 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         "temperature": pending.query.temperature,
     });
 
-    let provenance =
-        build_model_request_provenance(&pending, resolved, &assembly, &existing_events);
+    let provenance = build_model_request_provenance(
+        &pending,
+        resolved,
+        &assembly,
+        &existing_events,
+        &headroom,
+        &request_id,
+        &tier_name,
+        &params,
+    );
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
@@ -536,39 +545,20 @@ fn inject_runtime_context(
     user_msg.blocks = new_blocks;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_model_request_provenance(
     pending: &PendingRun,
     resolved: &ResolvedRuntime,
     assembly: &crate::context::ContextAssembly,
     existing_events: &[crate::event::StoredEvent],
+    headroom: &ContextHeadroom,
+    request_id: &str,
+    tier_name: &str,
+    params: &serde_json::Value,
 ) -> crate::context::RequestProvenance {
-    let headroom = {
-        let estimated_input = last_input_tokens(&resolved.config.kind, existing_events);
-        let thinking_overhead = resolved.config.think_level.overhead_tokens();
-        compute_context_headroom(
-            resolved
-                .config
-                .max_context_tokens
-                .saturating_sub(thinking_overhead),
-            Some(resolved.config.max_output_tokens),
-            estimated_input,
-        )
-    };
-
-    let request_id = format!("req_{}", pending.request_num);
-    let tier_name = pending
-        .query
-        .tier
-        .clone()
-        .unwrap_or_else(|| pending.config.default_tier().to_string());
-    let params = serde_json::json!({
-        "max_output_tokens": resolved.config.max_output_tokens,
-        "temperature": pending.query.temperature,
-    });
-
     RequestProvenance {
-        request_id,
-        tier: tier_name,
+        request_id: request_id.to_string(),
+        tier: tier_name.to_string(),
         workspace: pending.workspace.display().to_string(),
         platform: platform_label().to_string(),
         current_date: current_date_string(),
@@ -621,7 +611,7 @@ fn build_model_request_provenance(
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
         provider: resolved.config.kind.as_str().to_string(),
         model: resolved.config.model.clone(),
-        request_params: params,
+        request_params: params.clone(),
         token_estimate: None,
         context_budget_tier: headroom.tier.as_str().to_string(),
         max_context_tokens: Some(headroom.max_context_tokens),

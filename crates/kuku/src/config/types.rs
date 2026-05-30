@@ -5,7 +5,38 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::provider::types::ProviderFormat;
+
+// ── Provider format (moved from provider/ to break reverse dependency) ──
+
+/// Wire format selector for provider API protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderFormat {
+    #[serde(rename = "anthropic")]
+    Anthropic,
+    #[serde(rename = "openai-chat")]
+    OpenAiChat,
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+}
+
+impl ProviderFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderFormat::Anthropic => "anthropic",
+            ProviderFormat::OpenAiChat => "openai-chat",
+            ProviderFormat::OpenAiResponses => "openai-responses",
+        }
+    }
+
+    pub fn parse_from_str(s: &str) -> std::result::Result<Self, &'static str> {
+        match s {
+            "anthropic" => Ok(ProviderFormat::Anthropic),
+            "openai-chat" => Ok(ProviderFormat::OpenAiChat),
+            "openai-responses" => Ok(ProviderFormat::OpenAiResponses),
+            _ => Err("format must be anthropic/openai-chat/openai-responses"),
+        }
+    }
+}
 
 // ── Raw config file ──
 

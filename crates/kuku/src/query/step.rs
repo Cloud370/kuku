@@ -544,7 +544,7 @@ pub(super) async fn advance_pending(
                         );
                     }
 
-                    let (slot, tool_kind) = dispatch_tool_slot(&SlotDispatchArgs {
+                    let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),
                         args: queued.tool_call.args.clone(),

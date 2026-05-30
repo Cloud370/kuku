@@ -9,6 +9,7 @@ use kuku::session::session_events_path;
 
 // ---------- SSE response builders ----------
 
+#[cfg(feature = "test_support")]
 #[allow(unused_imports)] // used by provider_integration and query_runtime test binaries
 pub use kuku::test_support::anthropic_sse_response;
 

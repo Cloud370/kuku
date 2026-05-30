@@ -7,8 +7,7 @@ use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief,
-    resolve_write_path, write_atomically,
+    content_hash, find_write_snapshot, plural, require_brief, resolve_write_path, write_atomically,
 };
 
 struct WriteRequest {
@@ -39,9 +38,14 @@ pub(crate) fn write_file(
                 format!("path is not a file: {}", request.path),
             );
         }
-        let (_content, bytes) = match read_file_as_utf8(&resolved.path) {
-            Ok(result) => result,
-            Err(err) => return err,
+        let bytes = match fs::read(&resolved.path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: {error}"),
+                    format!("error reading file: {}", resolved.relative),
+                );
+            }
         };
         let current_hash = content_hash(&bytes);
         let Some(snapshot) = find_write_snapshot(prior_events, &resolved.path, true, None) else {

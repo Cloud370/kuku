@@ -28,7 +28,7 @@ pub async fn run(args: DeleteArgs) -> Result<(), Box<dyn std::error::Error>> {
 
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
-            if matches!(input.trim(), "y" | "") {
+            if input.trim().eq_ignore_ascii_case("y") {
                 delete_session(&home, workspace.as_deref(), &args.session_id)?;
                 println!("deleted {}", args.session_id);
             } else {

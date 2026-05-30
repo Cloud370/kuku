@@ -331,7 +331,7 @@ impl Run {
                     }));
                 }
                 let (slot, tool_kind) =
-                    super::slots::dispatch_tool_slot(&super::slots::SlotDispatchArgs {
+                    super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),
                         args: hook_result.args,
@@ -605,7 +605,7 @@ impl Run {
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
-        let (slot, tool_kind) = super::slots::dispatch_tool_slot(&super::slots::SlotDispatchArgs {
+        let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
             args: hook_result.args,

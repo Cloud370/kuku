@@ -263,28 +263,28 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) events_path: PathBuf,
 }
 
-pub(crate) fn dispatch_tool_slot(args: &SlotDispatchArgs) -> (ExecSlot, ToolKind) {
+pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {
     if args.tool_name == "run_command" {
         let slot = spawn_command_slot(
-            args.tool_id.clone(),
-            args.args.clone(),
-            args.summary.clone(),
-            args.workspace.clone(),
-            args.event_tx.clone(),
+            args.tool_id,
+            args.args,
+            args.summary,
+            args.workspace,
+            args.event_tx,
         );
         (slot, ToolKind::Command { pid: None })
     } else {
         let slot = spawn_simple_slot(
-            args.tool_id.clone(),
-            args.tool_name.clone(),
-            args.args.clone(),
-            args.summary.clone(),
-            args.workspace.clone(),
-            args.kuku_home.clone(),
-            args.event_tx.clone(),
-            args.config.clone(),
-            args.catalog.clone(),
-            args.events_path.clone(),
+            args.tool_id,
+            args.tool_name,
+            args.args,
+            args.summary,
+            args.workspace,
+            args.kuku_home,
+            args.event_tx,
+            args.config,
+            args.catalog,
+            args.events_path,
         );
         (slot, ToolKind::Simple)
     }
