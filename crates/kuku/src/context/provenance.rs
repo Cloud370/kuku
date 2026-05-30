@@ -1,51 +1,51 @@
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// A file path and its content hash for provenance tracking.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileSource {
     pub path: String,
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Range of event IDs included in the conversation history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryRange {
     pub first_event_id: Option<u64>,
     pub last_event_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the tool registry used for a provider request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
     pub tool_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the subagent registry used for agent catalog rendering.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubagentRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the skill registry used for skill catalog rendering.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the plugin registry used for a provider request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
     pub count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
 /// Inputs for building request provenance metadata.
+#[derive(Debug, Clone, PartialEq)]
 pub struct RequestProvenanceInput {
     pub request_id: String,
     pub tier: String,
@@ -70,8 +70,8 @@ pub struct RequestProvenanceInput {
     pub remaining_input_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 /// Captured provenance metadata for a provider request, stored in events.jsonl.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
     pub request_id: String,
     pub tier: String,

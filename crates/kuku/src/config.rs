@@ -127,16 +127,10 @@ impl From<RawHandoffConfig> for HandoffConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
 }
 
 fn deserialize_handoff<'de, D>(
@@ -568,7 +562,7 @@ fn inject_plugin_section(doc: &mut toml_edit::DocumentMut) {
         "\n\n# Plugin system: enable/disable hook execution from .kuku/packages/.\n",
         "",
     );
-    section["enabled"] = toml_edit::value(true);
+    section["enabled"] = toml_edit::value(false);
     doc["plugin"] = toml_edit::Item::Table(section);
 }
 

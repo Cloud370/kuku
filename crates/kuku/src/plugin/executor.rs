@@ -10,17 +10,18 @@ use super::output::{handle_overflow, merge_outputs, parse_stdout, HookOutput};
 
 const SIGTERM_GRACE: Duration = Duration::from_secs(2);
 
+/// JSON-serializable input passed to a hook process via stdin.
 #[derive(Debug, Clone, Serialize)]
-pub struct HookInput {
+pub(crate) struct HookInput {
     pub event: String,
     pub session_dir: String,
     #[serde(flatten)]
     pub extra: serde_json::Value,
 }
 
-// Diagnostic fields for event recording.
+/// Result of executing a single hook, including output, timing, and exit status.
 #[derive(Debug)]
-pub struct HookExecResult {
+pub(crate) struct HookExecResult {
     pub output: HookOutput,
     pub exit_code: i32,
     pub duration_ms: u64,
@@ -29,6 +30,7 @@ pub struct HookExecResult {
     pub package_name: String,
 }
 
+/// Execute a sequence of hooks, chaining outputs and respecting matchers.
 pub async fn execute_hooks(
     hooks: &[HookInstance],
     input: &HookInput,

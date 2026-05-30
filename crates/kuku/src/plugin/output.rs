@@ -3,8 +3,9 @@ use std::path::Path;
 
 const OVERFLOW_THRESHOLD: usize = 100 * 1024;
 
+/// Structured output parsed from a hook's stdout JSON.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HookOutput {
+pub(crate) struct HookOutput {
     #[serde(default)]
     pub block: bool,
     #[serde(default)]
@@ -15,7 +16,8 @@ pub struct HookOutput {
     pub additional_context: Option<String>,
 }
 
-pub fn parse_stdout(stdout: &str) -> HookOutput {
+/// Parse hook stdout as JSON, falling back to treating the entire output as additional context.
+pub(crate) fn parse_stdout(stdout: &str) -> HookOutput {
     match serde_json::from_str::<HookOutput>(stdout) {
         Ok(output) => output,
         Err(_) => HookOutput {
@@ -25,7 +27,8 @@ pub fn parse_stdout(stdout: &str) -> HookOutput {
     }
 }
 
-pub fn handle_overflow(stdout: &str, session_dir: &Path, index: usize) -> String {
+/// Truncate oversized hook output and persist the full text to an overflow file.
+pub(crate) fn handle_overflow(stdout: &str, session_dir: &Path, index: usize) -> String {
     if stdout.len() <= OVERFLOW_THRESHOLD {
         return stdout.to_string();
     }
@@ -45,7 +48,8 @@ pub fn handle_overflow(stdout: &str, session_dir: &Path, index: usize) -> String
     )
 }
 
-pub fn merge_outputs(outputs: &[HookOutput]) -> HookOutput {
+/// Merge multiple hook outputs, concatenating contexts and taking the last scalar value.
+pub(crate) fn merge_outputs(outputs: &[HookOutput]) -> HookOutput {
     let mut result = HookOutput::default();
     let mut contexts = Vec::new();
 

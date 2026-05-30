@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 
 use super::manifest::{parse_manifest, PackageManifest};
 
+/// Package installation tier: user-global or per-project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     User,
@@ -19,6 +20,7 @@ impl From<Tier> for crate::skill::definition::SkillSource {
     }
 }
 
+/// A discovered plugin package with its manifest and installation tier.
 #[derive(Debug, Clone)]
 pub struct LoadedPackage {
     pub name: String,
@@ -27,7 +29,8 @@ pub struct LoadedPackage {
     pub manifest: PackageManifest,
 }
 
-pub fn discover_packages(kuku_home: &Path, workspace: &Path) -> Result<Vec<LoadedPackage>> {
+/// Scan user and project package directories for plugin packages.
+pub(crate) fn discover_packages(kuku_home: &Path, workspace: &Path) -> Result<Vec<LoadedPackage>> {
     let mut packages = Vec::new();
 
     let user_dir = kuku_home.join("packages");
@@ -81,7 +84,8 @@ fn scan_packages_dir(dir: &Path, tier: Tier, packages: &mut Vec<LoadedPackage>) 
     Ok(())
 }
 
-pub fn collect_skill_dirs(packages: &[LoadedPackage]) -> Vec<(PathBuf, Tier)> {
+/// Extract skill directories from loaded packages for skill discovery.
+pub(crate) fn collect_skill_dirs(packages: &[LoadedPackage]) -> Vec<(PathBuf, Tier)> {
     packages
         .iter()
         .filter_map(|pkg| {

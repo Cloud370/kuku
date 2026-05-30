@@ -23,6 +23,7 @@ use super::helpers::{
     current_date_string, display_summary, execute_tool_call, gate_source_name, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, permission_candidate,
     permission_rule, platform_label, provider_failure_kind, provider_format_name,
+    run_tool_pre_hooks,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot};
@@ -32,85 +33,7 @@ use super::types::{
 };
 
 const MAX_REQUEST_LOOP: u64 = 20;
-
-struct HookBlockResult {
-    reason: String,
-    _package: String,
-}
-
-struct HookPreResult {
-    block: Option<HookBlockResult>,
-    args: serde_json::Value,
-}
-
-async fn run_tool_pre_hooks(
-    pending: &mut PendingRun,
-    tool_name: &str,
-    tool_args: &serde_json::Value,
-    tool_call_id: &str,
-) -> Result<HookPreResult> {
-    let Some(ref plugin_reg) = pending.plugin_registry else {
-        return Ok(HookPreResult {
-            block: None,
-            args: tool_args.clone(),
-        });
-    };
-    let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPreExecute);
-    if hooks.is_empty() {
-        return Ok(HookPreResult {
-            block: None,
-            args: tool_args.clone(),
-        });
-    }
-    let input = crate::plugin::executor::HookInput {
-        event: "tool.pre_execute".to_string(),
-        session_dir: pending
-            .events_path
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
-        extra: serde_json::json!({
-            "tool_name": tool_name,
-            "tool_args": tool_args,
-            "tool_call_id": tool_call_id,
-        }),
-    };
-    let session_dir = pending.events_path.parent().unwrap().to_path_buf();
-    let workspace = pending.workspace.clone();
-    let results =
-        crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace).await?;
-    super::helpers::record_plugin_hooks(
-        &pending.events_path,
-        pending.turn,
-        "tool.pre_execute",
-        &results,
-    )?;
-
-    let mut updated_args = tool_args.clone();
-    for r in &results {
-        if r.output.block {
-            return Ok(HookPreResult {
-                block: Some(HookBlockResult {
-                    reason: r.stderr.clone(),
-                    _package: r.package_name.clone(),
-                }),
-                args: updated_args,
-            });
-        }
-        if let Some(ref ctx) = r.output.additional_context {
-            pending.hook_context.push(ctx.clone());
-        }
-        if let Some(ref new_args) = r.output.updated_args {
-            updated_args = new_args.clone();
-        }
-    }
-
-    Ok(HookPreResult {
-        block: None,
-        args: updated_args,
-    })
-}
+const MAX_FORCE_CONTINUE: u64 = 3;
 
 fn return_blocked_tool(
     mut pending: PendingRun,
@@ -325,13 +248,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                     "model.post_response",
                     &results,
                 )?;
-                if pending.request_num < MAX_REQUEST_LOOP
+                if pending.force_continue_count < MAX_FORCE_CONTINUE
                     && results.iter().any(|r| r.exit_code == 2)
                 {
-                    // force-continue: inject hook_context and re-enter provider call
+                    pending.force_continue_count += 1;
                     if !pending.hook_context.is_empty() {
-                        pending.hook_context.clear();
-                        // Inject into messages via a synthetic user message
                         pending.pending_events.push_back(UiEvent::TextDelta {
                             text: String::new(),
                         });
@@ -1415,5 +1336,26 @@ mod tests {
         let s = "hello";
         let result = truncate_summary(s, 60);
         assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn max_force_continue_is_three() {
+        assert_eq!(MAX_FORCE_CONTINUE, 3);
+    }
+
+    #[test]
+    fn force_continue_allows_below_limit() {
+        for count in 0..MAX_FORCE_CONTINUE {
+            assert!(
+                count < MAX_FORCE_CONTINUE,
+                "count {count} should be below limit"
+            );
+        }
+    }
+
+    #[test]
+    fn force_continue_blocks_at_limit() {
+        assert!(!(MAX_FORCE_CONTINUE < MAX_FORCE_CONTINUE));
+        assert!(!((MAX_FORCE_CONTINUE + 1) < MAX_FORCE_CONTINUE));
     }
 }

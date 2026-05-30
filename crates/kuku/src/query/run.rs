@@ -198,31 +198,7 @@ impl Run {
                 Ok(None)
             }
             PendingStep::Done(output, usage, turn) => {
-                if let Some(ref plugin_reg) = output.plugin_registry {
-                    let hooks = plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
-                    if !hooks.is_empty() {
-                        let input = crate::plugin::executor::HookInput {
-                            event: "session.end".to_string(),
-                            session_dir: output.session_dir.to_string_lossy().to_string(),
-                            extra: serde_json::json!({}),
-                        };
-                        if let Ok(results) = crate::plugin::executor::execute_hooks(
-                            hooks,
-                            &input,
-                            &output.session_dir,
-                            &output.workspace,
-                        )
-                        .await
-                        {
-                            let _ = super::helpers::record_plugin_hooks(
-                                &output.session_dir,
-                                turn,
-                                "session.end",
-                                &results,
-                            );
-                        }
-                    }
-                }
+                run_session_end_hooks(&output, turn).await;
                 self.state = RunState::Done(None);
                 Ok(Some(UiEvent::Done {
                     output,
@@ -254,32 +230,7 @@ impl Run {
                         Ok(None)
                     }
                     PendingStep::Done(output, usage, turn) => {
-                        if let Some(ref plugin_reg) = output.plugin_registry {
-                            let hooks =
-                                plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
-                            if !hooks.is_empty() {
-                                let input = crate::plugin::executor::HookInput {
-                                    event: "session.end".to_string(),
-                                    session_dir: output.session_dir.to_string_lossy().to_string(),
-                                    extra: serde_json::json!({}),
-                                };
-                                if let Ok(results) = crate::plugin::executor::execute_hooks(
-                                    hooks,
-                                    &input,
-                                    &output.session_dir,
-                                    &output.workspace,
-                                )
-                                .await
-                                {
-                                    let _ = super::helpers::record_plugin_hooks(
-                                        &output.session_dir,
-                                        turn,
-                                        "session.end",
-                                        &results,
-                                    );
-                                }
-                            }
-                        }
+                        run_session_end_hooks(&output, turn).await;
                         self.state = RunState::Done(None);
                         Ok(Some(UiEvent::Done {
                             output,
@@ -372,54 +323,26 @@ impl Run {
                     tool_call,
                     display_summary,
                 } = pending.queued_tool_calls.pop_front().unwrap();
-                if let Some(ref plugin_reg) = pending.plugin_registry {
-                    let hooks =
-                        plugin_reg.hooks_for(crate::plugin::hook::HookEvent::ToolPreExecute);
-                    if !hooks.is_empty() {
-                        let input = crate::plugin::executor::HookInput {
-                            event: "tool.pre_execute".to_string(),
-                            session_dir: pending
-                                .events_path
-                                .parent()
-                                .unwrap()
-                                .to_string_lossy()
-                                .to_string(),
-                            extra: serde_json::json!({
-                                "tool_name": tool_call.name,
-                                "tool_args": tool_call.args,
-                                "tool_call_id": tool_call.id,
-                            }),
-                        };
-                        let session_dir = pending.events_path.parent().unwrap().to_path_buf();
-                        let workspace = pending.workspace.clone();
-                        let results = crate::plugin::executor::execute_hooks(
-                            hooks,
-                            &input,
-                            &session_dir,
-                            &workspace,
-                        )
-                        .await?;
-                        super::helpers::record_plugin_hooks(
-                            &pending.events_path,
-                            pending.turn,
-                            "tool.pre_execute",
-                            &results,
-                        )?;
-                        if results.iter().any(|r| r.output.block) {
-                            return Ok(Some(UiEvent::ToolEnd {
-                                id: tool_call.id,
-                                status: "blocked".to_string(),
-                                summary: "blocked by plugin hook".to_string(),
-                                model_content: None,
-                                result: None,
-                            }));
-                        }
-                    }
+                let hook_result = super::helpers::run_tool_pre_hooks(
+                    &mut *pending,
+                    &tool_call.name,
+                    &tool_call.args,
+                    &tool_call.id,
+                )
+                .await?;
+                if let Some(block) = hook_result.block {
+                    return Ok(Some(UiEvent::ToolEnd {
+                        id: tool_call.id,
+                        status: "blocked".to_string(),
+                        summary: block.reason,
+                        model_content: None,
+                        result: None,
+                    }));
                 }
                 let (slot, tool_kind) = super::slots::dispatch_tool_slot(
                     &tool_call.name,
                     tool_call.id.clone(),
-                    tool_call.args,
+                    hook_result.args,
                     display_summary.clone(),
                     pending.workspace.clone(),
                     pending.kuku_home.clone(),
@@ -672,45 +595,28 @@ impl Run {
                 result: result.structured,
             }));
         }
-        if let Some(ref plugin_reg) = pending.plugin_registry {
-            let hooks = plugin_reg.hooks_for(crate::plugin::hook::HookEvent::ToolPreExecute);
-            if !hooks.is_empty() {
-                let input = crate::plugin::executor::HookInput {
-                    event: "tool.pre_execute".to_string(),
-                    session_dir: pending
-                        .events_path
-                        .parent()
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string(),
-                    extra: serde_json::json!({
-                        "tool_name": tool_call.name,
-                        "tool_args": tool_call.args,
-                        "tool_call_id": tool_call.id,
-                    }),
-                };
-                let session_dir = pending.events_path.parent().unwrap().to_path_buf();
-                let workspace = pending.workspace.clone();
-                let results =
-                    crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace)
-                        .await?;
-                if results.iter().any(|r| r.output.block) {
-                    self.state = RunState::Pending(Box::new(pending));
-                    return Ok(Some(UiEvent::ToolEnd {
-                        id: tool_call.id,
-                        status: "blocked".to_string(),
-                        summary: "blocked by plugin hook".to_string(),
-                        model_content: None,
-                        result: None,
-                    }));
-                }
-            }
+        let hook_result = super::helpers::run_tool_pre_hooks(
+            &mut pending,
+            &tool_call.name,
+            &tool_call.args,
+            &tool_call.id,
+        )
+        .await?;
+        if let Some(block) = hook_result.block {
+            self.state = RunState::Pending(Box::new(pending));
+            return Ok(Some(UiEvent::ToolEnd {
+                id: tool_call.id,
+                status: "blocked".to_string(),
+                summary: block.reason,
+                model_content: None,
+                result: None,
+            }));
         }
-        let summary = display_summary(&tool_call.name, &tool_call.args, None);
+        let summary = display_summary(&tool_call.name, &hook_result.args, None);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(
             &tool_call.name,
             tool_call.id.clone(),
-            tool_call.args,
+            hook_result.args,
             summary.clone(),
             pending.workspace.clone(),
             pending.kuku_home.clone(),
@@ -727,6 +633,32 @@ impl Run {
             summary,
             kind: tool_kind,
         }))
+    }
+}
+
+async fn run_session_end_hooks(output: &super::types::RunOutput, turn: u64) {
+    let Some(ref plugin_reg) = output.plugin_registry else {
+        return;
+    };
+    let hooks = plugin_reg.hooks_for(crate::plugin::hook::HookEvent::SessionEnd);
+    if hooks.is_empty() {
+        return;
+    }
+    let input = crate::plugin::executor::HookInput {
+        event: "session.end".to_string(),
+        session_dir: output.session_dir.to_string_lossy().to_string(),
+        extra: serde_json::json!({}),
+    };
+    if let Ok(results) = crate::plugin::executor::execute_hooks(
+        hooks,
+        &input,
+        &output.session_dir,
+        &output.workspace,
+    )
+    .await
+    {
+        let _ =
+            super::helpers::record_plugin_hooks(&output.session_dir, turn, "session.end", &results);
     }
 }
 
@@ -875,6 +807,7 @@ mod tests {
             handoff_keep_turns: test_config().handoff().keep_turns,
             plugin_registry: None,
             hook_context: Vec::new(),
+            force_continue_count: 0,
         };
 
         let stream: std::pin::Pin<
@@ -937,6 +870,7 @@ mod tests {
                 handoff_keep_turns: test_config().handoff().keep_turns,
                 plugin_registry: None,
                 hook_context: Vec::new(),
+                force_continue_count: 0,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

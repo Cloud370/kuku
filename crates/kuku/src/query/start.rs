@@ -181,6 +181,7 @@ impl Query {
                 handoff_keep_turns,
                 plugin_registry,
                 hook_context: Vec::new(),
+                force_continue_count: 0,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

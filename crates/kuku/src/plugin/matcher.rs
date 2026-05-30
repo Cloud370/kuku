@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+/// Boolean expression tree for matching hook execution context variables.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatcherExpr {
     Cmp {
@@ -11,6 +12,7 @@ pub enum MatcherExpr {
     Or(Box<MatcherExpr>, Box<MatcherExpr>),
 }
 
+/// Comparison operator for matcher expressions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CmpOp {
     Eq,
@@ -23,6 +25,7 @@ struct Parser {
     pos: usize,
 }
 
+/// Parse a matcher expression string into an AST.
 pub fn parse(input: &str) -> Result<MatcherExpr, String> {
     let mut parser = Parser {
         input: input.chars().collect(),
@@ -199,6 +202,7 @@ impl Parser {
     }
 }
 
+/// Evaluate a matcher expression against a set of context variables.
 pub fn evaluate(expr: &MatcherExpr, vars: &HashMap<String, String>) -> bool {
     match expr {
         MatcherExpr::Cmp { var, op, value } => {

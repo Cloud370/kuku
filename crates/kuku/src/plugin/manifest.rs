@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+/// Parsed contents of a plugin's `kuku.toml` manifest file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub package: PackageMeta,
@@ -12,6 +13,7 @@ pub struct PackageManifest {
     pub hooks: Vec<HookDecl>,
 }
 
+/// Package identity metadata from the manifest `[package]` section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub name: String,
@@ -24,6 +26,7 @@ pub struct PackageMeta {
     pub repository: Option<String>,
 }
 
+/// A single hook declaration from the manifest `[[hooks]]` section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookDecl {
     #[serde(default)]
@@ -53,6 +56,7 @@ const VALID_EVENTS: &[&str] = &[
 
 static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(NAME_PATTERN).unwrap());
 
+/// Parse and validate a TOML manifest string into a `PackageManifest`.
 pub fn parse_manifest(content: &str, path: &std::path::Path) -> Result<PackageManifest> {
     let manifest: PackageManifest = toml::from_str(content)
         .map_err(|e| Error::PluginManifest(path.to_path_buf(), format!("TOML parse error: {e}")))?;
@@ -60,6 +64,7 @@ pub fn parse_manifest(content: &str, path: &std::path::Path) -> Result<PackageMa
     Ok(manifest)
 }
 
+/// Validate package name format and hook event declarations.
 pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> Result<()> {
     let name = &manifest.package.name;
     if !RE.is_match(name) {
@@ -109,6 +114,7 @@ pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> 
     Ok(())
 }
 
+/// Compute a deterministic SHA-256 hash of the manifest for change detection.
 pub fn compute_manifest_hash(manifest: &PackageManifest) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

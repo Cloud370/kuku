@@ -4,6 +4,7 @@ use std::time::Duration;
 use super::manifest::HookDecl;
 use super::matcher::MatcherExpr;
 
+/// Lifecycle event that triggers plugin hook execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum HookEvent {
     SessionStart,
@@ -30,6 +31,7 @@ impl std::str::FromStr for HookEvent {
 }
 
 impl HookEvent {
+    /// Return the wire-format event name (e.g. `"tool.pre_execute"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SessionStart => "session.start",
@@ -45,6 +47,7 @@ impl HookEvent {
 const DEFAULT_TIMEOUT: u64 = 30;
 const MAX_TIMEOUT: u64 = 600;
 
+/// A resolved hook ready for execution, built from a manifest declaration.
 #[derive(Debug, Clone)]
 pub struct HookInstance {
     pub event: HookEvent,
@@ -57,6 +60,7 @@ pub struct HookInstance {
     pub env: Vec<String>,
 }
 
+/// Build hook instances from a package manifest, resolving events and matchers.
 pub fn build_hook_instances(
     manifest: &super::manifest::PackageManifest,
     package_root: &std::path::Path,
