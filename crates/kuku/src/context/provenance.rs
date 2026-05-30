@@ -36,6 +36,14 @@ pub struct SkillRegistryProvenance {
     pub names: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Snapshot of the plugin registry used for a provider request.
+pub struct PluginRegistryProvenance {
+    pub hash: String,
+    pub names: Vec<String>,
+    pub count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Inputs for building request provenance metadata.
 pub struct RequestProvenanceInput {
@@ -51,6 +59,7 @@ pub struct RequestProvenanceInput {
     pub tool_registry: ToolRegistryProvenance,
     pub subagent_registry: Option<SubagentRegistryProvenance>,
     pub skill_registry: Option<SkillRegistryProvenance>,
+    pub plugin_registry: Option<PluginRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -78,6 +87,8 @@ pub struct RequestProvenance {
     pub subagent_registry: Option<SubagentRegistryProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_registry: Option<SkillRegistryProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_registry: Option<PluginRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -103,6 +114,7 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         tool_registry: input.tool_registry,
         subagent_registry: input.subagent_registry,
         skill_registry: input.skill_registry,
+        plugin_registry: input.plugin_registry,
         provider_format: input.provider_format,
         provider: input.provider,
         model: input.model,

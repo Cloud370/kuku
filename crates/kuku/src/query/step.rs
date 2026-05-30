@@ -33,6 +33,79 @@ use super::types::{
 
 const MAX_REQUEST_LOOP: u64 = 20;
 
+struct HookBlockResult {
+    reason: String,
+    _package: String,
+}
+
+struct HookPreResult {
+    block: Option<HookBlockResult>,
+    args: serde_json::Value,
+}
+
+async fn run_tool_pre_hooks(
+    pending: &mut PendingRun,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    tool_call_id: &str,
+) -> Result<HookPreResult> {
+    let Some(ref plugin_reg) = pending.plugin_registry else {
+        return Ok(HookPreResult {
+            block: None,
+            args: tool_args.clone(),
+        });
+    };
+    let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPreExecute);
+    if hooks.is_empty() {
+        return Ok(HookPreResult {
+            block: None,
+            args: tool_args.clone(),
+        });
+    }
+    let input = crate::plugin::executor::HookInput {
+        event: "tool.pre_execute".to_string(),
+        session_dir: pending
+            .events_path
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+        extra: serde_json::json!({
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "tool_call_id": tool_call_id,
+        }),
+    };
+    let session_dir = pending.events_path.parent().unwrap().to_path_buf();
+    let workspace = pending.workspace.clone();
+    let results =
+        crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace).await?;
+
+    let mut updated_args = tool_args.clone();
+    for r in &results {
+        if r.output.block {
+            return Ok(HookPreResult {
+                block: Some(HookBlockResult {
+                    reason: r.stderr.clone(),
+                    _package: r.package_name.clone(),
+                }),
+                args: updated_args,
+            });
+        }
+        if let Some(ref ctx) = r.output.additional_context {
+            pending.hook_context.push(ctx.clone());
+        }
+        if let Some(ref new_args) = r.output.updated_args {
+            updated_args = new_args.clone();
+        }
+    }
+
+    Ok(HookPreResult {
+        block: None,
+        args: updated_args,
+    })
+}
+
 fn return_blocked_tool(
     mut pending: PendingRun,
     id: &str,
@@ -175,6 +248,52 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             }
         }
 
+        if let Some(ref plugin_reg) = pending.plugin_registry {
+            let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPostResponse);
+            if !hooks.is_empty() {
+                let input = crate::plugin::executor::HookInput {
+                    event: "model.post_response".into(),
+                    session_dir: pending
+                        .events_path
+                        .parent()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into(),
+                    extra: serde_json::json!({
+                        "text": &accumulated_text,
+                        "stop_reason": &final_stop_reason,
+                    }),
+                };
+                let sd = pending.events_path.parent().unwrap().to_path_buf();
+                let ws = pending.workspace.clone();
+                let results =
+                    crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+                for r in &results {
+                    if r.exit_code == 2 {
+                        pending.request_num += 1;
+                    }
+                    if let Some(ref ctx) = r.output.additional_context {
+                        pending.hook_context.push(ctx.clone());
+                    }
+                }
+                if pending.request_num < MAX_REQUEST_LOOP
+                    && results.iter().any(|r| r.exit_code == 2)
+                {
+                    // force-continue: inject hook_context and re-enter provider call
+                    if !pending.hook_context.is_empty() {
+                        let hook_text = pending.hook_context.join("\n");
+                        pending.hook_context.clear();
+                        // Inject into messages via a synthetic user message
+                        pending.pending_events.push_back(UiEvent::TextDelta {
+                            text: String::new(),
+                        });
+                        drop(store);
+                        return call_provider_step(pending).await;
+                    }
+                }
+            }
+        }
+
         if !has_tool_calls {
             store.append(EventPayload::TurnEnd {
                 turn: pending.turn,
@@ -268,7 +387,7 @@ pub(super) async fn advance_pending(
         });
     }
 
-    if let Some(queued) = pending.queued_tool_calls.pop_front() {
+    if let Some(mut queued) = pending.queued_tool_calls.pop_front() {
         let id = queued.tool_call.id.clone();
         let summary = queued.display_summary.clone();
 
@@ -319,6 +438,19 @@ pub(super) async fn advance_pending(
                 );
             }
 
+            let hook_result =
+                run_tool_pre_hooks(&mut pending, "agent", &queued.tool_call.args, &id).await?;
+            if let Some(block) = hook_result.block {
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "agent",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    &block.reason,
+                );
+            }
+
             let child_session_id = format!(
                 "child_{}_{}",
                 pending.session_id, pending.child_session_count
@@ -354,6 +486,23 @@ pub(super) async fn advance_pending(
                 }),
             });
         } else if queued.tool_call.name == "use_skill" {
+            let hook_result = run_tool_pre_hooks(
+                &mut pending,
+                "use_skill",
+                &queued.tool_call.args,
+                &id,
+            )
+            .await?;
+            if let Some(block) = hook_result.block {
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "use_skill",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    &block.reason,
+                );
+            }
             return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
@@ -421,6 +570,25 @@ pub(super) async fn advance_pending(
                             ),
                         )?;
                     }
+
+                    let hook_result = run_tool_pre_hooks(
+                        &mut pending,
+                        &queued.tool_call.name,
+                        &queued.tool_call.args,
+                        &id,
+                    )
+                    .await?;
+                    if let Some(block) = hook_result.block {
+                        return return_blocked_tool(
+                            pending,
+                            &id,
+                            &queued.tool_call.name,
+                            &summary,
+                            super::types::ToolKind::Simple,
+                            &block.reason,
+                        );
+                    }
+                    queued.tool_call.args = hook_result.args;
 
                     if active_slot_count >= 32 {
                         return return_blocked_tool(
@@ -621,6 +789,48 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         assembly.runtime_context.as_deref(),
         pending.skill_body.as_deref(),
     );
+
+    if !pending.hook_context.is_empty() {
+        let hook_text = pending.hook_context.join("\n");
+        pending.hook_context.clear();
+        if let Some(last_user) = assembly
+            .history
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == crate::context::Role::User)
+        {
+            last_user
+                .blocks
+                .push(crate::context::MessageBlock::Text(format!(
+                    "\n\n<hook_context>\n{hook_text}\n</hook_context>"
+                )));
+        }
+    }
+
+    if let Some(ref plugin_reg) = pending.plugin_registry {
+        let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPreRequest);
+        if !hooks.is_empty() {
+            let input = crate::plugin::executor::HookInput {
+                event: "model.pre_request".into(),
+                session_dir: pending
+                    .events_path
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into(),
+                extra: serde_json::json!({ "tier": pending.query.tier }),
+            };
+            let sd = pending.events_path.parent().unwrap().to_path_buf();
+            let ws = pending.workspace.clone();
+            let results =
+                crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+            for r in &results {
+                if let Some(ref ctx) = r.output.additional_context {
+                    pending.hook_context.push(ctx.clone());
+                }
+            }
+        }
+    }
 
     let request_id = format!("req_{}", pending.request_num);
     let tier_name = pending
@@ -1025,6 +1235,13 @@ fn build_model_request_provenance(
             crate::context::provenance::SkillRegistryProvenance {
                 hash: reg.hash().to_string(),
                 names: reg.names().to_vec(),
+            }
+        }),
+        plugin_registry: pending.plugin_registry.as_ref().map(|reg| {
+            crate::context::provenance::PluginRegistryProvenance {
+                hash: reg.hash().to_string(),
+                names: reg.names().to_vec(),
+                count: reg.len(),
             }
         }),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),
