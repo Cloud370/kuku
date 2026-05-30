@@ -27,8 +27,12 @@ impl ProviderFormat {
             ProviderFormat::OpenAiResponses => "openai-responses",
         }
     }
+}
 
-    pub fn parse_from_str(s: &str) -> std::result::Result<Self, &'static str> {
+impl std::str::FromStr for ProviderFormat {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "anthropic" => Ok(ProviderFormat::Anthropic),
             "openai-chat" => Ok(ProviderFormat::OpenAiChat),

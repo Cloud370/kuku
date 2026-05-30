@@ -139,7 +139,7 @@ impl Display {
     pub fn permission_ask(&self, tool: &str, summary: &str) -> String {
         match self.mode {
             RenderMode::Pretty => {
-                format!("{} {} \u{b7} {}  (y/n)?", PERM_ASK_PREFIX, tool, summary)
+                format!("{} {} \u{b7} {}  (Y/n)?", PERM_ASK_PREFIX, tool, summary)
             }
             RenderMode::Raw => format!("ask {} \u{b7} {}", tool, summary),
         }

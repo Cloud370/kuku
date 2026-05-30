@@ -159,7 +159,7 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        _brief: brief.to_string(),
+        _brief: brief,
     })
 }
 

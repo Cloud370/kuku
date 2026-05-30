@@ -140,7 +140,8 @@ pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
             toml_edit::value(value)
         }
         "format" => {
-            super::types::ProviderFormat::parse_from_str(value)
+            value
+                .parse::<super::types::ProviderFormat>()
                 .map_err(|msg| Error::ConfigLoad(format!("{msg}, got '{value}'")))?;
             toml_edit::value(value)
         }

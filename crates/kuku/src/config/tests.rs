@@ -617,3 +617,39 @@ fn rejects_invalid_toml() {
     let result = config_patch_defaults("not [valid toml");
     assert!(result.is_err());
 }
+
+// ── ThinkLevel tests ──
+
+#[test]
+fn think_level_overhead_tokens_off() {
+    assert_eq!(ThinkLevel::Off.overhead_tokens(), 0);
+}
+
+#[test]
+fn think_level_overhead_tokens_low() {
+    assert_eq!(ThinkLevel::Low.overhead_tokens(), 1024);
+}
+
+#[test]
+fn think_level_overhead_tokens_medium() {
+    assert_eq!(ThinkLevel::Medium.overhead_tokens(), 4096);
+}
+
+#[test]
+fn think_level_overhead_tokens_high() {
+    assert_eq!(ThinkLevel::High.overhead_tokens(), 16000);
+}
+
+#[test]
+fn think_level_from_str_success() {
+    assert_eq!("off".parse::<ThinkLevel>().unwrap(), ThinkLevel::Off);
+    assert_eq!("low".parse::<ThinkLevel>().unwrap(), ThinkLevel::Low);
+    assert_eq!("medium".parse::<ThinkLevel>().unwrap(), ThinkLevel::Medium);
+    assert_eq!("high".parse::<ThinkLevel>().unwrap(), ThinkLevel::High);
+}
+
+#[test]
+fn think_level_from_str_invalid() {
+    let err = "invalid".parse::<ThinkLevel>().unwrap_err();
+    assert!(err.to_string().contains("ThinkLevel"));
+}

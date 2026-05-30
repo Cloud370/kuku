@@ -166,7 +166,7 @@ pub(super) fn is_default_excluded_dir(name: &str) -> bool {
 
 // ---------- File I/O helpers ----------
 
-pub(crate) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolResultEnvelope> {
+pub(super) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolResultEnvelope> {
     let bytes = fs::read(path).map_err(|error| {
         ToolResultEnvelope::error(
             format!("failed: {error}"),
@@ -182,7 +182,7 @@ pub(crate) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolRe
     Ok((content, bytes))
 }
 
-pub(crate) fn require_brief(tool_name: &str, args: &Value) -> Result<String, ToolResultEnvelope> {
+pub(super) fn require_brief(tool_name: &str, args: &Value) -> Result<String, ToolResultEnvelope> {
     let Some(brief) = args.get("brief").and_then(Value::as_str) else {
         return Err(ToolResultEnvelope::error(
             "failed: missing brief",

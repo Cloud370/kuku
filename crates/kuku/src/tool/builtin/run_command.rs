@@ -192,7 +192,7 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
     Ok(CommandRequest {
         command: command.to_string(),
         timeout_seconds,
-        _brief: brief.to_string(),
+        _brief: brief,
     })
 }
 

@@ -7,7 +7,6 @@ use super::types::{ExecSlot, PendingRun};
 
 pub(super) struct HookBlockResult {
     pub(super) reason: String,
-    pub(super) _package: String,
 }
 
 pub(super) struct HookPreResult {
@@ -176,7 +175,6 @@ pub(super) async fn run_tool_pre_hooks(
             return Ok(HookPreResult {
                 block: Some(HookBlockResult {
                     reason: r.stderr.clone(),
-                    _package: r.package_name.clone(),
                 }),
                 args: updated_args,
             });
