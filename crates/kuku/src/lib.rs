@@ -9,6 +9,8 @@ pub(crate) mod notice;
 pub mod permission;
 pub mod plugin;
 pub mod prompt;
+#[cfg(feature = "test_support")]
+pub mod test_support;
 pub use prompt::{builtin_prompt_catalog, PromptCatalog};
 pub(crate) mod provider;
 pub mod query;

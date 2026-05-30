@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use kuku::session::{current_workspace, kuku_home, list_sessions, SessionStatus};
 
 use crate::cli_args::ListArgs;
+use crate::display::util::truncate;
 
 /// List sessions: `kuku list [-a] [-w <workspace>] [-v]`
 pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -86,15 +87,6 @@ pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max - 1).collect();
-        format!("{truncated}…")
-    }
 }
 
 fn relative_time(rfc3339: &str) -> String {

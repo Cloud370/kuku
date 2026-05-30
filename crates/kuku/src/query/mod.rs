@@ -1,8 +1,11 @@
+mod handoff;
 mod helpers;
+mod provider;
 mod run;
 pub(crate) mod slots;
 mod start;
 mod step;
+mod tool_exec;
 mod types;
 
 pub(crate) use types::PermissionMode;

@@ -148,6 +148,17 @@ fn extract_tool_profile(mapping: &serde_yaml::Mapping) -> Option<ToolProfile> {
     })
 }
 
+const WRITE_TOOLS: &[&str] = &[
+    "Edit",
+    "Write",
+    "Bash",
+    "edit_file",
+    "write_file",
+    "run_command",
+    "remember_memory",
+    "forget_memory",
+];
+
 fn infer_profile_from_tools(tools: &Option<Vec<String>>) -> ToolProfile {
     let Some(tools) = tools else {
         return ToolProfile::Read;
@@ -155,19 +166,7 @@ fn infer_profile_from_tools(tools: &Option<Vec<String>>) -> ToolProfile {
     if tools.is_empty() {
         return ToolProfile::None;
     }
-    let has_write = tools.iter().any(|t| {
-        matches!(
-            t.as_str(),
-            "Edit"
-                | "Write"
-                | "Bash"
-                | "edit_file"
-                | "write_file"
-                | "run_command"
-                | "remember_memory"
-                | "forget_memory"
-        )
-    });
+    let has_write = tools.iter().any(|t| WRITE_TOOLS.contains(&t.as_str()));
     if has_write {
         ToolProfile::ReadWrite
     } else {

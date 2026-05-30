@@ -170,7 +170,7 @@ pub fn compute_file_revert_plan(
         let disk_path = workspace.join(file_path);
 
         let file_name = disk_path.file_name().unwrap_or_default().to_string_lossy();
-        if crate::tool::builtin::common::is_sensitive_file_name(&file_name) {
+        if crate::util::path::is_sensitive_file_name(&file_name) {
             sensitive_files.push(disk_path.clone());
         }
 
@@ -207,7 +207,7 @@ pub fn compute_file_revert_plan(
 }
 
 fn is_system_dir_path(path: &str) -> bool {
-    let normalized = crate::tool::builtin::common::normalize_path_sep(path);
+    let normalized = crate::util::path::normalize_path_sep(path);
     normalized
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")
@@ -311,13 +311,15 @@ pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
     last
 }
 
-/// List user turns in reverse chronological order for undo selection.
-pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
-    let mut current_turn: Option<u64> = None;
+fn collect_file_turns(events: &[StoredEvent], after_turn: Option<u64>) -> HashSet<u64> {
     let mut file_turns: HashSet<u64> = HashSet::new();
+    let mut current_turn: Option<u64> = None;
     for event in events {
         if let EventPayload::TurnStart { turn, .. } = &event.payload {
             current_turn = Some(*turn);
+        }
+        if after_turn.is_some_and(|n| current_turn.is_some_and(|t| t <= n)) {
+            continue;
         }
         if let EventPayload::ToolResult {
             structured: Some(s),
@@ -333,6 +335,12 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
             }
         }
     }
+    file_turns
+}
+
+/// List user turns in reverse chronological order for undo selection.
+pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
+    let file_turns = collect_file_turns(events, None);
     let mut turns: Vec<UserTurnEntry> = events
         .iter()
         .filter_map(|e| {
@@ -354,29 +362,22 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
 
 /// Count turns with file modifications after a given turn.
 pub fn count_file_turns_after(events: &[StoredEvent], after_turn: u64) -> usize {
-    let mut file_turns: HashSet<u64> = HashSet::new();
-    let mut current_turn: Option<u64> = None;
-    for event in events {
-        if let EventPayload::TurnStart { turn, .. } = &event.payload {
-            current_turn = Some(*turn);
-        }
-        if current_turn.is_some_and(|t| t > after_turn) {
-            if let EventPayload::ToolResult {
-                structured: Some(s),
-                ..
-            } = &event.payload
-            {
-                if let Some(kind) = s["kind"].as_str() {
-                    if REVERTABLE_KINDS.contains(&kind) {
-                        if let Some(t) = current_turn {
-                            file_turns.insert(t);
-                        }
-                    }
-                }
+    collect_file_turns(events, Some(after_turn)).len()
+}
+
+fn next_turn_number(events: &[StoredEvent]) -> u64 {
+    events
+        .iter()
+        .filter_map(|e| {
+            if let EventPayload::TurnStart { turn, .. } = &e.payload {
+                Some(*turn)
+            } else {
+                None
             }
-        }
-    }
-    file_turns.len()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 /// Execute a file revert plan: backup, restore, and delete files.
@@ -476,19 +477,7 @@ pub fn rollback_turn(
 ) -> crate::Result<RollbackResult> {
     let events = EventStore::replay(events_path)?;
 
-    let next_turn = events
-        .iter()
-        .filter_map(|e| {
-            if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                Some(*turn)
-            } else {
-                None
-            }
-        })
-        .max()
-        .unwrap_or(0)
-        + 1;
-
+    let next_turn = next_turn_number(&events);
     let affects_files = scope.affects_files();
     let mut store = EventStore::open(events_path)?;
     let rb_event = store.append(EventPayload::TurnRollback {
@@ -563,18 +552,7 @@ pub fn undo_rollback(
             "{file_turn_count} turn(s) with file changes since rollback; files kept as-is"
         ));
     }
-    let next_turn = check_events
-        .iter()
-        .filter_map(|e| {
-            if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                Some(*turn)
-            } else {
-                None
-            }
-        })
-        .max()
-        .unwrap_or(0)
-        + 1;
+    let next_turn = next_turn_number(&check_events);
 
     let mut store = EventStore::open(events_path)?;
     store.append(EventPayload::TurnRollbackUndo {

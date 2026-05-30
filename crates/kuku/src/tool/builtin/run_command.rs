@@ -13,7 +13,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::plural;
+use super::common::{plural, require_brief};
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
 const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
@@ -187,23 +187,12 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
         ));
     }
 
-    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing brief",
-            "run_command requires brief",
-        ));
-    };
-    if brief.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: brief is empty",
-            "brief must not be empty",
-        ));
-    }
+    let brief = require_brief("run_command", args)?;
 
     Ok(CommandRequest {
         command: command.to_string(),
         timeout_seconds,
-        _brief: brief.to_string(),
+        _brief: brief,
     })
 }
 

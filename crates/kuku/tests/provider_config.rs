@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
         ApiKey, Config, DiscoveryConfig, HandoffConfig, PluginConfig, ProviderConfig,
-        ResolvedThinking, ThinkLevel, TierConfig,
+        ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig,
     };
 }
 
@@ -62,7 +62,7 @@ fn default_config() -> Config {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
-            format: "anthropic".to_string(),
+            format: config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
             api_key: ApiKey::Plaintext("sk-ant-config".to_string()),
         },
@@ -144,7 +144,7 @@ fn explicit_tier_selects_different_tier() {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
-            format: "anthropic".to_string(),
+            format: config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
             api_key: ApiKey::Plaintext("sk-ant-config".to_string()),
         },

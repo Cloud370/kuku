@@ -6,7 +6,10 @@ use serde_json::Value;
 use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{content_hash, find_write_snapshot, plural, resolve_path, write_atomically};
+use super::common::{
+    content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief, resolve_path,
+    write_atomically,
+};
 
 struct EditRequest {
     path: String,
@@ -36,23 +39,9 @@ pub(crate) fn edit_file(
         );
     }
 
-    let bytes = match fs::read(&resolved.path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: {error}"),
-                format!("error reading file: {}", request.path),
-            )
-        }
-    };
-    let content = match String::from_utf8(bytes.clone()) {
-        Ok(content) => content,
-        Err(_) => {
-            return ToolResultEnvelope::error(
-                format!("failed: file is not valid UTF-8: {}", resolved.relative),
-                format!("file is not valid UTF-8: {}", resolved.relative),
-            )
-        }
+    let (content, bytes) = match read_file_as_utf8(&resolved.path) {
+        Ok(result) => result,
+        Err(err) => return err,
     };
     let current_hash = content_hash(&bytes);
     let Some(snapshot) =
@@ -161,18 +150,7 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             "old_text must not be empty",
         ));
     }
-    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing brief",
-            "edit_file requires brief",
-        ));
-    };
-    if brief.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: brief is empty",
-            "brief must not be empty",
-        ));
-    }
+    let brief = require_brief("edit_file", args)?;
     Ok(EditRequest {
         path: path.to_string(),
         old_text: old_text.to_string(),
@@ -181,7 +159,7 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        _brief: brief.to_string(),
+        _brief: brief,
     })
 }
 

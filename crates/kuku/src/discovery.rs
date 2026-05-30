@@ -64,7 +64,7 @@ pub fn discover(workspace: &Path, config: &DiscoveryConfig) -> DiscoveryResult {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    dirs_next()
+    home::home_dir()
 }
 
 fn scan_xdg_user(result: &mut DiscoveryResult) {
@@ -136,17 +136,6 @@ fn scan_dir_with_kinds(dir: &Path, scope: Scope, result: &mut DiscoveryResult) {
             result.agents.push(entry);
         }
     }
-}
-
-fn dirs_next() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            Some(PathBuf::from(drive).join(path))
-        })
 }
 
 #[cfg(test)]
