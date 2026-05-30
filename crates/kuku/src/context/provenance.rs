@@ -1,43 +1,51 @@
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// A file path and its content hash for provenance tracking.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileSource {
     pub path: String,
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Range of event IDs included in the conversation history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryRange {
     pub first_event_id: Option<u64>,
     pub last_event_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the tool registry used for a provider request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
     pub tool_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the subagent registry used for agent catalog rendering.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubagentRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Snapshot of the skill registry used for skill catalog rendering.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Snapshot of the plugin registry used for a provider request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PluginRegistryProvenance {
+    pub hash: String,
+    pub names: Vec<String>,
+    pub count: usize,
+}
+
 /// Inputs for building request provenance metadata.
+#[derive(Debug, Clone, PartialEq)]
 pub struct RequestProvenanceInput {
     pub request_id: String,
     pub tier: String,
@@ -51,6 +59,7 @@ pub struct RequestProvenanceInput {
     pub tool_registry: ToolRegistryProvenance,
     pub subagent_registry: Option<SubagentRegistryProvenance>,
     pub skill_registry: Option<SkillRegistryProvenance>,
+    pub plugin_registry: Option<PluginRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -61,8 +70,8 @@ pub struct RequestProvenanceInput {
     pub remaining_input_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 /// Captured provenance metadata for a provider request, stored in events.jsonl.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
     pub request_id: String,
     pub tier: String,
@@ -78,6 +87,8 @@ pub struct RequestProvenance {
     pub subagent_registry: Option<SubagentRegistryProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_registry: Option<SkillRegistryProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_registry: Option<PluginRegistryProvenance>,
     pub provider_format: String,
     pub provider: String,
     pub model: String,
@@ -103,6 +114,7 @@ pub fn build_request_provenance(input: RequestProvenanceInput) -> RequestProvena
         tool_registry: input.tool_registry,
         subagent_registry: input.subagent_registry,
         skill_registry: input.skill_registry,
+        plugin_registry: input.plugin_registry,
         provider_format: input.provider_format,
         provider: input.provider,
         model: input.model,
@@ -167,6 +179,7 @@ mod tests {
             tool_registry: tool_registry.clone(),
             subagent_registry: None,
             skill_registry: None,
+            plugin_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
@@ -195,6 +208,7 @@ mod tests {
             tool_registry: actual_tool_registry,
             subagent_registry: actual_subagent_registry,
             skill_registry: _,
+            plugin_registry: _,
             provider_format,
             provider,
             model,
@@ -255,6 +269,7 @@ mod tests {
             },
             subagent_registry: Some(subagent),
             skill_registry: None,
+            plugin_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
@@ -292,6 +307,7 @@ mod tests {
             },
             subagent_registry: None,
             skill_registry: None,
+            plugin_registry: None,
             provider_format: "anthropic".to_string(),
             provider: "anthropic".to_string(),
             model: "model".to_string(),

@@ -61,6 +61,18 @@ pub enum Error {
 
     #[error("child session requested permission: {tool} on {candidate}")]
     ChildPermissionRequested { tool: String, candidate: String },
+
+    #[error("plugin manifest error in {0:?}: {1}")]
+    PluginManifest(std::path::PathBuf, String),
+
+    #[error("plugin validation: {0}")]
+    PluginValidation(String),
+
+    #[error("plugin hook timeout: {0} ({1:?})")]
+    PluginHookTimeout(String, std::time::Duration),
+
+    #[error("plugin hook spawn error in {0:?}: {1}")]
+    PluginHookSpawn(std::path::PathBuf, std::io::Error),
 }
 
 /// Convenience alias for `std::result::Result<T, kuku::Error>`.
@@ -94,6 +106,10 @@ impl Error {
             Error::InvalidArgument(_) => "invalid_request",
             Error::SessionLocked { .. } => "session_locked",
             Error::ChildPermissionRequested { .. } => "internal",
+            Error::PluginManifest(_, _) => "internal",
+            Error::PluginValidation(_) => "invalid_request",
+            Error::PluginHookTimeout(_, _) => "internal",
+            Error::PluginHookSpawn(_, _) => "internal",
         }
     }
 }

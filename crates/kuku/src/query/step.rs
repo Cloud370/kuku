@@ -23,6 +23,7 @@ use super::helpers::{
     current_date_string, display_summary, execute_tool_call, gate_source_name, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, permission_candidate,
     permission_rule, platform_label, provider_failure_kind, provider_format_name,
+    run_tool_pre_hooks,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot};
@@ -32,6 +33,9 @@ use super::types::{
 };
 
 const MAX_REQUEST_LOOP: u64 = 20;
+/// Maximum times a model.post_response hook can force-continue (exit code 2)
+/// before the loop is terminated, preventing token-budget exhaustion.
+const MAX_FORCE_CONTINUE: u64 = 3;
 
 fn return_blocked_tool(
     mut pending: PendingRun,
@@ -77,6 +81,43 @@ async fn execute_inline_tool(
     kind: super::types::ToolKind,
 ) -> Result<PendingStep> {
     let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+
+    if let Some(ref plugin_reg) = pending.plugin_registry {
+        let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPostExecute);
+        if !hooks.is_empty() {
+            let input = crate::plugin::executor::HookInput {
+                event: "tool.post_execute".to_string(),
+                session_dir: pending
+                    .events_path
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                extra: serde_json::json!({
+                    "tool_name": queued.tool_call.name,
+                    "tool_call_id": queued.tool_call.id,
+                    "status": &result.status,
+                    "summary": &result.summary,
+                }),
+            };
+            let sd = pending.events_path.parent().unwrap().to_path_buf();
+            let ws = pending.workspace.clone();
+            let hook_results =
+                crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+            for r in &hook_results {
+                if let Some(ref ctx) = r.output.additional_context {
+                    pending.hook_context.push(ctx.clone());
+                }
+            }
+            super::helpers::record_plugin_hooks(
+                &pending.events_path,
+                pending.turn,
+                "tool.post_execute",
+                &hook_results,
+            )?;
+        }
+    }
+
     let mc = if result.model_content.is_empty() {
         None
     } else {
@@ -175,6 +216,55 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             }
         }
 
+        if let Some(ref plugin_reg) = pending.plugin_registry {
+            let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPostResponse);
+            if !hooks.is_empty() {
+                let input = crate::plugin::executor::HookInput {
+                    event: "model.post_response".into(),
+                    session_dir: pending
+                        .events_path
+                        .parent()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into(),
+                    extra: serde_json::json!({
+                        "text": &accumulated_text,
+                        "stop_reason": &final_stop_reason,
+                    }),
+                };
+                let sd = pending.events_path.parent().unwrap().to_path_buf();
+                let ws = pending.workspace.clone();
+                let results =
+                    crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+                for r in &results {
+                    if r.exit_code == 2 {
+                        pending.request_num += 1;
+                    }
+                    if let Some(ref ctx) = r.output.additional_context {
+                        pending.hook_context.push(ctx.clone());
+                    }
+                }
+                super::helpers::record_plugin_hooks(
+                    &pending.events_path,
+                    pending.turn,
+                    "model.post_response",
+                    &results,
+                )?;
+                if pending.force_continue_count < MAX_FORCE_CONTINUE
+                    && results.iter().any(|r| r.exit_code == 2)
+                {
+                    pending.force_continue_count += 1;
+                    if !pending.hook_context.is_empty() {
+                        pending.pending_events.push_back(UiEvent::TextDelta {
+                            text: String::new(),
+                        });
+                        drop(store);
+                        return call_provider_step(pending).await;
+                    }
+                }
+            }
+        }
+
         if !has_tool_calls {
             store.append(EventPayload::TurnEnd {
                 turn: pending.turn,
@@ -192,6 +282,9 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                     text: accumulated_text,
                     usage: total_usage.clone(),
                     turn: pending.turn,
+                    plugin_registry: pending.plugin_registry.clone(),
+                    session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+                    workspace: pending.workspace.clone(),
                 },
                 total_usage,
                 pending.turn,
@@ -246,6 +339,9 @@ pub(super) async fn advance_pending(
                     text: String::new(),
                     usage: None,
                     turn: pending.turn,
+                    plugin_registry: pending.plugin_registry.clone(),
+                    session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+                    workspace: pending.workspace.clone(),
                 },
                 None,
                 pending.turn,
@@ -262,7 +358,7 @@ pub(super) async fn advance_pending(
         });
     }
 
-    if let Some(queued) = pending.queued_tool_calls.pop_front() {
+    if let Some(mut queued) = pending.queued_tool_calls.pop_front() {
         let id = queued.tool_call.id.clone();
         let summary = queued.display_summary.clone();
 
@@ -313,6 +409,19 @@ pub(super) async fn advance_pending(
                 );
             }
 
+            let hook_result =
+                run_tool_pre_hooks(&mut pending, "agent", &queued.tool_call.args, &id).await?;
+            if let Some(block) = hook_result.block {
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "agent",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    &block.reason,
+                );
+            }
+
             let child_session_id = format!(
                 "child_{}_{}",
                 pending.session_id, pending.child_session_count
@@ -348,6 +457,18 @@ pub(super) async fn advance_pending(
                 }),
             });
         } else if queued.tool_call.name == "use_skill" {
+            let hook_result =
+                run_tool_pre_hooks(&mut pending, "use_skill", &queued.tool_call.args, &id).await?;
+            if let Some(block) = hook_result.block {
+                return return_blocked_tool(
+                    pending,
+                    &id,
+                    "use_skill",
+                    &summary,
+                    super::types::ToolKind::Simple,
+                    &block.reason,
+                );
+            }
             return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
@@ -415,6 +536,25 @@ pub(super) async fn advance_pending(
                             ),
                         )?;
                     }
+
+                    let hook_result = run_tool_pre_hooks(
+                        &mut pending,
+                        &queued.tool_call.name,
+                        &queued.tool_call.args,
+                        &id,
+                    )
+                    .await?;
+                    if let Some(block) = hook_result.block {
+                        return return_blocked_tool(
+                            pending,
+                            &id,
+                            &queued.tool_call.name,
+                            &summary,
+                            super::types::ToolKind::Simple,
+                            &block.reason,
+                        );
+                    }
+                    queued.tool_call.args = hook_result.args;
 
                     if active_slot_count >= 32 {
                         return return_blocked_tool(
@@ -522,6 +662,29 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         &existing_events,
     )?;
 
+    let runtime_blocks = if pending.turn == 1 {
+        if let Some(ref plugin_reg) = pending.plugin_registry {
+            if !plugin_reg.is_empty() {
+                let pkg_names = plugin_reg.names().join(", ");
+                let notice = format!(
+                    "Plugins loaded: {pkg_names}. \
+                     If not relevant to your current task, ignore."
+                );
+                let wrapped = format!("<kuku_system_notice>\n{notice}\n</kuku_system_notice>");
+                Some(match runtime_blocks {
+                    Some(existing) => format!("{existing}\n\n{wrapped}"),
+                    None => wrapped,
+                })
+            } else {
+                runtime_blocks
+            }
+        } else {
+            runtime_blocks
+        }
+    } else {
+        runtime_blocks
+    };
+
     let mut assembly = match assemble_context(
         ContextInput {
             environment: EnvironmentSource {
@@ -615,6 +778,53 @@ async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
         assembly.runtime_context.as_deref(),
         pending.skill_body.as_deref(),
     );
+
+    if !pending.hook_context.is_empty() {
+        let hook_text = pending.hook_context.join("\n");
+        pending.hook_context.clear();
+        if let Some(last_user) = assembly
+            .history
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == crate::context::Role::User)
+        {
+            last_user
+                .blocks
+                .push(crate::context::MessageBlock::Text(format!(
+                    "\n\n<hook_context>\n{hook_text}\n</hook_context>"
+                )));
+        }
+    }
+
+    if let Some(ref plugin_reg) = pending.plugin_registry {
+        let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPreRequest);
+        if !hooks.is_empty() {
+            let input = crate::plugin::executor::HookInput {
+                event: "model.pre_request".into(),
+                session_dir: pending
+                    .events_path
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into(),
+                extra: serde_json::json!({ "tier": pending.query.tier }),
+            };
+            let sd = pending.events_path.parent().unwrap().to_path_buf();
+            let ws = pending.workspace.clone();
+            let results = crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+            for r in &results {
+                if let Some(ref ctx) = r.output.additional_context {
+                    pending.hook_context.push(ctx.clone());
+                }
+            }
+            super::helpers::record_plugin_hooks(
+                &pending.events_path,
+                pending.turn,
+                "model.pre_request",
+                &results,
+            )?;
+        }
+    }
 
     let request_id = format!("req_{}", pending.request_num);
     let tier_name = pending
@@ -1019,6 +1229,13 @@ fn build_model_request_provenance(
             crate::context::provenance::SkillRegistryProvenance {
                 hash: reg.hash().to_string(),
                 names: reg.names().to_vec(),
+            }
+        }),
+        plugin_registry: pending.plugin_registry.as_ref().map(|reg| {
+            crate::context::provenance::PluginRegistryProvenance {
+                hash: reg.hash().to_string(),
+                names: reg.names().to_vec(),
+                count: reg.len(),
             }
         }),
         provider_format: provider_format_name(&resolved.config.kind).to_string(),

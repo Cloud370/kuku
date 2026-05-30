@@ -11,8 +11,8 @@ use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
 
-#[derive(Debug, Clone)]
 /// Builder for configuring and executing a model query.
+#[derive(Debug, Clone)]
 pub struct Query {
     pub(super) prompt: String,
     pub(super) session_id: Option<String>,
@@ -34,17 +34,20 @@ pub struct Query {
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Final output from a completed query run.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
     pub session_id: String,
     pub text: String,
     pub usage: Option<crate::provider::types::ProviderUsage>,
     pub turn: u64,
+    pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
+    pub(super) session_dir: std::path::PathBuf,
+    pub(super) workspace: std::path::PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// A pending permission request for a tool call.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PermissionRequest {
     pub id: String,
     pub tool_call_id: String,
@@ -53,8 +56,8 @@ pub struct PermissionRequest {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The host's response to a permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionChoice {
     Once,
     Session,
@@ -113,8 +116,8 @@ pub enum ToolEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Permission mode for child sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
     AutoAllow,
     Interactive,
@@ -173,8 +176,8 @@ pub enum UiEvent {
     },
 }
 
-#[derive(Debug)]
 /// An active query execution that yields UI events via `next()`.
+#[derive(Debug)]
 pub struct Run {
     pub(super) session_id: String,
     pub(super) state: RunState,
@@ -216,6 +219,7 @@ pub(crate) enum SlotEvent {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // Done variant is large but boxed variants dominate hot paths
 pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
@@ -262,6 +266,9 @@ pub(super) struct PendingRun {
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,
+    pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
+    pub(super) hook_context: Vec<String>,
+    pub(super) force_continue_count: u64,
 }
 
 #[derive(Debug)]
@@ -426,6 +433,26 @@ impl HandoffDetector {
                 }
             }
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl RunOutput {
+    pub(crate) fn new(
+        session_id: String,
+        text: String,
+        usage: Option<crate::provider::types::ProviderUsage>,
+        turn: u64,
+    ) -> Self {
+        Self {
+            session_id,
+            text,
+            usage,
+            turn,
+            plugin_registry: None,
+            session_dir: std::path::PathBuf::new(),
+            workspace: std::path::PathBuf::new(),
         }
     }
 }

@@ -82,13 +82,54 @@ impl Query {
         let subagent_registry = self.subagent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
+        let plugin_registry_opt = if config.plugin.enabled {
+            Some(
+                crate::plugin::PluginRegistry::builder()
+                    .load_packages(&kuku_home, &workspace)?
+                    .build()?,
+            )
+        } else {
+            None
+        };
+
+        if let Some(ref plugin_reg) = plugin_registry_opt {
+            let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::SessionStart);
+            if !hooks.is_empty() {
+                let input = crate::plugin::executor::HookInput {
+                    event: "session.start".to_string(),
+                    session_dir: events_path.parent().unwrap().to_string_lossy().to_string(),
+                    extra: serde_json::json!({}),
+                };
+                let session_dir = events_path.parent().unwrap().to_path_buf();
+                let results =
+                    crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace)
+                        .await?;
+                for r in &results {
+                    if r.output.block || r.exit_code == 2 {
+                        let reason = if r.stderr.is_empty() {
+                            "blocked by plugin hook".to_string()
+                        } else {
+                            r.stderr.clone()
+                        };
+                        return Err(crate::error::Error::PluginValidation(reason));
+                    }
+                }
+                super::helpers::record_plugin_hooks(&events_path, turn, "session.start", &results)?;
+            }
+        }
+
         let skill_registry = if self.disable_skills {
             (None, None)
         } else {
             let builder = crate::skill::registry::SkillRegistry::builder()
                 .build_with_discovery(&workspace, &config.discovery);
             match builder {
-                Ok(b) => {
+                Ok(mut b) => {
+                    if let Some(ref reg) = plugin_registry_opt {
+                        for (skill_dir, tier) in reg.skill_dirs() {
+                            b = b.load_from_dir(skill_dir, (*tier).into())?;
+                        }
+                    }
                     let reg = b.build();
                     let hash = reg.hash().to_string();
                     (Some(reg), Some(hash))
@@ -96,6 +137,7 @@ impl Query {
                 Err(_) => (None, None),
             }
         };
+        let plugin_registry = plugin_registry_opt.map(std::sync::Arc::new);
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
         crate::session::acquire_lock(&lock_path)?;
@@ -137,6 +179,9 @@ impl Query {
                 cancel_token: cancel_token.clone(),
                 handoff_triggered: false,
                 handoff_keep_turns,
+                plugin_registry,
+                hook_context: Vec::new(),
+                force_continue_count: 0,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,

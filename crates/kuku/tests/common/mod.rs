@@ -324,5 +324,6 @@ pub fn test_config() -> kuku::config::Config {
         default_tier: "balanced".to_string(),
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
+        plugin: kuku::config::PluginConfig::default(),
     }
 }
