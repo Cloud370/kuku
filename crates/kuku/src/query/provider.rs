@@ -224,7 +224,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         .tier
         .clone()
         .unwrap_or_else(|| pending.config.default_tier().to_string());
-    let think = resolved.config.think_level.as_str().to_string();
+    let think = resolved.config.think_level;
     let max_output = resolved.config.max_output_tokens;
     let params = serde_json::json!({
         "max_output_tokens": max_output,
@@ -241,7 +241,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             ts: now_timestamp()?,
             request_id: request_id.clone(),
             tier: tier_name,
-            think: think.clone(),
+            think: think.as_str().to_string(),
             provider: resolved.config.kind.as_str().to_string(),
             model: resolved.config.model.clone(),
             request_params: params,

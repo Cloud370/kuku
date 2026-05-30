@@ -325,7 +325,7 @@ fn fmt_tokens(n: u64) -> String {
 
 /// Format a stored event as a single summary line.
 pub fn render_event_brief(event: &StoredEvent, verbose: u8) -> String {
-    let mut line = format!("evt:{} | {}", event.id, event_type_name(&event.payload));
+    let mut line = format!("evt:{} | {}", event.id, event.payload.type_name());
     let details = event_details(&event.payload, verbose > 0);
     if !details.is_empty() {
         line.push_str(" | ");
@@ -377,29 +377,6 @@ fn render_context(ctx: &kuku::event::types::RequestContext) -> String {
     }
 
     out
-}
-
-fn event_type_name(payload: &EventPayload) -> &'static str {
-    match payload {
-        EventPayload::SessionMeta { .. } => "session.meta",
-        EventPayload::TurnStart { .. } => "turn.start",
-        EventPayload::UserInput { .. } => "user.input",
-        EventPayload::ModelRequest { .. } => "model.request",
-        EventPayload::ModelResponse { .. } => "model.response",
-        EventPayload::ModelError { .. } => "model.error",
-        EventPayload::ToolCall { .. } => "tool.call",
-        EventPayload::PermissionRequest { .. } => "permission.request",
-        EventPayload::PermissionDecision { .. } => "permission.decision",
-        EventPayload::ToolResult { .. } => "tool.result",
-        EventPayload::PolicyLoaded { .. } => "policy.loaded",
-        EventPayload::TurnEnd { .. } => "turn.end",
-        EventPayload::HandoffTrigger { .. } => "handoff.trigger",
-        EventPayload::Handoff { .. } => "handoff",
-        EventPayload::TurnRollback { .. } => "turn.rollback",
-        EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
-        EventPayload::PluginHook { .. } => "plugin.hook",
-        EventPayload::Unknown(_) => "unknown",
-    }
 }
 
 fn event_details(payload: &EventPayload, verbose: bool) -> String {

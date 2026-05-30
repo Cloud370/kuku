@@ -252,6 +252,31 @@ pub enum EventPayload {
     Unknown(Value),
 }
 
+impl EventPayload {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::SessionMeta { .. } => "session.meta",
+            Self::TurnStart { .. } => "turn.start",
+            Self::UserInput { .. } => "user.input",
+            Self::ModelRequest { .. } => "model.request",
+            Self::ModelResponse { .. } => "model.response",
+            Self::ModelError { .. } => "model.error",
+            Self::ToolCall { .. } => "tool.call",
+            Self::PolicyLoaded { .. } => "policy.loaded",
+            Self::PermissionRequest { .. } => "permission.request",
+            Self::PermissionDecision { .. } => "permission.decision",
+            Self::ToolResult { .. } => "tool.result",
+            Self::TurnEnd { .. } => "turn.end",
+            Self::HandoffTrigger { .. } => "handoff.trigger",
+            Self::Handoff { .. } => "handoff",
+            Self::TurnRollback { .. } => "turn.rollback",
+            Self::TurnRollbackUndo { .. } => "turn.rollback.undo",
+            Self::PluginHook { .. } => "plugin.hook",
+            Self::Unknown(_) => "unknown",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
