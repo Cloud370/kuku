@@ -32,7 +32,8 @@ impl std::str::FromStr for HookEvent {
 
 impl HookEvent {
     /// Return the wire-format event name (e.g. `"tool.pre_execute"`).
-    pub fn as_str(&self) -> &'static str {
+    #[allow(dead_code)]
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::SessionStart => "session.start",
             Self::SessionEnd => "session.end",
@@ -49,19 +50,19 @@ const MAX_TIMEOUT: u64 = 600;
 
 /// A resolved hook ready for execution, built from a manifest declaration.
 #[derive(Debug, Clone)]
-pub struct HookInstance {
-    pub event: HookEvent,
-    pub command: PathBuf,
-    pub matcher: Option<MatcherExpr>,
-    pub timeout: Duration,
-    pub chain: bool,
-    pub package_name: String,
-    pub package_root: PathBuf,
-    pub env: Vec<String>,
+pub(crate) struct HookInstance {
+    pub(crate) event: HookEvent,
+    pub(crate) command: PathBuf,
+    pub(crate) matcher: Option<MatcherExpr>,
+    pub(crate) timeout: Duration,
+    pub(crate) chain: bool,
+    pub(crate) package_name: String,
+    pub(crate) package_root: PathBuf,
+    pub(crate) env: Vec<String>,
 }
 
 /// Build hook instances from a package manifest, resolving events and matchers.
-pub fn build_hook_instances(
+pub(crate) fn build_hook_instances(
     manifest: &super::manifest::PackageManifest,
     package_root: &std::path::Path,
     package_name: &str,

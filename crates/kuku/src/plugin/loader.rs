@@ -6,7 +6,7 @@ use super::manifest::{parse_manifest, PackageManifest};
 
 /// Package installation tier: user-global or per-project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
+pub(crate) enum Tier {
     User,
     Project,
 }
@@ -22,11 +22,11 @@ impl From<Tier> for crate::skill::definition::SkillSource {
 
 /// A discovered plugin package with its manifest and installation tier.
 #[derive(Debug, Clone)]
-pub struct LoadedPackage {
-    pub name: String,
-    pub tier: Tier,
-    pub root: PathBuf,
-    pub manifest: PackageManifest,
+pub(crate) struct LoadedPackage {
+    pub(crate) name: String,
+    pub(crate) tier: Tier,
+    pub(crate) root: PathBuf,
+    pub(crate) manifest: PackageManifest,
 }
 
 /// Scan user and project package directories for plugin packages.

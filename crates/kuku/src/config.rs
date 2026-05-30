@@ -562,6 +562,8 @@ fn inject_plugin_section(doc: &mut toml_edit::DocumentMut) {
         "\n\n# Plugin system: enable/disable hook execution from .kuku/packages/.\n",
         "",
     );
+    // Default to false for patched configs — existing users opt in explicitly.
+    // New installs use assets/default-config.toml which sets enabled = true.
     section["enabled"] = toml_edit::value(false);
     doc["plugin"] = toml_edit::Item::Table(section);
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 /// Boolean expression tree for matching hook execution context variables.
 #[derive(Debug, Clone, PartialEq)]
-pub enum MatcherExpr {
+pub(crate) enum MatcherExpr {
     Cmp {
         var: String,
         op: CmpOp,
@@ -14,7 +14,7 @@ pub enum MatcherExpr {
 
 /// Comparison operator for matcher expressions.
 #[derive(Debug, Clone, PartialEq)]
-pub enum CmpOp {
+pub(crate) enum CmpOp {
     Eq,
     Ne,
     Contains,
@@ -26,7 +26,7 @@ struct Parser {
 }
 
 /// Parse a matcher expression string into an AST.
-pub fn parse(input: &str) -> Result<MatcherExpr, String> {
+pub(crate) fn parse(input: &str) -> Result<MatcherExpr, String> {
     let mut parser = Parser {
         input: input.chars().collect(),
         pos: 0,
@@ -203,7 +203,7 @@ impl Parser {
 }
 
 /// Evaluate a matcher expression against a set of context variables.
-pub fn evaluate(expr: &MatcherExpr, vars: &HashMap<String, String>) -> bool {
+pub(crate) fn evaluate(expr: &MatcherExpr, vars: &HashMap<String, String>) -> bool {
     match expr {
         MatcherExpr::Cmp { var, op, value } => {
             let Some(actual) = vars.get(var) else {

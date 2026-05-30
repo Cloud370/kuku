@@ -31,7 +31,7 @@ pub(crate) struct HookExecResult {
 }
 
 /// Execute a sequence of hooks, chaining outputs and respecting matchers.
-pub async fn execute_hooks(
+pub(crate) async fn execute_hooks(
     hooks: &[HookInstance],
     input: &HookInput,
     session_dir: &Path,

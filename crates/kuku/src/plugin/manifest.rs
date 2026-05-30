@@ -7,41 +7,41 @@ use crate::error::{Error, Result};
 
 /// Parsed contents of a plugin's `kuku.toml` manifest file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageManifest {
-    pub package: PackageMeta,
+pub(crate) struct PackageManifest {
+    pub(crate) package: PackageMeta,
     #[serde(default)]
-    pub hooks: Vec<HookDecl>,
+    pub(crate) hooks: Vec<HookDecl>,
 }
 
 /// Package identity metadata from the manifest `[package]` section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageMeta {
-    pub name: String,
-    pub version: String,
+pub(crate) struct PackageMeta {
+    pub(crate) name: String,
+    pub(crate) version: String,
     #[serde(default)]
-    pub description: Option<String>,
+    pub(crate) description: Option<String>,
     #[serde(default)]
-    pub homepage: Option<String>,
+    pub(crate) homepage: Option<String>,
     #[serde(default)]
-    pub repository: Option<String>,
+    pub(crate) repository: Option<String>,
 }
 
 /// A single hook declaration from the manifest `[[hooks]]` section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HookDecl {
+pub(crate) struct HookDecl {
     #[serde(default)]
-    pub event: Option<String>,
+    pub(crate) event: Option<String>,
     #[serde(default)]
-    pub events: Option<Vec<String>>,
-    pub command: String,
+    pub(crate) events: Option<Vec<String>>,
+    pub(crate) command: String,
     #[serde(default)]
-    pub matcher: Option<String>,
+    pub(crate) matcher: Option<String>,
     #[serde(default)]
-    pub timeout_seconds: Option<u64>,
+    pub(crate) timeout_seconds: Option<u64>,
     #[serde(default)]
-    pub chain: bool,
+    pub(crate) chain: bool,
     #[serde(default)]
-    pub env: Option<Vec<String>>,
+    pub(crate) env: Option<Vec<String>>,
 }
 
 const NAME_PATTERN: &str = r"^[a-z][a-z0-9-]{0,63}$";
@@ -57,7 +57,7 @@ const VALID_EVENTS: &[&str] = &[
 static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(NAME_PATTERN).unwrap());
 
 /// Parse and validate a TOML manifest string into a `PackageManifest`.
-pub fn parse_manifest(content: &str, path: &std::path::Path) -> Result<PackageManifest> {
+pub(crate) fn parse_manifest(content: &str, path: &std::path::Path) -> Result<PackageManifest> {
     let manifest: PackageManifest = toml::from_str(content)
         .map_err(|e| Error::PluginManifest(path.to_path_buf(), format!("TOML parse error: {e}")))?;
     validate_manifest(&manifest, path)?;
@@ -65,7 +65,7 @@ pub fn parse_manifest(content: &str, path: &std::path::Path) -> Result<PackageMa
 }
 
 /// Validate package name format and hook event declarations.
-pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> Result<()> {
+pub(crate) fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> Result<()> {
     let name = &manifest.package.name;
     if !RE.is_match(name) {
         return Err(Error::PluginManifest(
@@ -115,7 +115,7 @@ pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> 
 }
 
 /// Compute a deterministic SHA-256 hash of the manifest for change detection.
-pub fn compute_manifest_hash(manifest: &PackageManifest) -> String {
+pub(crate) fn compute_manifest_hash(manifest: &PackageManifest) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(manifest.package.name.as_bytes());

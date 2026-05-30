@@ -26,22 +26,17 @@ impl Eq for PluginRegistry {}
 
 impl PluginRegistry {
     /// Create a new builder for constructing a plugin registry.
-    pub fn builder() -> PluginRegistryBuilder {
+    pub(crate) fn builder() -> PluginRegistryBuilder {
         PluginRegistryBuilder::default()
     }
 
     /// Return all hook instances registered for the given event.
-    pub fn hooks_for(&self, event: HookEvent) -> &[HookInstance] {
+    pub(crate) fn hooks_for(&self, event: HookEvent) -> &[HookInstance] {
         self.hooks.get(&event).map_or(&[], |v| v.as_slice())
     }
 
-    /// Return all loaded packages indexed by name.
-    pub fn packages(&self) -> &BTreeMap<String, LoadedPackage> {
-        &self.packages
-    }
-
     /// Return skill directories contributed by loaded packages.
-    pub fn skill_dirs(&self) -> &[(std::path::PathBuf, Tier)] {
+    pub(crate) fn skill_dirs(&self) -> &[(std::path::PathBuf, Tier)] {
         &self.skill_dirs
     }
 
@@ -68,20 +63,20 @@ impl PluginRegistry {
 
 /// Builder for constructing a `PluginRegistry` from discovered packages.
 #[derive(Default)]
-pub struct PluginRegistryBuilder {
+pub(crate) struct PluginRegistryBuilder {
     packages: Vec<LoadedPackage>,
 }
 
 impl PluginRegistryBuilder {
     /// Discover and load plugin packages from user and project directories.
-    pub fn load_packages(mut self, kuku_home: &Path, workspace: &Path) -> Result<Self> {
+    pub(crate) fn load_packages(mut self, kuku_home: &Path, workspace: &Path) -> Result<Self> {
         let packages = super::loader::discover_packages(kuku_home, workspace)?;
         self.packages = packages;
         Ok(self)
     }
 
     /// Build the registry from loaded packages, resolving all hooks and skill directories.
-    pub fn build(self) -> crate::error::Result<PluginRegistry> {
+    pub(crate) fn build(self) -> crate::error::Result<PluginRegistry> {
         let mut packages = BTreeMap::new();
         let mut hooks: BTreeMap<HookEvent, Vec<HookInstance>> = BTreeMap::new();
 

@@ -33,6 +33,8 @@ use super::types::{
 };
 
 const MAX_REQUEST_LOOP: u64 = 20;
+/// Maximum times a model.post_response hook can force-continue (exit code 2)
+/// before the loop is terminated, preventing token-budget exhaustion.
 const MAX_FORCE_CONTINUE: u64 = 3;
 
 fn return_blocked_tool(
@@ -1336,26 +1338,5 @@ mod tests {
         let s = "hello";
         let result = truncate_summary(s, 60);
         assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn max_force_continue_is_three() {
-        assert_eq!(MAX_FORCE_CONTINUE, 3);
-    }
-
-    #[test]
-    fn force_continue_allows_below_limit() {
-        for count in 0..MAX_FORCE_CONTINUE {
-            assert!(
-                count < MAX_FORCE_CONTINUE,
-                "count {count} should be below limit"
-            );
-        }
-    }
-
-    #[test]
-    fn force_continue_blocks_at_limit() {
-        assert!(!(MAX_FORCE_CONTINUE < MAX_FORCE_CONTINUE));
-        assert!(!((MAX_FORCE_CONTINUE + 1) < MAX_FORCE_CONTINUE));
     }
 }
