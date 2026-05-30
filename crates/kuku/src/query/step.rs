@@ -150,6 +150,37 @@ async fn execute_inline_tool(
     kind: super::types::ToolKind,
 ) -> Result<PendingStep> {
     let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+
+    if let Some(ref plugin_reg) = pending.plugin_registry {
+        let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPostExecute);
+        if !hooks.is_empty() {
+            let input = crate::plugin::executor::HookInput {
+                event: "tool.post_execute".to_string(),
+                session_dir: pending
+                    .events_path
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                extra: serde_json::json!({
+                    "tool_name": queued.tool_call.name,
+                    "tool_call_id": queued.tool_call.id,
+                    "status": &result.status,
+                    "summary": &result.summary,
+                }),
+            };
+            let sd = pending.events_path.parent().unwrap().to_path_buf();
+            let ws = pending.workspace.clone();
+            let hook_results =
+                crate::plugin::executor::execute_hooks(hooks, &input, &sd, &ws).await?;
+            for r in &hook_results {
+                if let Some(ref ctx) = r.output.additional_context {
+                    pending.hook_context.push(ctx.clone());
+                }
+            }
+        }
+    }
+
     let mc = if result.model_content.is_empty() {
         None
     } else {

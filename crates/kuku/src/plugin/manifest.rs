@@ -109,6 +109,7 @@ pub fn validate_manifest(manifest: &PackageManifest, path: &std::path::Path) -> 
     Ok(())
 }
 
+// Public API for future change-detection system; not called yet in V1.
 #[allow(dead_code)]
 pub fn compute_manifest_hash(manifest: &PackageManifest) -> String {
     use sha2::{Digest, Sha256};

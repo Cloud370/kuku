@@ -18,6 +18,7 @@ pub struct HookInput {
     pub extra: serde_json::Value,
 }
 
+// Diagnostic fields for event recording; read by host integration layer.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HookExecResult {

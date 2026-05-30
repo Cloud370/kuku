@@ -64,7 +64,7 @@ impl Run {
         loop {
             // 1. Permission queue priority — don't wait for slots
             if matches!(&self.state, RunState::Pending(_)) {
-                if let Some(event) = self.try_process_queued_call()? {
+                if let Some(event) = self.try_process_queued_call().await? {
                     return Ok(Some(event));
                 }
             }
@@ -280,7 +280,7 @@ impl Run {
         }
     }
 
-    fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
+    async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
         let pending = match &mut self.state {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
@@ -356,6 +356,44 @@ impl Run {
                     tool_call,
                     display_summary,
                 } = pending.queued_tool_calls.pop_front().unwrap();
+                if let Some(ref plugin_reg) = pending.plugin_registry {
+                    let hooks =
+                        plugin_reg.hooks_for(crate::plugin::hook::HookEvent::ToolPreExecute);
+                    if !hooks.is_empty() {
+                        let input = crate::plugin::executor::HookInput {
+                            event: "tool.pre_execute".to_string(),
+                            session_dir: pending
+                                .events_path
+                                .parent()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_string(),
+                            extra: serde_json::json!({
+                                "tool_name": tool_call.name,
+                                "tool_args": tool_call.args,
+                                "tool_call_id": tool_call.id,
+                            }),
+                        };
+                        let session_dir = pending.events_path.parent().unwrap().to_path_buf();
+                        let workspace = pending.workspace.clone();
+                        let results = crate::plugin::executor::execute_hooks(
+                            hooks,
+                            &input,
+                            &session_dir,
+                            &workspace,
+                        )
+                        .await?;
+                        if results.iter().any(|r| r.output.block) {
+                            return Ok(Some(UiEvent::ToolEnd {
+                                id: tool_call.id,
+                                status: "blocked".to_string(),
+                                summary: "blocked by plugin hook".to_string(),
+                                model_content: None,
+                                result: None,
+                            }));
+                        }
+                    }
+                }
                 let (slot, tool_kind) = super::slots::dispatch_tool_slot(
                     &tool_call.name,
                     tool_call.id.clone(),
