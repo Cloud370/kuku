@@ -186,6 +186,8 @@ Tauri app startup:
 
 No IPC, no process management — just embedded HTTP server + webview. Distributed independently (.dmg / .msi / .AppImage), not bundled with CLI.
 
+The Tauri app shares the same `latest.json` update manifest as the CLI. The `desktop` field in the manifest provides platform-specific download URLs and signatures for Tauri's native updater (`tauri-plugin-updater`).
+
 ## Wire events
 
 All SDK events are converted to wire format and streamed via NDJSON. The client ignores events it does not need. Wire format is defined in [evolution.md](evolution.md#wire-format). Event types use underscore notation to distinguish from persisted events (dot notation) and Rust variants (PascalCase).
