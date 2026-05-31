@@ -20,7 +20,7 @@ pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
     let file: ConfigFile = toml::from_str(raw)
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
 
-    if file.handoff.is_some() && file.plugin.is_some() {
+    if file.handoff.is_some() && file.plugin.is_some() && file.update.is_some() {
         return Ok((raw.to_string(), false));
     }
 
@@ -33,6 +33,9 @@ pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
     }
     if file.plugin.is_none() {
         inject_plugin_section(&mut doc);
+    }
+    if file.update.is_none() {
+        inject_update_section(&mut doc);
     }
 
     Ok((doc.to_string(), true))
@@ -61,6 +64,17 @@ fn inject_plugin_section(doc: &mut toml_edit::DocumentMut) {
     // New installs use assets/default-config.toml which sets enabled = true.
     section["enabled"] = toml_edit::value(false);
     doc["plugin"] = toml_edit::Item::Table(section);
+}
+
+fn inject_update_section(doc: &mut toml_edit::DocumentMut) {
+    let mut section = toml_edit::Table::new();
+    *section.decor_mut() = toml_edit::Decor::new(
+        "\n\n# Update system: self-update source, channel, and custom mirrors.\n",
+        "",
+    );
+    section["source"] = toml_edit::value("github");
+    section["channel"] = toml_edit::value("stable");
+    doc["update"] = toml_edit::Item::Table(section);
 }
 
 /// Load config from disk, patch missing sections, write back atomically if changed.
