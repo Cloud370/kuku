@@ -46,6 +46,10 @@ keep_turns = 2
 
 [plugin]
 enabled = true
+
+[update]
+source = "github"
+channel = "stable"
 "#;
 
 // ── set_value tests ──
@@ -463,6 +467,122 @@ fn generate_default_includes_all_sections() {
     assert!(h.enabled);
     assert!((h.threshold - 0.7).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 2);
+    assert!(file.update.is_some());
+    let u = file.update.unwrap();
+    assert_eq!(u.source, "github");
+    assert_eq!(u.channel, "stable");
+}
+
+// ── update_config tests ──
+
+#[test]
+fn update_config_from_toml() {
+    let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[update]
+source = "mirror"
+channel = "alpha"
+
+[update.sources]
+custom = "https://example.com/latest.json"
+"#;
+    let file: ConfigFile = toml::from_str(input).unwrap();
+    let u = file.update.unwrap();
+    assert_eq!(u.source, "mirror");
+    assert_eq!(u.channel, "alpha");
+    assert_eq!(u.sources["custom"], "https://example.com/latest.json");
+}
+
+#[test]
+fn update_config_defaults_when_absent() {
+    let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+"#;
+    let file: ConfigFile = toml::from_str(input).unwrap();
+    assert!(file.update.is_none());
+    let resolved = ConfigFile::resolve(&file).unwrap();
+    assert_eq!(resolved.update.source, "github");
+    assert_eq!(resolved.update.channel, "stable");
+    assert!(resolved.update.sources.is_empty());
+}
+
+#[test]
+fn update_config_propagated_to_resolved_config() {
+    let dir = temp_config(
+        r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[update]
+source = "mirror"
+channel = "alpha"
+"#,
+    );
+    let path = dir.path().join("config.toml");
+    let file = load_and_patch_config(&path).unwrap();
+    let config = file.resolve().unwrap();
+    assert_eq!(config.update.source, "mirror");
+    assert_eq!(config.update.channel, "alpha");
 }
 
 // ── patch_defaults tests ──
@@ -497,6 +617,10 @@ keep_turns = 3
 
 [plugin]
 enabled = true
+
+[update]
+source = "github"
+channel = "stable"
 "#;
 
 #[test]
@@ -539,6 +663,47 @@ api_key = "test-key"
     assert!(h.enabled);
     assert!((h.threshold - 0.7).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 2);
+}
+
+#[test]
+fn fills_missing_update() {
+    let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[handoff]
+enabled = true
+threshold = 0.7
+keep_turns = 2
+
+[plugin]
+enabled = true
+"#;
+    let (patched, changed) = config_patch_defaults(input).unwrap();
+    assert!(changed);
+    let file: ConfigFile = toml::from_str(&patched).unwrap();
+    let u = file.update.unwrap();
+    assert_eq!(u.source, "github");
+    assert_eq!(u.channel, "stable");
 }
 
 #[test]
@@ -602,6 +767,10 @@ keep_turns = 5
 
 [plugin]
 enabled = true
+
+[update]
+source = "github"
+channel = "stable"
 "#;
     let (patched, changed) = config_patch_defaults(input).unwrap();
     assert!(!changed);
