@@ -214,7 +214,7 @@ async fn call_secondary_llm(
         max_output_tokens: Some(resolved.max_output_tokens),
         temperature: None,
         stream: true,
-        think_level: resolved.think_level.as_str().to_string(),
+        think_level: resolved.think_level,
         thinking: resolved.thinking.clone(),
     };
 

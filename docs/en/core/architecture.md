@@ -9,9 +9,9 @@ SDK owns runtime facts, session state, context rebuild, provider adapters, tool 
 ```text
 crates/kuku/src/
 ├── lib.rs              pub mod declarations, re-exports
-├── query/              public API: Query builder, Run state machine, slot dispatch
+├── query/              public API: Query builder, Run state machine, slot dispatch (provider, tool_exec, handoff, slots)
 ├── context/            rebuild messages from files + events, revert (rollback planning, file revert)
-├── provider/           model API adapters (Anthropic, OpenAI), SSE parsing
+├── provider/           model API adapters (Anthropic, OpenAI), SSE parsing (adapters, transport, config)
 ├── tool/               tool definitions, registry, dispatch, builtins, streaming output
 ├── permission/         runtime gate, hard guard, policy matching
 ├── session/            directory paths, writer lock, session list/delete, status
@@ -19,10 +19,11 @@ crates/kuku/src/
 ├── prompt/             prompt assets, catalog, template rendering
 ├── skill/              skill definitions, catalog, loader, registry
 ├── plugin/             manifest, matcher, hook execution, package discovery, registry
-├── config.rs           tiers, providers, HandoffConfig, PluginConfig, config.toml parsing and patching
+├── config/             tiers, providers, HandoffConfig, PluginConfig, config.toml parsing and patching
 ├── discovery.rs        agent and skill auto-discovery
 ├── subagent/           definitions, registry, catalog, child sessions
 ├── notice/             context drift detection, system notices
+├── util/               path normalization, YAML helpers
 ├── wire.rs             UiEvent → NDJSON wire format serialization
 └── error.rs            typed error enum
 ```
@@ -41,7 +42,7 @@ Each module has a clear boundary of what it may and may not depend on.
 | `session/` | Path derivation, writer lock, session list/delete | `event/` (via scan helpers) | Provider, model state |
 | `event/` | Event types, store append/replay, fast scan helpers | — | Provider, tools, permission |
 | `prompt/` | Asset catalog, template rendering | — | Runtime decisions, session state |
-| `config.rs` | Config parsing, validation, tiers, HandoffConfig, config_patch_defaults | — | Provider, tools, session |
+| `config/` | Config parsing, validation, tiers, HandoffConfig, config_patch_defaults | — | Provider, tools, session |
 | `skill/` | Skill definitions, catalog, loader, registry | `prompt/` | Runtime decisions, session state |
 | `plugin/` | Manifest parsing, matcher expressions, hook execution, package discovery, registry | `event/`, `config/`, `skill/` | Provider, permission |
 | `subagent/` | Definitions, registry, catalog, child spawn | `tool/`, `query/`, `session/` | — |

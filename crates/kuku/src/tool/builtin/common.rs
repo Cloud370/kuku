@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
 use crate::tool::ToolResultEnvelope;
+use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 
 // ---------- Types ----------
 
@@ -156,21 +157,6 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
         .replace('\\', "/")
 }
 
-pub(crate) fn normalize_path_sep(path: &str) -> String {
-    path.replace('\\', "/")
-}
-
-pub(crate) fn is_blocked_relative_path(path: &str) -> bool {
-    let normalized = normalize_path_sep(path);
-    normalized
-        .split('/')
-        .any(|part| part == ".git" || part == ".ssh")
-        || normalized
-            .rsplit('/')
-            .next()
-            .is_some_and(is_sensitive_file_name)
-}
-
 pub(super) fn is_default_excluded_dir(name: &str) -> bool {
     matches!(
         name,
@@ -178,21 +164,38 @@ pub(super) fn is_default_excluded_dir(name: &str) -> bool {
     )
 }
 
-pub(crate) fn is_sensitive_file_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".env"
-            | "credentials.json"
-            | "credentials.toml"
-            | "id_rsa"
-            | "id_dsa"
-            | "id_ecdsa"
-            | "id_ed25519"
-    ) || name.starts_with(".env.")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
-        || name.ends_with(".p12")
-        || name.ends_with(".pfx")
+// ---------- File I/O helpers ----------
+
+pub(super) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolResultEnvelope> {
+    let bytes = fs::read(path).map_err(|error| {
+        ToolResultEnvelope::error(
+            format!("failed: {error}"),
+            format!("error reading file: {}", path.display()),
+        )
+    })?;
+    let content = String::from_utf8(bytes.clone()).map_err(|_| {
+        ToolResultEnvelope::error(
+            format!("failed: file is not valid UTF-8: {}", path.display()),
+            format!("file is not valid UTF-8: {}", path.display()),
+        )
+    })?;
+    Ok((content, bytes))
+}
+
+pub(super) fn require_brief(tool_name: &str, args: &Value) -> Result<String, ToolResultEnvelope> {
+    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
+        return Err(ToolResultEnvelope::error(
+            "failed: missing brief",
+            format!("{tool_name} requires brief"),
+        ));
+    };
+    if brief.trim().is_empty() {
+        return Err(ToolResultEnvelope::error(
+            "failed: brief is empty",
+            "brief must not be empty",
+        ));
+    }
+    Ok(brief.to_string())
 }
 
 // ---------- Content helpers ----------

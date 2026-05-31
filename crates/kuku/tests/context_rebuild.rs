@@ -1,7 +1,7 @@
 use kuku::context::{
-    assemble_context, build_request_provenance, rebuild_history, CanonicalMessage, ContextInput,
-    EnvironmentSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
-    RequestProvenanceInput, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
+    assemble_context, rebuild_history, CanonicalMessage, ContextInput, EnvironmentSource,
+    FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock, RequestProvenance,
+    ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
 };
 use kuku::event::{EventPayload, EventStore};
 use kuku::prompt::builtin_prompt_catalog;
@@ -142,7 +142,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         other => panic!("expected project-context text block, got {other:?}"),
     }
 
-    let provenance = build_request_provenance(RequestProvenanceInput {
+    let provenance = RequestProvenance {
         request_id: "req_2".to_string(),
         tier: "balanced".to_string(),
         workspace: "/workspace".to_string(),
@@ -190,7 +190,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         context_budget_tier: "normal".to_string(),
         max_context_tokens: Some(200_000),
         remaining_input_tokens: None,
-    });
+    };
 
     assert_eq!(provenance.request_id, "req_2");
     assert_eq!(provenance.platform, "linux");

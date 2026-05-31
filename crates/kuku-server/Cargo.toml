@@ -32,6 +32,7 @@ tokio-stream = { workspace = true }
 home = { workspace = true }
 
 [dev-dependencies]
+kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
 wreq = { version = "6.0.0-rc.28", features = ["json", "stream"] }
 tempfile = "3"

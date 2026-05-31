@@ -153,12 +153,12 @@ fn hard_guard_rule(tool: &str, risk: &str, candidate: &str) -> Option<String> {
 }
 
 fn is_hard_guarded_path(candidate: &str) -> bool {
-    let normalized = crate::tool::builtin::common::normalize_path_sep(candidate);
+    let normalized = crate::util::path::normalize_path_sep(candidate);
     normalized
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")
         || (normalized.split('/').any(|part| part == ".kuku") && normalized.ends_with("/policy.md"))
-        || crate::tool::builtin::common::is_sensitive_file_name(
+        || crate::util::path::is_sensitive_file_name(
             normalized.rsplit('/').next().unwrap_or(&normalized),
         )
 }
@@ -240,7 +240,7 @@ fn is_dangerous_command_segment(segment: &str) -> bool {
 }
 
 fn pattern_matches(pattern: &str, candidate: &str) -> bool {
-    let candidate = crate::tool::builtin::common::normalize_path_sep(candidate);
+    let candidate = crate::util::path::normalize_path_sep(candidate);
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return candidate == prefix || candidate.starts_with(&format!("{prefix}/"));
     }

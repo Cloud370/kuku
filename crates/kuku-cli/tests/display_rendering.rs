@@ -33,7 +33,7 @@ fn permission_ask_format() {
     let line = d.permission_ask("run_command", "cargo build");
     assert!(line.contains("?"));
     assert!(line.contains("run_command"));
-    assert!(line.contains("(y/n)?"));
+    assert!(line.contains("(Y/n)?"));
 }
 
 #[test]

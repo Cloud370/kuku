@@ -5,7 +5,7 @@ use kuku::subagent::registry::SubagentRegistry;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine, RenderMode};
+use crate::display::{Display, OutputLine, RenderMode, SessionSummary};
 
 fn resolve_config_path(
     custom: Option<&str>,
@@ -48,52 +48,28 @@ fn build_skill_body(
     Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))
 }
 
-/// Non-interactive run: `kuku run "prompt" [flags]`
-pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let prompt = args.prompt.join(" ");
+struct BuiltQuery {
+    query: kuku::Query,
+    tier_name: String,
+    model_name: String,
+    config: kuku::config::Config,
+    previous_input_tokens: u64,
+}
 
-    let config_path = resolve_config_path(args.config.as_deref())?;
-    if !config_path.exists() {
-        eprintln!("error: config file not found: {}", config_path.display());
-        eprintln!("hint: run `kuku init` to initialize");
-        std::process::exit(1);
-    }
-
+fn build_query(
+    args: &RunArgs,
+    config_path: std::path::PathBuf,
+) -> Result<BuiltQuery, Box<dyn std::error::Error>> {
     let config_file =
         kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
     let cfg = config_file
         .resolve()
         .map_err(|e| format!("config error: {e}"))?;
 
-    let tier_name = args
-        .model
-        .clone()
-        .unwrap_or_else(|| cfg.default_tier().to_string());
-    let model_name = cfg
-        .tier(&tier_name)
-        .map(|t| t.model.clone())
-        .unwrap_or_else(|| tier_name.clone());
+    let prompt = args.prompt.join(" ");
 
-    use std::io::IsTerminal;
-    let mode = if args.raw || !std::io::stdout().is_terminal() {
-        RenderMode::Raw
-    } else {
-        RenderMode::Pretty
-    };
-    let think_level_str = cfg
-        .tier(&tier_name)
-        .map(|t| t.think.as_str())
-        .unwrap_or("medium");
-    let mut display = match mode {
-        RenderMode::Pretty => Display::new(args.show_thinking, think_level_str),
-        RenderMode::Raw => Display::new_raw(args.show_thinking, think_level_str),
-    };
-
-    let mut previous_input_tokens: u64 = 0;
-
-    // Parse slash command (unless skill_body already provided by caller)
-    let (user_prompt, skill_body) = if let Some(body) = args.skill_body {
-        (prompt, Some(body))
+    let (user_prompt, skill_body) = if let Some(body) = &args.skill_body {
+        (prompt.clone(), Some(body.clone()))
     } else if prompt.starts_with('/') && !args.no_skills {
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
@@ -110,22 +86,22 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         Some(body),
                     ),
                     Ok(None) => {
-                        eprintln!("Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills.");
-                        std::process::exit(1);
+                        return Err(format!(
+                            "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
+                        ).into());
                     }
                     Err(e) => {
-                        eprintln!("Error loading skill '{skill_name}': {e}");
-                        std::process::exit(1);
+                        return Err(format!("Error loading skill '{skill_name}': {e}").into());
                     }
                 }
             }
-            None => (prompt, None),
+            None => (prompt.clone(), None),
         }
     } else if prompt.starts_with('/') && args.no_skills {
         eprintln!("warning: slash command used with --no-skills; skill injection skipped");
-        (prompt, None)
+        (prompt.clone(), None)
     } else {
-        (prompt, None)
+        (prompt.clone(), None)
     };
 
     let mut q = query(&user_prompt).config_path(config_path);
@@ -149,6 +125,16 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref dir) = args.prompts_dir {
         q = q.prompts_dir(std::path::PathBuf::from(dir));
     }
+
+    let tier_name = args
+        .model
+        .clone()
+        .unwrap_or_else(|| cfg.default_tier().to_string());
+    let model_name = cfg
+        .tier(&tier_name)
+        .map(|t| t.model.clone())
+        .unwrap_or_else(|| tier_name.clone());
+
     if let Some(model) = &args.model {
         if cfg.tier(model).is_some() {
             q = q.tier(model.clone());
@@ -156,6 +142,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             q = q.model(model.clone());
         }
     }
+
+    let mut previous_input_tokens: u64 = 0;
     if let Some(session) = &args.session {
         q = q.session(session.clone());
     } else if args.cont {
@@ -192,6 +180,48 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    Ok(BuiltQuery {
+        query: q,
+        tier_name,
+        model_name,
+        config: cfg,
+        previous_input_tokens,
+    })
+}
+
+/// Non-interactive run: `kuku run "prompt" [flags]`
+pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(args.config.as_deref())?;
+    if !config_path.exists() {
+        eprintln!("error: config file not found: {}", config_path.display());
+        eprintln!("hint: run `kuku init` to initialize");
+        std::process::exit(1);
+    }
+
+    let built = build_query(&args, config_path)?;
+    let BuiltQuery {
+        query: q,
+        tier_name,
+        model_name,
+        config: cfg,
+        previous_input_tokens,
+    } = built;
+
+    use std::io::IsTerminal;
+    let mode = if args.raw || !std::io::stdout().is_terminal() {
+        RenderMode::Raw
+    } else {
+        RenderMode::Pretty
+    };
+    let think_level_str = cfg
+        .tier(&tier_name)
+        .map(|t| t.think.as_str())
+        .unwrap_or("medium");
+    let mut display = match mode {
+        RenderMode::Pretty => Display::new(args.show_thinking, think_level_str),
+        RenderMode::Raw => Display::new_raw(args.show_thinking, think_level_str),
+    };
+
     // JSON single-result path: use run(), output one final JSON line
     if args.json {
         let json_start = std::time::Instant::now();
@@ -209,14 +239,17 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
             .unwrap_or((0, 0, 0, 0));
-        let line = OutputLine::session_completed(
-            output.session_id,
-            tier_name.clone(),
-            model_name.clone(),
-            output.turn,
-            (input_tokens, output_tokens, cache_read, cache_creation),
-            json_elapsed.as_millis() as u64,
-        );
+        let line = OutputLine::session_completed(SessionSummary {
+            session_id: output.session_id,
+            tier: tier_name.clone(),
+            model: model_name.clone(),
+            turns: output.turn,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+            duration_ms: json_elapsed.as_millis() as u64,
+        });
         println!("{}", line.to_json_line());
         return Ok(());
     }
@@ -420,19 +453,17 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     if use_stream_json {
         println!(
             "{}",
-            OutputLine::session_completed(
-                session_id.clone(),
-                tier_name.clone(),
-                model_name.clone(),
-                current_turn,
-                (
-                    total_input_tokens,
-                    total_output_tokens,
-                    total_cache_read_input_tokens,
-                    total_cache_creation_input_tokens,
-                ),
-                session_elapsed.as_millis() as u64,
-            )
+            OutputLine::session_completed(SessionSummary {
+                session_id: session_id.clone(),
+                tier: tier_name.clone(),
+                model: model_name.clone(),
+                turns: current_turn,
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                cache_read_input_tokens: total_cache_read_input_tokens,
+                cache_creation_input_tokens: total_cache_creation_input_tokens,
+                duration_ms: session_elapsed.as_millis() as u64,
+            })
             .to_json_line()
         );
     } else {

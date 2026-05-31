@@ -51,6 +51,8 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
 }
 
 /// Count occurrences of `"type":"turn.start"` by string scan (no JSON parse).
+/// Safe because serde serializes the same struct definition deterministically,
+/// so the byte pattern `"type":"turn.start"` is stable across runs.
 pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     let mut file = match File::open(path) {
         Ok(f) => f,

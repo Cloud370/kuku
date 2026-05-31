@@ -84,7 +84,7 @@ pub(crate) struct ProviderRequest<'a> {
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: bool,
-    pub(crate) think_level: String,
+    pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
 }
 

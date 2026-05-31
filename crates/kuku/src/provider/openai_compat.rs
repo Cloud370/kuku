@@ -47,7 +47,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if request.think_level != "off" {
+    if request.think_level != crate::config::ThinkLevel::Off {
         let effort = match request.think_level.as_str() {
             "low" => request
                 .thinking

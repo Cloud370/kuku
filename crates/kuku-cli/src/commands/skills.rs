@@ -1,6 +1,7 @@
 use kuku::skill::registry::SkillRegistry;
 
 use crate::cli_args::{SkillsArgs, SkillsSubcommand};
+use crate::display::util::truncate;
 
 fn build_registry() -> Result<SkillRegistry, Box<dyn std::error::Error>> {
     let workspace = kuku::session::current_workspace()?;
@@ -65,12 +66,4 @@ pub fn run(args: SkillsArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(max).collect::<String>())
-    }
 }

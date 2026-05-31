@@ -32,11 +32,16 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let (provider_name, provider_cfg): (&str, Option<&CfgProvider>) = if let Some(p) =
         input.provider
     {
-        let target_format = provider_kind_to_format(ProviderKind::from(p));
+        let kind = ProviderKind::from(p);
+        let target_format = match &kind {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAiCompatible => "openai-chat",
+            ProviderKind::OpenAiResponses => "openai-responses",
+        };
         match cfg.and_then(|c| {
             c.providers
                 .iter()
-                .find(|(_, pc)| pc.format == target_format)
+                .find(|(_, pc)| pc.format.as_str() == target_format)
         }) {
             Some((name, pc)) => (name.as_str(), Some(pc)),
             None => (ProviderKind::from(p).as_str(), None),
@@ -116,12 +121,4 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         think_level,
         thinking: Default::default(),
     })
-}
-
-fn provider_kind_to_format(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::OpenAiCompatible => "openai-chat",
-        ProviderKind::OpenAiResponses => "openai-responses",
-    }
 }

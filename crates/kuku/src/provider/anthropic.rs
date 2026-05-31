@@ -55,7 +55,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
-    if request.think_level != "off" {
+    if request.think_level != crate::config::ThinkLevel::Off {
         body["thinking"] = json!({
             "type": "adaptive",
             "display": "summarized",
@@ -174,15 +174,11 @@ pub(crate) async fn stream(
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
-    tool_arg_buffers: Vec<(u64, String)>,
 }
 
 impl AnthropicSseParser {
     fn new() -> Self {
-        Self {
-            chunks: Vec::new(),
-            tool_arg_buffers: Vec::new(),
-        }
+        Self { chunks: Vec::new() }
     }
 
     fn feed(&mut self, frame: &str) {
@@ -262,7 +258,6 @@ impl AnthropicSseParser {
                                 id: id.clone(),
                                 name: name.clone(),
                             });
-                            self.tool_arg_buffers.push((index, String::new()));
                         }
                         _ => {}
                     }
@@ -294,11 +289,6 @@ impl AnthropicSseParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            if let Some((_, buf)) =
-                                self.tool_arg_buffers.iter_mut().find(|(i, _)| *i == index)
-                            {
-                                buf.push_str(&fragment);
-                            }
                             self.chunks
                                 .push(ProviderChunk::ToolCallArgDelta { index, fragment });
                         }
@@ -374,7 +364,10 @@ mod tests {
     use crate::prompt::PromptCatalog;
     use crate::provider::types::ProviderRequest;
 
-    fn minimal_request<'a>(think_level: &str, catalog: &'a PromptCatalog) -> ProviderRequest<'a> {
+    fn minimal_request<'a>(
+        think_level: crate::config::ThinkLevel,
+        catalog: &'a PromptCatalog,
+    ) -> ProviderRequest<'a> {
         ProviderRequest {
             assembly: ContextAssembly {
                 system_prompt: "test".into(),
@@ -392,7 +385,7 @@ mod tests {
             max_output_tokens: Some(1024),
             temperature: None,
             stream: false,
-            think_level: think_level.into(),
+            think_level,
             thinking: crate::config::ResolvedThinking {
                 low: None,
                 medium: None,
@@ -404,7 +397,7 @@ mod tests {
     #[test]
     fn render_body_adaptive_thinking_high() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request("high", &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::High, &catalog));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
         assert_eq!(body["output_config"]["effort"], "max");
@@ -414,7 +407,10 @@ mod tests {
     #[test]
     fn render_body_adaptive_thinking_medium() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request("medium", &catalog));
+        let body = render_body(&minimal_request(
+            crate::config::ThinkLevel::Medium,
+            &catalog,
+        ));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
     }
@@ -422,7 +418,7 @@ mod tests {
     #[test]
     fn render_body_adaptive_thinking_low() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request("low", &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::Low, &catalog));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "low");
     }
@@ -430,7 +426,7 @@ mod tests {
     #[test]
     fn render_body_no_thinking_when_off() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request("off", &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
     }
@@ -438,7 +434,7 @@ mod tests {
     #[test]
     fn render_body_includes_cache_control() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request("off", &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
         let cc = body
             .get("cache_control")
             .expect("cache_control field should be present");
