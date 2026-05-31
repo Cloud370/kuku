@@ -7,7 +7,7 @@ pub use resolve::{load_config, show_redacted};
 pub use types::{
     ApiKey, Config, ConfigFile, DiscoveryConfig, HandoffConfig, ModelEntry, PluginConfig,
     ProviderConfig, ProviderEntry, ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig,
-    TierInfo,
+    TierInfo, UpdateConfig,
 };
 
 #[cfg(test)]

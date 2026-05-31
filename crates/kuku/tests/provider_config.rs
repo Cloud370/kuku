@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
         ApiKey, Config, DiscoveryConfig, HandoffConfig, PluginConfig, ProviderConfig,
-        ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig,
+        ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig, UpdateConfig,
     };
 }
 
@@ -75,6 +75,7 @@ fn default_config() -> Config {
         discovery: config::DiscoveryConfig::default(),
         handoff: config::HandoffConfig::default(),
         plugin: config::PluginConfig::default(),
+        update: config::UpdateConfig::default(),
     }
 }
 
@@ -157,6 +158,7 @@ fn explicit_tier_selects_different_tier() {
         discovery: config::DiscoveryConfig::default(),
         handoff: config::HandoffConfig::default(),
         plugin: config::PluginConfig::default(),
+        update: config::UpdateConfig::default(),
     };
 
     let resolved = resolve_config(ResolveConfigInput {
