@@ -19,6 +19,7 @@ Public API and agent loop orchestration. The only module that may depend on ever
 - `Query` is a typed builder. `Run` streams `UiEvent` and accepts `decide()` calls.
 - `advance_pending` drives the state machine: context → provider → tool dispatch → loop.
 - `run()` is a convenience wrapper over `start()` + polling to `Done`.
+- Submodules: `provider.rs` (provider call orchestration), `tool_exec.rs` (tool execution dispatch), `handoff.rs` (handoff detection), `helpers.rs` (shared helpers), `slots.rs` (ExecSlot management).
 
 ## event/
 
@@ -65,7 +66,7 @@ Outputs:
 - `ContextAssembly` with system prompt, prelude messages, history, tools, runtime context
 - `RequestProvenance` with hashes for instructions, memory, prompts, tool registry, subagent registry
 
-**context/revert** — rollback planning, file revert execution, rollback state tracking. Depends on `event/` (replay) and `tool/builtin/common` (`is_sensitive_file_name`, `content_hash`).
+**context/revert** — rollback planning, file revert execution, rollback state tracking. Depends on `event/` (replay), `tool/builtin/common` (`content_hash`), and `util/path` (`is_sensitive_file_name`).
 
 Must not: call a provider, decide permissions, cache anything across turns.
 
