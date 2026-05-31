@@ -104,11 +104,37 @@ chmod +x "$BIN_DIR/kuku"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
-    echo ""
-    echo "Add kuku to your PATH:"
-    echo "  export PATH=\"$BIN_DIR:\$PATH\""
-    echo ""
-    echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.)"
+    # Detect shell profile
+    PROFILE=""
+    case "$SHELL" in
+      */zsh)  PROFILE="$HOME/.zshrc" ;;
+      */bash)
+        if [ -f "$HOME/.bashrc" ]; then
+          PROFILE="$HOME/.bashrc"
+        elif [ -f "$HOME/.bash_profile" ]; then
+          PROFILE="$HOME/.bash_profile"
+        else
+          PROFILE="$HOME/.profile"
+        fi
+        ;;
+      */fish) PROFILE="$HOME/.config/fish/config.fish" ;;
+      *)      PROFILE="$HOME/.profile" ;;
+    esac
+
+    PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+
+    # Avoid duplicate entries
+    if [ -f "$PROFILE" ] && grep -qF "$BIN_DIR" "$PROFILE" 2>/dev/null; then
+      echo "PATH entry already exists in $PROFILE"
+    else
+      echo "" >> "$PROFILE"
+      echo "# kuku" >> "$PROFILE"
+      echo "$PATH_LINE" >> "$PROFILE"
+      echo "Added kuku to PATH in $PROFILE"
+    fi
+
+    # Export for current session
+    export PATH="$BIN_DIR:$PATH"
     ;;
 esac
 

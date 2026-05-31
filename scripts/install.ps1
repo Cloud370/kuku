@@ -72,10 +72,10 @@ Expand-Archive -Path $cacheFile -DestinationPath $binDir -Force
 # ── PATH check ──
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$binDir*") {
-    Write-Host ""
-    Write-Host "Add kuku to your PATH:"
-    Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$binDir;`" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')"
-    Write-Host ""
+    $newPath = "$binDir;$userPath"
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    $env:Path = "$binDir;$env:Path"
+    Write-Host "Added kuku to user PATH"
 }
 
 Write-Host "kuku $manifestVersion installed successfully."
