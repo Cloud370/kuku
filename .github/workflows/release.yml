@@ -143,7 +143,7 @@ jobs:
             }' > latest.json
 
       - name: Create release
-        uses: softprops/action-ghrelease@v2
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
