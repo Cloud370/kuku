@@ -9,10 +9,30 @@
 
 Follows [SemVer](https://semver.org/) with `v` prefix on tags.
 
-- Stable: `v0.1.0`, `v0.2.0`
-- Pre-release: `v0.1.0-alpha.1`, `v0.1.0-beta.1`, `v0.1.0-rc.1`
+```
+v0.MINOR.PATCH
+   │      │
+   │      └── bug fix (patch within a feature set)
+   └── new feature or module
+```
+
+- Feature release: bump MINOR, reset PATCH to 0 → `0.1.0` → `0.2.0`
+- Bug fix: bump PATCH → `0.2.0` → `0.2.1`
+- At 0.x, MINOR may contain breaking changes
+
+### Pre-release tags
+
+| Stage | Who uses it | Meaning |
+|-------|-------------|---------|
+| `-alpha.N` | Developers only | Feature incomplete, API may change |
 
 Tag containing `-` is automatically marked as pre-release by CI.
+
+During fast iteration, `-alpha.N` with incrementing N is sufficient. Once the alpha is stable, promote directly to the next stable release (e.g. `0.2.0-alpha.3` → `0.2.0`).
+
+### When to release 1.0
+
+When the API is stable, external users depend on it, and breaking changes should be rare. Before that, stay at 0.x.
 
 ## Release Steps
 
