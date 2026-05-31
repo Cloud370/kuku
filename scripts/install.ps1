@@ -78,4 +78,11 @@ if ($userPath -notlike "*$binDir*") {
     Write-Host "Added kuku to user PATH"
 }
 
+Write-Host ""
 Write-Host "kuku $manifestVersion installed successfully."
+Write-Host ""
+Write-Host "  kuku --help          Show usage"
+Write-Host "  kuku --version       Show version"
+Write-Host "  kuku init            Initialize a project"
+Write-Host ""
+Write-Host "Docs: https://kuku.run"

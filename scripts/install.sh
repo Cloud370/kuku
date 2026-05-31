@@ -138,4 +138,11 @@ case ":$PATH:" in
     ;;
 esac
 
+echo ""
 echo "kuku $MANIFEST_VERSION installed successfully."
+echo ""
+echo "  kuku --help          Show usage"
+echo "  kuku --version       Show version"
+echo "  kuku init            Initialize a project"
+echo ""
+echo "Docs: https://kuku.run"
