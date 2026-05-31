@@ -86,3 +86,10 @@ keep_turns = 2           # number of recent turns preserved after handoff
 
 [plugin]
 enabled = true
+
+# ── Update system ─────────────────────────────────────────────────────────────
+# Self-update source, release channel, and custom mirror URLs.
+
+[update]
+source = "github"        # "github" (default releases) or "mirror" (custom URL)
+channel = "stable"       # "stable" or "alpha"

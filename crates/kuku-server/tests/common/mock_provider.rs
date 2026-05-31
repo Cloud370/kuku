@@ -28,6 +28,7 @@ pub use kuku::test_support::anthropic_sse_response;
 pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     use kuku::config::{
         ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
+        UpdateConfig,
     };
     use std::collections::BTreeMap;
 
@@ -61,5 +62,6 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         plugin: kuku::config::PluginConfig::default(),
+        update: UpdateConfig::default(),
     }
 }

@@ -682,6 +682,7 @@ mod tests {
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
             plugin: crate::config::PluginConfig::default(),
+            update: crate::config::UpdateConfig::default(),
         }
     }
 

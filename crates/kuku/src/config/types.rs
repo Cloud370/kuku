@@ -63,6 +63,9 @@ pub struct ConfigFile {
 
     #[serde(default)]
     pub plugin: Option<PluginConfig>,
+
+    #[serde(default)]
+    pub update: Option<UpdateConfig>,
 }
 
 pub(crate) fn default_true() -> bool {
@@ -121,6 +124,7 @@ pub struct Config {
     pub discovery: DiscoveryConfig,
     pub handoff: HandoffConfig,
     pub plugin: PluginConfig,
+    pub update: UpdateConfig,
 }
 
 /// Configuration for session handoff behaviour (threshold, history retention).
@@ -163,6 +167,24 @@ impl From<RawHandoffConfig> for HandoffConfig {
 pub struct PluginConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    pub source: String,
+    pub channel: String,
+    #[serde(default)]
+    pub sources: BTreeMap<String, String>,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            source: "github".into(),
+            channel: "stable".into(),
+            sources: BTreeMap::new(),
+        }
+    }
 }
 
 fn deserialize_handoff<'de, D>(

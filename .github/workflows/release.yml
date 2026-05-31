@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0-alpha.1)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Build WebUI
+        working-directory: apps/web
+        run: npm install && npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../kuku-${{ matrix.platform }}.tar.gz kuku
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/kuku.exe -DestinationPath kuku-${{ matrix.platform }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kuku-${{ matrix.platform }}
+          path: kuku-${{ matrix.platform }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: sha256sum kuku-* > sha256sums.txt
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          if echo "${{ steps.tag.outputs.tag }}" | grep -q '-'; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate latest.json
+        working-directory: artifacts
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          LINUX_SHA="$(sha256sum kuku-linux-x86_64.tar.gz | awk '{print $1}')"
+          DARWIN_SHA="$(sha256sum kuku-darwin-aarch64.tar.gz | awk '{print $1}')"
+          WINDOWS_SHA="$(sha256sum kuku-windows-x86_64.zip | awk '{print $1}')"
+          jq -n \
+            --arg v "$VERSION" \
+            --arg n "$NOTES" \
+            --arg d "$PUB_DATE" \
+            --arg b "$BASE" \
+            --arg ls "$LINUX_SHA" \
+            --arg ds "$DARWIN_SHA" \
+            --arg ws "$WINDOWS_SHA" \
+            '{
+              version: $v,
+              notes: $n,
+              pub_date: $d,
+              platforms: {
+                "linux-x86_64":   { url: ($b + "/kuku-linux-x86_64.tar.gz"),   sha256: $ls },
+                "darwin-aarch64": { url: ($b + "/kuku-darwin-aarch64.tar.gz"), sha256: $ds },
+                "windows-x86_64": { url: ($b + "/kuku-windows-x86_64.zip"),    sha256: $ws }
+              },
+              desktop: {}
+            }' > latest.json
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+          files: |
+            artifacts/kuku-linux-x86_64.tar.gz
+            artifacts/kuku-darwin-aarch64.tar.gz
+            artifacts/kuku-windows-x86_64.zip
+            artifacts/sha256sums.txt
+            artifacts/latest.json

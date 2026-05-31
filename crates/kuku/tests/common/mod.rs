@@ -243,5 +243,6 @@ pub fn test_config() -> kuku::config::Config {
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         plugin: kuku::config::PluginConfig::default(),
+        update: kuku::config::UpdateConfig::default(),
     }
 }

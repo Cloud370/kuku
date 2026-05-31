@@ -18,6 +18,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
             discovery: None,
             handoff: None,
             plugin: None,
+            update: None,
         });
     }
     let text = std::fs::read_to_string(path)
@@ -93,6 +94,8 @@ impl ConfigFile {
 
         let plugin = self.plugin.clone().unwrap_or_default();
 
+        let update = self.update.clone().unwrap_or_default();
+
         Ok(Config {
             tiers,
             providers,
@@ -100,6 +103,7 @@ impl ConfigFile {
             discovery,
             handoff,
             plugin,
+            update,
         })
     }
 

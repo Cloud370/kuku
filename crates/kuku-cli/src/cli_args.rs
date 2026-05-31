@@ -6,7 +6,7 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "kuku", version, about = "file-native agent runtime")]
+#[command(name = "kuku", version = env!("KUKU_VERSION"), about = "file-native agent runtime")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
