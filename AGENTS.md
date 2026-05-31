@@ -17,7 +17,11 @@ cargo check                                            # fast compile check
 cargo test -p kuku -p kuku-cli -p kuku-server                    # all tests
 cargo clippy -- -D warnings                            # zero warnings required
 cargo fmt --all                                        # format before commit
+make build                                             # local release build (glibc, fast)
+make release-linux                                     # portable release build (musl, via cross+Docker)
 ```
+
+Release builds use `x86_64-unknown-linux-musl` via `cross` (fully static, no glibc dependency). Use the default glibc target for development and tests; musl only for release packaging.
 
 ## Code conventions
 
