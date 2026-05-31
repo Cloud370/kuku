@@ -46,7 +46,7 @@ jobs:
 
       - name: Build WebUI
         working-directory: apps/web
-        run: npm ci && npm run build
+        run: npm install && npm run build
 
       - uses: dtolnay/rust-toolchain@stable
         with:
