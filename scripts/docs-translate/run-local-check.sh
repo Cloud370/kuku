@@ -13,9 +13,12 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 IMAGE_TAG="${KUKU_AGENT_RUNNER_IMAGE:-kuku-agent-runner:local}"
-CACHE_ROOT="${KUKU_CACHE_ROOT:-/tmp/opencode/docs-translate}"
+CACHE_ROOT="${KUKU_CACHE_ROOT:-/tmp/kuku/docs-translate}"
 CONTAINER_CACHE_DIR="${KUKU_CONTAINER_CACHE_DIR:-/kuku-cache}"
-RUN_ID="${KUKU_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+RUN_ID="${KUKU_RUN_ID:-}"
+if [[ -z "$RUN_ID" ]]; then
+    RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+fi
 KUKU_HOME_HOST="$CACHE_ROOT/kuku-home-runs/$RUN_ID"
 KUKU_HOME_CONTAINER="$CONTAINER_CACHE_DIR/kuku-home-runs/$RUN_ID"
 

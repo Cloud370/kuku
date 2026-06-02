@@ -15,7 +15,10 @@ fi
 BASE_BRANCH="${KUKU_PR_BASE:-main}"
 TARGET_LOCALE="${KUKU_DOCS_TARGET_LOCALE:-}"
 EXISTING_PR_REF="${KUKU_DOCS_PR:-}"
-RUN_ID="${KUKU_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+RUN_ID="${KUKU_RUN_ID:-}"
+if [[ -z "$RUN_ID" ]]; then
+    RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+fi
 
 usage() {
     printf 'usage: %s --locale <locale> [--pr <number-or-url>] docs/en/path.md\n' "${0##*/}" >&2
@@ -115,18 +118,15 @@ if [[ -z "$CURRENT_BRANCH" ]]; then
     exit 1
 fi
 
-if [[ -n "${KUKU_CHECK_PROMPT:-}" ]]; then
-    PROMPT="$KUKU_CHECK_PROMPT"
-else
-    if [[ ! -f "$PROMPT_TEMPLATE_FILE" ]]; then
-        printf 'prompt template file not found: %s\n' "$PROMPT_TEMPLATE_FILE" >&2
-        exit 1
-    fi
-    PROMPT_TEMPLATE="$(<"$PROMPT_TEMPLATE_FILE")"
-    PROMPT="${PROMPT_TEMPLATE//\{\{SOURCE_PATH\}\}/$SOURCE_PATH}"
-    PROMPT="${PROMPT//\{\{TARGET_PATH\}\}/$TARGET_PATH}"
-    PROMPT="${PROMPT//\{\{TARGET_LOCALE\}\}/$TARGET_LOCALE}"
-    PROMPT="$PROMPT
+if [[ ! -f "$PROMPT_TEMPLATE_FILE" ]]; then
+    printf 'prompt template file not found: %s\n' "$PROMPT_TEMPLATE_FILE" >&2
+    exit 1
+fi
+PROMPT_TEMPLATE="$(<"$PROMPT_TEMPLATE_FILE")"
+PROMPT="${PROMPT_TEMPLATE//\{\{SOURCE_PATH\}\}/$SOURCE_PATH}"
+PROMPT="${PROMPT//\{\{TARGET_PATH\}\}/$TARGET_PATH}"
+PROMPT="${PROMPT//\{\{TARGET_LOCALE\}\}/$TARGET_LOCALE}"
+PROMPT="$PROMPT
 
 Context:
 - Mode: open-pr
@@ -136,14 +136,13 @@ Context:
 - Target page exists: $TARGET_EXISTS
 - Current branch: \`$CURRENT_BRANCH\`
 - Base branch: \`$BASE_BRANCH\`"
-    if [[ -n "$EXISTING_PR_REF" ]]; then
-        PROMPT="$PROMPT
-- Explicit PR reference: \`$EXISTING_PR_REF\`"
-    fi
+if [[ -n "$EXISTING_PR_REF" ]]; then
     PROMPT="$PROMPT
+- Explicit PR reference: \`$EXISTING_PR_REF\`"
+fi
+PROMPT="$PROMPT
 
 When finished, return only the PR body text."
-fi
 
 SESSION_ID="$(KUKU_RUN_ID="$RUN_ID" KUKU_CHECK_SHOW_SKILL_INFO=0 KUKU_CHECK_OUTPUT_MODE=session-id KUKU_CHECK_PROMPT="$PROMPT" bash "$SCRIPT_DIR/run-local-check.sh")"
 
