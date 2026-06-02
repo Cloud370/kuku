@@ -1,6 +1,6 @@
 ---
 name: docs-translate
-description: Use only when the user explicitly asks to translate, sync, or update this repository's public Chinese docs mirror from `docs/en/**` to `docs/zh/**`, or when a dedicated docs-translate script or workflow invokes it. Never use for normal code work, normal English docs editing, review, or unrelated repository tasks.
+description: Use ONLY when the kuku repository's `scripts/docs-translate/*` workflow explicitly invokes it.
 allowed-tools:
   - find_files
   - read_file
@@ -12,100 +12,69 @@ allowed-tools:
 
 # Docs Translate
 
-This skill assumes the caller has already decided this is a manual docs translation run for this repository.
+This skill is the workflow brain for the `kuku` repository's public docs mirror.
 
-## Working Loop
+## Guardrail
 
-Follow this loop:
+- Scope: sync the `kuku` repository's public docs mirror from `docs/en/**` into `docs/<locale>/**`.
 
-1. Read `docs/AGENTS.md` before changing translated docs.
-2. Inspect repo state with `run_command` using focused Git commands.
-3. Identify the English source pages under `docs/en/**` that actually need translation work.
-4. Read the source pages and their matching `docs/zh/**` pages before editing.
-5. Translate conservatively into the mirrored Chinese paths.
-6. If the task includes formal sync or PR update, use `gh` through `run_command` only after the file changes are ready.
-7. Summarize which pages were updated and why, especially for any related pages beyond the direct mirror files.
+## Inputs
 
-## Efficiency Guidance
+- The caller supplies a source page and target locale.
+- The default mirrored target path is `docs/<locale>/<source-relative-path>`.
+- The caller may also supply an explicit target path or an existing PR reference.
+- An explicit PR reference means inspect and update that PR, not a different one.
+- Treat caller-supplied paths, locale, current branch, base branch, and explicit PR reference as starting context. Re-check only what is needed before file edits or external side effects.
 
-Prefer the smallest useful command and the fewest tool rounds.
+## Modes
 
-- Start with focused Git inspection:
-  - `git status --short`
-  - `git diff --name-only -- docs/en`
-  - `git diff --stat -- docs/en docs/zh`
-- When the changed set is already known, batch reads instead of many tiny single-file reads.
-- Read the English page and its mirrored Chinese page in parallel when possible.
-- If multiple independent docs pages need translation, process them in batches, not one shell round per file.
-- Batch related edits when they belong to the same page set, but do not bundle unrelated rewrites.
-- For long command output, prefer focused commands first. If a command is still noisy, it is acceptable to pipe to `tail -n` for the failure or final summary section.
-- Use `gh` only for explicit PR work, and prefer direct subcommands such as:
-  - `gh pr view`
-  - `gh pr create`
-  - `gh pr edit`
-  - `gh pr comment`
-- Do not spend turns rediscovering repository structure that is already known from `docs/AGENTS.md` and the mirrored path rule.
+- Translation-only: update translated docs and finish with a summary. Use `gh` only for caller-requested PR or branch work.
+- Open-PR: finish the sync on the current branch. After the docs changes are ready, use `git` and `gh` yourself to commit, push, and create or update the PR.
 
-## Tool Guidance
+## Fast Path
 
-- Use `run_command` for repository state and GitHub operations.
-- Use `git status --short` to inspect the worktree.
-- Use focused `git diff` commands to find relevant English docs changes.
-- Use `gh` only when the task explicitly includes PR inspection, creation, or update.
-- Use `read_file` and `search_text` to inspect docs content before editing.
-- Use `edit_file` or `write_file` only after reading the relevant source and target pages.
-- Prefer parallel reads over repeated serial reads when file paths are already known.
-- Prefer focused edits over broad rewrites when both would work.
+1. Read `docs/AGENTS.md`.
+2. Confirm the current branch and worktree state with focused commands such as `git branch --show-current` and `git status --short`.
+3. If the caller already gives a concrete source or target path, skip repo-wide discovery. Otherwise use focused `git diff` on `docs/en/**`.
+4. Read the English source page and the current target page. If the target page does not exist yet, create it at the mirrored target path.
+5. Translate conservatively.
+6. Run the self-check below before any `git` or `gh` action.
+7. In open-PR mode, inspect PR state first, then stage only this sync task's docs changes, commit, push, and create or update the PR.
+8. If there are no docs changes, stop without committing or opening a PR.
 
-For ordinary local translation-only runs, do not use `gh` unless the user explicitly asks for PR or branch work.
+## Self-Check
 
-## Translation Rules
+- The target path matches the requested locale and mirrored source path unless the caller explicitly overrides it.
+- Markdown structure, links, code spans, commands, paths, and config keys remain intact.
+- Visible labels are translated.
+- No obvious English residue remains unless the term is intentionally protected.
+- Canonical product terms stay in English: `Agent`, `Skill`, `Session`, `Memory`, `Tool`, `Prompt`, `Server`, `Package`, `Hook`.
+- Related updates stay narrow and are easy to explain.
+- No unrelated docs rewrites are mixed into the same run.
 
-- `docs/en/**` is the canonical source.
-- Keep the mirrored path structure under `docs/zh/**`.
-- Preserve Markdown structure, headings, code spans, commands, paths, config keys, and links.
-- Keep canonical product terms in English, including:
-  - `Agent`
-  - `Skill`
-  - `Session`
-  - `Memory`
-  - `Tool`
-  - `Prompt`
-  - `Server`
-  - `Package`
-  - `Hook`
-- Prefer the direct corresponding translated page first.
-- Additional related-page updates are allowed only when clearly needed for consistency.
-- If updating pages beyond the direct corresponding set, explain why in the final summary or PR body.
+## Translation Style
 
-## Behavior Rules
+- Match the source page's tone: technical, direct, and factual.
+- Prefer natural target-language phrasing over word-by-word calques.
+- Keep the translation concise. Do not add explanations that are not present in the source page.
+- Reuse established terminology from nearby pages in the same target locale when it already exists.
+- Keep headings, short labels, and table vocabulary consistent within the same page.
+- If the source is terse, keep the translation terse.
 
-- Be conservative.
-- Do not rewrite large unrelated sections.
-- Do not invent new documentation structure.
-- Respect the repository docs rules in `docs/AGENTS.md`.
-- Treat recent English changes as the main cue, not as permission to rewrite the whole docs tree.
-- If a page does not need translation changes, leave it alone.
-- If formal sync is requested, keep PR language factual and short.
-- Branch and worktree preparation belong to the caller workflow. Do not create or switch branches unless the user explicitly asks.
+## PR Rules
 
-## PR Body Contract
+- For this workflow, write PR text with the structure below.
+- Keep PR language short and factual.
+- Prefer direct `gh` subcommands such as `gh pr list`, `gh pr view`, `gh pr create`, `gh pr edit`, and `gh pr comment`.
+- Prefer updating an existing PR on the current branch instead of opening a duplicate.
+- If an explicit PR reference is provided, inspect it first and work only when its head branch matches the current branch.
+- Before committing, limit the staged set to the docs changes for this sync task.
 
-When a translation run needs a PR body, keep it short and factual.
+## PR Body
 
-Include these sections in this order:
-
-1. `## Source Pages`
-2. `## Updated Pages`
-3. `## Related Updates`
-4. `## Notes`
-
-Rules:
-
-- `Source Pages` lists the English pages that drove this translation run.
-- `Updated Pages` lists the translated files that changed.
-- `Related Updates` is either `- none` or a short bullet list with reasons.
-- `Notes` should mention review expectations or translation risk only when needed.
-- End the PR body with the exact final line `Submitted by kuku AGENT.`.
-- Do not write marketing language.
-- Do not write long explanations.
+- Title: `docs: sync <locale> for <path-under-docs/en>`
+- Sections, in order: `## Source Pages`, `## Updated Pages`, `## Related Updates`, `## Notes`
+- `Related Updates`: `- none` or a short list with reasons.
+- `Notes`: only when review risk or translation risk matters.
+- If the caller asks for PR-body-only output, return only the PR body text.
+- If you add a signature tail, use the exact final line `Submitted by kuku AGENT.`.
