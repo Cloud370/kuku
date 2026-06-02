@@ -224,12 +224,12 @@ jobs:
 
           {
             printf '## Docs translate run\n\n'
-            printf '- Source: `%s`\n' "$KUKU_DOCS_SOURCE_PATH"
-            printf '- Locale: `%s`\n' "$KUKU_DOCS_TARGET_LOCALE"
-            printf '- Branch: `%s`\n' "$KUKU_DOCS_BRANCH_NAME"
-            printf '- Base: `%s`\n' "$KUKU_DOCS_BASE_BRANCH"
+            printf '%s\n' "- Source: \`$KUKU_DOCS_SOURCE_PATH\`"
+            printf '%s\n' "- Locale: \`$KUKU_DOCS_TARGET_LOCALE\`"
+            printf '%s\n' "- Branch: \`$KUKU_DOCS_BRANCH_NAME\`"
+            printf '%s\n' "- Base: \`$KUKU_DOCS_BASE_BRANCH\`"
             if [[ -n "$KUKU_DOCS_PR_NUMBER" ]]; then
-              printf '- Existing PR: `%s`\n' "$KUKU_DOCS_PR_NUMBER"
+              printf '%s\n' "- Existing PR: \`$KUKU_DOCS_PR_NUMBER\`"
             fi
             printf '\n### Agent final output\n\n%s\n' "$pr_body"
           } >> "$GITHUB_STEP_SUMMARY"
