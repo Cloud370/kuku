@@ -1,6 +1,10 @@
 name: Docs Translate Open PR
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs-translate-open-pr.yml"
   workflow_dispatch:
     inputs:
       source_path:
@@ -29,16 +33,26 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
-  group: docs-translate-open-pr-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_path }}-${{ inputs.locale }}
+  group: docs-translate-open-pr-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  translate:
+  register:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/docs-translate/translate-page-and-open-pr.sh
+
+  translate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
