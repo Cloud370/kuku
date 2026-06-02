@@ -1,6 +1,7 @@
 mod config {
     pub use kuku::config::{
-        load_config, ApiKey, Config, ProviderConfig, ResolvedThinking, ThinkLevel, TierConfig,
+        load_and_patch_config, load_config, ApiKey, Config, ProviderConfig, ProviderFormat,
+        ResolvedThinking, ThinkLevel, TierConfig,
     };
 }
 
@@ -201,6 +202,198 @@ api_key = "$TEST_API_KEY_VAR"
         ApiKey::Env(name) => assert_eq!(name, "TEST_API_KEY_VAR"),
         other => panic!("expected Env, got {other:?}"),
     }
+}
+
+#[test]
+fn base_url_env_ref_resolves() {
+    let _guard = common::env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "$TEST_BASE_URL_VAR"
+api_key = "sk-ant-123"
+"#,
+    )
+    .unwrap();
+
+    let prev = std::env::var_os("TEST_BASE_URL_VAR");
+    std::env::set_var("TEST_BASE_URL_VAR", "https://gateway.example/v1");
+    let file = load_config(&path).unwrap();
+    let cfg = file.resolve().unwrap();
+    match prev {
+        Some(value) => std::env::set_var("TEST_BASE_URL_VAR", value),
+        None => std::env::remove_var("TEST_BASE_URL_VAR"),
+    }
+
+    assert_eq!(
+        cfg.provider("anthropic").unwrap().base_url,
+        "https://gateway.example/v1"
+    );
+}
+
+#[test]
+fn missing_base_url_env_ref_is_rejected() {
+    let _guard = common::env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "$MISSING_BASE_URL_VAR"
+api_key = "sk-ant-123"
+"#,
+    )
+    .unwrap();
+
+    let prev = std::env::var_os("MISSING_BASE_URL_VAR");
+    std::env::remove_var("MISSING_BASE_URL_VAR");
+    let err = load_config(&path).unwrap_err();
+    match prev {
+        Some(value) => std::env::set_var("MISSING_BASE_URL_VAR", value),
+        None => std::env::remove_var("MISSING_BASE_URL_VAR"),
+    }
+
+    assert!(err.to_string().contains(
+        "env var 'MISSING_BASE_URL_VAR' referenced by provider.anthropic.base_url is not set"
+    ));
+}
+
+#[test]
+fn env_ref_resolves_before_toml_typed_deserialize() {
+    let _guard = common::env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+default_model = "$TEST_DEFAULT_MODEL"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+
+[provider.anthropic]
+format = "$TEST_PROVIDER_FORMAT"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-123"
+"#,
+    )
+    .unwrap();
+
+    let prev_default = std::env::var_os("TEST_DEFAULT_MODEL");
+    let prev_format = std::env::var_os("TEST_PROVIDER_FORMAT");
+    std::env::set_var("TEST_DEFAULT_MODEL", "balanced");
+    std::env::set_var("TEST_PROVIDER_FORMAT", "anthropic");
+    let file = load_config(&path).unwrap();
+    let cfg = file.resolve().unwrap();
+    match prev_default {
+        Some(value) => std::env::set_var("TEST_DEFAULT_MODEL", value),
+        None => std::env::remove_var("TEST_DEFAULT_MODEL"),
+    }
+    match prev_format {
+        Some(value) => std::env::set_var("TEST_PROVIDER_FORMAT", value),
+        None => std::env::remove_var("TEST_PROVIDER_FORMAT"),
+    }
+
+    assert_eq!(cfg.default_tier(), "balanced");
+    assert_eq!(
+        cfg.provider("anthropic").unwrap().format,
+        config::ProviderFormat::Anthropic
+    );
+}
+
+#[test]
+fn load_and_patch_config_resolves_env_refs_on_runtime_path() {
+    let _guard = common::env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+
+[provider.anthropic]
+format = "$TEST_PROVIDER_FORMAT"
+base_url = "$TEST_BASE_URL_VAR"
+api_key = "$TEST_API_KEY_VAR"
+"#,
+    )
+    .unwrap();
+
+    let prev_format = std::env::var_os("TEST_PROVIDER_FORMAT");
+    let prev_base = std::env::var_os("TEST_BASE_URL_VAR");
+    let prev_key = std::env::var_os("TEST_API_KEY_VAR");
+    std::env::set_var("TEST_PROVIDER_FORMAT", "anthropic");
+    std::env::set_var("TEST_BASE_URL_VAR", "https://gateway.example/v1");
+    std::env::set_var("TEST_API_KEY_VAR", "runtime-key");
+    let file = config::load_and_patch_config(&path).unwrap();
+    let cfg = file.resolve().unwrap();
+    match prev_format {
+        Some(value) => std::env::set_var("TEST_PROVIDER_FORMAT", value),
+        None => std::env::remove_var("TEST_PROVIDER_FORMAT"),
+    }
+    match prev_base {
+        Some(value) => std::env::set_var("TEST_BASE_URL_VAR", value),
+        None => std::env::remove_var("TEST_BASE_URL_VAR"),
+    }
+    match prev_key {
+        Some(value) => std::env::set_var("TEST_API_KEY_VAR", value),
+        None => std::env::remove_var("TEST_API_KEY_VAR"),
+    }
+
+    assert_eq!(cfg.default_tier(), "balanced");
+    assert_eq!(
+        cfg.provider("anthropic").unwrap().base_url,
+        "https://gateway.example/v1"
+    );
 }
 
 #[test]

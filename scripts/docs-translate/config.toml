@@ -1,0 +1,21 @@
+default_model = "strong"
+
+[model.strong]
+provider = "anthropic_compat"
+model = "claude-opus-4-7"
+think = "high"
+
+[model.balanced]
+provider = "anthropic_compat"
+model = "claude-opus-4-7"
+think = "high"
+
+[model.light]
+provider = "anthropic_compat"
+model = "claude-haiku-4-5-20251001"
+think = "low"
+
+[provider.anthropic_compat]
+format = "anthropic"
+base_url = "$KUKU_ANTHROPIC_BASE_URL"
+api_key = "$KUKU_ANTHROPIC_API_KEY"

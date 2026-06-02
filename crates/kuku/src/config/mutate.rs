@@ -2,6 +2,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::str::FromStr;
 
+use super::resolve::parse_config_file;
 use crate::config::types::{ConfigFile, ThinkLevel};
 use crate::error::{Error, Result};
 
@@ -17,8 +18,7 @@ pub fn generate_default() -> &'static str {
 /// Detect missing config sections via struct deserialization, then inject
 /// defaults using `toml_edit` to preserve user comments and formatting.
 pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
-    let file: ConfigFile = toml::from_str(raw)
-        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
+    let file: ConfigFile = parse_config_file(raw)?;
 
     if file.handoff.is_some() && file.plugin.is_some() && file.update.is_some() {
         return Ok((raw.to_string(), false));
@@ -99,7 +99,7 @@ pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
             }
         }
     }
-    toml::from_str(&patched).map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+    parse_config_file(&patched)
 }
 
 /// Modify a single value in a config file by dot-notation key.

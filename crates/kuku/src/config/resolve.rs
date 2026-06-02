@@ -23,7 +23,68 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
     }
     let text = std::fs::read_to_string(path)
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
-    toml::from_str(&text).map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+    parse_config_file(&text)
+}
+
+pub(crate) fn parse_config_file(raw: &str) -> Result<ConfigFile> {
+    let mut value = toml::from_str::<toml::Value>(raw)
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
+    resolve_env_refs(&mut value, "")?;
+    value
+        .try_into()
+        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
+}
+
+fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
+    match value {
+        toml::Value::String(raw) if should_resolve_env_ref(path, raw) => {
+            let env_name = raw
+                .strip_prefix('$')
+                .expect("should_resolve_env_ref checked prefix");
+            *raw = std::env::var(env_name).map_err(|_| {
+                Error::ConfigLoad(format!(
+                    "env var '{env_name}' referenced by {} is not set",
+                    display_path(path)
+                ))
+            })?;
+            Ok(())
+        }
+        toml::Value::Array(items) => {
+            for (index, item) in items.iter_mut().enumerate() {
+                let item_path = if path.is_empty() {
+                    format!("[{index}]")
+                } else {
+                    format!("{path}[{index}]")
+                };
+                resolve_env_refs(item, &item_path)?;
+            }
+            Ok(())
+        }
+        toml::Value::Table(table) => {
+            for (key, item) in table.iter_mut() {
+                let item_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                resolve_env_refs(item, &item_path)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn should_resolve_env_ref(path: &str, value: &str) -> bool {
+    value.starts_with('$') && !path.ends_with("api_key")
+}
+
+fn display_path(path: &str) -> &str {
+    if path.is_empty() {
+        "config value"
+    } else {
+        path
+    }
 }
 
 // ── Resolve / validate ──

@@ -1,0 +1,1 @@
+/docs-translate Sync {{TARGET_PATH}} from {{SOURCE_PATH}}. Only update that mirrored page unless a directly related translated page clearly needs a consistency fix. Do not use gh. Keep canonical product terms, commands, paths, and links unchanged. When finished, reply with a short factual summary.

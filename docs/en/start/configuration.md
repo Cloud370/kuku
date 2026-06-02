@@ -25,6 +25,8 @@ The default config defines two providers:
 
 You can keep secrets in environment variables or store a literal `api_key` in `config.toml`.
 
+For other string settings, you can also use `$ENV_VAR_NAME` in `config.toml`. For example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"` resolves during config load.
+
 ## Model Tiers
 
 The default install defines three tiers:

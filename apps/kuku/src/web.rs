@@ -9,12 +9,16 @@ use axum::{
     response::Response,
     Router,
 };
+
+#[cfg(feature = "embedded-web-assets")]
 use rust_embed::RustEmbed;
 
+#[cfg(feature = "embedded-web-assets")]
 #[derive(RustEmbed)]
 #[folder = "../web/dist"]
 struct WebAssets;
 
+#[cfg(feature = "embedded-web-assets")]
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "html" => "text/html; charset=utf-8",
@@ -31,6 +35,7 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
+#[cfg(feature = "embedded-web-assets")]
 async fn serve_spa(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -54,6 +59,17 @@ async fn serve_spa(uri: Uri) -> Response {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("Not found"))
+        .unwrap()
+}
+
+#[cfg(not(feature = "embedded-web-assets"))]
+async fn serve_spa(_uri: Uri) -> Response {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(
+            "Web UI assets are not bundled. Build apps/web and rebuild with --features embedded-web-assets.",
+        ))
         .unwrap()
 }
 
@@ -123,6 +139,13 @@ pub async fn run_server(
     web_ui: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::net::SocketAddr;
+
+    if web_ui && !cfg!(feature = "embedded-web-assets") {
+        return Err(
+            "Web UI assets are not bundled. Build apps/web and rebuild with --features embedded-web-assets."
+                .into(),
+        );
+    }
 
     let (app, listener, state) = setup_server(args).await?;
 
