@@ -551,6 +551,7 @@ pub(super) async fn advance_pending(
                         summary: summary.clone(),
                         workspace: pending.workspace.clone(),
                         kuku_home: pending.kuku_home.clone(),
+                        prior_events: prior_events.clone(),
                         event_tx: slot_event_tx,
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),

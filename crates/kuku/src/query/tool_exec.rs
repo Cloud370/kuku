@@ -14,6 +14,20 @@ pub(super) struct HookPreResult {
     pub(super) args: serde_json::Value,
 }
 
+fn finalize_persisted_tool_result(
+    result_event_id: u64,
+    result: &Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut result = result.clone();
+    let Some(structured) = result.as_mut() else {
+        return result;
+    };
+    if structured["kind"] == "file_content" {
+        structured["read_event_id"] = serde_json::Value::from(result_event_id);
+    }
+    result
+}
+
 pub(crate) fn write_tool_result(
     slot: &ExecSlot,
     status: &str,
@@ -22,8 +36,9 @@ pub(crate) fn write_tool_result(
     result: &Option<serde_json::Value>,
     events_path: &std::path::Path,
     turn: u64,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
+    let structured = finalize_persisted_tool_result(store.next_id(), result);
     store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
@@ -32,9 +47,9 @@ pub(crate) fn write_tool_result(
         summary: summary.to_string(),
         model_content: model_content.to_string(),
         truncated: false,
-        structured: result.clone(),
+        structured: structured.clone(),
     })?;
-    Ok(())
+    Ok(structured)
 }
 
 fn handle_use_skill(

@@ -44,6 +44,26 @@ fn is_initial_request(req: &HttpMockRequest) -> bool {
     !has_tool_use && !has_tool_result
 }
 
+fn body_contains(req: &HttpMockRequest, needle: &[u8]) -> bool {
+    req.body
+        .as_ref()
+        .is_some_and(|body| body.windows(needle.len()).any(|window| window == needle))
+}
+
+fn has_read_tool_result_only(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
+        && !body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
+}
+
+fn has_edit_tool_result(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
+}
+
+fn has_read_and_edit_tool_results(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
+        && body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
+}
+
 /// Register the common body conditions that always accompany a tool-use
 /// request.  Returns the updated `When` for further chaining.
 fn context_conditions(when: When, query_text: &str) -> When {
@@ -400,6 +420,241 @@ async fn executes_read_file_and_search_text() {
             .count(),
         0
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn each_slot_read_file_persists_its_own_read_event_id() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(env.workspace.path().join("README.md"), "# Project\n").unwrap();
+    std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
+    std::fs::write(env.workspace.path().join("docs/tools.md"), "# Tools\n").unwrap();
+
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "read two files")
+            .method(POST)
+            .path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read both files."},
+                    {"type": "tool_use", "id": "toolu_read_1", "name": "read_file", "input": {"path": "README.md"}},
+                    {"type": "tool_use", "id": "toolu_read_2", "name": "read_file", "input": {"path": "docs/tools.md"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let final_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Reads complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = anthro("read two files", &server).run().await.unwrap();
+
+    tool_mock.assert();
+    final_mock.assert();
+    assert_eq!(output.text, "Reads complete.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    let read_events = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolResult {
+                status,
+                structured: Some(structured),
+                ..
+            } if status == "ok" && structured["kind"] == "file_content" => {
+                Some((event.id, structured))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(read_events.len(), 2);
+    for (event_id, structured) in read_events {
+        assert_eq!(structured["read_event_id"], event_id);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn read_file_snapshot_allows_following_edit_file() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(env.workspace.path().join("README.md"), "alpha\nbeta\n").unwrap();
+
+    let read_mock = server.mock(|when, then| {
+        context_conditions(when, "read then edit")
+            .method(POST)
+            .path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_read")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_read",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read the file first."},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let edit_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(has_read_tool_result_only);
+        then.status(200)
+            .header("request-id", "req_edit")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_edit",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Now I can edit it."},
+                    {"type": "tool_use", "id": "toolu_edit", "name": "edit_file", "input": {"path": "README.md", "old_text": "beta", "new_text": "gamma", "brief": "rename beta"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 7, "output_tokens": 8}
+            })));
+    });
+    let final_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(has_edit_tool_result);
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Edit complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = anthro("read then edit", &server).run().await.unwrap();
+
+    read_mock.assert();
+    edit_mock.assert();
+    final_mock.assert();
+    assert_eq!(output.text, "Edit complete.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    let read_event = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolResult {
+                status,
+                structured: Some(structured),
+                ..
+            } if status == "ok" && structured["kind"] == "file_content" => {
+                Some((event.id, structured))
+            }
+            _ => None,
+        })
+        .expect("missing read_file tool result");
+    assert_eq!(read_event.1["path"], "README.md");
+    assert_eq!(read_event.1["read_event_id"], read_event.0);
+    assert!(read_event.1["read_event_id"].as_u64().unwrap() > 0);
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { status, structured: Some(structured), .. }
+            if status == "ok" && structured["kind"] == "file_edit"
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { status, model_content, .. }
+            if status == "error"
+                && model_content.contains("prior successful read_file snapshot")
+    )));
+    assert_eq!(
+        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap(),
+        "alpha\ngamma\n"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_batch_read_file_then_edit_file_succeeds() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(env.workspace.path().join("README.md"), "alpha\nbeta\n").unwrap();
+
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "read then edit same batch")
+            .method(POST)
+            .path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will read and then edit the file."},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md"}},
+                    {"type": "tool_use", "id": "toolu_edit", "name": "edit_file", "input": {"path": "README.md", "old_text": "beta", "new_text": "gamma", "brief": "rename beta"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let final_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(has_read_and_edit_tool_results);
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Same-batch edit complete."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = anthro("read then edit same batch", &server)
+        .run()
+        .await
+        .unwrap();
+
+    tool_mock.assert();
+    final_mock.assert();
+    assert_eq!(output.text, "Same-batch edit complete.");
+    assert_eq!(
+        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap(),
+        "alpha\ngamma\n"
+    );
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { status, structured: Some(structured), .. }
+            if status == "ok" && structured["kind"] == "file_edit"
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { status, model_content, .. }
+            if status == "error"
+                && model_content.contains("prior successful read_file snapshot")
+    )));
 }
 
 // ---------------------------------------------------------------------------
