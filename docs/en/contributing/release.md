@@ -1,52 +1,58 @@
-# Release Process
+# Release
+
+This page keeps the current release rules for the repository.
 
 ## Prerequisites
 
-- [cargo-release](https://github.com/crate-ci/cargo-release) installed: `cargo install cargo-release`
-- Push access to the repository
+- Install [`cargo-release`](https://github.com/crate-ci/cargo-release): `cargo install cargo-release`
+- Have push access to the repository
 
 ## Versioning
 
-Follows [SemVer](https://semver.org/) with `v` prefix on tags.
+Releases follow SemVer and use a `v` prefix on git tags.
 
-```
+```text
 v0.MINOR.PATCH
-   │      │
-   │      └── bug fix (patch within a feature set)
-   └── new feature or module
 ```
 
-- Feature release: bump MINOR, reset PATCH to 0 → `0.1.0` → `0.2.0`
-- Bug fix: bump PATCH → `0.2.0` → `0.2.1`
-- At 0.x, MINOR may contain breaking changes
+- Feature release: bump `MINOR`, reset `PATCH` to `0`
+- Bug fix release: bump `PATCH`
+- While the project is in `0.x`, `MINOR` releases may still contain breaking changes
 
-### Pre-release tags
+## Pre-releases
 
-| Stage | Who uses it | Meaning |
-|-------|-------------|---------|
-| `-alpha.N` | Developers only | Feature incomplete, API may change |
+Use `-alpha.N` for developer-facing pre-releases when a feature set is not yet stable.
 
-Tag containing `-` is automatically marked as pre-release by CI.
+Any tag containing `-` is treated as a pre-release by CI.
 
-During fast iteration, `-alpha.N` with incrementing N is sufficient. Once the alpha is stable, promote directly to the next stable release (e.g. `0.2.0-alpha.3` → `0.2.0`).
+Example progression:
 
-### When to release 1.0
+```text
+0.2.0-alpha.3 -> 0.2.0
+```
 
-When the API is stable, external users depend on it, and breaking changes should be rare. Before that, stay at 0.x.
+## Release steps
 
-## Release Steps
+1. Update `CHANGELOG.md` for the target version.
+2. Run `cargo release <version>`.
+3. Let CI build artifacts and publish the GitHub Release.
 
-1. Update `CHANGELOG.md` with the new version
-2. Run `cargo release <version>` — this will:
-   - Update version in all workspace Cargo.toml files
-   - Create a git commit
-   - Create a git tag `v<version>`
-   - Push commit and tag to origin
-3. CI automatically builds binaries for 3 platforms and creates a GitHub Release
+`cargo release` updates workspace versions, creates the release commit, creates the `v<version>` tag, and pushes both.
 
-## Channels
+## Build paths
 
-- **stable**: `kuku update` checks `releases/latest/download/latest.json` (skips pre-releases)
-- **alpha**: `kuku update` checks the latest pre-release's `latest.json`
+- `make build` builds the normal local Linux release target.
+- `make release-linux` builds the portable musl release artifact.
 
-Switch with: `kuku config set update.channel alpha` (or stable)
+Use the musl path for release packaging, not normal development.
+
+## Update channels
+
+- `stable` checks `releases/latest/download/latest.json` and skips pre-releases
+- `alpha` checks the latest pre-release manifest
+
+Switch channels with `kuku config set update.channel alpha` or `kuku config set update.channel stable`.
+
+## When 1.0 matters
+
+Move to `1.0` when the public API is stable, external users depend on it, and breaking changes should become rare.

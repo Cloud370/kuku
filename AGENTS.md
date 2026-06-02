@@ -8,7 +8,11 @@ kuku — a Rust SDK for file-native agent execution. SDK (`crates/kuku/`), CLI (
 
 ## Project map
 
-Full document map: [docs/en/README.md](docs/en/README.md). Key: [direction](docs/en/core/direction.md) · [architecture](docs/en/core/architecture.md) · [agent-loop](docs/en/core/agent-loop.md) · [glossary](docs/en/glossary.md) · [code-style](docs/en/contributing/code-style.md) · [modules](docs/en/contributing/modules.md).
+Full document map: [docs/en/index.md](docs/en/index.md). Key: [start](docs/en/start/index.md) · [guides](docs/en/guides/index.md) · [how-it-works](docs/en/how-it-works/index.md) · [reference](docs/en/reference/index.md) · [architecture](docs/en/architecture/index.md) · [contributing](docs/en/contributing/index.md).
+
+## Documentation
+
+For any work touching `docs/**`, `README.md`, translation pages, docs homepages, or docs navigation, read and follow `docs/AGENTS.md` first.
 
 ## Commands
 
@@ -27,7 +31,7 @@ Release builds use `x86_64-unknown-linux-musl` via `cross` (fully static, no gli
 
 - `MUST` / `PREFER` rules in [code-style.md](docs/en/contributing/code-style.md) are the contract.
 - No file over 1000 lines. Enums over strings. No wildcard imports. No comments by default.
-- Module dependencies follow [modules.md](docs/en/contributing/modules.md).
+- Module dependencies follow [module-contracts.md](docs/en/architecture/module-contracts.md).
 
 ## Editing tips
 

@@ -1,58 +1,20 @@
 # kuku
 
-[中文](docs/zh/index.md)
+[English Docs](docs/en/index.md) | [中文文档](docs/zh/index.md) | [Docs Portal](docs/index.md)
 
-> The agent explained. A readable Rust agent SDK — understand the loop from source, own your sessions as files. No database, no black box.
+> A file-native Rust agent SDK. Sessions, Memory, Skills, and config stay on disk as readable files.
 
 > [!WARNING]
 > kuku is in active development. APIs and file formats may change.
 
-kuku is a terminal coding agent with a file-native architecture. No database, no server, no hidden state. Everything — config, memory, sessions, skills — is a file you can read, edit, and version-control.
+kuku is the runtime behind a terminal coding agent and related host apps. It keeps runtime state in files instead of a database or hidden process state, so you can inspect what happened, diff it, and version it.
 
 ## Why kuku
 
-- **Zero infra** — no database, no server. All state lives in human-readable files under `~/.kuku/`.
-- **Inspect** — config, skills, prompts, and memory are plain files. Nothing hidden.
-- **No hidden state** — runtime state lives on disk, no invisible in-memory caches.
-- **Cache-first design** — minimal system prompt (~3K tokens), built for maximum cache hit rate.
-
-## Engineering Comparison
-
-| | kuku | Claude Code | Codex | OpenCode |
-|--|------|-------------|-------|----------|
-| Size | **~10 MB** | ~250 MB | ~80 MB | ~50 MB |
-| Deps | **~15** | ~80 | ~280 | ~100 |
-| Config | 1 TOML | JSON + flags | 9 layers | 9 layers |
-| Prompt | **~3K** | ~30K | ~9K | ~15K |
-| Memory | Markdown | MD + YAML | SQLite + JSONL | SQLite + JSON |
-
-> [!NOTE]
-> Based on source code analysis as of May 2026. System prompt includes all tokens injected at session initialization — system instructions, tool definitions, and runtime context.
-
-## Features
-
-**Core**
-
-- Agent loop (file-native)
-- Tools: read, search, edit, write, run
-- Skills system
-- Persistent memory (human-readable)
-- Subagents (isolated sessions)
-- Permission system (multi-level)
-- Multi-provider (Anthropic, OpenAI)
-- Streaming output
-
-**Interface**
-
-- CLI
-- HTTP Server
-
-**Planned**
-
-- MCP support
-- Extension system
-- Web UI
-- Desktop app
+- File-native runtime: sessions, Memory, config, permissions, and Skills live on disk.
+- Readable architecture: the SDK owns runtime facts; host apps own presentation and transport.
+- Low hidden state: every turn is rebuilt from files and persisted events.
+- Cache-first prompt design: small stable prelude, dynamic state added only where needed.
 
 ## Quick Start
 
@@ -61,25 +23,35 @@ cargo install --git https://github.com/Cloud370/kuku
 kuku run say hello
 ```
 
-> [!TIP]
-> You need an API key for your chosen provider. Set it via environment variable (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) or in `~/.kuku/config.toml`.
+Set a provider API key with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or configure it in `~/.kuku/config.toml`.
 
-## Documentation
+## Docs
 
-- [Direction](docs/en/core/direction.md) — project goals and design philosophy
-- [Architecture](docs/en/core/architecture.md) — system overview
-- [Agent Loop](docs/en/core/agent-loop.md) — how the loop works
-- [Modules](docs/en/contributing/modules.md) — crate structure
-- [Code Style](docs/en/contributing/code-style.md) — conventions
+- Start in English: [docs/en/index.md](docs/en/index.md)
+- 从中文开始: [docs/zh/index.md](docs/zh/index.md)
+- Language selector: [docs/index.md](docs/index.md)
+
+Recommended path:
+
+1. [Install](docs/en/start/install.md)
+2. [Quickstart](docs/en/start/quickstart.md)
+3. [Configuration](docs/en/start/configuration.md)
+4. [Guides](docs/en/guides/index.md)
+5. [Reference](docs/en/reference/index.md)
+
+## Repo Map
+
+- SDK: [`crates/kuku/`](crates/kuku/)
+- CLI: [`crates/kuku-cli/`](crates/kuku-cli/)
+- Server: [`crates/kuku-server/`](crates/kuku-server/)
+- Unified binary: [`apps/kuku/`](apps/kuku/)
 
 ## License
 
-Licensed under either of
+Licensed under either of:
 
 - MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-
-at your option.
 
 ### Contribution
 

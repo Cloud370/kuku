@@ -1,0 +1,21 @@
+# Docs Rules
+
+- `docs/en/**` is the canonical source. Update English first.
+- `docs/zh/**` mirrors the same paths and filenames as `docs/en/**`. Keep structure aligned and update Chinese after English.
+- When adding, removing, renaming, or moving docs pages, update the matching paths in both language trees and then re-check the docs indexes and navigation that link to them.
+- Route changes by doc type:
+  - commands, flags, config, environment variables, APIs, file formats -> `reference/`
+  - setup steps and task flows -> `start/` or `guides/`
+  - public behavior, runtime semantics, `Session`, `Memory`, permissions -> `how-it-works/`
+  - crate boundaries, host architecture, prompt assembly, internal design -> `architecture/`
+  - development, testing, release workflow -> `contributing/`
+- Common follow-ups:
+  - CLI changes: update `reference/cli.md`, then check related `guides/` and `start/`
+  - config or env changes: update `reference/config.md` and `reference/environment-variables.md`, then check `start/configuration.md`
+  - `Session` behavior: update `how-it-works/sessions.md`, then check `guides/manage-sessions.md` and `reference/file-layout.md`
+  - `Memory` behavior: update `how-it-works/memory.md`, then check `guides/manage-memory.md`
+  - `Agent` or `Skill` format: update the matching `reference/` page, then check related guides and `how-it-works/agents-and-skills.md`
+  - server endpoint or streaming changes: update `reference/server-api.md`, then check `guides/run-the-server.md`
+  - internal-only refactors with no public behavior change: update `architecture/` only
+- One fact, one home. Keep each fact fully defined in one canonical page and link from other pages instead of duplicating it.
+- Homepage sync rule: when positioning, primary entry links, key stats/comparisons, or quickstart paths change, re-check `README.md`, `docs/index.md`, `docs/en/index.md`, and `docs/zh/index.md` together so they stay aligned.
