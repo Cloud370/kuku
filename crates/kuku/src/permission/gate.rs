@@ -207,6 +207,7 @@ fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
                 .lines()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
+                .map(|value| value.strip_prefix("sudo ").unwrap_or(value).trim())
                 .map(ToString::to_string)
                 .collect();
         }
@@ -216,7 +217,6 @@ fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
 
 fn is_dangerous_command_segment(segment: &str) -> bool {
     [
-        "git push",
         "git reset --hard",
         "git clean -f",
         "rm -rf",

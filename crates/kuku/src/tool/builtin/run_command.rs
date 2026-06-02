@@ -202,14 +202,8 @@ fn blocked_command_reason(command: &str) -> Option<&'static str> {
         .replace("&&", "\x00")
         .replace("||", "\n")
         .replace(['&', ';', '\x00'], "\n");
-    for segment in normalized
-        .lines()
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-    {
-        let segment = segment.strip_prefix("sudo ").unwrap_or(segment).trim();
+    for segment in normalized_command_segments(&normalized) {
         for (prefix, reason) in [
-            ("git push", "git push affects a remote repository"),
             ("git reset --hard", "git reset --hard discards local work"),
             ("git clean -f", "git clean deletes untracked files"),
             ("rm -rf", "recursive force delete is destructive"),
@@ -246,6 +240,39 @@ fn blocked_command_reason(command: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+fn normalized_command_segments(command: &str) -> Vec<String> {
+    command
+        .lines()
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.strip_prefix("sudo ").unwrap_or(segment).trim())
+        .flat_map(unwrap_shell_wrapper)
+        .collect()
+}
+
+fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
+    for prefix in [
+        "sh -c ",
+        "bash -lc ",
+        "zsh -lc ",
+        "cmd /c ",
+        "powershell -command ",
+        "pwsh -command ",
+    ] {
+        if let Some(rest) = segment.strip_prefix(prefix) {
+            let rest = rest.trim().trim_matches('"').trim_matches('\'');
+            return rest
+                .lines()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.strip_prefix("sudo ").unwrap_or(value).trim())
+                .map(ToString::to_string)
+                .collect();
+        }
+    }
+    vec![segment.to_string()]
 }
 
 #[cfg(windows)]
@@ -683,6 +710,29 @@ mod tests {
         assert!(dangerous
             .model_content
             .contains("blocked by command hard guard"));
+    }
+
+    #[test]
+    fn command_hard_guard_does_not_block_git_push_or_gh_pr_create() {
+        assert_eq!(blocked_command_reason("git push origin main"), None);
+        assert_eq!(blocked_command_reason("gh pr create --fill"), None);
+    }
+
+    #[test]
+    fn command_hard_guard_still_blocks_destructive_commands() {
+        for command in [
+            "git reset --hard HEAD",
+            "sh -c 'git reset --hard HEAD'",
+            "sh -c 'sudo git reset --hard HEAD'",
+            "rm -rf target",
+            "npm publish",
+            "make deploy",
+        ] {
+            assert!(
+                blocked_command_reason(command).is_some(),
+                "{command} should remain hard guarded"
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
