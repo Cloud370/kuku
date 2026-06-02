@@ -210,4 +210,25 @@ impl Query {
             }
         }
     }
+
+    pub async fn run_with_permission_choice(
+        self,
+        choice: super::types::PermissionChoice,
+    ) -> Result<RunOutput> {
+        let mut run = self.start_session().await?;
+        loop {
+            match run.next().await? {
+                Some(UiEvent::PermissionRequested { request }) => {
+                    run.decide(&request.id, choice, None).await?;
+                }
+                Some(UiEvent::Done { output, .. }) => return Ok(output),
+                Some(_) => continue,
+                None => {
+                    return Err(Error::InvalidEventStream(
+                        "run ended without producing Done".to_string(),
+                    ))
+                }
+            }
+        }
+    }
 }

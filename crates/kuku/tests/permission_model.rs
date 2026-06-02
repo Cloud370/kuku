@@ -140,16 +140,31 @@ fn hard_guard_blocks_git_and_secret_paths() {
 fn hard_guard_blocks_destructive_commands() {
     let policy = kuku::permission::parse_policy("# policy\n").unwrap();
 
-    let decision = kuku::permission::decide_tool_call(
-        "run_command",
-        "command",
+    for command in [
         "git reset --hard HEAD~1",
-        &policy,
-        &[],
-    );
+        "rm -rf target",
+        "npm publish",
+        "make deploy",
+    ] {
+        let decision =
+            kuku::permission::decide_tool_call("run_command", "command", command, &policy, &[]);
 
-    assert_eq!(decision.kind, kuku::permission::GateDecisionKind::Deny);
-    assert_eq!(decision.source, kuku::permission::GateSource::HardGuard);
+        assert_eq!(decision.kind, kuku::permission::GateDecisionKind::Deny);
+        assert_eq!(decision.source, kuku::permission::GateSource::HardGuard);
+    }
+}
+
+#[test]
+fn hard_guard_does_not_block_git_push_or_gh_pr_create() {
+    let policy = kuku::permission::parse_policy("# policy\n").unwrap();
+
+    for command in ["git push origin main", "gh pr create --fill"] {
+        let decision =
+            kuku::permission::decide_tool_call("run_command", "command", command, &policy, &[]);
+
+        assert_eq!(decision.kind, kuku::permission::GateDecisionKind::Ask);
+        assert_eq!(decision.source, kuku::permission::GateSource::DefaultAsk);
+    }
 }
 
 #[test]
@@ -169,7 +184,7 @@ fn hard_guard_blocks_wrapped_destructive_commands() {
     let decision = kuku::permission::decide_tool_call(
         "run_command",
         "command",
-        "sh -c 'git push origin main'",
+        "sh -c 'sudo git reset --hard HEAD~1'",
         &policy,
         &[],
     );

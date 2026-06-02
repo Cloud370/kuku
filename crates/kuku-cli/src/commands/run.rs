@@ -225,7 +225,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     // JSON single-result path: use run(), output one final JSON line
     if args.json {
         let json_start = std::time::Instant::now();
-        let output = q.run().await?;
+        let output = if args.auto_yes {
+            q.run_with_permission_choice(PermissionChoice::Once).await?
+        } else {
+            q.run().await?
+        };
         let json_elapsed = json_start.elapsed();
         let (input_tokens, output_tokens, cache_read, cache_creation) = output
             .usage

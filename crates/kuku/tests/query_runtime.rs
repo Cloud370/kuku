@@ -4,7 +4,7 @@ use common::{anthropic_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
-use kuku::{query, Error, Provider, UiEvent};
+use kuku::{query, Error, PermissionChoice, Provider, UiEvent};
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
@@ -460,6 +460,60 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "deny" && scope == "once")));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_with_permission_choice_allows_gated_tool_and_continues() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command was allowed."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("run allowed command");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "printf allowed", "timeout": 60, "brief": "print marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let output = query("run allowed command")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run_with_permission_choice(PermissionChoice::Once)
+        .await
+        .unwrap();
+
+    assert_eq!(output.text, "Command was allowed.");
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "once")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
 }
 
 #[tokio::test(flavor = "current_thread")]
