@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/docs-translate.yml"
       - ".github/workflows/docs-translate-en-changes.yml"
+      - ".github/workflows/docs-translate-open-pr.yml"
       - ".kuku/skills/docs-translate/**"
       - "scripts/docs-translate/**"
   pull_request:
@@ -13,6 +14,7 @@ on:
     paths:
       - ".github/workflows/docs-translate.yml"
       - ".github/workflows/docs-translate-en-changes.yml"
+      - ".github/workflows/docs-translate-open-pr.yml"
       - ".kuku/skills/docs-translate/**"
       - "scripts/docs-translate/**"
   workflow_dispatch:

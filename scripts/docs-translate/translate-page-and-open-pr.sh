@@ -24,6 +24,23 @@ usage() {
     printf 'usage: %s --locale <locale> [--pr <number-or-url>] docs/en/path.md\n' "${0##*/}" >&2
 }
 
+reject_unsafe_path() {
+    local path="$1"
+
+    if [[ "$path" == /* ]]; then
+        printf 'source path must be relative\n' >&2
+        exit 1
+    fi
+
+    IFS='/' read -r -a path_parts <<<"$path"
+    for part in "${path_parts[@]}"; do
+        if [[ -z "$part" || "$part" == "." || "$part" == ".." ]]; then
+            printf 'source path must not contain empty, dot, or dot-dot path components\n' >&2
+            exit 1
+        fi
+    done
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --locale|-l)
@@ -74,6 +91,8 @@ if [[ $# -ne 1 ]]; then
 fi
 
 SOURCE_PATH="$1"
+
+reject_unsafe_path "$SOURCE_PATH"
 
 if [[ -z "$TARGET_LOCALE" ]]; then
     printf 'target locale is required\n' >&2

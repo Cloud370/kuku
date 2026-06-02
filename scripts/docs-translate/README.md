@@ -66,3 +66,16 @@ It ignores `KUKU_CHECK_PROMPT` and always builds its own structured prompt.
 
 - `.github/workflows/docs-translate.yml` validates this tooling and Docker image.
 - `.github/workflows/docs-translate-en-changes.yml` reports changed `docs/en/**` pages on `main` pushes.
+- `.github/workflows/docs-translate-open-pr.yml` manually runs a real translation and opens or updates a PR.
+
+Before #46 is merged, run the open-PR workflow against `feat/docs-translate-tooling` so the workflow branch contains these helper scripts. After #46 is merged, run it from `main`.
+
+Example GitHub Actions dispatch from this branch:
+
+```bash
+gh workflow run .github/workflows/docs-translate-open-pr.yml \
+  --ref feat/docs-translate-tooling \
+  -f source_path=docs/en/reference/config.md \
+  -f locale=zh \
+  -f base_branch=feat/docs-translate-tooling
+```

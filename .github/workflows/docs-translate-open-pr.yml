@@ -1,0 +1,221 @@
+name: Docs Translate Open PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_path:
+        description: English docs page to translate, for example docs/en/start/install.md
+        required: true
+        type: string
+      locale:
+        description: Target locale directory, for example zh
+        required: true
+        default: zh
+        type: string
+      base_branch:
+        description: PR base branch. Leave empty to use the workflow ref branch.
+        required: false
+        default: ""
+        type: string
+      branch_name:
+        description: Translation branch to create. Leave empty for an automatic branch name.
+        required: false
+        default: ""
+        type: string
+      pr_number:
+        description: Existing PR number to update instead of opening a new PR.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: docs-translate-open-pr-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_path }}-${{ inputs.locale }}
+  cancel-in-progress: false
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Prepare translation branch
+        env:
+          INPUT_SOURCE_PATH: ${{ inputs.source_path }}
+          INPUT_LOCALE: ${{ inputs.locale }}
+          INPUT_BASE_BRANCH: ${{ inputs.base_branch }}
+          INPUT_BRANCH_NAME: ${{ inputs.branch_name }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          reject_unsafe_path() {
+            local path="$1"
+
+            if [[ "$path" == /* ]]; then
+              printf 'source_path must be relative\n' >&2
+              exit 1
+            fi
+
+            IFS='/' read -r -a path_parts <<<"$path"
+            for part in "${path_parts[@]}"; do
+              if [[ -z "$part" || "$part" == "." || "$part" == ".." ]]; then
+                printf 'source_path must not contain empty, dot, or dot-dot path components\n' >&2
+                exit 1
+              fi
+            done
+          }
+
+          reject_unsafe_path "$INPUT_SOURCE_PATH"
+
+          if [[ "$INPUT_SOURCE_PATH" != docs/en/*.md ]]; then
+            printf 'source_path must be under docs/en and end with .md\n' >&2
+            exit 1
+          fi
+
+          if [[ ! -f "$INPUT_SOURCE_PATH" ]]; then
+            printf 'source_path does not exist: %s\n' "$INPUT_SOURCE_PATH" >&2
+            exit 1
+          fi
+
+          if [[ ! "$INPUT_LOCALE" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            printf 'locale must match [A-Za-z0-9_-]+\n' >&2
+            exit 1
+          fi
+
+          if [[ -n "$INPUT_PR_NUMBER" && ! "$INPUT_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            printf 'pr_number must be numeric when provided\n' >&2
+            exit 1
+          fi
+
+          base_branch="$INPUT_BASE_BRANCH"
+          if [[ -z "$base_branch" ]]; then
+            base_branch="$WORKFLOW_REF_NAME"
+          fi
+
+          if [[ ! "$base_branch" =~ ^[A-Za-z0-9._/-]+$ || "$base_branch" == -* ]]; then
+            printf 'base_branch contains unsupported characters\n' >&2
+            exit 1
+          fi
+          if ! git check-ref-format --branch "$base_branch" >/dev/null; then
+            printf 'base_branch is not a valid branch name\n' >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [[ -n "$INPUT_PR_NUMBER" ]]; then
+            pr_repo="$(gh pr view "$INPUT_PR_NUMBER" --json headRepository,headRepositoryOwner --jq '.headRepositoryOwner.login + "/" + .headRepository.name')"
+            if [[ "$pr_repo" != "$GITHUB_REPOSITORY" ]]; then
+              printf 'only same-repository PRs can be updated by this workflow\n' >&2
+              exit 1
+            fi
+
+            branch_name="$(gh pr view "$INPUT_PR_NUMBER" --json headRefName --jq .headRefName)"
+            if [[ -z "$branch_name" ]]; then
+              printf 'could not resolve head branch for PR %s\n' "$INPUT_PR_NUMBER" >&2
+              exit 1
+            fi
+            if ! git check-ref-format --branch "$branch_name" >/dev/null; then
+              printf 'PR head branch is not a valid branch name\n' >&2
+              exit 1
+            fi
+            git fetch origin "$branch_name"
+            git checkout "$branch_name"
+          else
+            branch_name="$INPUT_BRANCH_NAME"
+            if [[ -z "$branch_name" ]]; then
+              slug="${INPUT_SOURCE_PATH#docs/en/}"
+              slug="${slug%.md}"
+              slug="${slug//\//-}"
+              slug="$(printf '%s' "$slug" | tr -cd 'A-Za-z0-9._-')"
+              branch_name="docs-translate/$INPUT_LOCALE/$slug-${GITHUB_RUN_ID}"
+            fi
+
+            if [[ ! "$branch_name" =~ ^[A-Za-z0-9._/-]+$ || "$branch_name" == -* ]]; then
+              printf 'branch_name contains unsupported characters\n' >&2
+              exit 1
+            fi
+            if ! git check-ref-format --branch "$branch_name" >/dev/null; then
+              printf 'branch_name is not a valid branch name\n' >&2
+              exit 1
+            fi
+
+            git fetch origin "$base_branch"
+            git checkout -B "$branch_name" "origin/$base_branch"
+          fi
+
+          {
+            printf 'KUKU_DOCS_SOURCE_PATH=%s\n' "$INPUT_SOURCE_PATH"
+            printf 'KUKU_DOCS_TARGET_LOCALE=%s\n' "$INPUT_LOCALE"
+            printf 'KUKU_DOCS_BASE_BRANCH=%s\n' "$base_branch"
+            printf 'KUKU_DOCS_BRANCH_NAME=%s\n' "$branch_name"
+            printf 'KUKU_DOCS_PR_NUMBER=%s\n' "$INPUT_PR_NUMBER"
+          } >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Cache container runtime build state
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kuku/docs-translate-ci
+          key: docs-translate-runtime-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml', 'scripts/docs-translate/Dockerfile') }}
+          restore-keys: |
+            docs-translate-runtime-${{ runner.os }}-
+
+      - name: Build runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/docs-translate/Dockerfile
+          tags: kuku-agent-runner:ci
+          load: true
+          cache-from: type=gha,scope=docs-translate-runner
+          cache-to: type=gha,mode=max,scope=docs-translate-runner
+
+      - name: Translate and open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          KUKU_AGENT_RUNNER_IMAGE: kuku-agent-runner:ci
+          KUKU_CACHE_ROOT: /tmp/kuku/docs-translate-ci
+          KUKU_ENV_FILE: /dev/null
+          KUKU_ANTHROPIC_BASE_URL: ${{ secrets.KUKU_ANTHROPIC_BASE_URL }}
+          KUKU_ANTHROPIC_API_KEY: ${{ secrets.KUKU_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$KUKU_ANTHROPIC_BASE_URL" || -z "$KUKU_ANTHROPIC_API_KEY" ]]; then
+            printf 'KUKU_ANTHROPIC_BASE_URL and KUKU_ANTHROPIC_API_KEY secrets are required.\n' >&2
+            exit 1
+          fi
+
+          args=(--locale "$KUKU_DOCS_TARGET_LOCALE" --base "$KUKU_DOCS_BASE_BRANCH")
+          if [[ -n "$KUKU_DOCS_PR_NUMBER" ]]; then
+            args+=(--pr "$KUKU_DOCS_PR_NUMBER")
+          fi
+
+          pr_body="$(bash scripts/docs-translate/translate-page-and-open-pr.sh "${args[@]}" "$KUKU_DOCS_SOURCE_PATH")"
+          printf '%s\n' "$pr_body"
+
+          {
+            printf '## Docs translate run\n\n'
+            printf '- Source: `%s`\n' "$KUKU_DOCS_SOURCE_PATH"
+            printf '- Locale: `%s`\n' "$KUKU_DOCS_TARGET_LOCALE"
+            printf '- Branch: `%s`\n' "$KUKU_DOCS_BRANCH_NAME"
+            printf '- Base: `%s`\n' "$KUKU_DOCS_BASE_BRANCH"
+            if [[ -n "$KUKU_DOCS_PR_NUMBER" ]]; then
+              printf '- Existing PR: `%s`\n' "$KUKU_DOCS_PR_NUMBER"
+            fi
+            printf '\n### Agent final output\n\n%s\n' "$pr_body"
+          } >> "$GITHUB_STEP_SUMMARY"
