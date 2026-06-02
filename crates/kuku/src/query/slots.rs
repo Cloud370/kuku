@@ -4,8 +4,14 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot, Notify};
 
+use crate::event::StoredEvent;
+
 use super::types::{ExecSlot, PermissionChoice, PermissionMode, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
+
+pub(crate) fn requires_ordered_simple_execution(tool_name: &str) -> bool {
+    matches!(tool_name, "read_file" | "edit_file" | "write_file")
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_simple_slot(
@@ -15,6 +21,7 @@ pub(crate) fn spawn_simple_slot(
     summary: String,
     workspace: PathBuf,
     kuku_home: PathBuf,
+    prior_events: Vec<StoredEvent>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
@@ -23,6 +30,8 @@ pub(crate) fn spawn_simple_slot(
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
     let tc_id = tool_call_id.clone();
+    let dispatch_tool_call_id = tool_call_id.clone();
+    let ordered_with_simple_tools = requires_ordered_simple_execution(&tool_name);
 
     tokio::spawn(async move {
         let result = tokio::select! {
@@ -34,7 +43,16 @@ pub(crate) fn spawn_simple_slot(
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
-                &tool_name, &args, &workspace, &kuku_home, &[], 0, None, &config, &catalog, &events_path,
+                &tool_name,
+                &args,
+                &workspace,
+                &kuku_home,
+                &prior_events,
+                0,
+                Some(&dispatch_tool_call_id),
+                &config,
+                &catalog,
+                &events_path,
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
@@ -48,6 +66,7 @@ pub(crate) fn spawn_simple_slot(
     ExecSlot {
         tool_call_id,
         kind: ToolKind::Simple,
+        ordered_with_simple_tools,
         label: summary,
         cancel,
         child_permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -190,6 +209,7 @@ pub(crate) fn spawn_agent_slot(
     ExecSlot {
         tool_call_id,
         kind: ToolKind::Agent { child_session_id },
+        ordered_with_simple_tools: false,
         label: summary,
         cancel,
         child_permissions,
@@ -244,6 +264,7 @@ pub(crate) fn spawn_command_slot(
     ExecSlot {
         tool_call_id,
         kind: ToolKind::Command { pid: None },
+        ordered_with_simple_tools: false,
         label: summary,
         cancel,
         child_permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -257,6 +278,7 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) summary: String,
     pub(crate) workspace: PathBuf,
     pub(crate) kuku_home: PathBuf,
+    pub(crate) prior_events: Vec<StoredEvent>,
     pub(crate) event_tx: mpsc::Sender<(String, SlotEvent)>,
     pub(crate) config: std::sync::Arc<crate::config::Config>,
     pub(crate) catalog: crate::prompt::PromptCatalog,
@@ -281,6 +303,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.summary,
             args.workspace,
             args.kuku_home,
+            args.prior_events,
             args.event_tx,
             args.config,
             args.catalog,

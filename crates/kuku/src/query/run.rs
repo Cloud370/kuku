@@ -11,6 +11,7 @@ use super::helpers::{
     append_permission_decision, display_summary, now_timestamp, permission_candidate,
     permission_rule,
 };
+use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
@@ -24,6 +25,12 @@ impl Drop for Run {
 }
 
 impl Run {
+    fn has_active_ordered_simple_slot(&self) -> bool {
+        self.slots
+            .values()
+            .any(|slot| slot.ordered_with_simple_tools)
+    }
+
     /// The session ID for this run.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -107,7 +114,7 @@ impl Run {
                                     }));
                                 }
                             };
-                            super::tool_exec::write_tool_result(
+                            let result = super::tool_exec::write_tool_result(
                                 &slot,
                                 &status,
                                 &summary,
@@ -249,6 +256,7 @@ impl Run {
     }
 
     async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
+        let has_active_ordered_simple_slot = self.has_active_ordered_simple_slot();
         let pending = match &mut self.state {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
@@ -259,6 +267,11 @@ impl Run {
         };
 
         if queued.tool_call.name == "agent" || queued.tool_call.name == "use_skill" {
+            return Ok(None);
+        }
+        if requires_ordered_simple_execution(&queued.tool_call.name)
+            && has_active_ordered_simple_slot
+        {
             return Ok(None);
         }
 
@@ -296,19 +309,21 @@ impl Run {
             crate::permission::GateDecisionKind::Allow => {
                 if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
                     let choice = super::helpers::gate_choice(&decision.source);
-                    append_permission_decision(
-                        &pending.events_path,
-                        pending.turn,
-                        &queued.tool_call.id,
-                        choice,
-                        super::helpers::gate_source_name(decision.source),
-                        &permission_rule(
-                            &pending.kuku_home,
-                            &pending.workspace,
-                            &queued.tool_call.name,
-                            &queued.tool_call.args,
-                        ),
-                    )?;
+                    if !has_permission_decision(&prior_events, &queued.tool_call.id) {
+                        append_permission_decision(
+                            &pending.events_path,
+                            pending.turn,
+                            &queued.tool_call.id,
+                            choice,
+                            super::helpers::gate_source_name(decision.source),
+                            &permission_rule(
+                                &pending.kuku_home,
+                                &pending.workspace,
+                                &queued.tool_call.name,
+                                &queued.tool_call.args,
+                            ),
+                        )?;
+                    }
                 }
                 let QueuedToolCall {
                     tool_call,
@@ -338,6 +353,7 @@ impl Run {
                         summary: display_summary.clone(),
                         workspace: pending.workspace.clone(),
                         kuku_home: pending.kuku_home.clone(),
+                        prior_events: prior_events.clone(),
                         event_tx: self.slot_event_tx.clone(),
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
@@ -544,7 +560,10 @@ impl Run {
             .queued_tool_calls
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
-        let QueuedToolCall { tool_call, .. } = queued;
+        let QueuedToolCall {
+            tool_call,
+            display_summary: queued_summary,
+        } = queued;
         let rule = permission_rule(
             &pending.kuku_home,
             &pending.workspace,
@@ -571,6 +590,7 @@ impl Run {
             source,
             &rule,
         )?;
+        let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
             let result = execute_tool_call(&mut pending, &tool_call).await?;
             let mc = if result.model_content.is_empty() {
@@ -586,6 +606,16 @@ impl Run {
                 model_content: mc,
                 result: result.structured,
             }));
+        }
+        if requires_ordered_simple_execution(&tool_call.name)
+            && self.has_active_ordered_simple_slot()
+        {
+            pending.queued_tool_calls.push_front(QueuedToolCall {
+                tool_call,
+                display_summary: queued_summary,
+            });
+            self.state = RunState::Pending(Box::new(pending));
+            return Ok(None);
         }
         let hook_result = run_tool_pre_hooks(
             &mut pending,
@@ -612,6 +642,7 @@ impl Run {
             summary: summary.clone(),
             workspace: pending.workspace.clone(),
             kuku_home: pending.kuku_home.clone(),
+            prior_events: prior_events.clone(),
             event_tx: self.slot_event_tx.clone(),
             config: pending.config.clone(),
             catalog: pending.catalog.clone(),
@@ -626,6 +657,15 @@ impl Run {
             kind: tool_kind,
         }))
     }
+}
+
+fn has_permission_decision(events: &[crate::event::StoredEvent], tool_call_id: &str) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::PermissionDecision { tool_call_id: id, .. } if id == tool_call_id
+        )
+    })
 }
 
 async fn run_session_end_hooks(output: &super::types::RunOutput, turn: u64) {
