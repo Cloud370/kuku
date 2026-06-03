@@ -104,7 +104,7 @@ The `done` event includes run metrics:
 | `tool_summary.errors` | `u64` | Tool executions with error status |
 | `tool_summary.rounds` | `u64` | Model→tools→result cycles |
 
-For the full JSON output contract including `response`, `usage`, and `tools`, see the [Run Metrics spec](https://github.com/Cloud370/kuku/blob/main/docs/superpowers/specs/2026-06-03-run-metrics-output-design.md).
+On interrupt (`session_interrupted`), `response` is partial text or `null`. `usage` and `tools` use the same structure as above.
 
 ## `DELETE /runs/{id}`
 

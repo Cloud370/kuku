@@ -5,7 +5,7 @@ use kuku::subagent::registry::SubagentRegistry;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine, RenderMode, RunSummary, RunUsageSummary};
+use crate::display::{Display, OutputLine, RenderMode, RunMetrics, RunUsageSummary};
 
 fn cache_hit_rate(cache_read: u64, input: u64) -> f64 {
     if input + cache_read > 0 {
@@ -270,7 +270,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
             .unwrap_or((0, 0, 0, 0));
-        let line = OutputLine::session_completed(RunSummary {
+        let line = OutputLine::session_completed(RunMetrics {
             session_id: output.session_id,
             tier: tier_name.clone(),
             model: model_name.clone(),
@@ -280,7 +280,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
             duration_ms: json_elapsed.as_millis() as u64,
-            response: output.text,
+            response: Some(output.text),
             usage: build_usage_summary(
                 input_tokens,
                 output_tokens,
@@ -514,68 +514,47 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let session_elapsed = session_start.elapsed();
     println!();
     if use_stream_json {
-        if was_cancelled {
-            let ts = done_output
-                .as_ref()
-                .map(|o| o.tool_summary.clone())
-                .unwrap_or_default();
-            let model_reqs = done_output
-                .as_ref()
-                .map(|o| o.model_request_count)
-                .unwrap_or(0);
-            let think_ms = done_output
-                .as_ref()
-                .map(|o| o.thinking_duration_ms)
-                .unwrap_or(0);
-            let line = OutputLine::session_interrupted(
-                session_id.clone(),
-                tier_name.clone(),
-                model_name.clone(),
-                current_turn,
+        let ts = done_output
+            .as_ref()
+            .map(|o| o.tool_summary.clone())
+            .unwrap_or_default();
+        let model_reqs = done_output
+            .as_ref()
+            .map(|o| o.model_request_count)
+            .unwrap_or(0);
+        let think_ms = done_output
+            .as_ref()
+            .map(|o| o.thinking_duration_ms)
+            .unwrap_or(0);
+        let metrics = RunMetrics {
+            session_id: session_id.clone(),
+            tier: tier_name.clone(),
+            model: model_name.clone(),
+            turns: current_turn,
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            cache_read_input_tokens: total_cache_read_input_tokens,
+            cache_creation_input_tokens: total_cache_creation_input_tokens,
+            duration_ms: session_elapsed.as_millis() as u64,
+            response: if text_buffer.is_empty() {
+                None
+            } else {
+                Some(text_buffer)
+            },
+            usage: build_usage_summary(
                 total_input_tokens,
                 total_output_tokens,
                 total_cache_read_input_tokens,
                 total_cache_creation_input_tokens,
-                session_elapsed.as_millis() as u64,
-                if text_buffer.is_empty() {
-                    None
-                } else {
-                    Some(text_buffer)
-                },
-                build_usage_summary(
-                    total_input_tokens,
-                    total_output_tokens,
-                    total_cache_read_input_tokens,
-                    total_cache_creation_input_tokens,
-                    model_reqs,
-                    think_ms,
-                ),
-                ts,
-            );
-            println!("{}", line.to_json_line());
-        } else if let Some(output) = done_output {
-            let line = OutputLine::session_completed(RunSummary {
-                session_id: session_id.clone(),
-                tier: tier_name.clone(),
-                model: model_name.clone(),
-                turns: current_turn,
-                input_tokens: total_input_tokens,
-                output_tokens: total_output_tokens,
-                cache_read_input_tokens: total_cache_read_input_tokens,
-                cache_creation_input_tokens: total_cache_creation_input_tokens,
-                duration_ms: session_elapsed.as_millis() as u64,
-                response: text_buffer,
-                usage: build_usage_summary(
-                    total_input_tokens,
-                    total_output_tokens,
-                    total_cache_read_input_tokens,
-                    total_cache_creation_input_tokens,
-                    output.model_request_count,
-                    output.thinking_duration_ms,
-                ),
-                tools: output.tool_summary,
-            });
-            println!("{}", line.to_json_line());
+                model_reqs,
+                think_ms,
+            ),
+            tools: ts,
+        };
+        if done_output.is_some() {
+            println!("{}", OutputLine::session_completed(metrics).to_json_line());
+        } else {
+            println!("{}", OutputLine::session_interrupted(metrics).to_json_line());
         }
     } else if was_cancelled {
         eprintln!("{}", display.session_interrupted(&session_id, current_turn));

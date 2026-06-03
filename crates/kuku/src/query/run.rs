@@ -641,6 +641,7 @@ impl Run {
         )
         .await?;
         if let Some(block) = hook_result.block {
+            pending.record_tool_call(&tool_call.name);
             self.state = RunState::Pending(Box::new(pending));
             return Ok(Some(UiEvent::ToolEnd {
                 id: tool_call.id,

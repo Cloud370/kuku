@@ -209,10 +209,28 @@ impl OutputLine {
         }
     }
 
-    pub fn session_completed(summary: RunSummary) -> Self {
+    pub fn session_completed(summary: RunMetrics) -> Self {
         OutputLine::SessionCompleted {
             session_id: summary.session_id,
             event: "completed".into(),
+            tier: summary.tier,
+            model: summary.model,
+            turns: summary.turns,
+            input_tokens: summary.input_tokens,
+            output_tokens: summary.output_tokens,
+            cache_read_input_tokens: summary.cache_read_input_tokens,
+            cache_creation_input_tokens: summary.cache_creation_input_tokens,
+            duration_ms: summary.duration_ms,
+            response: summary.response.unwrap_or_default(),
+            usage: summary.usage,
+            tools: summary.tools,
+        }
+    }
+
+    pub fn session_interrupted(summary: RunMetrics) -> Self {
+        OutputLine::SessionInterrupted {
+            session_id: summary.session_id,
+            event: "interrupted".into(),
             tier: summary.tier,
             model: summary.model,
             turns: summary.turns,
@@ -226,41 +244,9 @@ impl OutputLine {
             tools: summary.tools,
         }
     }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn session_interrupted(
-        session_id: String,
-        tier: String,
-        model: String,
-        turns: u64,
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_input_tokens: u64,
-        cache_creation_input_tokens: u64,
-        duration_ms: u64,
-        response: Option<String>,
-        usage: RunUsageSummary,
-        tools: kuku::query::ToolSummary,
-    ) -> Self {
-        OutputLine::SessionInterrupted {
-            session_id,
-            event: "interrupted".into(),
-            tier,
-            model,
-            turns,
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens,
-            cache_creation_input_tokens,
-            duration_ms,
-            response,
-            usage,
-            tools,
-        }
-    }
 }
 
-pub struct RunSummary {
+pub struct RunMetrics {
     pub session_id: String,
     pub tier: String,
     pub model: String,
@@ -270,7 +256,7 @@ pub struct RunSummary {
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
     pub duration_ms: u64,
-    pub response: String,
+    pub response: Option<String>,
     pub usage: RunUsageSummary,
     pub tools: kuku::query::ToolSummary,
 }

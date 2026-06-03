@@ -4,7 +4,7 @@ pub mod text;
 pub mod util;
 
 pub use event::{derive_final_output, render_event_brief};
-pub use json::{OutputLine, RunSummary, RunUsageSummary};
+pub use json::{OutputLine, RunMetrics, RunUsageSummary};
 pub use text::{Display, RenderMode};
 
 #[cfg(test)]
@@ -276,9 +276,9 @@ mod tests {
 
     #[test]
     fn session_completed_json_all_fields_present() {
-        use crate::display::{OutputLine, RunSummary, RunUsageSummary};
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         use kuku::query::ToolSummary;
-        let summary = RunSummary {
+        let summary = RunMetrics {
             session_id: "abc123".into(),
             tier: "balanced".into(),
             model: "claude-sonnet-4-6".into(),
@@ -288,7 +288,7 @@ mod tests {
             cache_read_input_tokens: 27000,
             cache_creation_input_tokens: 200,
             duration_ms: 7910,
-            response: "READY".into(),
+            response: Some("READY".into()),
             usage: RunUsageSummary {
                 total_input_tokens: 31700,
                 total_tokens: 32600,
@@ -334,8 +334,8 @@ mod tests {
 
     #[test]
     fn session_completed_json_tools_always_present() {
-        use crate::display::{OutputLine, RunSummary, RunUsageSummary};
-        let summary = RunSummary {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
             session_id: "s".into(),
             tier: "t".into(),
             model: "m".into(),
@@ -345,7 +345,7 @@ mod tests {
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
             duration_ms: 0,
-            response: "".into(),
+            response: Some("".into()),
             usage: RunUsageSummary {
                 total_input_tokens: 0,
                 total_tokens: 0,
@@ -366,8 +366,8 @@ mod tests {
 
     #[test]
     fn session_completed_response_is_string() {
-        use crate::display::{OutputLine, RunSummary, RunUsageSummary};
-        let summary = RunSummary {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
             session_id: "s".into(),
             tier: "t".into(),
             model: "m".into(),
@@ -377,7 +377,7 @@ mod tests {
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
             duration_ms: 0,
-            response: "hello".into(),
+            response: Some("hello".into()),
             usage: RunUsageSummary {
                 total_input_tokens: 0,
                 total_tokens: 0,
@@ -394,62 +394,62 @@ mod tests {
 
     #[test]
     fn session_interrupted_response_is_null_when_empty() {
-        use crate::display::{OutputLine, RunUsageSummary};
-        let line = OutputLine::session_interrupted(
-            "s".into(),
-            "t".into(),
-            "m".into(),
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            None,
-            RunUsageSummary {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let line = OutputLine::session_interrupted(RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: None,
+            usage: RunUsageSummary {
                 total_input_tokens: 0,
                 total_tokens: 0,
                 cache_hit_rate: 0.0,
                 model_requests: 0,
                 thinking_duration_ms: 0,
             },
-            kuku::query::ToolSummary::default(),
-        );
+            tools: kuku::query::ToolSummary::default(),
+        });
         let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
         assert_eq!(json["response"], serde_json::Value::Null);
     }
 
     #[test]
     fn session_interrupted_response_is_string_when_partial() {
-        use crate::display::{OutputLine, RunUsageSummary};
-        let line = OutputLine::session_interrupted(
-            "s".into(),
-            "t".into(),
-            "m".into(),
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            Some("partial".into()),
-            RunUsageSummary {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let line = OutputLine::session_interrupted(RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: Some("partial".into()),
+            usage: RunUsageSummary {
                 total_input_tokens: 0,
                 total_tokens: 0,
                 cache_hit_rate: 0.0,
                 model_requests: 0,
                 thinking_duration_ms: 0,
             },
-            kuku::query::ToolSummary::default(),
-        );
+            tools: kuku::query::ToolSummary::default(),
+        });
         let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
         assert_eq!(json["response"], "partial");
     }
 
     #[test]
     fn cache_hit_rate_rounded_to_3_decimal_places() {
-        use crate::display::{OutputLine, RunSummary, RunUsageSummary};
-        let summary = RunSummary {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
             session_id: "s".into(),
             tier: "t".into(),
             model: "m".into(),
@@ -459,7 +459,7 @@ mod tests {
             cache_read_input_tokens: 27000,
             cache_creation_input_tokens: 0,
             duration_ms: 0,
-            response: "".into(),
+            response: Some("".into()),
             usage: RunUsageSummary {
                 total_input_tokens: 31500,
                 total_tokens: 32400,
