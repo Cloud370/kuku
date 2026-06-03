@@ -135,6 +135,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         tool_calls,
         usage,
         handoff_detector,
+        thinking_duration_ms,
         ..
     } = state;
 
@@ -146,7 +147,13 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             u.cache_creation_input_tokens.unwrap_or(0);
     }
 
+    pending.thinking_duration_ms += thinking_duration_ms;
+    pending.model_request_count += 1;
+
     let has_tool_calls = !tool_calls.is_empty();
+    if has_tool_calls {
+        pending.tool_rounds += 1;
+    }
     let final_stop_reason = stop_reason.unwrap_or_else(|| {
         if has_tool_calls {
             "tool_use".to_string()
