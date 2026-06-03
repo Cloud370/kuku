@@ -41,6 +41,9 @@ pub struct RunOutput {
     pub text: String,
     pub usage: Option<crate::provider::types::ProviderUsage>,
     pub turn: u64,
+    pub model_request_count: u64,
+    pub thinking_duration_ms: u64,
+    pub tool_summary: ToolSummary,
     pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
     pub(super) session_dir: std::path::PathBuf,
     pub(super) workspace: std::path::PathBuf,
@@ -247,6 +250,15 @@ pub(super) struct CumulativeUsage {
     pub(super) cache_creation_input_tokens: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ToolSummary {
+    pub total_calls: u64,
+    pub names: Vec<String>,
+    pub denied: u64,
+    pub errors: u64,
+    pub rounds: u64,
+}
+
 #[derive(Debug)]
 pub(super) struct PendingRun {
     pub(super) session_id: String,
@@ -276,6 +288,13 @@ pub(super) struct PendingRun {
     pub(super) plugin_registry: Option<Arc<crate::plugin::PluginRegistry>>,
     pub(super) hook_context: Vec<String>,
     pub(super) force_continue_count: u64,
+    pub(super) model_request_count: u64,
+    pub(super) tool_rounds: u64,
+    pub(super) tool_calls: u64,
+    pub(super) tool_names: Vec<String>,
+    pub(super) tool_denied: u64,
+    pub(super) tool_errors: u64,
+    pub(super) thinking_duration_ms: u64,
 }
 
 #[derive(Debug)]
@@ -348,6 +367,9 @@ impl RunOutput {
             text,
             usage,
             turn,
+            model_request_count: 0,
+            thinking_duration_ms: 0,
+            tool_summary: ToolSummary::default(),
             plugin_registry: None,
             session_dir: std::path::PathBuf::new(),
             workspace: std::path::PathBuf::new(),
