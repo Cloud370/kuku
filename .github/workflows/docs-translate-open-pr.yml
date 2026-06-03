@@ -219,7 +219,10 @@ jobs:
             args+=(--pr "$KUKU_DOCS_PR_NUMBER")
           fi
 
-          pr_body="$(bash scripts/docs-translate/translate-page-and-open-pr.sh "${args[@]}" "$KUKU_DOCS_SOURCE_PATH")"
+          run_id="docs-translate-${GITHUB_RUN_ID}"
+          pr_body="$(KUKU_RUN_ID="$run_id" bash scripts/docs-translate/translate-page-and-open-pr.sh "${args[@]}" "$KUKU_DOCS_SOURCE_PATH")"
+          run_stats_file="$KUKU_CACHE_ROOT/kuku-home-runs/$run_id/session-run.json"
+          run_stats_block="$(bash scripts/docs-translate/render-run-stats.sh "$run_stats_file")"
           printf '%s\n' "$pr_body"
           pr_body_file="$(mktemp)"
           printf '%s\n' "$pr_body" > "$pr_body_file"
@@ -241,5 +244,6 @@ jobs:
             if [[ -n "$KUKU_DOCS_PR_NUMBER" ]]; then
               printf '%s\n' "- Existing PR: \`$KUKU_DOCS_PR_NUMBER\`"
             fi
+            printf '\n%s\n' "$run_stats_block"
             printf '\n### Agent final output\n\n%s\n' "$pr_body"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -60,6 +60,7 @@ elif [[ "$DO_RUN" == "1" ]]; then
     fi
     if [[ "$OUTPUT_MODE" == "session-id" ]]; then
         RUN_JSON="$($BIN run -y --no-agents --model "$RUN_MODEL" "${OUTPUT_ARGS[@]}" "$CHECK_PROMPT")"
+        printf '%s\n' "$RUN_JSON" > "$RUNTIME_HOME/session-run.json"
         printf '%s\n' "$RUN_JSON" | jq -r '.session_id // empty'
     else
         "$BIN" run -y --no-agents --model "$RUN_MODEL" "${OUTPUT_ARGS[@]}" "$CHECK_PROMPT"
