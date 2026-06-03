@@ -4,7 +4,7 @@ pub mod text;
 pub mod util;
 
 pub use event::{derive_final_output, render_event_brief};
-pub use json::{OutputLine, SessionSummary};
+pub use json::{OutputLine, RunSummary, RunUsageSummary};
 pub use text::{Display, RenderMode};
 
 #[cfg(test)]
