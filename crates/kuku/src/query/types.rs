@@ -297,6 +297,25 @@ pub(super) struct PendingRun {
     pub(super) thinking_duration_ms: u64,
 }
 
+impl PendingRun {
+    pub(super) fn record_tool_call(&mut self, name: &str) {
+        self.tool_calls += 1;
+        if !self.tool_names.iter().any(|n| n == name) {
+            self.tool_names.push(name.to_owned());
+        }
+    }
+
+    pub(super) fn record_tool_denied(&mut self, name: &str) {
+        self.record_tool_call(name);
+        self.tool_denied += 1;
+    }
+
+    pub(super) fn record_tool_error(&mut self, name: &str) {
+        self.record_tool_call(name);
+        self.tool_errors += 1;
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ResolvedRuntime {
     pub(super) config: ResolvedProvider,

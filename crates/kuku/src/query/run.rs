@@ -337,10 +337,7 @@ impl Run {
                 )
                 .await?;
                 if let Some(block) = hook_result.block {
-                    pending.tool_calls += 1;
-                    if !pending.tool_names.contains(&tool_call.name) {
-                        pending.tool_names.push(tool_call.name.clone());
-                    }
+                    pending.record_tool_call(&tool_call.name);
                     return Ok(Some(UiEvent::ToolEnd {
                         id: tool_call.id,
                         status: "blocked".to_string(),
@@ -349,10 +346,7 @@ impl Run {
                         result: None,
                     }));
                 }
-                pending.tool_calls += 1;
-                if !pending.tool_names.contains(&tool_call.name) {
-                    pending.tool_names.push(tool_call.name.clone());
-                }
+                pending.record_tool_call(&tool_call.name);
                 let (slot, tool_kind) =
                     super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
                         tool_name: tool_call.name.clone(),
@@ -378,11 +372,7 @@ impl Run {
             crate::permission::GateDecisionKind::Deny => {
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
-                pending.tool_calls += 1;
-                if !pending.tool_names.contains(&tool_call.name) {
-                    pending.tool_names.push(tool_call.name.clone());
-                }
-                pending.tool_denied += 1;
+                pending.record_tool_denied(&tool_call.name);
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
                     status: "blocked".to_string(),
@@ -617,11 +607,7 @@ impl Run {
         )?;
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
-            pending.tool_calls += 1;
-            if !pending.tool_names.contains(&tool_call.name) {
-                pending.tool_names.push(tool_call.name.clone());
-            }
-            pending.tool_denied += 1;
+            pending.record_tool_denied(&tool_call.name);
             let result = execute_tool_call(&mut pending, &tool_call).await?;
             let mc = if result.model_content.is_empty() {
                 None
@@ -665,10 +651,7 @@ impl Run {
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
-        pending.tool_calls += 1;
-        if !pending.tool_names.contains(&tool_call.name) {
-            pending.tool_names.push(tool_call.name.clone());
-        }
+        pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
