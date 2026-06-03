@@ -347,30 +347,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     &mut display,
                     use_stream_json,
                 );
-                if use_stream_json {
-                    let line = OutputLine::session_interrupted(
-                        session_id.clone(),
-                        tier_name.clone(),
-                        model_name.clone(),
-                        current_turn,
-                        total_input_tokens,
-                        total_output_tokens,
-                        total_cache_read_input_tokens,
-                        total_cache_creation_input_tokens,
-                        session_start.elapsed().as_millis() as u64,
-                        if text_buffer.is_empty() { None } else { Some(text_buffer.clone()) },
-                        build_usage_summary(
-                            total_input_tokens, total_output_tokens,
-                            total_cache_read_input_tokens, total_cache_creation_input_tokens,
-                            0, 0,
-                        ),
-                        kuku::query::ToolSummary::default(),
-                    );
-                    println!("{}", line.to_json_line());
-                } else {
-                    eprintln!("{}", display.session_interrupted(&session_id, current_turn));
-                }
-                std::process::exit(130);
+                was_cancelled = true;
+                break;
             }
         };
 
@@ -599,7 +577,24 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             });
             println!("{}", line.to_json_line());
         }
+    } else if was_cancelled {
+        eprintln!("{}", display.session_interrupted(&session_id, current_turn));
+        std::process::exit(130);
     } else if args.verbose {
+        let usage = build_usage_summary(
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_input_tokens,
+            total_cache_creation_input_tokens,
+            done_output
+                .as_ref()
+                .map(|o| o.model_request_count)
+                .unwrap_or(0),
+            done_output
+                .as_ref()
+                .map(|o| o.thinking_duration_ms)
+                .unwrap_or(0),
+        );
         let ts = done_output.as_ref().map(|o| &o.tool_summary);
         println!(
             "{}",
@@ -611,27 +606,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 total_cache_read_input_tokens,
                 total_cache_creation_input_tokens,
                 session_elapsed,
-                total_input_tokens
-                    + total_cache_read_input_tokens
-                    + total_cache_creation_input_tokens,
-                total_input_tokens
-                    + total_cache_read_input_tokens
-                    + total_cache_creation_input_tokens
-                    + total_output_tokens,
-                cache_hit_rate(total_cache_read_input_tokens, total_input_tokens),
-                done_output
-                    .as_ref()
-                    .map(|o| o.model_request_count)
-                    .unwrap_or(0),
-                done_output
-                    .as_ref()
-                    .map(|o| o.thinking_duration_ms)
-                    .unwrap_or(0),
-                ts.map(|t| t.total_calls).unwrap_or(0),
-                ts.map(|t| t.names.as_slice()).unwrap_or(&[]),
-                ts.map(|t| t.denied).unwrap_or(0),
-                ts.map(|t| t.errors).unwrap_or(0),
-                ts.map(|t| t.rounds).unwrap_or(0),
+                &usage,
+                ts,
                 done_output.as_ref().map(|o| o.text.as_str()).unwrap_or(""),
             )
         );
