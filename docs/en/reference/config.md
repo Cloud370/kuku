@@ -46,8 +46,10 @@ Default tiers are `strong`, `balanced`, and `light`.
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | string | `anthropic`, `openai-chat`, or `openai-responses` |
-| `base_url` | string | Provider API base URL |
+| `base_url` | string | Provider API base URL, or `$ENV_VAR_NAME` |
 | `api_key` | string | Literal key, or `$ENV_VAR_NAME` |
+
+Any string config value whose first character is `$` is treated as an environment variable reference and resolved before validation, except `api_key`, which keeps the env-var reference and resolves later when the provider is used.
 
 ## `discovery`
 

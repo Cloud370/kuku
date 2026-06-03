@@ -8,7 +8,7 @@
 | `ANTHROPIC_API_KEY` | Common API key source for `provider.anthropic` |
 | `OPENAI_API_KEY` | Common API key source for `provider.openai` |
 
-`config.toml` can also reference any environment variable by using `$NAME` in a provider `api_key` field.
+`config.toml` can also reference environment variables with `$NAME` in string fields. `api_key` keeps the env-var reference and resolves it later; other string fields resolve during config load.
 
 ## Default Behavior Without `KUKU_HOME`
 

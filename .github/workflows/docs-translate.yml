@@ -1,0 +1,75 @@
+name: Docs Translate Tooling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs-translate.yml"
+      - ".github/workflows/docs-translate-en-changes.yml"
+      - ".github/workflows/docs-translate-open-pr.yml"
+      - ".kuku/skills/docs-translate/**"
+      - "scripts/docs-translate/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs-translate.yml"
+      - ".github/workflows/docs-translate-en-changes.yml"
+      - ".github/workflows/docs-translate-open-pr.yml"
+      - ".kuku/skills/docs-translate/**"
+      - "scripts/docs-translate/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-translate-tooling-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell scripts
+        run: |
+          bash -n scripts/docs-translate/run-local-check.sh
+          bash -n scripts/docs-translate/check-in-container.sh
+          bash -n scripts/docs-translate/translate-page-and-open-pr.sh
+          bash -n scripts/docs-translate/open-pr-from-body.sh
+          bash -n scripts/docs-translate/test-open-pr-from-body.sh
+          bash -n scripts/docs-translate/render-run-stats.sh
+          bash -n scripts/docs-translate/test-render-run-stats.sh
+          bash -n scripts/docs-translate/report-docs-en-changes.sh
+          bash scripts/docs-translate/test-open-pr-from-body.sh
+          bash scripts/docs-translate/test-render-run-stats.sh
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Cache container runtime build state
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kuku/docs-translate-ci
+          key: docs-translate-runtime-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml', 'scripts/docs-translate/Dockerfile') }}
+          restore-keys: |
+            docs-translate-runtime-${{ runner.os }}-
+
+      - name: Build runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/docs-translate/Dockerfile
+          tags: kuku-agent-runner:ci
+          load: true
+          cache-from: type=gha,scope=docs-translate-runner
+          cache-to: type=gha,mode=max,scope=docs-translate-runner
+
+      - name: Check container entrypoint without model run
+        env:
+          KUKU_AGENT_RUNNER_IMAGE: kuku-agent-runner:ci
+          KUKU_CACHE_ROOT: /tmp/kuku/docs-translate-ci
+          KUKU_ENV_FILE: /dev/null
+          KUKU_CHECK_RUN: "0"
+          KUKU_CHECK_PROMPT: ""
+        run: bash scripts/docs-translate/run-local-check.sh

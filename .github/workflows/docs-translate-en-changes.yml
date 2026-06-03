@@ -1,0 +1,28 @@
+name: Docs EN Change Report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/en/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-en-changes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Report changed English docs pages
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: bash scripts/docs-translate/report-docs-en-changes.sh "$BEFORE_SHA" "$AFTER_SHA"

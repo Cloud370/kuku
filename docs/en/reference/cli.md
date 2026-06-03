@@ -128,4 +128,6 @@ Defaults:
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
 
+`kuku web` requires a binary built with embedded Web UI assets. The release workflow and release artifacts include them. For local source builds, build `kuku-app` with `--features embedded-web-assets` after preparing `apps/web/dist`.
+
 For request and stream formats, see [Server API](server-api.md).

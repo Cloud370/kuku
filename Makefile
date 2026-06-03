@@ -4,15 +4,15 @@ build-web:
 	cd apps/web && npm install && npm run build
 
 build: build-web
-	cargo build --release
+	cargo build --release --features embedded-web-assets
 
 build-all: build-web
-	cargo build --release --target x86_64-unknown-linux-gnu
-	cargo build --release --target aarch64-apple-darwin
-	cargo build --release --target x86_64-pc-windows-msvc
+	cargo build --release --features embedded-web-assets --target x86_64-unknown-linux-gnu
+	cargo build --release --features embedded-web-assets --target aarch64-apple-darwin
+	cargo build --release --features embedded-web-assets --target x86_64-pc-windows-msvc
 
 release-linux: build-web
-	cross build --release --target x86_64-unknown-linux-musl
+	cross build --release --features embedded-web-assets --target x86_64-unknown-linux-musl
 
 clean:
 	cargo clean

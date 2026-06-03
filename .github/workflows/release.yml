@@ -61,11 +61,11 @@ jobs:
 
       - name: Build binary (Linux)
         if: runner.os == 'Linux'
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --features embedded-web-assets --target ${{ matrix.target }}
 
       - name: Build binary
         if: runner.os != 'Linux'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features embedded-web-assets --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'

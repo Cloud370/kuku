@@ -1,0 +1,3 @@
+/docs-translate
+Sync {{TARGET_PATH}} from {{SOURCE_PATH}}.
+Target locale: {{TARGET_LOCALE}}.
