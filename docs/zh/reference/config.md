@@ -46,8 +46,10 @@ $KUKU_HOME/config.toml
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | string | `anthropic`、`openai-chat` 或 `openai-responses` |
-| `base_url` | string | provider API 基础 URL |
+| `base_url` | string | provider API 基础 URL，或 `$ENV_VAR_NAME` |
 | `api_key` | string | 直接填写的 key，或 `$ENV_VAR_NAME` |
+
+任何首字符为 `$` 的字符串类型的配置值会被视作环境变量引用并在校验前解析，唯一的例外是 `api_key`，其保留环境变量引用并延迟到使用该 provider 时才解析。
 
 ## `discovery`
 
