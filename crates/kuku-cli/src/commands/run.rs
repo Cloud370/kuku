@@ -569,6 +569,31 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             });
             println!("{}", line.to_json_line());
         }
+    } else if args.verbose {
+        let ts = done_output.as_ref().map(|o| &o.tool_summary);
+        println!(
+            "{}",
+            display.session_completed_verbose(
+                &session_id,
+                current_turn,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_input_tokens,
+                total_cache_creation_input_tokens,
+                session_elapsed,
+                total_input_tokens + total_cache_read_input_tokens + total_cache_creation_input_tokens,
+                total_input_tokens + total_cache_read_input_tokens + total_cache_creation_input_tokens + total_output_tokens,
+                cache_hit_rate(total_cache_read_input_tokens, total_input_tokens),
+                done_output.as_ref().map(|o| o.model_request_count).unwrap_or(0),
+                done_output.as_ref().map(|o| o.thinking_duration_ms).unwrap_or(0),
+                ts.map(|t| t.total_calls).unwrap_or(0),
+                ts.map(|t| t.names.as_slice()).unwrap_or(&[]),
+                ts.map(|t| t.denied).unwrap_or(0),
+                ts.map(|t| t.errors).unwrap_or(0),
+                ts.map(|t| t.rounds).unwrap_or(0),
+                done_output.as_ref().map(|o| o.text.as_str()).unwrap_or(""),
+            )
+        );
     } else {
         println!(
             "{}",
@@ -665,6 +690,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             stream_json: false,
             show_thinking: false,
             raw: false,
+            verbose: false,
             config: config.clone(),
             prompts_dir: None,
             no_agents: false,

@@ -213,6 +213,73 @@ impl Display {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_completed_verbose(
+        &self,
+        session_id: &str,
+        turns: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+        duration: Duration,
+        total_input_tokens: u64,
+        total_tokens: u64,
+        cache_hit_rate: f64,
+        model_requests: u64,
+        thinking_duration_ms: u64,
+        tool_calls: u64,
+        tool_names: &[String],
+        tool_denied: u64,
+        tool_errors: u64,
+        tool_rounds: u64,
+        response: &str,
+    ) -> String {
+        let base = self.session_completed(
+            session_id, turns, input_tokens, output_tokens,
+            cache_read_input_tokens, cache_creation_input_tokens, duration,
+        );
+        let mut lines = vec![base];
+
+        let mut usage_parts = vec![
+            format!("{} total in", fmt_tokens(total_input_tokens)),
+            format!("{} total", fmt_tokens(total_tokens)),
+        ];
+        if cache_hit_rate > 0.0 {
+            usage_parts.push(format!("{:.1}% cache hit", cache_hit_rate * 100.0));
+        }
+        if model_requests > 0 {
+            usage_parts.push(format!("{} reqs", model_requests));
+        }
+        if thinking_duration_ms > 0 {
+            usage_parts.push(format!("{:.1}s thinking", thinking_duration_ms as f64 / 1000.0));
+        }
+        lines.push(format!("  usage: {}", usage_parts.join(" . ")));
+
+        if tool_calls > 0 {
+            let mut tool_parts = vec![
+                format!("{} calls ({})", tool_calls, tool_names.join(", ")),
+            ];
+            if tool_errors > 0 {
+                tool_parts.push(format!("{} error", tool_errors));
+            }
+            if tool_denied > 0 {
+                tool_parts.push(format!("{} denied", tool_denied));
+            }
+            if tool_rounds > 0 {
+                tool_parts.push(format!("{} rounds", tool_rounds));
+            }
+            lines.push(format!("  tools: {}", tool_parts.join(" . ")));
+        }
+
+        lines.push("  response:".to_string());
+        for line in response.lines() {
+            lines.push(format!("  {}", line));
+        }
+
+        lines.join("\n")
+    }
+
     pub fn session_interrupted(&self, session_id: &str, turns: u64) -> String {
         format!(
             "{} interrupted: {} \u{b7} {} turns {}",
