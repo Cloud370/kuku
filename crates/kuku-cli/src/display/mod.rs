@@ -336,13 +336,22 @@ mod tests {
     fn session_completed_json_tools_always_present() {
         use crate::display::{OutputLine, RunSummary, RunUsageSummary};
         let summary = RunSummary {
-            session_id: "s".into(), tier: "t".into(), model: "m".into(),
-            turns: 1, input_tokens: 0, output_tokens: 0,
-            cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
-            duration_ms: 0, response: "".into(),
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: "".into(),
             usage: RunUsageSummary {
-                total_input_tokens: 0, total_tokens: 0,
-                cache_hit_rate: 0.0, model_requests: 0, thinking_duration_ms: 0,
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
             },
             tools: kuku::query::ToolSummary::default(),
         };
@@ -359,13 +368,22 @@ mod tests {
     fn session_completed_response_is_string() {
         use crate::display::{OutputLine, RunSummary, RunUsageSummary};
         let summary = RunSummary {
-            session_id: "s".into(), tier: "t".into(), model: "m".into(),
-            turns: 1, input_tokens: 0, output_tokens: 0,
-            cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
-            duration_ms: 0, response: "hello".into(),
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: "hello".into(),
             usage: RunUsageSummary {
-                total_input_tokens: 0, total_tokens: 0,
-                cache_hit_rate: 0.0, model_requests: 0, thinking_duration_ms: 0,
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
             },
             tools: kuku::query::ToolSummary::default(),
         };
@@ -378,11 +396,22 @@ mod tests {
     fn session_interrupted_response_is_null_when_empty() {
         use crate::display::{OutputLine, RunUsageSummary};
         let line = OutputLine::session_interrupted(
-            "s".into(), "t".into(), "m".into(), 1, 0, 0, 0, 0, 0,
+            "s".into(),
+            "t".into(),
+            "m".into(),
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
             None,
             RunUsageSummary {
-                total_input_tokens: 0, total_tokens: 0,
-                cache_hit_rate: 0.0, model_requests: 0, thinking_duration_ms: 0,
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
             },
             kuku::query::ToolSummary::default(),
         );
@@ -394,11 +423,22 @@ mod tests {
     fn session_interrupted_response_is_string_when_partial() {
         use crate::display::{OutputLine, RunUsageSummary};
         let line = OutputLine::session_interrupted(
-            "s".into(), "t".into(), "m".into(), 1, 0, 0, 0, 0, 0,
+            "s".into(),
+            "t".into(),
+            "m".into(),
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
             Some("partial".into()),
             RunUsageSummary {
-                total_input_tokens: 0, total_tokens: 0,
-                cache_hit_rate: 0.0, model_requests: 0, thinking_duration_ms: 0,
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
             },
             kuku::query::ToolSummary::default(),
         );
@@ -410,20 +450,31 @@ mod tests {
     fn cache_hit_rate_rounded_to_3_decimal_places() {
         use crate::display::{OutputLine, RunSummary, RunUsageSummary};
         let summary = RunSummary {
-            session_id: "s".into(), tier: "t".into(), model: "m".into(),
-            turns: 1, input_tokens: 4500, output_tokens: 900,
-            cache_read_input_tokens: 27000, cache_creation_input_tokens: 0,
-            duration_ms: 0, response: "".into(),
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 4500,
+            output_tokens: 900,
+            cache_read_input_tokens: 27000,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: "".into(),
             usage: RunUsageSummary {
-                total_input_tokens: 31500, total_tokens: 32400,
+                total_input_tokens: 31500,
+                total_tokens: 32400,
                 cache_hit_rate: 0.857,
-                model_requests: 3, thinking_duration_ms: 0,
+                model_requests: 3,
+                thinking_duration_ms: 0,
             },
             tools: kuku::query::ToolSummary::default(),
         };
         let line = OutputLine::session_completed(summary);
         let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
         let rate_str = json["usage"]["cache_hit_rate"].to_string();
-        assert!(rate_str.len() <= 5, "expected short decimal, got: {rate_str}");
+        assert!(
+            rate_str.len() <= 5,
+            "expected short decimal, got: {rate_str}"
+        );
     }
 }

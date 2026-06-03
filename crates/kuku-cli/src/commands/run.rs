@@ -282,8 +282,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             duration_ms: json_elapsed.as_millis() as u64,
             response: output.text,
             usage: build_usage_summary(
-                input_tokens, output_tokens, cache_read, cache_creation,
-                output.model_request_count, output.thinking_duration_ms,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_creation,
+                output.model_request_count,
+                output.thinking_duration_ms,
             ),
             tools: output.tool_summary.clone(),
         });
@@ -489,7 +493,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", display.tool_running());
                 }
             }
-            Some(UiEvent::Done { usage, turn, output }) => {
+            Some(UiEvent::Done {
+                usage,
+                turn,
+                output,
+            }) => {
                 close_thinking(
                     &mut in_thinking,
                     &mut thinking_start,
@@ -526,9 +534,18 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     if use_stream_json {
         if was_cancelled {
-            let ts = done_output.as_ref().map(|o| o.tool_summary.clone()).unwrap_or_default();
-            let model_reqs = done_output.as_ref().map(|o| o.model_request_count).unwrap_or(0);
-            let think_ms = done_output.as_ref().map(|o| o.thinking_duration_ms).unwrap_or(0);
+            let ts = done_output
+                .as_ref()
+                .map(|o| o.tool_summary.clone())
+                .unwrap_or_default();
+            let model_reqs = done_output
+                .as_ref()
+                .map(|o| o.model_request_count)
+                .unwrap_or(0);
+            let think_ms = done_output
+                .as_ref()
+                .map(|o| o.thinking_duration_ms)
+                .unwrap_or(0);
             let line = OutputLine::session_interrupted(
                 session_id.clone(),
                 tier_name.clone(),
@@ -539,11 +556,18 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 total_cache_read_input_tokens,
                 total_cache_creation_input_tokens,
                 session_elapsed.as_millis() as u64,
-                if text_buffer.is_empty() { None } else { Some(text_buffer) },
+                if text_buffer.is_empty() {
+                    None
+                } else {
+                    Some(text_buffer)
+                },
                 build_usage_summary(
-                    total_input_tokens, total_output_tokens,
-                    total_cache_read_input_tokens, total_cache_creation_input_tokens,
-                    model_reqs, think_ms,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_input_tokens,
+                    total_cache_creation_input_tokens,
+                    model_reqs,
+                    think_ms,
                 ),
                 ts,
             );
@@ -561,9 +585,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 duration_ms: session_elapsed.as_millis() as u64,
                 response: text_buffer,
                 usage: build_usage_summary(
-                    total_input_tokens, total_output_tokens,
-                    total_cache_read_input_tokens, total_cache_creation_input_tokens,
-                    output.model_request_count, output.thinking_duration_ms,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_input_tokens,
+                    total_cache_creation_input_tokens,
+                    output.model_request_count,
+                    output.thinking_duration_ms,
                 ),
                 tools: output.tool_summary,
             });
@@ -581,11 +608,22 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 total_cache_read_input_tokens,
                 total_cache_creation_input_tokens,
                 session_elapsed,
-                total_input_tokens + total_cache_read_input_tokens + total_cache_creation_input_tokens,
-                total_input_tokens + total_cache_read_input_tokens + total_cache_creation_input_tokens + total_output_tokens,
+                total_input_tokens
+                    + total_cache_read_input_tokens
+                    + total_cache_creation_input_tokens,
+                total_input_tokens
+                    + total_cache_read_input_tokens
+                    + total_cache_creation_input_tokens
+                    + total_output_tokens,
                 cache_hit_rate(total_cache_read_input_tokens, total_input_tokens),
-                done_output.as_ref().map(|o| o.model_request_count).unwrap_or(0),
-                done_output.as_ref().map(|o| o.thinking_duration_ms).unwrap_or(0),
+                done_output
+                    .as_ref()
+                    .map(|o| o.model_request_count)
+                    .unwrap_or(0),
+                done_output
+                    .as_ref()
+                    .map(|o| o.thinking_duration_ms)
+                    .unwrap_or(0),
                 ts.map(|t| t.total_calls).unwrap_or(0),
                 ts.map(|t| t.names.as_slice()).unwrap_or(&[]),
                 ts.map(|t| t.denied).unwrap_or(0),
