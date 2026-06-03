@@ -796,6 +796,13 @@ mod tests {
             plugin_registry: None,
             hook_context: Vec::new(),
             force_continue_count: 0,
+            model_request_count: 0,
+            thinking_duration_ms: 0,
+            tool_rounds: 0,
+            tool_calls: 0,
+            tool_names: Vec::new(),
+            tool_denied: 0,
+            tool_errors: 0,
         }
     }
 

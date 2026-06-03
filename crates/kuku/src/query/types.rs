@@ -584,4 +584,39 @@ mod tests {
         let back: ToolEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, out);
     }
+
+    #[test]
+    fn tool_summary_default_is_all_zeros() {
+        let s = ToolSummary::default();
+        assert_eq!(s.total_calls, 0);
+        assert!(s.names.is_empty());
+        assert_eq!(s.denied, 0);
+        assert_eq!(s.errors, 0);
+        assert_eq!(s.rounds, 0);
+    }
+
+    #[test]
+    fn run_output_new_has_zero_counters() {
+        let output = RunOutput::new("sid".into(), "text".into(), None, 1);
+        assert_eq!(output.model_request_count, 0);
+        assert_eq!(output.thinking_duration_ms, 0);
+        assert_eq!(output.tool_summary, ToolSummary::default());
+    }
+
+    #[test]
+    fn tool_summary_serializes_flat() {
+        let s = ToolSummary {
+            total_calls: 3,
+            names: vec!["read_file".into(), "bash".into()],
+            denied: 0,
+            errors: 1,
+            rounds: 2,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["total_calls"], 3);
+        assert_eq!(json["names"], serde_json::json!(["read_file", "bash"]));
+        assert_eq!(json["denied"], 0);
+        assert_eq!(json["errors"], 1);
+        assert_eq!(json["rounds"], 2);
+    }
 }

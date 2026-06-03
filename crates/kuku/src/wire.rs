@@ -74,6 +74,9 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "text": output.text,
             "turn": turn,
             "usage": usage,
+            "model_request_count": output.model_request_count,
+            "thinking_duration_ms": output.thinking_duration_ms,
+            "tool_summary": output.tool_summary,
         })),
         UiEvent::TurnStart { turn } => Some(json!({
             "type": "turn_start",
@@ -296,5 +299,32 @@ mod tests {
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "turn_start");
         assert_eq!(wire["turn"], 5);
+    }
+
+    #[test]
+    fn done_wire_format_includes_metrics() {
+        use crate::query::ToolSummary;
+        let mut output = RunOutput::new("sid".into(), "hello".into(), None, 1);
+        output.model_request_count = 3;
+        output.thinking_duration_ms = 3200;
+        output.tool_summary = ToolSummary {
+            total_calls: 2,
+            names: vec!["bash".into()],
+            denied: 0,
+            errors: 1,
+            rounds: 1,
+        };
+        let event = UiEvent::Done {
+            output,
+            usage: None,
+            turn: 1,
+        };
+        let val = to_wire(&event).unwrap();
+        assert_eq!(val["type"], "done");
+        assert_eq!(val["model_request_count"], 3);
+        assert_eq!(val["thinking_duration_ms"], 3200);
+        assert_eq!(val["tool_summary"]["total_calls"], 2);
+        assert_eq!(val["tool_summary"]["names"], serde_json::json!(["bash"]));
+        assert_eq!(val["tool_summary"]["errors"], 1);
     }
 }
