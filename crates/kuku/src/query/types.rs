@@ -350,6 +350,8 @@ pub(super) struct StreamingChunkState {
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
     pub(super) lead_events: Vec<UiEvent>,
     pub(super) handoff_detector: Option<HandoffDetector>,
+    pub(super) thinking_start: Option<std::time::Instant>,
+    pub(super) thinking_duration_ms: u64,
 }
 
 use super::handoff::HandoffDetector;

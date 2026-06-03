@@ -411,6 +411,9 @@ impl Run {
                     streaming.provider_request_id = Some(rid);
                 }
                 ProviderChunk::TextDelta { text } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.accumulated_text.push_str(&text);
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
@@ -423,10 +426,16 @@ impl Run {
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
+                    if streaming.thinking_start.is_none() {
+                        streaming.thinking_start = Some(std::time::Instant::now());
+                    }
                     streaming.accumulated_thinking.push_str(&text);
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
                 }
                 ProviderChunk::ToolCallStart { index, id, name } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.tool_calls.push(ProviderToolCall {
                         id,
                         name,
@@ -458,6 +467,9 @@ impl Run {
                     }
                 }
                 ProviderChunk::StopReason { reason } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.stop_reason = Some(reason);
                 }
                 ProviderChunk::StreamUsage {
@@ -878,6 +890,8 @@ mod tests {
             usage: None,
             lead_events: Vec::new(),
             handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);

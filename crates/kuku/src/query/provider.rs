@@ -317,6 +317,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             } else {
                 None
             },
+            thinking_start: None,
+            thinking_duration_ms: 0,
         }))),
         Err(failure)
             if matches!(
