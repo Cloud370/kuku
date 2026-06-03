@@ -525,6 +525,9 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 was_cancelled = true;
                 break;
             }
+            Some(UiEvent::TurnStart { turn }) => {
+                current_turn = turn;
+            }
             Some(_) => {}
             None => break,
         }
