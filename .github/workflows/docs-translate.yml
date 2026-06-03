@@ -37,7 +37,10 @@ jobs:
           bash -n scripts/docs-translate/run-local-check.sh
           bash -n scripts/docs-translate/check-in-container.sh
           bash -n scripts/docs-translate/translate-page-and-open-pr.sh
+          bash -n scripts/docs-translate/open-pr-from-body.sh
+          bash -n scripts/docs-translate/test-open-pr-from-body.sh
           bash -n scripts/docs-translate/report-docs-en-changes.sh
+          bash scripts/docs-translate/test-open-pr-from-body.sh
 
       - uses: docker/setup-buildx-action@v3
 

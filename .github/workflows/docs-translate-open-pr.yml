@@ -221,6 +221,15 @@ jobs:
 
           pr_body="$(bash scripts/docs-translate/translate-page-and-open-pr.sh "${args[@]}" "$KUKU_DOCS_SOURCE_PATH")"
           printf '%s\n' "$pr_body"
+          pr_body_file="$(mktemp)"
+          printf '%s\n' "$pr_body" > "$pr_body_file"
+          pr_title="docs: sync $KUKU_DOCS_TARGET_LOCALE for ${KUKU_DOCS_SOURCE_PATH#docs/en/}"
+          pr_url="$(bash scripts/docs-translate/open-pr-from-body.sh \
+            --head "$KUKU_DOCS_BRANCH_NAME" \
+            --base "$KUKU_DOCS_BASE_BRANCH" \
+            --title "$pr_title" \
+            --body-file "$pr_body_file")"
+          printf 'Translation PR: %s\n' "$pr_url"
 
           {
             printf '## Docs translate run\n\n'
@@ -228,6 +237,7 @@ jobs:
             printf '%s\n' "- Locale: \`$KUKU_DOCS_TARGET_LOCALE\`"
             printf '%s\n' "- Branch: \`$KUKU_DOCS_BRANCH_NAME\`"
             printf '%s\n' "- Base: \`$KUKU_DOCS_BASE_BRANCH\`"
+            printf '%s\n' "- PR: $pr_url"
             if [[ -n "$KUKU_DOCS_PR_NUMBER" ]]; then
               printf '%s\n' "- Existing PR: \`$KUKU_DOCS_PR_NUMBER\`"
             fi
