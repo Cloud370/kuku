@@ -39,6 +39,11 @@ fn return_blocked_tool(
         truncated: false,
         structured: None,
     })?;
+    pending.tool_calls += 1;
+    let tool_name_owned = tool_name.to_string();
+    if !pending.tool_names.contains(&tool_name_owned) {
+        pending.tool_names.push(tool_name_owned);
+    }
     pending.pending_events.push_back(UiEvent::ToolEnd {
         id: id.to_string(),
         status: "blocked".to_string(),
@@ -101,6 +106,7 @@ async fn execute_inline_tool(
         }
     }
 
+    let is_error = result.status == "error";
     let mc = if result.model_content.is_empty() {
         None
     } else {
@@ -113,6 +119,13 @@ async fn execute_inline_tool(
         model_content: mc,
         result: result.structured,
     });
+    if is_error {
+        pending.tool_errors += 1;
+    }
+    pending.tool_calls += 1;
+    if !pending.tool_names.contains(&queued.tool_call.name) {
+        pending.tool_names.push(queued.tool_call.name.clone());
+    }
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
         slot: None,
@@ -454,6 +467,10 @@ pub(super) async fn advance_pending(
                 slot_event_tx,
             );
 
+            pending.tool_calls += 1;
+            if !pending.tool_names.contains(&"agent".to_string()) {
+                pending.tool_names.push("agent".to_string());
+            }
             return Ok(PendingStep::Pending {
                 pending: Box::new(pending),
                 slot: Some(slot),
@@ -582,6 +599,10 @@ pub(super) async fn advance_pending(
                         catalog: pending.catalog.clone(),
                         events_path: pending.events_path.clone(),
                     });
+                    pending.tool_calls += 1;
+                    if !pending.tool_names.contains(&queued.tool_call.name) {
+                        pending.tool_names.push(queued.tool_call.name.clone());
+                    }
                     return Ok(PendingStep::Pending {
                         pending: Box::new(pending),
                         slot: Some(slot),
@@ -618,6 +639,7 @@ pub(super) async fn advance_pending(
                             &queued.tool_call.args,
                         ),
                     )?;
+                    pending.tool_denied += 1;
                     return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple)
                         .await;
                 }

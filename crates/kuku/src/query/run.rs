@@ -604,6 +604,11 @@ impl Run {
         )?;
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
+            pending.tool_calls += 1;
+            if !pending.tool_names.contains(&tool_call.name) {
+                pending.tool_names.push(tool_call.name.clone());
+            }
+            pending.tool_denied += 1;
             let result = execute_tool_call(&mut pending, &tool_call).await?;
             let mc = if result.model_content.is_empty() {
                 None
@@ -647,6 +652,10 @@ impl Run {
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
+        pending.tool_calls += 1;
+        if !pending.tool_names.contains(&tool_call.name) {
+            pending.tool_names.push(tool_call.name.clone());
+        }
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
