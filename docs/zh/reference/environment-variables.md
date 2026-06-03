@@ -8,7 +8,7 @@
 | `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |
 | `OPENAI_API_KEY` | `provider.openai` 常用的 API key 来源 |
 
-`config.toml` 也可以在 provider 的 `api_key` 字段中使用 `$NAME` 来引用任意环境变量。
+`config.toml` 也可以在字符串字段中使用 `$NAME` 引用环境变量。`api_key` 保留环境变量引用并在之后解析；其他字符串字段在配置加载时解析。
 
 ## 未设置 `KUKU_HOME` 时的默认行为
 
