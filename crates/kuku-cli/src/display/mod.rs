@@ -4,7 +4,7 @@ pub mod text;
 pub mod util;
 
 pub use event::{derive_final_output, render_event_brief};
-pub use json::{OutputLine, SessionSummary};
+pub use json::{OutputLine, RunMetrics, RunUsageSummary};
 pub use text::{Display, RenderMode};
 
 #[cfg(test)]
@@ -272,5 +272,209 @@ mod tests {
     fn truncate_max_one() {
         let result = super::util::truncate("hello", 1);
         assert_eq!(result, "\u{2026}");
+    }
+
+    #[test]
+    fn session_completed_json_all_fields_present() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        use kuku::query::ToolSummary;
+        let summary = RunMetrics {
+            session_id: "abc123".into(),
+            tier: "balanced".into(),
+            model: "claude-sonnet-4-6".into(),
+            turns: 1,
+            input_tokens: 4500,
+            output_tokens: 900,
+            cache_read_input_tokens: 27000,
+            cache_creation_input_tokens: 200,
+            duration_ms: 7910,
+            response: Some("READY".into()),
+            usage: RunUsageSummary {
+                total_input_tokens: 31700,
+                total_tokens: 32600,
+                cache_hit_rate: 0.857,
+                model_requests: 3,
+                thinking_duration_ms: 3200,
+            },
+            tools: ToolSummary {
+                total_calls: 5,
+                names: vec!["read_file".into(), "write_file".into(), "bash".into()],
+                denied: 0,
+                errors: 1,
+                rounds: 2,
+            },
+        };
+        let line = OutputLine::session_completed(summary);
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+
+        assert_eq!(json["type"], "session");
+        assert_eq!(json["event"], "completed");
+        assert_eq!(json["session_id"], "abc123");
+        assert_eq!(json["tier"], "balanced");
+        assert_eq!(json["model"], "claude-sonnet-4-6");
+        assert_eq!(json["turns"], 1);
+        assert_eq!(json["input_tokens"], 4500);
+        assert_eq!(json["output_tokens"], 900);
+        assert_eq!(json["cache_read_input_tokens"], 27000);
+        assert_eq!(json["cache_creation_input_tokens"], 200);
+        assert_eq!(json["duration_ms"], 7910);
+        assert_eq!(json["response"], "READY");
+
+        assert_eq!(json["usage"]["total_input_tokens"], 31700);
+        assert_eq!(json["usage"]["total_tokens"], 32600);
+        assert_eq!(json["usage"]["cache_hit_rate"], 0.857);
+        assert_eq!(json["usage"]["model_requests"], 3);
+        assert_eq!(json["usage"]["thinking_duration_ms"], 3200);
+
+        assert_eq!(json["tools"]["total_calls"], 5);
+        assert_eq!(json["tools"]["denied"], 0);
+        assert_eq!(json["tools"]["errors"], 1);
+        assert_eq!(json["tools"]["rounds"], 2);
+    }
+
+    #[test]
+    fn session_completed_json_tools_always_present() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: Some("".into()),
+            usage: RunUsageSummary {
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
+            },
+            tools: kuku::query::ToolSummary::default(),
+        };
+        let line = OutputLine::session_completed(summary);
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        assert_eq!(json["tools"]["total_calls"], 0);
+        assert!(json["tools"]["names"].as_array().unwrap().is_empty());
+        assert_eq!(json["tools"]["denied"], 0);
+        assert_eq!(json["tools"]["errors"], 0);
+        assert_eq!(json["tools"]["rounds"], 0);
+    }
+
+    #[test]
+    fn session_completed_response_is_string() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: Some("hello".into()),
+            usage: RunUsageSummary {
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
+            },
+            tools: kuku::query::ToolSummary::default(),
+        };
+        let line = OutputLine::session_completed(summary);
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        assert_eq!(json["response"], "hello");
+    }
+
+    #[test]
+    fn session_interrupted_response_is_null_when_empty() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let line = OutputLine::session_interrupted(RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: None,
+            usage: RunUsageSummary {
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
+            },
+            tools: kuku::query::ToolSummary::default(),
+        });
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        assert_eq!(json["response"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn session_interrupted_response_is_string_when_partial() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let line = OutputLine::session_interrupted(RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: Some("partial".into()),
+            usage: RunUsageSummary {
+                total_input_tokens: 0,
+                total_tokens: 0,
+                cache_hit_rate: 0.0,
+                model_requests: 0,
+                thinking_duration_ms: 0,
+            },
+            tools: kuku::query::ToolSummary::default(),
+        });
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        assert_eq!(json["response"], "partial");
+    }
+
+    #[test]
+    fn cache_hit_rate_rounded_to_3_decimal_places() {
+        use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
+        let summary = RunMetrics {
+            session_id: "s".into(),
+            tier: "t".into(),
+            model: "m".into(),
+            turns: 1,
+            input_tokens: 4500,
+            output_tokens: 900,
+            cache_read_input_tokens: 27000,
+            cache_creation_input_tokens: 0,
+            duration_ms: 0,
+            response: Some("".into()),
+            usage: RunUsageSummary {
+                total_input_tokens: 31500,
+                total_tokens: 32400,
+                cache_hit_rate: 0.857,
+                model_requests: 3,
+                thinking_duration_ms: 0,
+            },
+            tools: kuku::query::ToolSummary::default(),
+        };
+        let line = OutputLine::session_completed(summary);
+        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let rate_str = json["usage"]["cache_hit_rate"].to_string();
+        assert!(
+            rate_str.len() <= 5,
+            "expected short decimal, got: {rate_str}"
+        );
     }
 }

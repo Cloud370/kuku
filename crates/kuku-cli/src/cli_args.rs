@@ -104,6 +104,10 @@ pub struct RunArgs {
     #[arg(long = "raw", conflicts_with_all = ["json", "stream_json"])]
     pub raw: bool,
 
+    /// Show detailed run metrics (usage, tools, response)
+    #[arg(long = "verbose", conflicts_with_all = ["json", "stream_json"])]
+    pub verbose: bool,
+
     /// Path to config.toml (default: ~/.kuku/config.toml)
     #[arg(long = "config")]
     pub config: Option<String>,

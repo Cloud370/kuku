@@ -337,6 +337,7 @@ impl Run {
                 )
                 .await?;
                 if let Some(block) = hook_result.block {
+                    pending.record_tool_call(&tool_call.name);
                     return Ok(Some(UiEvent::ToolEnd {
                         id: tool_call.id,
                         status: "blocked".to_string(),
@@ -345,6 +346,7 @@ impl Run {
                         result: None,
                     }));
                 }
+                pending.record_tool_call(&tool_call.name);
                 let (slot, tool_kind) =
                     super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
                         tool_name: tool_call.name.clone(),
@@ -370,6 +372,7 @@ impl Run {
             crate::permission::GateDecisionKind::Deny => {
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
+                pending.record_tool_denied(&tool_call.name);
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
                     status: "blocked".to_string(),
@@ -411,6 +414,9 @@ impl Run {
                     streaming.provider_request_id = Some(rid);
                 }
                 ProviderChunk::TextDelta { text } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.accumulated_text.push_str(&text);
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
@@ -423,10 +429,16 @@ impl Run {
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
+                    if streaming.thinking_start.is_none() {
+                        streaming.thinking_start = Some(std::time::Instant::now());
+                    }
                     streaming.accumulated_thinking.push_str(&text);
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
                 }
                 ProviderChunk::ToolCallStart { index, id, name } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.tool_calls.push(ProviderToolCall {
                         id,
                         name,
@@ -458,6 +470,9 @@ impl Run {
                     }
                 }
                 ProviderChunk::StopReason { reason } => {
+                    if let Some(start) = streaming.thinking_start.take() {
+                        streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
                     streaming.stop_reason = Some(reason);
                 }
                 ProviderChunk::StreamUsage {
@@ -592,6 +607,7 @@ impl Run {
         )?;
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
+            pending.record_tool_denied(&tool_call.name);
             let result = execute_tool_call(&mut pending, &tool_call).await?;
             let mc = if result.model_content.is_empty() {
                 None
@@ -625,6 +641,7 @@ impl Run {
         )
         .await?;
         if let Some(block) = hook_result.block {
+            pending.record_tool_call(&tool_call.name);
             self.state = RunState::Pending(Box::new(pending));
             return Ok(Some(UiEvent::ToolEnd {
                 id: tool_call.id,
@@ -635,6 +652,7 @@ impl Run {
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
+        pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
@@ -775,6 +793,13 @@ mod tests {
             plugin_registry: None,
             hook_context: Vec::new(),
             force_continue_count: 0,
+            model_request_count: 0,
+            thinking_duration_ms: 0,
+            tool_rounds: 0,
+            tool_calls: 0,
+            tool_names: Vec::new(),
+            tool_denied: 0,
+            tool_errors: 0,
         }
     }
 
@@ -878,6 +903,8 @@ mod tests {
             usage: None,
             lead_events: Vec::new(),
             handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
         };
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);

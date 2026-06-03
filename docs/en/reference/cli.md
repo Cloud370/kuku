@@ -40,6 +40,7 @@ Flags:
 | `--stream-json` | Emit realtime JSON lines |
 | `--show-thinking` | Show thinking content |
 | `--raw` | Plain text output |
+| `--verbose` | Show detailed run metrics (usage, tools, response) |
 | `--config <path>` | Use a specific config file |
 | `--prompts-dir <dir>` | Override embedded prompt assets |
 | `--no-agents` | Disable the `agent` tool |

@@ -52,9 +52,27 @@ kuku run --continue "continue"
 
 Use these when another tool or script will consume the result:
 
-- `--json` for one final JSON line
-- `--stream-json` for realtime JSON lines
+- `--json` for one final JSON line with full metrics
+- `--stream-json` for realtime JSON lines (final event includes metrics)
+- `--verbose` for human-readable output with detailed usage, tools, and response
 - `--raw` for plain text
+
+### JSON output structure
+
+`--json` and `--stream-json` emit a `session_completed` object:
+
+```json
+{"type":"session","event":"completed","session_id":"...","tier":"balanced",
+ "model":"claude-sonnet-4-6","turns":1,"input_tokens":4500,"output_tokens":900,
+ "cache_read_input_tokens":27000,"cache_creation_input_tokens":0,"duration_ms":7910,
+ "response":"READY",
+ "usage":{"total_input_tokens":31500,"total_tokens":32400,
+          "cache_hit_rate":0.857,"model_requests":3,"thinking_duration_ms":3200},
+ "tools":{"total_calls":5,"names":["read_file","write_file","bash"],
+          "denied":0,"errors":1,"rounds":2}}
+```
+
+All fields are always present, including `cache_creation_input_tokens` (defaults to 0). `response` is the full final assistant text. On interrupt (`session_interrupted`), `response` is partial text or `null`.
 
 ## Roll Back a Turn
 

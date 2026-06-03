@@ -80,22 +80,29 @@ pub enum OutputLine {
         turns: u64,
         input_tokens: u64,
         output_tokens: u64,
-        #[serde(skip_serializing_if = "is_zero")]
         cache_read_input_tokens: u64,
-        #[serde(skip_serializing_if = "is_zero")]
         cache_creation_input_tokens: u64,
         duration_ms: u64,
+        response: String,
+        usage: RunUsageSummary,
+        tools: kuku::query::ToolSummary,
     },
     #[serde(rename = "session")]
     SessionInterrupted {
         session_id: String,
         event: String,
+        tier: String,
+        model: String,
         turns: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+        duration_ms: u64,
+        response: Option<String>,
+        usage: RunUsageSummary,
+        tools: kuku::query::ToolSummary,
     },
-}
-
-fn is_zero(n: &u64) -> bool {
-    *n == 0
 }
 
 impl OutputLine {
@@ -202,7 +209,7 @@ impl OutputLine {
         }
     }
 
-    pub fn session_completed(summary: SessionSummary) -> Self {
+    pub fn session_completed(summary: RunMetrics) -> Self {
         OutputLine::SessionCompleted {
             session_id: summary.session_id,
             event: "completed".into(),
@@ -214,19 +221,32 @@ impl OutputLine {
             cache_read_input_tokens: summary.cache_read_input_tokens,
             cache_creation_input_tokens: summary.cache_creation_input_tokens,
             duration_ms: summary.duration_ms,
+            response: summary.response.unwrap_or_default(),
+            usage: summary.usage,
+            tools: summary.tools,
         }
     }
 
-    pub fn session_interrupted(session_id: String, turns: u64) -> Self {
+    pub fn session_interrupted(summary: RunMetrics) -> Self {
         OutputLine::SessionInterrupted {
-            session_id,
+            session_id: summary.session_id,
             event: "interrupted".into(),
-            turns,
+            tier: summary.tier,
+            model: summary.model,
+            turns: summary.turns,
+            input_tokens: summary.input_tokens,
+            output_tokens: summary.output_tokens,
+            cache_read_input_tokens: summary.cache_read_input_tokens,
+            cache_creation_input_tokens: summary.cache_creation_input_tokens,
+            duration_ms: summary.duration_ms,
+            response: summary.response,
+            usage: summary.usage,
+            tools: summary.tools,
         }
     }
 }
 
-pub struct SessionSummary {
+pub struct RunMetrics {
     pub session_id: String,
     pub tier: String,
     pub model: String,
@@ -236,4 +256,16 @@ pub struct SessionSummary {
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
     pub duration_ms: u64,
+    pub response: Option<String>,
+    pub usage: RunUsageSummary,
+    pub tools: kuku::query::ToolSummary,
+}
+
+#[derive(serde::Serialize)]
+pub struct RunUsageSummary {
+    pub total_input_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_hit_rate: f64,
+    pub model_requests: u64,
+    pub thinking_duration_ms: u64,
 }

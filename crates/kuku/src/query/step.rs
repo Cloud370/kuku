@@ -39,6 +39,7 @@ fn return_blocked_tool(
         truncated: false,
         structured: None,
     })?;
+    pending.record_tool_call(tool_name);
     pending.pending_events.push_back(UiEvent::ToolEnd {
         id: id.to_string(),
         status: "blocked".to_string(),
@@ -101,6 +102,7 @@ async fn execute_inline_tool(
         }
     }
 
+    let is_error = result.status == "error";
     let mc = if result.model_content.is_empty() {
         None
     } else {
@@ -113,6 +115,11 @@ async fn execute_inline_tool(
         model_content: mc,
         result: result.structured,
     });
+    if is_error {
+        pending.record_tool_error(&queued.tool_call.name);
+    } else {
+        pending.record_tool_call(&queued.tool_call.name);
+    }
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
         slot: None,
@@ -135,6 +142,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         tool_calls,
         usage,
         handoff_detector,
+        thinking_duration_ms,
         ..
     } = state;
 
@@ -146,7 +154,13 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             u.cache_creation_input_tokens.unwrap_or(0);
     }
 
+    pending.thinking_duration_ms += thinking_duration_ms;
+    pending.model_request_count += 1;
+
     let has_tool_calls = !tool_calls.is_empty();
+    if has_tool_calls {
+        pending.tool_rounds += 1;
+    }
     let final_stop_reason = stop_reason.unwrap_or_else(|| {
         if has_tool_calls {
             "tool_use".to_string()
@@ -265,6 +279,15 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                     text: accumulated_text,
                     usage: total_usage.clone(),
                     turn: pending.turn,
+                    model_request_count: pending.model_request_count,
+                    thinking_duration_ms: pending.thinking_duration_ms,
+                    tool_summary: super::types::ToolSummary {
+                        total_calls: pending.tool_calls,
+                        names: pending.tool_names.clone(),
+                        denied: pending.tool_denied,
+                        errors: pending.tool_errors,
+                        rounds: pending.tool_rounds,
+                    },
                     plugin_registry: pending.plugin_registry.clone(),
                     session_dir: pending.events_path.parent().unwrap().to_path_buf(),
                     workspace: pending.workspace.clone(),
@@ -322,6 +345,15 @@ pub(super) async fn advance_pending(
                     text: String::new(),
                     usage: None,
                     turn: pending.turn,
+                    model_request_count: pending.model_request_count,
+                    thinking_duration_ms: pending.thinking_duration_ms,
+                    tool_summary: super::types::ToolSummary {
+                        total_calls: pending.tool_calls,
+                        names: pending.tool_names.clone(),
+                        denied: pending.tool_denied,
+                        errors: pending.tool_errors,
+                        rounds: pending.tool_rounds,
+                    },
                     plugin_registry: pending.plugin_registry.clone(),
                     session_dir: pending.events_path.parent().unwrap().to_path_buf(),
                     workspace: pending.workspace.clone(),
@@ -429,6 +461,7 @@ pub(super) async fn advance_pending(
                 slot_event_tx,
             );
 
+            pending.record_tool_call("agent");
             return Ok(PendingStep::Pending {
                 pending: Box::new(pending),
                 slot: Some(slot),
@@ -557,6 +590,7 @@ pub(super) async fn advance_pending(
                         catalog: pending.catalog.clone(),
                         events_path: pending.events_path.clone(),
                     });
+                    pending.record_tool_call(&queued.tool_call.name);
                     return Ok(PendingStep::Pending {
                         pending: Box::new(pending),
                         slot: Some(slot),
@@ -593,6 +627,7 @@ pub(super) async fn advance_pending(
                             &queued.tool_call.args,
                         ),
                     )?;
+                    pending.record_tool_denied(&queued.tool_call.name);
                     return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple)
                         .await;
                 }

@@ -89,8 +89,22 @@ Examples:
 ```json
 {"type":"run_start","run_id":"..."}
 {"type":"text","content":"hello"}
-{"type":"done","session_id":"...","text":"done","turn":1,"usage":null}
+{"type":"done","session_id":"...","text":"done","turn":1,"usage":null,"model_request_count":1,"thinking_duration_ms":0,"tool_summary":{"total_calls":0,"names":[],"denied":0,"errors":0,"rounds":0}}
 ```
+
+The `done` event includes run metrics:
+
+| Field | Type | Description |
+|---|---|---|
+| `model_request_count` | `u64` | Number of model API calls in this session |
+| `thinking_duration_ms` | `u64` | Cumulative time spent in thinking blocks |
+| `tool_summary.total_calls` | `u64` | Total tool invocations (including blocked) |
+| `tool_summary.names` | `string[]` | Unique tool names in first-appearance order |
+| `tool_summary.denied` | `u64` | Permission denials |
+| `tool_summary.errors` | `u64` | Tool executions with error status |
+| `tool_summary.rounds` | `u64` | Model→tools→result cycles |
+
+On interrupt (`session_interrupted`), `response` is partial text or `null`. `usage` and `tools` use the same structure as above.
 
 ## `DELETE /runs/{id}`
 

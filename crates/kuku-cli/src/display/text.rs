@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use super::RunUsageSummary;
+
 const THINKING_OPEN: &str = "\u{250c}\u{2500} thinking";
 const THINKING_SEP: &str = "\u{2500}";
 const THINKING_CLOSE: &str = "\u{2514}\u{2500} thinking";
@@ -211,6 +213,77 @@ impl Display {
             secs,
             SESSION_PREFIX
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_completed_verbose(
+        &self,
+        session_id: &str,
+        turns: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+        duration: Duration,
+        usage: &RunUsageSummary,
+        tools: Option<&kuku::query::ToolSummary>,
+        response: &str,
+    ) -> String {
+        let base = self.session_completed(
+            session_id,
+            turns,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+            duration,
+        );
+        let mut lines = vec![base];
+
+        let mut usage_parts = vec![
+            format!("{} total in", fmt_tokens(usage.total_input_tokens)),
+            format!("{} total", fmt_tokens(usage.total_tokens)),
+        ];
+        if usage.cache_hit_rate > 0.0 {
+            usage_parts.push(format!("{:.1}% cache hit", usage.cache_hit_rate * 100.0));
+        }
+        if usage.model_requests > 0 {
+            usage_parts.push(format!("{} reqs", usage.model_requests));
+        }
+        if usage.thinking_duration_ms > 0 {
+            usage_parts.push(format!(
+                "{:.1}s thinking",
+                usage.thinking_duration_ms as f64 / 1000.0
+            ));
+        }
+        lines.push(format!("  usage: {}", usage_parts.join(" . ")));
+
+        if let Some(tools) = tools {
+            if tools.total_calls > 0 {
+                let mut tool_parts = vec![format!(
+                    "{} calls ({})",
+                    tools.total_calls,
+                    tools.names.join(", ")
+                )];
+                if tools.errors > 0 {
+                    tool_parts.push(format!("{} error", tools.errors));
+                }
+                if tools.denied > 0 {
+                    tool_parts.push(format!("{} denied", tools.denied));
+                }
+                if tools.rounds > 0 {
+                    tool_parts.push(format!("{} rounds", tools.rounds));
+                }
+                lines.push(format!("  tools: {}", tool_parts.join(" . ")));
+            }
+        }
+
+        lines.push("  response:".to_string());
+        for line in response.lines() {
+            lines.push(format!("  {}", line));
+        }
+
+        lines.join("\n")
     }
 
     pub fn session_interrupted(&self, session_id: &str, turns: u64) -> String {

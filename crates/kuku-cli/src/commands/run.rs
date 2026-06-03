@@ -5,7 +5,34 @@ use kuku::subagent::registry::SubagentRegistry;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine, RenderMode, SessionSummary};
+use crate::display::{Display, OutputLine, RenderMode, RunMetrics, RunUsageSummary};
+
+fn cache_hit_rate(cache_read: u64, input: u64) -> f64 {
+    if input + cache_read > 0 {
+        let raw = cache_read as f64 / (input + cache_read) as f64;
+        (raw * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    }
+}
+
+fn build_usage_summary(
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    model_requests: u64,
+    thinking_duration_ms: u64,
+) -> RunUsageSummary {
+    let total_input = input_tokens + cache_read + cache_creation;
+    RunUsageSummary {
+        total_input_tokens: total_input,
+        total_tokens: total_input + output_tokens,
+        cache_hit_rate: cache_hit_rate(cache_read, input_tokens),
+        model_requests,
+        thinking_duration_ms,
+    }
+}
 
 fn resolve_config_path(
     custom: Option<&str>,
@@ -243,7 +270,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
             .unwrap_or((0, 0, 0, 0));
-        let line = OutputLine::session_completed(SessionSummary {
+        let line = OutputLine::session_completed(RunMetrics {
             session_id: output.session_id,
             tier: tier_name.clone(),
             model: model_name.clone(),
@@ -253,6 +280,16 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
             duration_ms: json_elapsed.as_millis() as u64,
+            response: Some(output.text),
+            usage: build_usage_summary(
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_creation,
+                output.model_request_count,
+                output.thinking_duration_ms,
+            ),
+            tools: output.tool_summary.clone(),
         });
         println!("{}", line.to_json_line());
         return Ok(());
@@ -296,19 +333,22 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut total_cache_read_input_tokens: u64 = 0;
     let mut total_cache_creation_input_tokens: u64 = 0;
     let mut current_turn: u64 = 0;
+    let mut text_buffer = String::new();
+    let mut was_cancelled = false;
+    let mut done_output: Option<kuku::RunOutput> = None;
 
     loop {
         let event = tokio::select! {
             result = run.next() => result?,
             _ = tokio::signal::ctrl_c() => {
-                if use_stream_json {
-                    println!("{}", OutputLine::session_interrupted(
-                        session_id.clone(), current_turn,
-                    ).to_json_line());
-                } else {
-                    eprintln!("{}", display.session_interrupted(&session_id, current_turn));
-                }
-                std::process::exit(130);
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                was_cancelled = true;
+                break;
             }
         };
 
@@ -321,6 +361,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if use_stream_json {
+                    text_buffer.push_str(&text);
                     println!("{}", OutputLine::text_delta(text).to_json_line());
                 } else {
                     print!("{text}");
@@ -430,7 +471,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", display.tool_running());
                 }
             }
-            Some(UiEvent::Done { usage, turn, .. }) => {
+            Some(UiEvent::Done {
+                usage,
+                turn,
+                output,
+            }) => {
                 close_thinking(
                     &mut in_thinking,
                     &mut thinking_start,
@@ -444,9 +489,23 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     total_cache_creation_input_tokens += u.cache_creation_input_tokens.unwrap_or(0);
                 }
                 current_turn = turn;
+                done_output = Some(output);
                 break;
             }
-            Some(UiEvent::Cancelled { .. }) => break,
+            Some(UiEvent::Cancelled { turn }) => {
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                current_turn = turn;
+                was_cancelled = true;
+                break;
+            }
+            Some(UiEvent::TurnStart { turn }) => {
+                current_turn = turn;
+            }
             Some(_) => {}
             None => break,
         }
@@ -455,20 +514,84 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let session_elapsed = session_start.elapsed();
     println!();
     if use_stream_json {
+        let ts = done_output
+            .as_ref()
+            .map(|o| o.tool_summary.clone())
+            .unwrap_or_default();
+        let model_reqs = done_output
+            .as_ref()
+            .map(|o| o.model_request_count)
+            .unwrap_or(0);
+        let think_ms = done_output
+            .as_ref()
+            .map(|o| o.thinking_duration_ms)
+            .unwrap_or(0);
+        let metrics = RunMetrics {
+            session_id: session_id.clone(),
+            tier: tier_name.clone(),
+            model: model_name.clone(),
+            turns: current_turn,
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            cache_read_input_tokens: total_cache_read_input_tokens,
+            cache_creation_input_tokens: total_cache_creation_input_tokens,
+            duration_ms: session_elapsed.as_millis() as u64,
+            response: if text_buffer.is_empty() {
+                None
+            } else {
+                Some(text_buffer)
+            },
+            usage: build_usage_summary(
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_input_tokens,
+                total_cache_creation_input_tokens,
+                model_reqs,
+                think_ms,
+            ),
+            tools: ts,
+        };
+        if done_output.is_some() {
+            println!("{}", OutputLine::session_completed(metrics).to_json_line());
+        } else {
+            println!(
+                "{}",
+                OutputLine::session_interrupted(metrics).to_json_line()
+            );
+        }
+    } else if was_cancelled {
+        eprintln!("{}", display.session_interrupted(&session_id, current_turn));
+        std::process::exit(130);
+    } else if args.verbose {
+        let usage = build_usage_summary(
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_input_tokens,
+            total_cache_creation_input_tokens,
+            done_output
+                .as_ref()
+                .map(|o| o.model_request_count)
+                .unwrap_or(0),
+            done_output
+                .as_ref()
+                .map(|o| o.thinking_duration_ms)
+                .unwrap_or(0),
+        );
+        let ts = done_output.as_ref().map(|o| &o.tool_summary);
         println!(
             "{}",
-            OutputLine::session_completed(SessionSummary {
-                session_id: session_id.clone(),
-                tier: tier_name.clone(),
-                model: model_name.clone(),
-                turns: current_turn,
-                input_tokens: total_input_tokens,
-                output_tokens: total_output_tokens,
-                cache_read_input_tokens: total_cache_read_input_tokens,
-                cache_creation_input_tokens: total_cache_creation_input_tokens,
-                duration_ms: session_elapsed.as_millis() as u64,
-            })
-            .to_json_line()
+            display.session_completed_verbose(
+                &session_id,
+                current_turn,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_input_tokens,
+                total_cache_creation_input_tokens,
+                session_elapsed,
+                &usage,
+                ts,
+                done_output.as_ref().map(|o| o.text.as_str()).unwrap_or(""),
+            )
         );
     } else {
         println!(
@@ -566,6 +689,7 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             stream_json: false,
             show_thinking: false,
             raw: false,
+            verbose: false,
             config: config.clone(),
             prompts_dir: None,
             no_agents: false,
