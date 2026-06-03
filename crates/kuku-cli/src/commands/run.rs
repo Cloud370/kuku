@@ -554,7 +554,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         if done_output.is_some() {
             println!("{}", OutputLine::session_completed(metrics).to_json_line());
         } else {
-            println!("{}", OutputLine::session_interrupted(metrics).to_json_line());
+            println!(
+                "{}",
+                OutputLine::session_interrupted(metrics).to_json_line()
+            );
         }
     } else if was_cancelled {
         eprintln!("{}", display.session_interrupted(&session_id, current_turn));
