@@ -227,6 +227,7 @@ impl OutputLine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn session_interrupted(
         session_id: String,
         tier: String,
