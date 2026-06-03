@@ -337,6 +337,10 @@ impl Run {
                 )
                 .await?;
                 if let Some(block) = hook_result.block {
+                    pending.tool_calls += 1;
+                    if !pending.tool_names.contains(&tool_call.name) {
+                        pending.tool_names.push(tool_call.name.clone());
+                    }
                     return Ok(Some(UiEvent::ToolEnd {
                         id: tool_call.id,
                         status: "blocked".to_string(),
@@ -344,6 +348,10 @@ impl Run {
                         model_content: None,
                         result: None,
                     }));
+                }
+                pending.tool_calls += 1;
+                if !pending.tool_names.contains(&tool_call.name) {
+                    pending.tool_names.push(tool_call.name.clone());
                 }
                 let (slot, tool_kind) =
                     super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
@@ -370,6 +378,11 @@ impl Run {
             crate::permission::GateDecisionKind::Deny => {
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
+                pending.tool_calls += 1;
+                if !pending.tool_names.contains(&tool_call.name) {
+                    pending.tool_names.push(tool_call.name.clone());
+                }
+                pending.tool_denied += 1;
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
                     status: "blocked".to_string(),
