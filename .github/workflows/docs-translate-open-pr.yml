@@ -128,6 +128,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          helper_dir="$RUNNER_TEMP/docs-translate-helpers"
+          rm -rf "$helper_dir"
+          mkdir -p "$helper_dir"
+          cp scripts/docs-translate/open-pr-from-body.sh "$helper_dir/open-pr-from-body.sh"
+          cp scripts/docs-translate/render-run-stats.sh "$helper_dir/render-run-stats.sh"
+          chmod +x "$helper_dir/open-pr-from-body.sh" "$helper_dir/render-run-stats.sh"
+
           if [[ -n "$INPUT_PR_NUMBER" ]]; then
             pr_repo="$(gh pr view "$INPUT_PR_NUMBER" --json headRepository,headRepositoryOwner --jq '.headRepositoryOwner.login + "/" + .headRepository.name')"
             if [[ "$pr_repo" != "$GITHUB_REPOSITORY" ]]; then
@@ -175,6 +182,7 @@ jobs:
             printf 'KUKU_DOCS_BASE_BRANCH=%s\n' "$base_branch"
             printf 'KUKU_DOCS_BRANCH_NAME=%s\n' "$branch_name"
             printf 'KUKU_DOCS_PR_NUMBER=%s\n' "$INPUT_PR_NUMBER"
+            printf 'KUKU_DOCS_HELPER_DIR=%s\n' "$helper_dir"
           } >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
@@ -222,12 +230,12 @@ jobs:
           run_id="docs-translate-${GITHUB_RUN_ID}"
           pr_body="$(KUKU_RUN_ID="$run_id" bash scripts/docs-translate/translate-page-and-open-pr.sh "${args[@]}" "$KUKU_DOCS_SOURCE_PATH")"
           run_stats_file="$KUKU_CACHE_ROOT/kuku-home-runs/$run_id/session-run.json"
-          run_stats_block="$(bash scripts/docs-translate/render-run-stats.sh "$run_stats_file")"
+          run_stats_block="$(bash "$KUKU_DOCS_HELPER_DIR/render-run-stats.sh" "$run_stats_file")"
           printf '%s\n' "$pr_body"
           pr_body_file="$(mktemp)"
           printf '%s\n' "$pr_body" > "$pr_body_file"
           pr_title="docs: sync $KUKU_DOCS_TARGET_LOCALE for ${KUKU_DOCS_SOURCE_PATH#docs/en/}"
-          pr_url="$(bash scripts/docs-translate/open-pr-from-body.sh \
+          pr_url="$(bash "$KUKU_DOCS_HELPER_DIR/open-pr-from-body.sh" \
             --head "$KUKU_DOCS_BRANCH_NAME" \
             --base "$KUKU_DOCS_BASE_BRANCH" \
             --title "$pr_title" \
