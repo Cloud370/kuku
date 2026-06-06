@@ -50,11 +50,13 @@ Optional:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `allowed-tools` | string[] | Tools the skill may use without prompts |
-| `disallowed-tools` | string[] | Tools the skill must not use |
+| `allowed-tools` | string[] | Legacy metadata only; not enforced as runtime policy |
+| `disallowed-tools` | string[] | Legacy metadata only; not enforced as runtime policy |
 | `max-turns` | integer | Turn limit while active |
 | `model` | string | Tier override |
 | `metadata` | table | Arbitrary metadata |
+
+Skills guide model behavior, but they do not change permissions. Tool access and permission prompts still come from the runtime policy for the current session.
 
 ## Loading Model
 

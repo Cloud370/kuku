@@ -19,7 +19,11 @@
 Conditional tools:
 
 - `agent` with required args `name`, `prompt`
+- `list_skills` with optional args `offset`, `limit`
+- `search_skills` with required arg `query` and optional args `offset`, `limit`
 - `use_skill` with required arg `skill_name`
+
+When the default skill tool surface is enabled, the runtime exposes `list_skills`, `search_skills`, and `use_skill` together.
 
 ## Tool Result Envelope
 

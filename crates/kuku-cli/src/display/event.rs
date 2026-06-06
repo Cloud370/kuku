@@ -56,6 +56,26 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
             let preview: String = text.chars().take(60).collect();
             preview
         }
+        EventPayload::ContextSkills {
+            registry,
+            bootstrap_loaded,
+            ..
+        } => {
+            if verbose {
+                format!(
+                    "skills={}  bootstrap_loaded={}  hash={}",
+                    registry.len(),
+                    bootstrap_loaded.len(),
+                    registry.hash()
+                )
+            } else {
+                format!(
+                    "skills={}  bootstrap_loaded={}",
+                    registry.len(),
+                    bootstrap_loaded.len()
+                )
+            }
+        }
         EventPayload::ToolCall {
             tool,
             args,

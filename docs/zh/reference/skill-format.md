@@ -50,11 +50,13 @@ Before writing any code:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `allowed-tools` | string[] | Skill 无需提示即可使用的 Tool |
-| `disallowed-tools` | string[] | Skill 禁止使用的 Tool |
+| `allowed-tools` | string[] | 仅为遗留元数据；不是运行时强制策略 |
+| `disallowed-tools` | string[] | 仅为遗留元数据；不是运行时强制策略 |
 | `max-turns` | integer | 激活时的轮次上限 |
 | `model` | string | tier 覆盖 |
 | `metadata` | table | 任意元数据 |
+
+Skill 会指导模型行为，但不会改变权限。Tool 访问和权限提示仍然由当前 Session 的运行时策略决定。
 
 ## 加载模型
 

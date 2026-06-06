@@ -1,20 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillChangeEntry {
-    pub name: String,
-    pub description: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    ContextDrift {
-        entries: Vec<ContextDriftEntry>,
-    },
-    SkillChanged {
-        updated: Vec<SkillChangeEntry>,
-        added: Vec<SkillChangeEntry>,
-        removed: Vec<String>,
-    },
+    ContextDrift { entries: Vec<ContextDriftEntry> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

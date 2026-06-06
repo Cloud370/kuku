@@ -19,6 +19,8 @@ Skills are markdown-based capabilities discovered from skill directories. The mo
 
 Skills do not create separate session state. They change the current session by adding instructions and optional resources.
 
+The runtime exposes a default skill tool surface of `list_skills`, `search_skills`, and `use_skill` when skills are enabled.
+
 ## Agents
 
 Agents are subagent definitions discovered from user or project directories. When the model uses an Agent, kuku creates a child session and runs the same agent loop there.
@@ -36,7 +38,7 @@ Nested Agent delegation is limited to `parent -> child -> grandchild`. If a chil
 
 Subagent permission requests are surfaced back through the parent run for a decision. Hard guards still apply.
 
-Skills do not bypass permissions either. They can influence behavior, but the runtime still decides which tool calls are allowed.
+Skills do not bypass permissions either. They can guide behavior, but the runtime still decides which tool calls are allowed.
 
 See [Permissions](permissions.md) for the enforcement model.
 

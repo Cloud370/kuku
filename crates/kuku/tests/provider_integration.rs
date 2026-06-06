@@ -135,20 +135,24 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 7);
+    assert_eq!(events.len(), 8);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ContextPrelude { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ContextSources { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
     assert!(matches!(
-        events[3].payload,
-        EventPayload::ContextPrelude { .. }
-    ));
-    assert!(matches!(
-        events[4].payload,
-        EventPayload::ContextSources { .. }
-    ));
-    assert!(matches!(
-        events[5].payload,
+        events[events.len() - 2].payload,
         EventPayload::ModelResponse { .. }
     ));
-    assert!(matches!(events[6].payload, EventPayload::TurnEnd { .. }));
+    assert!(matches!(
+        events[events.len() - 1].payload,
+        EventPayload::TurnEnd { .. }
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +247,7 @@ async fn executes_find_files_and_continues_to_final_response() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
-async fn second_turn_request_places_drift_notice_between_context_and_tool_guidance() {
+async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
     let env = TestEnv::new();
     let first_server = MockServer::start();
     std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
@@ -284,7 +288,10 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
         when.method(POST)
             .path("/v1/messages")
             .body_matches(
-                Regex::new(r#"(?s).*<kuku_runtime_context>.*<kuku_system_notice>.*"#).unwrap(),
+                Regex::new(
+                    r#"(?s).*<kuku_runtime_context>.*<kuku_system_notice>.*</kuku_system_notice>.*</kuku_runtime_context>.*"#,
+                )
+                .unwrap(),
             )
             .body_contains("Only unacknowledged drift is reported here.")
             .body_contains("- AGENTS.md (updated)");
@@ -313,6 +320,60 @@ async fn second_turn_request_places_drift_notice_between_context_and_tool_guidan
     assert_eq!(second.text, "drift ok");
 
     second_request.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_turn_request_includes_budgeted_skill_block_and_hints() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let skill_dir = env
+        .workspace
+        .path()
+        .join(".claude")
+        .join("skills")
+        .join("tdd");
+    let mut config = test_config();
+    config.discovery.auto_discover = false;
+    config.discovery.extra_project_paths = vec![env.workspace.path().join(".claude")];
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: tdd\ndescription: Write tests first\n---\n\nInstructions.\n",
+    )
+    .unwrap();
+
+    let request = server.mock(|when, then| {
+        context_conditions(when, "show skills")
+            .method(POST)
+            .path("/v1/messages")
+            .body_contains("<kuku_skills>")
+            .body_contains("Available skills: 1 total")
+            .body_contains("tdd - Write tests first")
+            .body_contains("Use list_skills to browse available skills.")
+            .body_contains("Use search_skills to find skills by task or workflow.");
+        then.status(200)
+            .header("request-id", "req_skills")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_skills",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "skills ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+    let output = query("show skills")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config)
+        .run()
+        .await
+        .unwrap();
+
+    request.assert_hits(1);
+    assert_eq!(output.text, "skills ok");
 }
 
 // ---------------------------------------------------------------------------
@@ -940,7 +1001,10 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 7);
+    assert_eq!(events.len(), 8);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelResponse { ref text, .. } if text == "Hi from GPT!"

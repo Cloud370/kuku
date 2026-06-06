@@ -24,7 +24,11 @@ kuku skills show <name>
 
 ## Use Skills During a Run
 
-当 `use_skill` tool 启用时，kuku 可以按需加载完整的 skill 指令。
+当默认 Skill Tool surface 启用时，kuku 可以：
+
+- 使用 `list_skills` 浏览当前目录快照
+- 使用 `search_skills` 查找相关工作流
+- 使用 `use_skill` 按需加载完整的 skill 指令
 
 你也可以用带斜杠前缀的 Skill 名称启动 `kuku run`：
 
@@ -39,6 +43,10 @@ kuku run "/tdd implement login"
 ```bash
 kuku run --no-skills "task"
 ```
+
+`--no-skills` 会禁用默认的 Skill Tool surface，因此这次运行中 `list_skills`、`search_skills`、`use_skill` 以及斜杠前缀的 Skill 加载都不可用。
+
+Skill 可以指导模型如何工作，但不会扩展权限，也不会绕过 Tool 审批规则。
 
 ## Decide Where a Skill Belongs
 

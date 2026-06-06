@@ -5,9 +5,11 @@ use std::path::Path;
 
 use crate::error::Result;
 
+use serde::{Deserialize, Serialize};
+
 use super::definition::{SkillDefinition, SkillSource};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRegistry {
     definitions: BTreeMap<String, SkillDefinition>,
     names: Vec<String>,
@@ -53,6 +55,11 @@ pub struct SkillRegistryBuilder {
 }
 
 impl SkillRegistryBuilder {
+    pub fn with_definition(mut self, def: SkillDefinition) -> Self {
+        self.add(def);
+        self
+    }
+
     pub fn load_from_dir(mut self, dir: &Path, source: SkillSource) -> Result<Self> {
         let defs = super::loader::load_from_dir(dir, source)?;
         for def in defs {
@@ -90,52 +97,36 @@ impl SkillRegistryBuilder {
 }
 
 pub struct SkillChanges {
-    pub added: Vec<crate::notice::types::SkillChangeEntry>,
-    pub updated: Vec<crate::notice::types::SkillChangeEntry>,
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
     pub removed: Vec<String>,
 }
 
 pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<SkillChanges> {
-    use crate::notice::types::SkillChangeEntry;
-
     let old_names: std::collections::HashSet<&str> =
         old.names().iter().map(|s| s.as_str()).collect();
     let new_names: std::collections::HashSet<&str> =
         new.names().iter().map(|s| s.as_str()).collect();
 
-    let added: Vec<SkillChangeEntry> = new_names
+    let mut added: Vec<String> = new_names
         .difference(&old_names)
-        .filter_map(|&name| {
-            new.get(name).map(|def| SkillChangeEntry {
-                name: def.name.clone(),
-                description: def.description.clone(),
-                path: def
-                    .source_path
-                    .clone()
-                    .unwrap_or_else(|| def.source.as_str().to_string()),
-            })
-        })
+        .map(|name| (*name).to_string())
         .collect();
-    let removed: Vec<String> = old_names
+    let mut removed: Vec<String> = old_names
         .difference(&new_names)
         .map(|s| s.to_string())
         .collect();
-    let updated: Vec<SkillChangeEntry> = new_names
+    let mut updated: Vec<String> = new_names
         .intersection(&old_names)
         .filter(|name| {
             new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
         })
-        .filter_map(|&name| {
-            new.get(name).map(|def| SkillChangeEntry {
-                name: def.name.clone(),
-                description: def.description.clone(),
-                path: def
-                    .source_path
-                    .clone()
-                    .unwrap_or_else(|| def.source.as_str().to_string()),
-            })
-        })
+        .map(|name| (*name).to_string())
         .collect();
+
+    added.sort();
+    removed.sort();
+    updated.sort();
 
     if added.is_empty() && updated.is_empty() && removed.is_empty() {
         None
@@ -272,13 +263,67 @@ mod tests {
             .build();
         let changes = detect_skill_changes(&old, &new).unwrap();
         assert_eq!(changes.added.len(), 1);
-        assert_eq!(changes.added[0].name, "fresh");
-        assert_eq!(changes.added[0].description, "new");
-        assert!(changes.added[0].path.contains("fresh"));
+        assert_eq!(changes.added[0], "fresh");
         assert_eq!(changes.removed, vec!["tdd".to_string()]);
         assert_eq!(changes.updated.len(), 1);
-        assert_eq!(changes.updated[0].name, "shared");
-        assert_eq!(changes.updated[0].description, "v2");
-        assert!(changes.updated[0].path.contains("shared"));
+        assert_eq!(changes.updated[0], "shared");
+    }
+
+    #[test]
+    fn detect_skill_changes_outputs_are_sorted_by_name() {
+        let old = SkillRegistry::builder()
+            .with_definition(skill_definition("gamma", "old"))
+            .with_definition(skill_definition("delta", "old"))
+            .with_definition(skill_definition("shared-b", "old"))
+            .with_definition(skill_definition("shared-a", "old"))
+            .build();
+        let new = SkillRegistry::builder()
+            .with_definition(skill_definition("alpha", "new"))
+            .with_definition(skill_definition("beta", "new"))
+            .with_definition(skill_definition("shared-b", "new"))
+            .with_definition(skill_definition("shared-a", "new"))
+            .build();
+
+        let changes = detect_skill_changes(&old, &new).unwrap();
+        assert_eq!(
+            changes
+                .added
+                .iter()
+                .map(|entry| entry.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert_eq!(
+            changes.removed,
+            vec!["delta".to_string(), "gamma".to_string()]
+        );
+        assert_eq!(
+            changes
+                .updated
+                .iter()
+                .map(|entry| entry.as_str())
+                .collect::<Vec<_>>(),
+            vec!["shared-a", "shared-b"]
+        );
+    }
+
+    fn skill_definition(name: &str, description: &str) -> SkillDefinition {
+        let mut definition = SkillDefinition {
+            name: name.to_string(),
+            description: description.to_string(),
+            instructions: format!("{name} instructions"),
+            source: SkillSource::Project,
+            hash: String::new(),
+            source_path: Some(format!("/skills/{name}")),
+            allowed_tools: None,
+            disallowed_tools: None,
+            max_turns: None,
+            model: None,
+            license: None,
+            compatibility: None,
+            metadata: serde_json::Value::Null,
+        };
+        definition.hash = definition.compute_hash();
+        definition
     }
 }

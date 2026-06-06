@@ -127,6 +127,10 @@ pub struct RunArgs {
     /// Internal: pre-parsed skill body from interactive slash command
     #[arg(skip)]
     pub skill_body: Option<String>,
+
+    /// Internal: name for a pre-parsed bootstrap skill
+    #[arg(skip)]
+    pub bootstrap_skill_name: Option<String>,
 }
 
 // ── Agents ──

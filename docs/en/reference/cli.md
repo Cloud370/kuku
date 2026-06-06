@@ -44,9 +44,9 @@ Flags:
 | `--config <path>` | Use a specific config file |
 | `--prompts-dir <dir>` | Override embedded prompt assets |
 | `--no-agents` | Disable the `agent` tool |
-| `--no-skills` | Disable the `use_skill` tool |
+| `--no-skills` | Disable the default skill tool surface: `list_skills`, `search_skills`, and `use_skill` |
 
-If the prompt starts with `/skill-name` and skills are enabled, `kuku run` loads that Skill and sends the remaining text as the user prompt.
+If the prompt starts with `/skill-name` and skills are enabled, `kuku run` loads that Skill and sends the remaining text as the user prompt. `--no-skills` disables that shortcut because it disables the default skill tool surface.
 
 ## `kuku show`
 
