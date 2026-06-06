@@ -74,6 +74,14 @@ impl Run {
             RunState::WaitingForPermission(mut waiting) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut waiting.pending);
                 waiting.pending.flush_runtime_logs();
+                if self
+                    .close_pending_permission_as_cancelled(&waiting)
+                    .is_err()
+                {
+                    self.state = RunState::WaitingForPermission(waiting);
+                    self.cancel_token.notify_waiters();
+                    return;
+                }
                 (waiting.pending.events_path.clone(), waiting.pending.turn)
             }
             other @ (RunState::Cancelled { .. } | RunState::Done(_)) => {
@@ -684,45 +692,13 @@ impl Run {
             }
         };
 
-        let tool_call = match waiting.pending.queued_tool_calls.front() {
-            Some(queued) if queued.tool_call.id == waiting.request.tool_call_id => {
-                queued.tool_call.clone()
-            }
-            Some(queued) => {
-                let message = format!(
-                    "pending permission {} expects tool call {}, but queued tool call is {}",
-                    waiting.request.id, waiting.request.tool_call_id, queued.tool_call.id
-                );
+        let result = match self.close_pending_permission_as_cancelled(&waiting) {
+            Ok(result) => result,
+            Err(error) => {
                 self.state = RunState::WaitingForPermission(Box::new(waiting));
-                return Err(Error::InvalidEventStream(message));
-            }
-            None => {
-                self.state = RunState::WaitingForPermission(Box::new(waiting));
-                return Err(Error::InvalidEventStream(format!(
-                    "pending permission {} has no queued tool call",
-                    request_id
-                )));
+                return Err(error);
             }
         };
-        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
-        let write_result = (|| -> Result<()> {
-            let mut store = EventStore::open(&waiting.pending.events_path)?;
-            store.append(EventPayload::ToolResult {
-                turn: waiting.pending.turn,
-                ts: now_timestamp()?,
-                tool_call_id: tool_call.id.clone(),
-                status: result.status.clone(),
-                summary: result.summary.clone(),
-                model_content: result.model_content.clone(),
-                truncated: result.truncated,
-                structured: result.structured.clone(),
-            })?;
-            Ok(())
-        })();
-        if let Err(error) = write_result {
-            self.state = RunState::WaitingForPermission(Box::new(waiting));
-            return Err(error);
-        }
 
         let QueuedToolCall { tool_call, .. } = waiting
             .pending
@@ -738,6 +714,43 @@ impl Run {
             model_content: None,
             result: result.structured,
         }))
+    }
+
+    fn close_pending_permission_as_cancelled(
+        &self,
+        waiting: &PendingPermission,
+    ) -> Result<crate::tool::ToolResultEnvelope> {
+        let tool_call = match waiting.pending.queued_tool_calls.front() {
+            Some(queued) if queued.tool_call.id == waiting.request.tool_call_id => {
+                &queued.tool_call
+            }
+            Some(queued) => {
+                let message = format!(
+                    "pending permission {} expects tool call {}, but queued tool call is {}",
+                    waiting.request.id, waiting.request.tool_call_id, queued.tool_call.id
+                );
+                return Err(Error::InvalidEventStream(message));
+            }
+            None => {
+                return Err(Error::InvalidEventStream(format!(
+                    "pending permission {} has no queued tool call",
+                    waiting.request.id
+                )));
+            }
+        };
+        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let mut store = EventStore::open(&waiting.pending.events_path)?;
+        store.append(EventPayload::ToolResult {
+            turn: waiting.pending.turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call.id.clone(),
+            status: result.status.clone(),
+            summary: result.summary.clone(),
+            model_content: result.model_content.clone(),
+            truncated: result.truncated,
+            structured: result.structured.clone(),
+        })?;
+        Ok(result)
     }
 
     async fn apply_choice(
@@ -1376,6 +1389,36 @@ mod tests {
                 if waiting.request.id == "req_cancel"
                     && waiting.pending.queued_tool_calls.front().unwrap().tool_call.id == "tool_cancel"
         ));
+    }
+
+    #[tokio::test]
+    async fn cancel_waiting_permission_writes_cancelled_result_without_deny() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let mut run = make_waiting_run(
+            events_path.clone(),
+            dir.path(),
+            "req_cancel",
+            "tool_cancel",
+            "tool_cancel",
+        );
+
+        run.cancel();
+        let event = run.next().await.unwrap();
+
+        assert!(matches!(event, Some(UiEvent::Cancelled { turn: 1 })));
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::ToolResult { ref tool_call_id, ref status, ref structured, .. }
+                if tool_call_id == "tool_cancel"
+                    && status == "cancelled"
+                    && structured == &Some(serde_json::json!({"kind": "cancelled"}))
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "tool_cancel"
+        )));
     }
 
     #[tokio::test]
