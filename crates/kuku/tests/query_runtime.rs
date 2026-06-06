@@ -1037,6 +1037,270 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_allow_executes_original_tool() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    let final_mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains(r#""tool_use_id":"toolu_resume_allow""#)
+            .body_contains("resumed-allowed");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_allow_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Allowed after resume."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("run resumed command");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_allow_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_resume_allow", "name": "run_command", "input": {"command": "printf resumed-allowed", "timeout": 60, "brief": "print resumed marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_allow_executes";
+    let mut run = query("run resumed command")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let request = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        resumed.next().await.unwrap(),
+        Some(UiEvent::PermissionRequested { .. })
+    ));
+    let decision_event = resumed
+        .decide(&request.id, PermissionChoice::Once, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(decision_event, Some(UiEvent::ToolStart { id, .. }) if id == "toolu_resume_allow")
+    );
+
+    let mut event = resumed.next().await.unwrap().expect("event after allow");
+    while !matches!(event, UiEvent::Done { .. }) {
+        event = resumed.next().await.unwrap().expect("event after allow");
+    }
+    match event {
+        UiEvent::Done { output, .. } => assert_eq!(output.text, "Allowed after resume."),
+        _ => unreachable!(),
+    }
+
+    final_mock.assert_hits(1);
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionAllow { ref tool_call_id, .. } if tool_call_id == "toolu_resume_allow"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref tool_call_id, ref status, .. }
+            if tool_call_id == "toolu_resume_allow" && status == "ok"
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_deny_records_real_deny() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    let final_mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""tool_result""#)
+            .body_contains("permission gate denied this tool call");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_deny_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Denied after resume."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("deny resumed command");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_deny_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_resume_deny", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print denied marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_deny_records";
+    let mut run = query("deny resumed command")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let request = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        resumed.next().await.unwrap(),
+        Some(UiEvent::PermissionRequested { .. })
+    ));
+    let decision_event = resumed
+        .decide(&request.id, PermissionChoice::Deny, None)
+        .await
+        .unwrap();
+    assert!(matches!(decision_event, Some(UiEvent::ToolEnd { status, .. }) if status == "blocked"));
+
+    let mut event = resumed.next().await.unwrap().expect("event after deny");
+    while !matches!(event, UiEvent::Done { .. }) {
+        event = resumed.next().await.unwrap().expect("event after deny");
+    }
+
+    final_mock.assert_hits(1);
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionDeny { ref tool_call_id, ref source, .. }
+            if tool_call_id == "toolu_resume_deny" && source == "host"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref tool_call_id, ref status, ref model_content, .. }
+            if tool_call_id == "toolu_resume_deny" && status == "blocked" && model_content.contains("permission gate denied")
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("cancel resumed command");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_cancel_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_resume_cancel", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print cancelled marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_cancel_records";
+    let mut run = query("cancel resumed command")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let request = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        resumed.next().await.unwrap(),
+        Some(UiEvent::PermissionRequested { .. })
+    ));
+    let event = resumed.cancel_pending_permission(&request.id).unwrap();
+    assert!(
+        matches!(event, Some(UiEvent::ToolEnd { status, result, .. }) if status == "cancelled" && result == Some(serde_json::json!({"kind": "cancelled"})))
+    );
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "toolu_resume_cancel"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref tool_call_id, ref status, ref structured, .. }
+            if tool_call_id == "toolu_resume_cancel" && status == "cancelled" && structured == &Some(serde_json::json!({"kind": "cancelled"}))
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let _env = TestEnv::new();
     let server = MockServer::start();

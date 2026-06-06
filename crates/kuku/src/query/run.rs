@@ -673,6 +673,73 @@ impl Run {
             .await
     }
 
+    /// Cancel a pending permission without recording an allow or deny decision.
+    pub fn cancel_pending_permission(&mut self, request_id: &str) -> Result<Option<UiEvent>> {
+        let state = std::mem::replace(&mut self.state, RunState::Done(None));
+        let mut waiting = match state {
+            RunState::WaitingForPermission(waiting) if waiting.request.id == request_id => *waiting,
+            other => {
+                self.state = other;
+                return Err(Error::PermissionRequestNotPending(request_id.to_string()));
+            }
+        };
+
+        let tool_call = match waiting.pending.queued_tool_calls.front() {
+            Some(queued) if queued.tool_call.id == waiting.request.tool_call_id => {
+                queued.tool_call.clone()
+            }
+            Some(queued) => {
+                let message = format!(
+                    "pending permission {} expects tool call {}, but queued tool call is {}",
+                    waiting.request.id, waiting.request.tool_call_id, queued.tool_call.id
+                );
+                self.state = RunState::WaitingForPermission(Box::new(waiting));
+                return Err(Error::InvalidEventStream(message));
+            }
+            None => {
+                self.state = RunState::WaitingForPermission(Box::new(waiting));
+                return Err(Error::InvalidEventStream(format!(
+                    "pending permission {} has no queued tool call",
+                    request_id
+                )));
+            }
+        };
+        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let write_result = (|| -> Result<()> {
+            let mut store = EventStore::open(&waiting.pending.events_path)?;
+            store.append(EventPayload::ToolResult {
+                turn: waiting.pending.turn,
+                ts: now_timestamp()?,
+                tool_call_id: tool_call.id.clone(),
+                status: result.status.clone(),
+                summary: result.summary.clone(),
+                model_content: result.model_content.clone(),
+                truncated: result.truncated,
+                structured: result.structured.clone(),
+            })?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            self.state = RunState::WaitingForPermission(Box::new(waiting));
+            return Err(error);
+        }
+
+        let QueuedToolCall { tool_call, .. } = waiting
+            .pending
+            .queued_tool_calls
+            .pop_front()
+            .expect("PendingPermission implies a queued tool call");
+
+        self.state = RunState::Pending(Box::new(waiting.pending));
+        Ok(Some(UiEvent::ToolEnd {
+            id: tool_call.id,
+            status: result.status,
+            summary: result.summary,
+            model_content: None,
+            result: result.structured,
+        }))
+    }
+
     async fn apply_choice(
         &mut self,
         request_id: &str,
@@ -877,6 +944,7 @@ pub(super) fn find_tool_definition<'a>(
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
+    use crate::provider::types::ProviderToolCall;
     use crate::query::types::CumulativeUsage;
 
     fn test_config() -> crate::config::Config {
@@ -952,6 +1020,52 @@ mod tests {
             tool_denied: 0,
             tool_errors: 0,
             runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
+        }
+    }
+
+    fn make_waiting_run(
+        events_path: std::path::PathBuf,
+        dir: &std::path::Path,
+        request_id: &str,
+        request_tool_call_id: &str,
+        queued_tool_call_id: &str,
+    ) -> Run {
+        let pending = make_test_pending(
+            events_path,
+            dir,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        let mut pending = pending;
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call: ProviderToolCall {
+                id: queued_tool_call_id.to_string(),
+                name: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+                index: 0,
+            },
+            display_summary: "print hi".to_string(),
+        });
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::WaitingForPermission(Box::new(PendingPermission {
+                pending,
+                request: PermissionRequest {
+                    id: request_id.to_string(),
+                    tool_call_id: request_tool_call_id.to_string(),
+                    tool: "run_command".to_string(),
+                    risk: "command".to_string(),
+                    summary: "print hi".to_string(),
+                    candidate: "printf hi".to_string(),
+                    source: "default_ask".to_string(),
+                },
+            })),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         }
     }
 
@@ -1214,6 +1328,54 @@ mod tests {
             result.structured,
             Some(serde_json::json!({"kind": "cancelled"}))
         );
+    }
+
+    #[test]
+    fn cancel_pending_permission_rejects_mismatched_queued_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut run = make_waiting_run(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            "req_cancel",
+            "tool_request",
+            "tool_queued",
+        );
+
+        let error = run.cancel_pending_permission("req_cancel").unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidEventStream(message) if message.contains("tool_request") && message.contains("tool_queued"))
+        );
+        assert!(matches!(
+            &run.state,
+            RunState::WaitingForPermission(waiting)
+                if waiting.request.tool_call_id == "tool_request"
+                    && waiting.pending.queued_tool_calls.front().unwrap().tool_call.id == "tool_queued"
+        ));
+    }
+
+    #[test]
+    fn cancel_pending_permission_restores_state_when_persistence_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events_dir");
+        std::fs::create_dir(&events_path).unwrap();
+        let mut run = make_waiting_run(
+            events_path,
+            dir.path(),
+            "req_cancel",
+            "tool_cancel",
+            "tool_cancel",
+        );
+
+        let error = run.cancel_pending_permission("req_cancel").unwrap_err();
+
+        assert!(matches!(error, Error::Io(_)));
+        assert!(matches!(
+            &run.state,
+            RunState::WaitingForPermission(waiting)
+                if waiting.request.id == "req_cancel"
+                    && waiting.pending.queued_tool_calls.front().unwrap().tool_call.id == "tool_cancel"
+        ));
     }
 
     #[tokio::test]
