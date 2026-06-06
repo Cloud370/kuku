@@ -813,6 +813,94 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn interrupted_open_tool_blocks_resume_without_fake_result() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let provider_mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_should_not_run",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "should not run"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_interrupted_open_tool_blocks";
+    let mut store = EventStore::open(env.events_path(session_id)).unwrap();
+    store
+        .append(EventPayload::SessionMeta {
+            ts: "2026-06-06T00:00:00Z".to_string(),
+            schema_version: 1,
+            session_id: session_id.to_string(),
+            created_at: "2026-06-06T00:00:00Z".to_string(),
+            kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStart {
+            turn: 1,
+            ts: "2026-06-06T00:00:01Z".to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::UserInput {
+            turn: 1,
+            ts: "2026-06-06T00:00:02Z".to_string(),
+            text: "run interrupted command".to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ModelResponse {
+            turn: 1,
+            ts: "2026-06-06T00:00:03Z".to_string(),
+            request_id: "req_1".to_string(),
+            text: String::new(),
+            thinking: None,
+            input_tokens_total: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ToolCall {
+            turn: 1,
+            ts: "2026-06-06T00:00:04Z".to_string(),
+            tool_call_id: "toolu_interrupted".to_string(),
+            request_id: "req_1".to_string(),
+            index: 0,
+            tool: "run_command".to_string(),
+            args: serde_json::json!({"command": "printf side-effect", "timeout": 60, "brief": "side effect"}),
+        })
+        .unwrap();
+    drop(store);
+
+    let error = query("resume should fail before provider")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::InterruptedOpenTool(_)));
+    let message = error.to_string();
+    assert!(message.contains(session_id));
+    assert!(message.contains("toolu_interrupted"));
+    provider_mock.assert_hits(0);
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult { ref tool_call_id, .. } if tool_call_id == "toolu_interrupted"
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
     let env = TestEnv::new();
     let server = MockServer::start();

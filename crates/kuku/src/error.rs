@@ -41,6 +41,9 @@ pub enum Error {
     #[error("permission request not pending: {0}")]
     PermissionRequestNotPending(String),
 
+    #[error("interrupted open tool state: {0}")]
+    InterruptedOpenTool(String),
+
     #[error("invalid policy file: {0}")]
     InvalidPolicy(String),
 
@@ -100,6 +103,7 @@ impl Error {
             },
             Error::MissingProviderConfig(_) => "internal",
             Error::PermissionRequestNotPending(_) => "internal",
+            Error::InterruptedOpenTool(_) => "interrupted_open_tool",
             Error::InvalidPolicy(_) => "internal",
             Error::PromptRender(_) => "internal",
             Error::ConfigLoad(_) => "internal",
@@ -146,6 +150,15 @@ mod tests {
         assert_eq!(
             Error::PermissionRequestNotPending("req_1".to_string()).to_string(),
             "permission request not pending: req_1"
+        );
+    }
+
+    #[test]
+    fn interrupted_open_tool_variant_formats_message() {
+        assert_eq!(
+            Error::InterruptedOpenTool("session s_1 has unresolved tool call toolu_1".to_string())
+                .to_string(),
+            "interrupted open tool state: session s_1 has unresolved tool call toolu_1"
         );
     }
 

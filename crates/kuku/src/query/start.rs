@@ -63,6 +63,7 @@ impl Query {
         } else {
             Some(super::lifecycle::reduce_lifecycle(&existing_events))
         };
+        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id)?;
         let resumed_permission = lifecycle
             .as_ref()
             .and_then(|state| state.pending_permissions.first());
@@ -346,6 +347,23 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
         resumed_permission_requests,
         first_request,
     }
+}
+
+fn reject_interrupted_open_tools(
+    lifecycle: Option<&super::lifecycle::LifecycleState>,
+    session_id: &str,
+) -> Result<()> {
+    let Some(lifecycle) = lifecycle else {
+        return Ok(());
+    };
+    let Some(open_tool) = lifecycle.open_tools.first() else {
+        return Ok(());
+    };
+
+    Err(Error::InterruptedOpenTool(format!(
+        "session {session_id} has unresolved tool call {} from turn {}; review the session before resuming",
+        open_tool.tool_call.id, open_tool.turn
+    )))
 }
 
 fn resumed_model_request_count(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
