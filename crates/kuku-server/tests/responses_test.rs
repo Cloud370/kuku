@@ -89,7 +89,8 @@ async fn response_with_wrong_run_id_does_not_resolve_permission() {
     mock.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
+            .body_contains(r#""tool_result""#)
+            .body_contains("toolu_cmd");
         then.status(200)
             .header("request-id", "req_final")
             .header("connection", "close")
@@ -103,7 +104,9 @@ async fn response_with_wrong_run_id_does_not_resolve_permission() {
             })));
     });
     mock.mock(|when, then| {
-        when.method(httpmock::Method::POST).path("/v1/messages");
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("run command");
         then.status(200)
             .header("request-id", "req_tool")
             .header("connection", "close")
