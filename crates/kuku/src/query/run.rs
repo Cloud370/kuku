@@ -1199,7 +1199,7 @@ mod tests {
         let (command, hook_path, hook_body) = (
             "hooks/block.cmd",
             pkg_dir.join("hooks").join("block.cmd"),
-            format!("@echo off\r\necho {stderr_message} 1>&2\r\nexit /b 2\r\n"),
+            format!("@echo off\r\n<nul set /p ={stderr_message} 1>&2\r\nexit /b 2\r\n"),
         );
 
         #[cfg(not(windows))]
