@@ -23,7 +23,10 @@ impl Query {
     async fn start_session(mut self) -> Result<Run> {
         self.validate()?;
 
-        let kuku_home = kuku_home()?;
+        let kuku_home = match self.captured_kuku_home.take() {
+            Some(path) => path,
+            None => kuku_home()?,
+        };
 
         let workspace = match self.workspace_path.take() {
             Some(path) => path,
