@@ -183,7 +183,9 @@ async fn cancel_while_waiting_for_permission_stops_run() {
     let final_mock = mock.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains("permission gate denied this tool call");
+            .body_contains("permission gate denied this tool call")
+            .body_contains(r#""tool_result""#)
+            .body_contains("toolu_cancel_wait");
         then.status(200)
             .header("request-id", "req_after_cancel")
             .header("connection", "close")
