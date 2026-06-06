@@ -1,5 +1,7 @@
 #[allow(dead_code)]
 pub mod mock_provider;
+#[allow(dead_code)]
+pub mod stream;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

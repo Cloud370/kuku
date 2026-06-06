@@ -1,42 +1,7 @@
 mod common;
 
 use common::mock_provider;
-use std::fmt::Debug;
-use tokio_stream::StreamExt;
-
-async fn next_json_line<S, B, E>(stream: &mut S, buf: &mut Vec<u8>) -> serde_json::Value
-where
-    S: tokio_stream::Stream<Item = Result<B, E>> + Unpin,
-    B: AsRef<[u8]>,
-    E: Debug,
-{
-    loop {
-        if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-            let line = String::from_utf8(buf.drain(..=pos).collect()).unwrap();
-            return serde_json::from_str(line.trim()).unwrap();
-        }
-        let chunk = stream.next().await.unwrap().unwrap();
-        buf.extend_from_slice(chunk.as_ref());
-    }
-}
-
-async fn next_event_of_type<S, B, E>(
-    stream: &mut S,
-    buf: &mut Vec<u8>,
-    event_type: &str,
-) -> serde_json::Value
-where
-    S: tokio_stream::Stream<Item = Result<B, E>> + Unpin,
-    B: AsRef<[u8]>,
-    E: Debug,
-{
-    loop {
-        let event = next_json_line(stream, buf).await;
-        if event["type"] == event_type {
-            return event;
-        }
-    }
-}
+use common::stream::next_event_of_type;
 
 #[tokio::test]
 async fn invalid_interaction_id_returns_error() {
