@@ -22,6 +22,7 @@
 | `model.response` | 已完成的 provider 响应。 |
 | `model.error` | provider 失败。 |
 | `tool.call` | 一次请求的 Tool 调用。 |
+| `permission.requested` | 一次 Tool 调用的持久待处理权限状态。 |
 | `permission.allow` | Tool 授权允许决策。 |
 | `permission.deny` | Tool 授权拒绝决策。 |
 | `tool.result` | 一次 Tool 调用的结果。 |
@@ -48,6 +49,12 @@
 - `conversation_only`
 - `files_only`
 - `both`
+
+## 权限状态
+
+`permission.requested` 记录某个 Tool 调用正在等待 Host 授权。它是持久的待处理权限状态，不是允许或拒绝决策，也不是可观测性日志记录。
+
+当 Host 解决该请求后，kuku 会在 `tool.result` 之前追加写入 `permission.allow` 或 `permission.deny`。
 
 ## Session 事实与运行时流
 

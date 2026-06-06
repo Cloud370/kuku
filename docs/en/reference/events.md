@@ -22,6 +22,7 @@ Lowercase and dot-separated.
 | `model.response` | Completed provider response. |
 | `model.error` | Provider failure. |
 | `tool.call` | One requested tool call. |
+| `permission.requested` | Durable pending permission state for one tool call. |
 | `permission.allow` | Tool authorization allow decision. |
 | `permission.deny` | Tool authorization deny decision. |
 | `tool.result` | Result of one tool call. |
@@ -48,6 +49,12 @@ Every persisted event line includes at least:
 - `conversation_only`
 - `files_only`
 - `both`
+
+## Permission State
+
+`permission.requested` records that a tool call is waiting for host authorization. It is a durable pending permission state, not an allow or deny decision, and not an observability log record.
+
+When the host resolves the request, kuku appends either `permission.allow` or `permission.deny` before `tool.result`.
 
 ## Session Facts vs Runtime Streams
 

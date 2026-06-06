@@ -9,7 +9,7 @@ turn.start
   -> user.input
   -> model.response
       stop_reason = tool_use ?
-        yes -> tool.call -> permission.allow|permission.deny -> tool.result -> loop
+        yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
         no  -> turn.end
 ```
 
@@ -19,7 +19,7 @@ turn.start
 2. It rebuilds the model context from files and persisted events.
 3. It streams the model response to the host and appends `model.response` when complete.
 4. If the response ends the turn, kuku appends `turn.end`.
-5. If the response asks for tools, kuku appends `tool.call`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
+5. If the response asks for tools, kuku appends `tool.call`, records pending permission with `permission.requested`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
 
 ## Tool execution
 
@@ -30,6 +30,8 @@ Subagents use the same loop in child sessions. They do not create a second runti
 ## Permissions inside the loop
 
 The model can request a tool, but the runtime decides whether that tool may execute. Permission checks are runtime enforcement, not prompt advice.
+
+`permission.requested` is the durable pending state for an unresolved tool authorization request. It is not an allow or deny decision, and it is not read from observability logs.
 
 See [Permissions](permissions.md) for the policy model.
 

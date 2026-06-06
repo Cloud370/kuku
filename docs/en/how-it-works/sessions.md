@@ -27,6 +27,7 @@ Each line in `events.jsonl` is one session fact. Common event types include:
 - `user.input`
 - `model.response`
 - `tool.call`
+- `permission.requested`
 - `permission.allow`
 - `permission.deny`
 - `tool.result`
@@ -61,6 +62,8 @@ Starting a run without a session id creates a new session directory and writes `
 ### Continuing a session
 
 Starting a run with an existing session id appends a new turn to that session. kuku rebuilds prior context from the event log.
+
+If a previous run stopped after `permission.requested` and before `permission.allow` or `permission.deny`, restart can re-present that unresolved permission request from `events.jsonl`. This recovery uses the session fact log, not observability logs.
 
 ### Status
 

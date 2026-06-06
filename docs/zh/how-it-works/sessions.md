@@ -27,6 +27,7 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 - `user.input`
 - `model.response`
 - `tool.call`
+- `permission.requested`
 - `permission.allow`
 - `permission.deny`
 - `tool.result`
@@ -61,6 +62,8 @@ $KUKU_HOME/logs/
 ### Continuing a session
 
 在已有 Session id 的情况下启动运行，会向该 Session 追加新的一轮。kuku 会从事件日志重建先前上下文。
+
+如果上一次运行停在 `permission.requested` 之后、`permission.allow` 或 `permission.deny` 之前，重启可以从 `events.jsonl` 重新呈现这个未解决的权限请求。这个恢复过程使用 Session 事实日志，而不是可观测性日志。
 
 ### Status
 
