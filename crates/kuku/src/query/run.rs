@@ -132,6 +132,7 @@ impl Run {
                                 RunState::WaitingForPermission(w) => {
                                     (&w.pending.events_path, w.pending.turn)
                                 }
+                                RunState::Cancelled { events_path, turn } => (events_path, *turn),
                                 _ => {
                                     return Ok(Some(UiEvent::ToolEnd {
                                         id: slot.tool_call_id,
@@ -996,7 +997,7 @@ mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
     use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
-    use crate::query::types::{CumulativeUsage, ResolvedRuntime};
+    use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -1191,6 +1192,41 @@ mod tests {
         )));
     }
 
+    fn write_blocking_pre_hook(pkg_dir: &std::path::Path, stderr_message: &str) {
+        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
+
+        #[cfg(windows)]
+        let (command, hook_path, hook_body) = (
+            "hooks/block.cmd",
+            pkg_dir.join("hooks").join("block.cmd"),
+            format!("@echo off\r\necho {stderr_message} 1>&2\r\nexit /b 2\r\n"),
+        );
+
+        #[cfg(not(windows))]
+        let (command, hook_path, hook_body) = (
+            "hooks/block.sh",
+            pkg_dir.join("hooks").join("block.sh"),
+            format!("#!/bin/sh\nprintf '{stderr_message}' >&2\nexit 2\n"),
+        );
+
+        std::fs::write(
+            pkg_dir.join("kuku.toml"),
+            format!(
+                "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"{command}\"\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(&hook_path, hook_body).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, permissions).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn queued_deny_persists_blocked_tool_result() {
         let dir = tempfile::tempdir().unwrap();
@@ -1220,25 +1256,7 @@ mod tests {
         )
         .unwrap();
         let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
-        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
-        std::fs::write(
-            pkg_dir.join("kuku.toml"),
-            "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"hooks/block.sh\"\n",
-        )
-        .unwrap();
-        let hook_path = pkg_dir.join("hooks").join("block.sh");
-        std::fs::write(
-            &hook_path,
-            "#!/bin/sh\nprintf 'blocked by hook' >&2\nexit 2\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&hook_path, permissions).unwrap();
-        }
+        write_blocking_pre_hook(&pkg_dir, "blocked by hook");
         let mut run = make_queued_run(events_path.clone(), dir.path());
         if let RunState::Pending(pending) = &mut run.state {
             pending.plugin_registry = Some(std::sync::Arc::new(
@@ -1264,25 +1282,7 @@ mod tests {
         let events_path = dir.path().join("events.jsonl");
         std::fs::write(dir.path().join("policy.md"), "# policy\n").unwrap();
         let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
-        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
-        std::fs::write(
-            pkg_dir.join("kuku.toml"),
-            "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"hooks/block.sh\"\n",
-        )
-        .unwrap();
-        let hook_path = pkg_dir.join("hooks").join("block.sh");
-        std::fs::write(
-            &hook_path,
-            "#!/bin/sh\nprintf 'blocked after allow' >&2\nexit 2\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&hook_path, permissions).unwrap();
-        }
+        write_blocking_pre_hook(&pkg_dir, "blocked after allow");
         let mut run = make_queued_run(events_path.clone(), dir.path());
         let waiting = match std::mem::replace(&mut run.state, RunState::Done(None)) {
             RunState::Pending(mut pending) => {
@@ -1657,6 +1657,88 @@ mod tests {
         assert!(!events.iter().any(|event| matches!(
             event.payload,
             EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "tool_cancel"
+        )));
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&events_path).unwrap();
+        store
+            .append(EventPayload::TurnStart {
+                turn: 1,
+                ts: "2026-05-20T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        store
+            .append(EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-05-20T00:00:01Z".to_string(),
+                tool_call_id: "tool_cancelled".to_string(),
+                request_id: "req_1".to_string(),
+                index: 0,
+                tool: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            })
+            .unwrap();
+
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            "tool_cancelled".to_string(),
+            ExecSlot {
+                tool_call_id: "tool_cancelled".to_string(),
+                kind: ToolKind::Command { pid: None },
+                ordered_with_simple_tools: false,
+                label: "print hi".to_string(),
+                cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+                child_permissions: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+            },
+        );
+        let mut run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Cancelled {
+                events_path: events_path.clone(),
+                turn: 1,
+            },
+            slots,
+            slot_event_tx: slot_event_tx.clone(),
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        };
+
+        slot_event_tx
+            .send((
+                "tool_cancelled".to_string(),
+                SlotEvent::Done {
+                    status: "ok".to_string(),
+                    summary: "finished after cancellation".to_string(),
+                    model_content: String::new(),
+                    result: Some(serde_json::json!({"kind": "command_result"})),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let event = run.next().await.unwrap();
+
+        assert!(matches!(
+            event,
+            Some(UiEvent::ToolEnd { ref id, ref status, .. })
+                if id == "tool_cancelled" && status == "ok"
+        ));
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolResult { tool_call_id, status, summary, .. }
+                if tool_call_id == "tool_cancelled"
+                    && status == "ok"
+                    && summary == "finished after cancellation"
         )));
     }
 

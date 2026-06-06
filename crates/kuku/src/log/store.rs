@@ -100,6 +100,7 @@ impl BufferedLogWriter {
         run_before_append_hook(&self.path)?;
 
         let completed = match append_records(
+            &self.path,
             &mut file,
             &self.buffer,
             #[cfg(test)]
@@ -195,6 +196,7 @@ struct AppendError {
 }
 
 fn append_records(
+    path: &Path,
     writer: &mut std::fs::File,
     records: &[LogRecord],
     #[cfg(test)] fail_after_bytes: Option<usize>,
@@ -219,18 +221,10 @@ fn append_records(
             match result {
                 Ok(()) => completed += 1,
                 Err(error) => {
-                    writer
-                        .set_len(start)
-                        .map_err(|rollback_error| AppendError {
-                            completed,
-                            error: rollback_error.into(),
-                        })?;
-                    writer
-                        .seek(SeekFrom::Start(start))
-                        .map_err(|rollback_error| AppendError {
-                            completed,
-                            error: rollback_error.into(),
-                        })?;
+                    rollback_file_to_offset(path, start).map_err(|rollback_error| AppendError {
+                        completed,
+                        error: rollback_error,
+                    })?;
                     return Err(AppendError {
                         completed,
                         error: error.into(),
@@ -256,18 +250,10 @@ fn append_records(
             match write_record_line(&mut *writer, &line) {
                 Ok(()) => completed += 1,
                 Err(error) => {
-                    writer
-                        .set_len(start)
-                        .map_err(|rollback_error| AppendError {
-                            completed,
-                            error: rollback_error.into(),
-                        })?;
-                    writer
-                        .seek(SeekFrom::Start(start))
-                        .map_err(|rollback_error| AppendError {
-                            completed,
-                            error: rollback_error.into(),
-                        })?;
+                    rollback_file_to_offset(path, start).map_err(|rollback_error| AppendError {
+                        completed,
+                        error: rollback_error,
+                    })?;
                     return Err(AppendError {
                         completed,
                         error: error.into(),
@@ -277,6 +263,13 @@ fn append_records(
         }
         Ok(completed)
     }
+}
+
+fn rollback_file_to_offset(path: &Path, offset: u64) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.set_len(offset)?;
+    file.seek(SeekFrom::Start(offset))?;
+    Ok(())
 }
 
 fn serialized_line(record: &LogRecord) -> Result<Vec<u8>> {

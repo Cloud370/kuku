@@ -21,8 +21,8 @@ struct ResponseGroup {
 
 /// Reconstruct conversation history messages from a session's stored events.
 /// Returns `(handoff_summary, messages)` where `handoff_summary` is the text
-/// from the most recent Handoff event (if any), and `messages` contains only
-/// events after that handoff.
+/// from the most recent Handoff event (if any), and `messages` contains the
+/// most recent `keep_turns` turns before that handoff plus later events.
 pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<CanonicalMessage>) {
     let filtered = filter_rolled_back_events(events);
 
@@ -33,11 +33,16 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
 
     let (summary, effective) = match handoff_pos {
         Some((idx, event)) => {
-            let summary = match &event.payload {
-                EventPayload::Handoff { summary, .. } => Some(summary.clone()),
-                _ => None,
+            let (summary, keep_turns) = match &event.payload {
+                EventPayload::Handoff {
+                    summary,
+                    keep_turns,
+                    ..
+                } => (Some(summary.clone()), *keep_turns),
+                _ => (None, 0),
             };
-            (summary, &filtered[idx + 1..])
+            let start_idx = handoff_start_index(&filtered, idx, keep_turns);
+            (summary, &filtered[start_idx..])
         }
         None => (None, filtered.as_slice()),
     };
@@ -128,6 +133,59 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
 
     flush_group(&mut messages, &mut current_group);
     (summary, messages)
+}
+
+fn handoff_start_index(events: &[&StoredEvent], handoff_idx: usize, keep_turns: usize) -> usize {
+    if keep_turns == 0 {
+        return handoff_idx + 1;
+    }
+
+    let mut turns_seen = 0;
+    let mut last_turn = None;
+    let mut scan_idx = handoff_idx;
+
+    loop {
+        if let Some(turn) = event_turn(&events[scan_idx].payload) {
+            if last_turn != Some(turn) {
+                turns_seen += 1;
+                last_turn = Some(turn);
+            }
+            if turns_seen == keep_turns {
+                let mut start_idx = scan_idx;
+                while start_idx > 0 && event_turn(&events[start_idx - 1].payload) == Some(turn) {
+                    start_idx -= 1;
+                }
+                return start_idx;
+            }
+        }
+
+        if scan_idx == 0 {
+            return 0;
+        }
+        scan_idx -= 1;
+    }
+}
+
+fn event_turn(payload: &EventPayload) -> Option<u64> {
+    match payload {
+        EventPayload::UserInput { turn, .. }
+        | EventPayload::ModelResponse { turn, .. }
+        | EventPayload::ToolCall { turn, .. }
+        | EventPayload::ToolResult { turn, .. }
+        | EventPayload::TurnStart { turn, .. }
+        | EventPayload::TurnEnd { turn, .. }
+        | EventPayload::ContextSources { turn, .. }
+        | EventPayload::ModelError { turn, .. }
+        | EventPayload::PermissionRequested { turn, .. }
+        | EventPayload::PermissionAllow { turn, .. }
+        | EventPayload::PermissionDeny { turn, .. }
+        | EventPayload::Handoff { turn, .. }
+        | EventPayload::TurnRollback { turn, .. }
+        | EventPayload::TurnRollbackUndo { turn, .. } => Some(*turn),
+        EventPayload::SessionMeta { .. }
+        | EventPayload::ContextPrelude { .. }
+        | EventPayload::Unknown(_) => None,
+    }
 }
 
 fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) {
@@ -539,15 +597,20 @@ mod tests {
         );
     }
 
-    fn handoff_event(id: u64, summary: &str) -> StoredEvent {
+    fn handoff_event_with_keep_turns(
+        id: u64,
+        turn: u64,
+        summary: &str,
+        keep_turns: usize,
+    ) -> StoredEvent {
         event(
             id,
             EventPayload::Handoff {
-                turn: 2,
+                turn,
                 ts: "2026-05-27T00:00:01Z".to_string(),
                 request_id: "req_handoff".to_string(),
                 summary: summary.to_string(),
-                keep_turns: 2,
+                keep_turns,
             },
         )
     }
@@ -570,15 +633,22 @@ mod tests {
             user_input(1, 1, "old question"),
             model_response(2, 1, "req_1", "old answer"),
             turn_end(3, 1),
-            handoff_event(4, "## Goal\nDo stuff"),
+            handoff_event_with_keep_turns(4, 1, "## Goal\nDo stuff", 2),
             user_input(5, 2, "new question"),
             model_response(6, 2, "req_2", "new answer"),
             turn_end(7, 2),
         ];
         let (summary, history) = rebuild_history(&events);
         assert_eq!(summary.as_deref(), Some("## Goal\nDo stuff"));
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0], CanonicalMessage::user_text("new question"));
+        assert_eq!(
+            history,
+            vec![
+                CanonicalMessage::user_text("old question"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("old answer".to_string())]),
+                CanonicalMessage::user_text("new question"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("new answer".to_string())]),
+            ]
+        );
     }
 
     #[test]
@@ -587,19 +657,62 @@ mod tests {
             user_input(1, 1, "first"),
             model_response(2, 1, "req_1", "answer1"),
             turn_end(3, 1),
-            handoff_event(4, "first summary"),
+            handoff_event_with_keep_turns(4, 1, "first summary", 2),
             user_input(5, 2, "second"),
             model_response(6, 2, "req_2", "answer2"),
             turn_end(7, 2),
-            handoff_event(8, "second summary"),
+            handoff_event_with_keep_turns(8, 2, "second summary", 2),
             user_input(9, 3, "third"),
             model_response(10, 3, "req_3", "answer3"),
             turn_end(11, 3),
         ];
         let (summary, history) = rebuild_history(&events);
         assert_eq!(summary.as_deref(), Some("second summary"));
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0], CanonicalMessage::user_text("third"));
+        assert_eq!(
+            history,
+            vec![
+                CanonicalMessage::user_text("first"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer1".to_string())]),
+                CanonicalMessage::user_text("second"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer2".to_string())]),
+                CanonicalMessage::user_text("third"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer3".to_string())]),
+            ]
+        );
+    }
+
+    #[test]
+    fn rebuild_history_keeps_recent_pre_handoff_turns() {
+        let events = vec![
+            user_input(1, 1, "first"),
+            model_response(2, 1, "req_1", "answer1"),
+            turn_end(3, 1),
+            user_input(4, 2, "second"),
+            model_response(5, 2, "req_2", "answer2"),
+            turn_end(6, 2),
+            user_input(7, 3, "third"),
+            model_response(8, 3, "req_3", "answer3"),
+            handoff_event_with_keep_turns(9, 3, "summary", 2),
+            turn_end(10, 3),
+            user_input(11, 4, "fourth"),
+            model_response(12, 4, "req_4", "answer4"),
+            turn_end(13, 4),
+        ];
+
+        let (summary, history) = rebuild_history(&events);
+
+        assert_eq!(summary.as_deref(), Some("summary"));
+        assert_eq!(
+            history,
+            vec![
+                CanonicalMessage::user_text("second"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer2".to_string())]),
+                CanonicalMessage::user_text("third"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer3".to_string())]),
+                CanonicalMessage::user_text("fourth"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("answer4".to_string())]),
+            ]
+        );
     }
 
     fn ts(id: u64, turn: u64) -> StoredEvent {
@@ -721,7 +834,7 @@ mod tests {
             ts(1, 1),
             user_input(2, 1, "a"),
             turn_end(3, 1),
-            handoff_event(4, "old summary"),
+            handoff_event_with_keep_turns(4, 1, "old summary", 2),
             ts(5, 2),
             user_input(6, 2, "b"),
             turn_end(7, 2),
@@ -738,7 +851,7 @@ mod tests {
             ts(1, 1),
             user_input(2, 1, "a"),
             turn_end(3, 1),
-            handoff_event(4, "summary of turn 1"),
+            handoff_event_with_keep_turns(4, 1, "summary of turn 1", 2),
             ts(5, 2),
             user_input(6, 2, "b"),
             turn_end(7, 2),
@@ -759,7 +872,7 @@ mod tests {
                 }
             })
             .collect();
-        assert_eq!(texts, vec!["b"]);
+        assert_eq!(texts, vec!["a", "b"]);
     }
 
     #[test]

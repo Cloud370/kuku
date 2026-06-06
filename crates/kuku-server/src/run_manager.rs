@@ -129,18 +129,29 @@ impl RunManager {
                         let (tx, rx) = oneshot::channel();
                         let permission_key = (run_id.clone(), request.id.clone());
                         permissions.lock().await.insert(permission_key.clone(), tx);
-                        let choice = tokio::select! {
-                            result = rx => result.unwrap_or(kuku::PermissionChoice::Deny),
-                            _ = tokio::time::sleep(Duration::from_secs(60)) => kuku::PermissionChoice::Deny,
-                            _ = cancel_for_perm.notified() => kuku::PermissionChoice::Deny,
+                        enum PendingPermissionOutcome {
+                            Choice(kuku::PermissionChoice),
+                            Cancelled,
+                        }
+                        let outcome = tokio::select! {
+                            result = rx => PendingPermissionOutcome::Choice(result.unwrap_or(kuku::PermissionChoice::Deny)),
+                            _ = tokio::time::sleep(Duration::from_secs(60)) => PendingPermissionOutcome::Choice(kuku::PermissionChoice::Deny),
+                            _ = cancel_for_perm.notified() => PendingPermissionOutcome::Cancelled,
                         };
                         permissions.lock().await.remove(&permission_key);
-                        if let Ok(Some(result_event)) = run.decide(&request.id, choice, None).await
-                        {
-                            if let Some(line) = crate::wire::serialize_event(&result_event) {
-                                push_event(&recent_events, &line);
-                                let _ = event_tx.send(line);
+                        match outcome {
+                            PendingPermissionOutcome::Choice(choice) => {
+                                if let Ok(Some(result_event)) =
+                                    run.decide(&request.id, choice, None).await
+                                {
+                                    if let Some(line) = crate::wire::serialize_event(&result_event)
+                                    {
+                                        push_event(&recent_events, &line);
+                                        let _ = event_tx.send(line);
+                                    }
+                                }
                             }
+                            PendingPermissionOutcome::Cancelled => run.cancel(),
                         }
                         continue;
                     }

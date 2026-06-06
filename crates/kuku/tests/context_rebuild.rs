@@ -524,6 +524,8 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
     assert_eq!(
         history,
         vec![
+            CanonicalMessage::user_text("old"),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("old answer".to_string())]),
             CanonicalMessage::user_text("new"),
             CanonicalMessage::assistant(vec![MessageBlock::Text("new answer".to_string())]),
         ]
