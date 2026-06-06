@@ -123,11 +123,12 @@ mod tests {
     async fn child_permission_request_is_persisted_in_child_session_events() {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
         let workspace_alias = home.path().join("workspace-link");
         #[cfg(unix)]
         std::os::unix::fs::symlink(workspace.path(), &workspace_alias).unwrap();
         #[cfg(not(unix))]
-        std::fs::create_dir(&workspace_alias).unwrap();
+        let workspace_alias = workspace.path().to_path_buf();
         let server = MockServer::start();
 
         server.mock(|when, then| {
