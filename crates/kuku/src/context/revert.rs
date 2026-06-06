@@ -49,30 +49,7 @@ enum FileStateAt {
 
 /// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
-    let mut undone_ids: HashSet<u64> = HashSet::new();
-    let mut active_rollback: Option<(u64, u64, RollbackScope)> = None;
-
-    for event in events {
-        match &event.payload {
-            EventPayload::TurnRollbackUndo {
-                rollback_event_id, ..
-            } => {
-                undone_ids.insert(*rollback_event_id);
-                if active_rollback
-                    .as_ref()
-                    .is_some_and(|(_, rb_id, _)| rb_id == rollback_event_id)
-                {
-                    active_rollback = None;
-                }
-            }
-            EventPayload::TurnRollback {
-                target_turn, scope, ..
-            } if !undone_ids.contains(&event.id) => {
-                active_rollback = Some((*target_turn, event.id, scope.clone()));
-            }
-            _ => {}
-        }
-    }
+    let active_rollback = active_rollback_tuple(events);
 
     let skipped_turns: HashSet<u64> = match &active_rollback {
         Some((target_turn, _, scope)) if scope.affects_conversation() => events
@@ -278,33 +255,44 @@ fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usiz
 /// Find the most recent non-undone rollback in the event stream.
 pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
     let mut undone_ids: HashSet<u64> = HashSet::new();
-    let mut last: Option<ActiveRollback> = None;
     for event in events {
-        match &event.payload {
-            EventPayload::TurnRollbackUndo {
-                rollback_event_id, ..
-            } => {
-                undone_ids.insert(*rollback_event_id);
-                if last
-                    .as_ref()
-                    .is_some_and(|r| r.rollback_event_id == *rollback_event_id)
-                {
-                    last = None;
-                }
-            }
-            EventPayload::TurnRollback {
-                target_turn, scope, ..
-            } if !undone_ids.contains(&event.id) => {
-                last = Some(ActiveRollback {
-                    rollback_event_id: event.id,
-                    target_turn: *target_turn,
-                    scope: scope.clone(),
-                });
-            }
-            _ => {}
+        if let EventPayload::TurnRollbackUndo {
+            rollback_event_id, ..
+        } = &event.payload
+        {
+            undone_ids.insert(*rollback_event_id);
         }
     }
-    last
+
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::TurnRollback {
+            target_turn, scope, ..
+        } if !undone_ids.contains(&event.id) => Some(ActiveRollback {
+            rollback_event_id: event.id,
+            target_turn: *target_turn,
+            scope: scope.clone(),
+        }),
+        _ => None,
+    })
+}
+
+fn active_rollback_tuple(events: &[StoredEvent]) -> Option<(u64, u64, RollbackScope)> {
+    let mut undone_ids: HashSet<u64> = HashSet::new();
+    for event in events {
+        if let EventPayload::TurnRollbackUndo {
+            rollback_event_id, ..
+        } = &event.payload
+        {
+            undone_ids.insert(*rollback_event_id);
+        }
+    }
+
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::TurnRollback {
+            target_turn, scope, ..
+        } if !undone_ids.contains(&event.id) => Some((*target_turn, event.id, scope.clone())),
+        _ => None,
+    })
 }
 
 fn collect_file_turns(events: &[StoredEvent], after_turn: Option<u64>) -> HashSet<u64> {

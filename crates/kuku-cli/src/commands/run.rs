@@ -62,6 +62,19 @@ fn close_thinking(
     }
 }
 
+fn noninteractive_permission_choice(
+    auto_yes: bool,
+    use_stream_json: bool,
+) -> Option<PermissionChoice> {
+    if auto_yes {
+        Some(PermissionChoice::Once)
+    } else if use_stream_json {
+        Some(PermissionChoice::Deny)
+    } else {
+        None
+    }
+}
+
 fn build_skill_body(
     skill_name: &str,
     registry: &kuku::skill::registry::SkillRegistry,
@@ -420,18 +433,35 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     &mut display,
                     use_stream_json,
                 );
-                if args.auto_yes || use_stream_json {
-                    let _ = run
-                        .decide(&request.id, PermissionChoice::Once, None)
-                        .await?;
+                if let Some(choice) =
+                    noninteractive_permission_choice(args.auto_yes, use_stream_json)
+                {
+                    let _ = run.decide(&request.id, choice, None).await?;
                     if use_stream_json {
+                        if matches!(choice, PermissionChoice::Deny) {
+                            println!(
+                                "{}",
+                                OutputLine::permission_ask(
+                                    request.id.clone(),
+                                    request.tool.clone(),
+                                    request.risk,
+                                    request.summary,
+                                )
+                                .to_json_line()
+                            );
+                        }
+                        let decision = if matches!(choice, PermissionChoice::Deny) {
+                            "deny"
+                        } else {
+                            "allow"
+                        };
                         println!(
                             "{}",
                             OutputLine::permission_decision(
                                 request.id,
                                 request.tool,
-                                "allow".into(),
-                                "posture".into(),
+                                decision.into(),
+                                "noninteractive".into(),
                             )
                             .to_json_line()
                         );
@@ -715,7 +745,33 @@ fn parse_slash_command(input: &str) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_slash_command;
+    use super::{noninteractive_permission_choice, parse_slash_command};
+    use kuku::PermissionChoice;
+
+    #[test]
+    fn stream_json_without_yes_denies_permission_requests() {
+        assert_eq!(
+            noninteractive_permission_choice(false, true),
+            Some(PermissionChoice::Deny)
+        );
+    }
+
+    #[test]
+    fn yes_auto_allows_permission_requests() {
+        assert_eq!(
+            noninteractive_permission_choice(true, false),
+            Some(PermissionChoice::Once)
+        );
+        assert_eq!(
+            noninteractive_permission_choice(true, true),
+            Some(PermissionChoice::Once)
+        );
+    }
+
+    #[test]
+    fn interactive_without_yes_waits_for_user_input() {
+        assert_eq!(noninteractive_permission_choice(false, false), None);
+    }
 
     #[test]
     fn slash_command_with_prompt() {

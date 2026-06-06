@@ -12,7 +12,9 @@ pub struct RunHandle {
     recent_events: Arc<Mutex<VecDeque<String>>>,
 }
 
-type PermissionMap = Arc<TokioMutex<HashMap<String, oneshot::Sender<kuku::PermissionChoice>>>>;
+type PermissionKey = (String, String);
+type PermissionMap =
+    Arc<TokioMutex<HashMap<PermissionKey, oneshot::Sender<kuku::PermissionChoice>>>>;
 
 pub struct RunManager {
     runs: Arc<Mutex<HashMap<String, RunHandle>>>,
@@ -73,10 +75,12 @@ impl RunManager {
         let event_tx_clone = event_tx.clone();
         let recent_clone = recent_events.clone();
         let cancel_for_perm = cancel_token.clone();
+        let run_id_for_loop = run_id.clone();
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let join_handle = tokio::spawn(async move {
             Self::run_loop(
                 run,
+                run_id_for_loop,
                 event_tx_clone,
                 permissions,
                 permit,
@@ -107,6 +111,7 @@ impl RunManager {
 
     async fn run_loop(
         mut run: kuku::Run,
+        run_id: String,
         event_tx: broadcast::Sender<String>,
         permissions: PermissionMap,
         _permit: tokio::sync::OwnedSemaphorePermit,
@@ -122,13 +127,14 @@ impl RunManager {
                             let _ = event_tx.send(line);
                         }
                         let (tx, rx) = oneshot::channel();
-                        permissions.lock().await.insert(request.id.clone(), tx);
+                        let permission_key = (run_id.clone(), request.id.clone());
+                        permissions.lock().await.insert(permission_key.clone(), tx);
                         let choice = tokio::select! {
                             result = rx => result.unwrap_or(kuku::PermissionChoice::Deny),
                             _ = tokio::time::sleep(Duration::from_secs(60)) => kuku::PermissionChoice::Deny,
                             _ = cancel_for_perm.notified() => kuku::PermissionChoice::Deny,
                         };
-                        permissions.lock().await.remove(&request.id);
+                        permissions.lock().await.remove(&permission_key);
                         if let Ok(Some(result_event)) = run.decide(&request.id, choice, None).await
                         {
                             if let Some(line) = crate::wire::serialize_event(&result_event) {
@@ -174,6 +180,7 @@ impl RunManager {
 
     pub async fn respond(
         &self,
+        run_id: &str,
         interaction_id: &str,
         choice: kuku::PermissionChoice,
     ) -> Result<(), kuku::Error> {
@@ -181,7 +188,7 @@ impl RunManager {
             .permissions
             .lock()
             .await
-            .remove(interaction_id)
+            .remove(&(run_id.to_string(), interaction_id.to_string()))
             .ok_or_else(|| kuku::Error::PermissionRequestNotPending(interaction_id.to_string()))?;
         let _ = tx.send(choice);
         Ok(())

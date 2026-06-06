@@ -123,6 +123,11 @@ mod tests {
     async fn child_permission_request_is_persisted_in_child_session_events() {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        let workspace_alias = home.path().join("workspace-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(workspace.path(), &workspace_alias).unwrap();
+        #[cfg(not(unix))]
+        std::fs::create_dir(&workspace_alias).unwrap();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -149,7 +154,7 @@ mod tests {
             child_session_id,
             &command_agent(),
             "run the tests",
-            workspace.path(),
+            &workspace_alias,
             home.path(),
             std::sync::Arc::new(test_config(server.base_url())),
             None,
@@ -169,12 +174,9 @@ mod tests {
         assert_eq!(request.tool_call_id, "toolu_child_cmd");
         assert_eq!(request.tool, "run_command");
 
-        let events_path = crate::session::session_events_path(
-            home.path(),
-            &std::fs::canonicalize(workspace.path()).unwrap(),
-            child_session_id,
-        )
-        .unwrap();
+        let events_path =
+            crate::session::session_events_path(home.path(), &workspace_alias, child_session_id)
+                .unwrap();
         let child_events = EventStore::replay(events_path).unwrap();
         let child_permission = child_events
             .iter()

@@ -432,6 +432,12 @@ impl Run {
                 .await?;
                 if let Some(block) = hook_result.block {
                     pending.record_tool_call(&tool_call.name);
+                    persist_blocked_tool_result(
+                        &pending.events_path,
+                        pending.turn,
+                        &tool_call.id,
+                        &block.reason,
+                    )?;
                     return Ok(Some(UiEvent::ToolEnd {
                         id: tool_call.id,
                         status: "blocked".to_string(),
@@ -494,6 +500,12 @@ impl Run {
                     ),
                 )?;
                 pending.record_tool_denied(&tool_call.name);
+                persist_blocked_tool_result(
+                    &pending.events_path,
+                    pending.turn,
+                    &tool_call.id,
+                    "permission denied",
+                )?;
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
                     status: "blocked".to_string(),
@@ -674,7 +686,7 @@ impl Run {
             _ => {
                 return Err(Error::PermissionRequestNotPending(
                     "no permission request is pending".to_string(),
-                ))
+                ));
             }
         };
         self.apply_choice(&request_id, PermissionChoice::Deny, "runtime")
@@ -840,6 +852,12 @@ impl Run {
         .await?;
         if let Some(block) = hook_result.block {
             pending.record_tool_call(&tool_call.name);
+            persist_blocked_tool_result(
+                &pending.events_path,
+                pending.turn,
+                &tool_call.id,
+                &block.reason,
+            )?;
             self.state = RunState::Pending(Box::new(pending));
             return Ok(Some(UiEvent::ToolEnd {
                 id: tool_call.id,
@@ -884,6 +902,26 @@ fn has_permission_decision(events: &[crate::event::StoredEvent], tool_call_id: &
                 if id == tool_call_id
         )
     })
+}
+
+fn persist_blocked_tool_result(
+    events_path: &std::path::Path,
+    turn: u64,
+    tool_call_id: &str,
+    summary: &str,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call_id.to_string(),
+        status: "blocked".to_string(),
+        summary: summary.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        structured: None,
+    })?;
+    Ok(())
 }
 
 fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error: &Error) {
@@ -957,8 +995,8 @@ pub(super) fn find_tool_definition<'a>(
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
-    use crate::provider::types::ProviderToolCall;
-    use crate::query::types::CumulativeUsage;
+    use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
+    use crate::query::types::{CumulativeUsage, ResolvedRuntime};
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -1080,6 +1118,207 @@ mod tests {
             lock_path: std::path::PathBuf::new(),
             deferred_runtime_logs: std::collections::VecDeque::new(),
         }
+    }
+
+    fn test_resolved_runtime() -> ResolvedRuntime {
+        ResolvedRuntime {
+            config: ResolvedProvider {
+                kind: ProviderKind::OpenAiCompatible,
+                model: "test-model".to_string(),
+                base_url: "https://example.test".to_string(),
+                api_key: SecretString::new("test-key"),
+                max_context_tokens: 1000,
+                max_output_tokens: 1000,
+                think_level: crate::config::ThinkLevel::Off,
+                thinking: crate::config::ResolvedThinking::default(),
+            },
+            registry: vec![ToolDefinition {
+                name: "run_command".to_string(),
+                description: "test command".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                read_only: false,
+                max_result_chars: 8000,
+                risk: "command".to_string(),
+            }],
+        }
+    }
+
+    fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Run {
+        let mut pending = make_test_pending(
+            events_path,
+            dir,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.resolved = Some(test_resolved_runtime());
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call: ProviderToolCall {
+                id: "tool_queued".to_string(),
+                name: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+                index: 0,
+            },
+            display_summary: "print hi".to_string(),
+        });
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(pending)),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn assert_blocked_tool_result(events_path: &std::path::Path, summary: &str) {
+        let events = EventStore::replay(events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolResult {
+                tool_call_id,
+                status,
+                summary: stored_summary,
+                model_content,
+                structured,
+                ..
+            } if tool_call_id == "tool_queued"
+                && status == "blocked"
+                && stored_summary == summary
+                && model_content.is_empty()
+                && structured.is_none()
+        )));
+    }
+
+    #[tokio::test]
+    async fn queued_deny_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(
+            dir.path().join("policy.md"),
+            "# policy\n\n## allow\n\n## deny\n- run_command(printf hi)\n",
+        )
+        .unwrap();
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+
+        let event = run.next().await.unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "permission denied");
+    }
+
+    #[tokio::test]
+    async fn queued_pre_hook_block_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(
+            dir.path().join("policy.md"),
+            "# policy\n\n## allow\n- run_command(printf hi)\n\n## deny\n",
+        )
+        .unwrap();
+        let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
+        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
+        std::fs::write(
+            pkg_dir.join("kuku.toml"),
+            "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"hooks/block.sh\"\n",
+        )
+        .unwrap();
+        let hook_path = pkg_dir.join("hooks").join("block.sh");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\nprintf 'blocked by hook' >&2\nexit 2\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, permissions).unwrap();
+        }
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+        if let RunState::Pending(pending) = &mut run.state {
+            pending.plugin_registry = Some(std::sync::Arc::new(
+                crate::plugin::PluginRegistry::builder()
+                    .load_packages(dir.path(), dir.path())
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+            ));
+        }
+
+        let event = run.next().await.unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "blocked by hook");
+    }
+
+    #[tokio::test]
+    async fn decide_pre_hook_block_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(dir.path().join("policy.md"), "# policy\n").unwrap();
+        let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
+        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
+        std::fs::write(
+            pkg_dir.join("kuku.toml"),
+            "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"hooks/block.sh\"\n",
+        )
+        .unwrap();
+        let hook_path = pkg_dir.join("hooks").join("block.sh");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\nprintf 'blocked after allow' >&2\nexit 2\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, permissions).unwrap();
+        }
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+        let waiting = match std::mem::replace(&mut run.state, RunState::Done(None)) {
+            RunState::Pending(mut pending) => {
+                pending.plugin_registry = Some(std::sync::Arc::new(
+                    crate::plugin::PluginRegistry::builder()
+                        .load_packages(dir.path(), dir.path())
+                        .unwrap()
+                        .build()
+                        .unwrap(),
+                ));
+                PendingPermission {
+                    request: PermissionRequest {
+                        id: "tool_queued".to_string(),
+                        tool_call_id: "tool_queued".to_string(),
+                        tool: "run_command".to_string(),
+                        risk: "command".to_string(),
+                        summary: "print hi".to_string(),
+                        candidate: "printf hi".to_string(),
+                        source: "default_ask".to_string(),
+                    },
+                    pending: *pending,
+                }
+            }
+            other => panic!("expected pending run, got {other:?}"),
+        };
+        run.state = RunState::WaitingForPermission(Box::new(waiting));
+
+        let event = run
+            .decide("tool_queued", PermissionChoice::Once, None)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "blocked after allow");
     }
 
     #[tokio::test]

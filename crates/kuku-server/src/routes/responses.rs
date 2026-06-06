@@ -15,7 +15,7 @@ pub struct ResponseRequest {
 
 pub async fn respond(
     State(state): State<Arc<AppState>>,
-    Path(_run_id): Path<String>,
+    Path(run_id): Path<String>,
     Json(body): Json<ResponseRequest>,
 ) -> Json<serde_json::Value> {
     let choice = match body.choice.as_str() {
@@ -31,7 +31,7 @@ pub async fn respond(
     };
 
     let mgr = state.run_manager.lock().await;
-    match mgr.respond(&body.interaction_id, choice).await {
+    match mgr.respond(&run_id, &body.interaction_id, choice).await {
         Ok(()) => Json(json!({"ok": true})),
         Err(e) => Json(crate::error_mapping::error_envelope(&e)),
     }

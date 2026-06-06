@@ -17,7 +17,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "PermissionAllow", "PermissionDeny", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" },
@@ -196,6 +196,8 @@ fn normalize_type_filter(raw: &str) -> String {
         "ToolCall" => "tool.call".to_string(),
         "ToolResult" => "tool.result".to_string(),
         "PermissionRequested" => "permission.requested".to_string(),
+        "PermissionAllow" => "permission.allow".to_string(),
+        "PermissionDeny" => "permission.deny".to_string(),
         "Handoff" => "handoff".to_string(),
         "TurnRollback" => "turn.rollback".to_string(),
         "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
@@ -210,6 +212,8 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         EventPayload::ToolCall { .. } => "tool.call",
         EventPayload::ToolResult { .. } => "tool.result",
         EventPayload::PermissionRequested { .. } => "permission.requested",
+        EventPayload::PermissionAllow { .. } => "permission.allow",
+        EventPayload::PermissionDeny { .. } => "permission.deny",
         EventPayload::Handoff { .. } => "handoff",
         EventPayload::TurnRollback { .. } => "turn.rollback",
         EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
@@ -219,8 +223,6 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         | EventPayload::TurnStart { .. }
         | EventPayload::TurnEnd { .. }
         | EventPayload::ModelError { .. }
-        | EventPayload::PermissionAllow { .. }
-        | EventPayload::PermissionDeny { .. }
         | EventPayload::Unknown(_) => return false,
     };
     type_tag == filter
@@ -601,6 +603,52 @@ mod tests {
         assert!(result.model_content.contains("permission.requested"));
         assert!(result.model_content.contains("cargo test"));
         assert!(!result.model_content.contains("hello"));
+    }
+
+    #[test]
+    fn query_session_type_filter_permission_allow_and_deny() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::PermissionAllow {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_allow".into(),
+                    tool: "run_command".into(),
+                    scope: "session".into(),
+                    matcher: "cargo test".into(),
+                    source: "user".into(),
+                },
+                EventPayload::PermissionDeny {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_deny".into(),
+                    tool: "run_command".into(),
+                    reason: "too risky".into(),
+                    source: "user".into(),
+                },
+            ],
+        );
+
+        let allow = query_session(&json!({"type": "permission.allow"}), &path);
+        let deny = query_session(&json!({"type": "permission.deny"}), &path);
+
+        assert_eq!(allow.status, "ok");
+        assert!(allow.model_content.contains("permission.allow"));
+        assert!(allow.model_content.contains("cargo test"));
+        assert!(!allow.model_content.contains("permission.deny"));
+        assert!(!allow.model_content.contains("hello"));
+        assert_eq!(deny.status, "ok");
+        assert!(deny.model_content.contains("permission.deny"));
+        assert!(deny.model_content.contains("too risky"));
+        assert!(!deny.model_content.contains("permission.allow"));
+        assert!(!deny.model_content.contains("hello"));
     }
 
     #[test]

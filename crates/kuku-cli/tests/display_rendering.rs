@@ -117,6 +117,23 @@ fn json_tool_call_serializes() {
 }
 
 #[test]
+fn json_permission_ask_serializes_existing_schema() {
+    let line = OutputLine::permission_ask(
+        "perm_1".into(),
+        "run_command".into(),
+        "execute".into(),
+        "cargo test".into(),
+    );
+    let json: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
+
+    assert_eq!(json["type"], "permission_ask");
+    assert_eq!(json["request_id"], "perm_1");
+    assert_eq!(json["tool"], "run_command");
+    assert_eq!(json["risk"], "execute");
+    assert_eq!(json["summary"], "cargo test");
+}
+
+#[test]
 fn json_error_serializes() {
     let line = OutputLine::error("provider".into(), "auth".into(), "invalid key".into(), None);
     let json = line.to_json_line();
