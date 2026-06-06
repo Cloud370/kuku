@@ -189,7 +189,7 @@ pub(super) async fn run_tool_pre_hooks(
         if r.output.block {
             return Ok(HookPreResult {
                 block: Some(HookBlockResult {
-                    reason: r.stderr.clone(),
+                    reason: r.stderr.trim_end().to_string(),
                 }),
                 args: updated_args,
             });

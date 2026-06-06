@@ -151,7 +151,17 @@ impl RunManager {
                                     }
                                 }
                             }
-                            PendingPermissionOutcome::Cancelled => run.cancel(),
+                            PendingPermissionOutcome::Cancelled => {
+                                run.cancel();
+                                if let Ok(Some(cancelled_event)) = run.next().await {
+                                    if let Some(line) =
+                                        crate::wire::serialize_event(&cancelled_event)
+                                    {
+                                        push_event(&recent_events, &line);
+                                        let _ = event_tx.send(line);
+                                    }
+                                }
+                            }
                         }
                         continue;
                     }
