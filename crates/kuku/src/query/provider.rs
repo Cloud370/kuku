@@ -599,7 +599,7 @@ fn inject_runtime_context(
     user_msg.blocks = new_blocks;
 }
 
-fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
+pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     if pending.resolved.is_some() {
         return Ok(());
     }

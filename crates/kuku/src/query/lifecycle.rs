@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::context::revert::filter_rolled_back_events;
@@ -58,19 +56,21 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 args,
                 ..
             } => {
-                tools.entry(tool_call_id.clone()).or_insert_with(|| ToolLifecycle {
-                    tool_call: ProviderToolCall {
-                        id: tool_call_id.clone(),
-                        name: tool.clone(),
-                        args: args.clone(),
-                        index: *index,
-                    },
-                    turn: *turn,
-                    permission_request: None,
-                    permission_allowed: false,
-                    permission_denied: false,
-                    has_result: false,
-                });
+                tools
+                    .entry(tool_call_id.clone())
+                    .or_insert_with(|| ToolLifecycle {
+                        tool_call: ProviderToolCall {
+                            id: tool_call_id.clone(),
+                            name: tool.clone(),
+                            args: args.clone(),
+                            index: *index,
+                        },
+                        turn: *turn,
+                        permission_request: None,
+                        permission_allowed: false,
+                        permission_denied: false,
+                        has_result: false,
+                    });
             }
             EventPayload::PermissionRequested {
                 turn,
@@ -179,7 +179,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
 mod tests {
     use serde_json::json;
 
-    use super::{OpenToolKind, reduce_lifecycle};
+    use super::{reduce_lifecycle, OpenToolKind};
     use crate::event::{EventPayload, RollbackScope, StoredEvent};
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {

@@ -14,8 +14,8 @@ use super::helpers::{
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingRun, PendingStep, PermissionChoice, PermissionRequest, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
+    QueuedToolCall, Run, RunState, SlotEvent, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -320,23 +320,46 @@ impl Run {
 
     async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
         let has_active_ordered_simple_slot = self.has_active_ordered_simple_slot();
+        let (front_tool_call_id, front_tool_name) = match &self.state {
+            RunState::Pending(pending) => match pending.queued_tool_calls.front() {
+                Some(queued) => (queued.tool_call.id.clone(), queued.tool_call.name.clone()),
+                None => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let resumed_request = match &mut self.state {
+            RunState::Pending(pending) => {
+                pending.take_resumed_permission_request(&front_tool_call_id)
+            }
+            _ => return Ok(None),
+        };
+        if let Some(request) = resumed_request {
+            let state = std::mem::replace(&mut self.state, RunState::Done(None));
+            if let RunState::Pending(pending) = state {
+                self.state = RunState::WaitingForPermission(Box::new(PendingPermission {
+                    pending: *pending,
+                    request: request.clone(),
+                }));
+                return Ok(Some(UiEvent::PermissionRequested { request }));
+            }
+        }
+
+        if front_tool_name == "agent" || front_tool_name == "use_skill" {
+            return Ok(None);
+        }
+        if requires_ordered_simple_execution(&front_tool_name) && has_active_ordered_simple_slot {
+            return Ok(None);
+        }
+
         let pending = match &mut self.state {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
         };
+        super::provider::ensure_resolved(pending)?;
         let queued = match pending.queued_tool_calls.front() {
             Some(q) => q,
             None => return Ok(None),
         };
-
-        if queued.tool_call.name == "agent" || queued.tool_call.name == "use_skill" {
-            return Ok(None);
-        }
-        if requires_ordered_simple_execution(&queued.tool_call.name)
-            && has_active_ordered_simple_slot
-        {
-            return Ok(None);
-        }
 
         let policy = crate::permission::load_project_policy(&pending.policy_path)?;
         let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
@@ -903,6 +926,7 @@ mod tests {
             cumulative: CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: std::collections::VecDeque::new(),
+            resumed_permission_requests: std::collections::VecDeque::new(),
             config: std::sync::Arc::new(test_config()),
             prompts_dir: None,
             subagent_registry: None,

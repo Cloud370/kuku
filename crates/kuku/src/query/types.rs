@@ -279,6 +279,7 @@ pub(super) struct PendingRun {
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
+    pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
@@ -326,6 +327,16 @@ impl PendingRun {
     pub(super) fn record_tool_error(&mut self, name: &str) {
         self.record_tool_call(name);
         self.tool_errors += 1;
+    }
+
+    pub(super) fn take_resumed_permission_request(
+        &mut self,
+        tool_call_id: &str,
+    ) -> Option<PermissionRequest> {
+        self.resumed_permission_requests
+            .iter()
+            .position(|request| request.tool_call_id == tool_call_id)
+            .and_then(|index| self.resumed_permission_requests.remove(index))
     }
 }
 

@@ -498,6 +498,15 @@ pub(super) async fn advance_pending(
             return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
+            if let Some(request) = pending.take_resumed_permission_request(&id) {
+                pending.queued_tool_calls.push_front(queued);
+                return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
+                    pending,
+                    request,
+                })));
+            }
+
+            super::provider::ensure_resolved(&mut pending)?;
             let definition =
                 find_tool_definition(&pending, &queued.tool_call.name).ok_or_else(|| {
                     crate::error::Error::InvalidArgument(format!(
@@ -505,6 +514,7 @@ pub(super) async fn advance_pending(
                         queued.tool_call.name
                     ))
                 })?;
+            let risk = definition.risk.clone();
             let candidate = permission_candidate(
                 &pending.kuku_home,
                 &pending.workspace,
@@ -516,7 +526,7 @@ pub(super) async fn advance_pending(
             let session_grants = recover_session_grants(&prior_events);
             let decision = decide_tool_call(
                 &queued.tool_call.name,
-                &definition.risk,
+                &risk,
                 &candidate,
                 &policy,
                 &session_grants,
@@ -529,7 +539,7 @@ pub(super) async fn advance_pending(
                         id: tc_id.clone(),
                         tool_call_id: tc_id,
                         tool: queued.tool_call.name.clone(),
-                        risk: definition.risk.clone(),
+                        risk: risk.clone(),
                         summary: summary.clone(),
                         candidate: candidate.clone(),
                         source: gate_source_name(decision.source).to_string(),
@@ -622,7 +632,7 @@ pub(super) async fn advance_pending(
                             id: id.clone(),
                             tool_call_id: id.clone(),
                             tool: queued.tool_call.name.clone(),
-                            risk: definition.risk.clone(),
+                            risk: risk.clone(),
                             summary: summary.clone(),
                             candidate,
                             source: gate_source_name(decision.source).to_string(),

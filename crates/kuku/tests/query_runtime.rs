@@ -5,7 +5,18 @@ use common::{anthropic_sse_response, test_config, TestEnv};
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
 use kuku::log::{LogLevel, LogRecord, LogScope};
-use kuku::{query, Error, PermissionChoice, Provider, UiEvent};
+use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
+
+async fn next_permission_request(run: &mut Run) -> PermissionRequest {
+    let mut event = run.next().await.unwrap().expect("event");
+    while !matches!(event, UiEvent::PermissionRequested { .. }) {
+        event = run.next().await.unwrap().expect("event");
+    }
+    match event {
+        UiEvent::PermissionRequested { request } => request,
+        _ => unreachable!(),
+    }
+}
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
@@ -743,6 +754,388 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_reemits_request_before_new_turn() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_permission",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_resume_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_permission_request";
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let original = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    match resumed.next().await.unwrap().expect("resumed event") {
+        UiEvent::PermissionRequested { request } => {
+            assert_eq!(request.id, original.id);
+            assert_eq!(request.tool_call_id, original.tool_call_id);
+            assert_eq!(request.tool, original.tool);
+            assert_eq!(request.candidate, original.candidate);
+            assert_eq!(request.source, original.source);
+        }
+        other => panic!("expected resumed permission request, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_no_turn",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_no_turn_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_no_new_turn";
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let _request = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        resumed.next().await.unwrap(),
+        Some(UiEvent::PermissionRequested { .. })
+    ));
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    let turn_starts = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::TurnStart { .. }))
+        .count();
+    let user_inputs: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::UserInput { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(turn_starts, 1);
+    assert_eq!(user_inputs, vec!["run tests"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_does_not_resolve_config_or_append_facts_before_reemit() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_no_resolve",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_no_resolve", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_no_resolve";
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let original = next_permission_request(&mut run).await;
+    let before_events = EventStore::replay(env.events_path(session_id)).unwrap();
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    match resumed.next().await.unwrap().expect("resumed request") {
+        UiEvent::PermissionRequested { request } => assert_eq!(request.id, original.id),
+        other => panic!("expected resumed permission request, got {other:?}"),
+    }
+
+    let after_events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert_eq!(after_events.len(), before_events.len());
+    assert!(!after_events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_request_id() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("permission gate denied this tool call");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Command denied after resume."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_decide",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_resume_decide", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_decide_continues";
+    let mut run = query("run tests")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let request = next_permission_request(&mut run).await;
+    drop(run);
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        resumed.next().await.unwrap(),
+        Some(UiEvent::PermissionRequested { .. })
+    ));
+    let decision_event = resumed
+        .decide(&request.id, PermissionChoice::Deny, None)
+        .await
+        .unwrap();
+    assert!(matches!(decision_event, Some(UiEvent::ToolEnd { .. })));
+
+    let mut saw_resumed_turn_start = false;
+    let mut event = resumed.next().await.unwrap().expect("event after decision");
+    while !matches!(event, UiEvent::Done { .. }) {
+        if matches!(event, UiEvent::TurnStart { turn: 1 }) {
+            saw_resumed_turn_start = true;
+        }
+        event = resumed.next().await.unwrap().expect("event after decision");
+    }
+
+    assert!(!saw_resumed_turn_start);
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    let request_ids: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelResponse { request_id, .. } => Some(request_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(request_ids, vec!["req_1", "req_2"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_permission_resume_preserves_sibling_queued_permission() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_resume_siblings",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need two approvals."},
+                    {"type": "tool_use", "id": "toolu_resume_first", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}},
+                    {"type": "tool_use", "id": "toolu_resume_second", "name": "run_command", "input": {"command": "cargo check", "timeout": 60, "brief": "run check"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let session_id = "s_resume_sibling_permission";
+    let mut run = query("run tests then check")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let first = next_permission_request(&mut run).await;
+    assert_eq!(first.tool_call_id, "toolu_resume_first");
+
+    let mut store = EventStore::open(_env.events_path(session_id)).unwrap();
+    store
+        .append(EventPayload::PermissionRequested {
+            turn: 1,
+            ts: "2026-06-06T00:00:00Z".to_string(),
+            tool_call_id: "toolu_resume_second".to_string(),
+            tool: "run_command".to_string(),
+            risk: "command".to_string(),
+            summary: "persisted second summary".to_string(),
+            candidate: "persisted cargo check".to_string(),
+            source: "persisted_source".to_string(),
+        })
+        .unwrap();
+    let before_events = EventStore::replay(_env.events_path(session_id)).unwrap();
+    drop(run);
+
+    let mut invalid_config = test_config();
+    invalid_config.default_tier = "missing-tier".to_string();
+
+    let mut resumed = query("second prompt must not be appended yet")
+        .session(session_id)
+        .config(invalid_config)
+        .start()
+        .await
+        .unwrap();
+
+    let resumed_first = match resumed.next().await.unwrap().expect("resumed request") {
+        UiEvent::PermissionRequested { request } => request,
+        other => panic!("expected first resumed permission, got {other:?}"),
+    };
+    assert_eq!(resumed_first.tool_call_id, "toolu_resume_first");
+
+    let denied = resumed
+        .decide(&resumed_first.id, PermissionChoice::Deny, None)
+        .await
+        .unwrap();
+    assert!(matches!(denied, Some(UiEvent::ToolEnd { .. })));
+
+    let resumed_second = match resumed.next().await.unwrap().expect("second request") {
+        UiEvent::PermissionRequested { request } => request,
+        other => panic!("expected resumed sibling permission, got {other:?}"),
+    };
+    assert_eq!(resumed_second.tool_call_id, "toolu_resume_second");
+    assert_eq!(resumed_second.tool, "run_command");
+    assert_eq!(resumed_second.candidate, "persisted cargo check");
+    assert_eq!(resumed_second.source, "persisted_source");
+
+    let events = EventStore::replay(_env.events_path(session_id)).unwrap();
+    assert_eq!(events.len(), before_events.len() + 2);
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+    )));
+    let requested_second = events
+        .iter()
+        .filter(|event| {
+            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_resume_second")
+        })
+        .count();
+    assert_eq!(requested_second, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed() {
     let env = TestEnv::new();
     let server = MockServer::start();
@@ -807,13 +1200,19 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
                 candidate,
                 source,
                 ..
-            } if tool_call_id == "toolu_cmd" => {
-                Some((tool.as_str(), risk.as_str(), candidate.as_str(), source.as_str()))
-            }
+            } if tool_call_id == "toolu_cmd" => Some((
+                tool.as_str(),
+                risk.as_str(),
+                candidate.as_str(),
+                source.as_str(),
+            )),
             _ => None,
         })
         .expect("permission.requested event");
-    assert_eq!(requested, ("run_command", "command", "cargo test", "default_ask"));
+    assert_eq!(
+        requested,
+        ("run_command", "command", "cargo test", "default_ask")
+    );
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. })));
@@ -861,7 +1260,10 @@ async fn queued_deny_path_emits_permission_requested_before_deny() {
         match event {
             UiEvent::ToolStart { id, .. } if id == "toolu_read_ok" => saw_first_start = true,
             UiEvent::ToolEnd { id, status, .. } if id == "toolu_read_denied" => {
-                assert!(saw_first_start, "first slot should be active before queued deny");
+                assert!(
+                    saw_first_start,
+                    "first slot should be active before queued deny"
+                );
                 assert_eq!(status, "blocked");
                 break;
             }
