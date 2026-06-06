@@ -8,14 +8,14 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_permission_decision, display_summary, now_timestamp, permission_candidate,
-    permission_rule,
+    append_model_error, append_permission_decision, append_permission_request, append_turn_end,
+    display_summary, now_timestamp, permission_candidate, permission_rule,
 };
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
-    StreamingChunkState, UiEvent,
+    PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
+    QueuedToolCall, Run, RunState, SlotEvent, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -57,11 +57,37 @@ impl Run {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
         }
-        let (events_path, turn) = match &self.state {
-            RunState::Pending(p) => (p.events_path.clone(), p.turn),
-            RunState::Streaming(s) => (s.pending.events_path.clone(), s.pending.turn),
-            RunState::WaitingForPermission(w) => (w.pending.events_path.clone(), w.pending.turn),
-            RunState::Cancelled { .. } | RunState::Done(_) => return,
+        let (events_path, turn) = match std::mem::replace(&mut self.state, RunState::Done(None)) {
+            RunState::Pending(mut pending) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut pending);
+                pending.flush_runtime_logs();
+                (pending.events_path.clone(), pending.turn)
+            }
+            RunState::Streaming(mut streaming) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
+                streaming.pending.flush_runtime_logs();
+                (
+                    streaming.pending.events_path.clone(),
+                    streaming.pending.turn,
+                )
+            }
+            RunState::WaitingForPermission(mut waiting) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut waiting.pending);
+                waiting.pending.flush_runtime_logs();
+                if self
+                    .close_pending_permission_as_cancelled(&waiting)
+                    .is_err()
+                {
+                    self.state = RunState::WaitingForPermission(waiting);
+                    self.cancel_token.notify_waiters();
+                    return;
+                }
+                (waiting.pending.events_path.clone(), waiting.pending.turn)
+            }
+            other @ (RunState::Cancelled { .. } | RunState::Done(_)) => {
+                self.state = other;
+                return;
+            }
         };
         self.state = RunState::Cancelled { events_path, turn };
         self.cancel_token.notify_waiters();
@@ -70,10 +96,12 @@ impl Run {
     /// Poll for the next UI event from the running query.
     pub async fn next(&mut self) -> Result<Option<UiEvent>> {
         loop {
+            self.persist_deferred_runtime_logs();
+
             // 1. Permission queue priority — don't wait for slots
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
-                    return Ok(Some(event));
+                    return Ok(Some(self.defer_runtime_log_if_needed(event)));
                 }
             }
 
@@ -104,6 +132,7 @@ impl Run {
                                 RunState::WaitingForPermission(w) => {
                                     (&w.pending.events_path, w.pending.turn)
                                 }
+                                RunState::Cancelled { events_path, turn } => (events_path, *turn),
                                 _ => {
                                     return Ok(Some(UiEvent::ToolEnd {
                                         id: slot.tool_call_id,
@@ -143,12 +172,12 @@ impl Run {
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
-                        return Ok(Some(event));
+                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
                     }
                 }
                 RunState::Streaming(streaming) => {
                     if let Some(event) = self.advance_from_streaming(streaming).await? {
-                        return Ok(Some(event));
+                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
                     }
                 }
                 RunState::WaitingForPermission(waiting) => {
@@ -175,6 +204,37 @@ impl Run {
                 }
                 RunState::Done(None) => return Ok(None),
             }
+        }
+    }
+
+    fn defer_runtime_log_if_needed(&mut self, event: UiEvent) -> UiEvent {
+        if let UiEvent::Log { record } = &event {
+            self.deferred_runtime_logs.push_back(record.clone());
+        }
+        event
+    }
+
+    fn persist_deferred_runtime_logs(&mut self) {
+        let Some(record) = self.deferred_runtime_logs.pop_front() else {
+            return;
+        };
+        match &mut self.state {
+            RunState::Pending(pending) => {
+                let _ = pending.runtime_log_writer.push(record);
+            }
+            RunState::Streaming(streaming) => {
+                let _ = streaming.pending.runtime_log_writer.push(record);
+            }
+            RunState::WaitingForPermission(waiting) => {
+                let _ = waiting.pending.runtime_log_writer.push(record);
+            }
+            RunState::Cancelled { .. } | RunState::Done(_) => {}
+        }
+    }
+
+    fn persist_deferred_runtime_logs_for_pending(&mut self, pending: &mut PendingRun) {
+        while let Some(record) = self.deferred_runtime_logs.pop_front() {
+            let _ = pending.runtime_log_writer.push(record);
         }
     }
 
@@ -214,6 +274,10 @@ impl Run {
                     turn,
                 }))
             }
+            PendingStep::Failed(error) => {
+                self.state = RunState::Done(None);
+                Err(error)
+            }
         }
     }
 
@@ -225,12 +289,20 @@ impl Run {
             self.state = RunState::Streaming(streaming);
             return Ok(Some(event));
         }
-        match Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await? {
-            Some(event) => {
+        let poll = Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await;
+        match poll {
+            Err(error) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
+                record_streaming_provider_error_facts(&streaming, &error);
+                streaming.pending.flush_runtime_logs();
+                Err(error)
+            }
+            Ok(Some(event)) => {
                 self.state = RunState::Streaming(streaming);
                 Ok(Some(event))
             }
-            None => {
+            Ok(None) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
                 let step = super::step::finish_streaming(*streaming).await?;
                 match step {
                     PendingStep::Pending { pending, .. } => {
@@ -257,23 +329,46 @@ impl Run {
 
     async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
         let has_active_ordered_simple_slot = self.has_active_ordered_simple_slot();
+        let (front_tool_call_id, front_tool_name) = match &self.state {
+            RunState::Pending(pending) => match pending.queued_tool_calls.front() {
+                Some(queued) => (queued.tool_call.id.clone(), queued.tool_call.name.clone()),
+                None => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let resumed_request = match &mut self.state {
+            RunState::Pending(pending) => {
+                pending.take_resumed_permission_request(&front_tool_call_id)
+            }
+            _ => return Ok(None),
+        };
+        if let Some(request) = resumed_request {
+            let state = std::mem::replace(&mut self.state, RunState::Done(None));
+            if let RunState::Pending(pending) = state {
+                self.state = RunState::WaitingForPermission(Box::new(PendingPermission {
+                    pending: *pending,
+                    request: request.clone(),
+                }));
+                return Ok(Some(UiEvent::PermissionRequested { request }));
+            }
+        }
+
+        if front_tool_name == "agent" || front_tool_name == "use_skill" {
+            return Ok(None);
+        }
+        if requires_ordered_simple_execution(&front_tool_name) && has_active_ordered_simple_slot {
+            return Ok(None);
+        }
+
         let pending = match &mut self.state {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
         };
+        super::provider::ensure_resolved(pending)?;
         let queued = match pending.queued_tool_calls.front() {
             Some(q) => q,
             None => return Ok(None),
         };
-
-        if queued.tool_call.name == "agent" || queued.tool_call.name == "use_skill" {
-            return Ok(None);
-        }
-        if requires_ordered_simple_execution(&queued.tool_call.name)
-            && has_active_ordered_simple_slot
-        {
-            return Ok(None);
-        }
 
         let policy = crate::permission::load_project_policy(&pending.policy_path)?;
         let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
@@ -338,6 +433,12 @@ impl Run {
                 .await?;
                 if let Some(block) = hook_result.block {
                     pending.record_tool_call(&tool_call.name);
+                    persist_blocked_tool_result(
+                        &pending.events_path,
+                        pending.turn,
+                        &tool_call.id,
+                        &block.reason,
+                    )?;
                     return Ok(Some(UiEvent::ToolEnd {
                         id: tool_call.id,
                         status: "blocked".to_string(),
@@ -370,9 +471,42 @@ impl Run {
                 }))
             }
             crate::permission::GateDecisionKind::Deny => {
+                let risk = definition.risk.clone();
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
+                append_permission_request(
+                    &pending.events_path,
+                    pending.turn,
+                    &PermissionRequest {
+                        id: tool_call.id.clone(),
+                        tool_call_id: tool_call.id.clone(),
+                        tool: tool_call.name.clone(),
+                        risk,
+                        summary: display_summary(&tool_call.name, &tool_call.args, None),
+                        candidate,
+                        source: super::helpers::gate_source_name(decision.source).to_string(),
+                    },
+                )?;
+                append_permission_decision(
+                    &pending.events_path,
+                    pending.turn,
+                    &tool_call.id,
+                    PermissionChoice::Deny,
+                    super::helpers::gate_source_name(decision.source),
+                    &permission_rule(
+                        &pending.kuku_home,
+                        &pending.workspace,
+                        &tool_call.name,
+                        &tool_call.args,
+                    ),
+                )?;
                 pending.record_tool_denied(&tool_call.name);
+                persist_blocked_tool_result(
+                    &pending.events_path,
+                    pending.turn,
+                    &tool_call.id,
+                    "permission denied",
+                )?;
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
                     status: "blocked".to_string(),
@@ -500,7 +634,12 @@ impl Run {
                     );
                 }
                 ProviderChunk::ServerError { code, message } => {
-                    return Ok(Some(UiEvent::Error { code, message }));
+                    return Err(crate::error::Error::Provider {
+                        kind: crate::provider::types::ProviderFailureKind::Unknown,
+                        message: format!("{code}: {message}"),
+                        provider: None,
+                        model: None,
+                    });
                 }
                 ProviderChunk::StreamEnd => {}
             }
@@ -548,11 +687,83 @@ impl Run {
             _ => {
                 return Err(Error::PermissionRequestNotPending(
                     "no permission request is pending".to_string(),
-                ))
+                ));
             }
         };
         self.apply_choice(&request_id, PermissionChoice::Deny, "runtime")
             .await
+    }
+
+    /// Cancel a pending permission without recording an allow or deny decision.
+    pub fn cancel_pending_permission(&mut self, request_id: &str) -> Result<Option<UiEvent>> {
+        let state = std::mem::replace(&mut self.state, RunState::Done(None));
+        let mut waiting = match state {
+            RunState::WaitingForPermission(waiting) if waiting.request.id == request_id => *waiting,
+            other => {
+                self.state = other;
+                return Err(Error::PermissionRequestNotPending(request_id.to_string()));
+            }
+        };
+
+        let result = match self.close_pending_permission_as_cancelled(&waiting) {
+            Ok(result) => result,
+            Err(error) => {
+                self.state = RunState::WaitingForPermission(Box::new(waiting));
+                return Err(error);
+            }
+        };
+
+        let QueuedToolCall { tool_call, .. } = waiting
+            .pending
+            .queued_tool_calls
+            .pop_front()
+            .expect("PendingPermission implies a queued tool call");
+
+        self.state = RunState::Pending(Box::new(waiting.pending));
+        Ok(Some(UiEvent::ToolEnd {
+            id: tool_call.id,
+            status: result.status,
+            summary: result.summary,
+            model_content: None,
+            result: result.structured,
+        }))
+    }
+
+    fn close_pending_permission_as_cancelled(
+        &self,
+        waiting: &PendingPermission,
+    ) -> Result<crate::tool::ToolResultEnvelope> {
+        let tool_call = match waiting.pending.queued_tool_calls.front() {
+            Some(queued) if queued.tool_call.id == waiting.request.tool_call_id => {
+                &queued.tool_call
+            }
+            Some(queued) => {
+                let message = format!(
+                    "pending permission {} expects tool call {}, but queued tool call is {}",
+                    waiting.request.id, waiting.request.tool_call_id, queued.tool_call.id
+                );
+                return Err(Error::InvalidEventStream(message));
+            }
+            None => {
+                return Err(Error::InvalidEventStream(format!(
+                    "pending permission {} has no queued tool call",
+                    waiting.request.id
+                )));
+            }
+        };
+        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let mut store = EventStore::open(&waiting.pending.events_path)?;
+        store.append(EventPayload::ToolResult {
+            turn: waiting.pending.turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call.id.clone(),
+            status: result.status.clone(),
+            summary: result.summary.clone(),
+            model_content: result.model_content.clone(),
+            truncated: result.truncated,
+            structured: result.structured.clone(),
+        })?;
+        Ok(result)
     }
 
     async fn apply_choice(
@@ -642,6 +853,12 @@ impl Run {
         .await?;
         if let Some(block) = hook_result.block {
             pending.record_tool_call(&tool_call.name);
+            persist_blocked_tool_result(
+                &pending.events_path,
+                pending.turn,
+                &tool_call.id,
+                &block.reason,
+            )?;
             self.state = RunState::Pending(Box::new(pending));
             return Ok(Some(UiEvent::ToolEnd {
                 id: tool_call.id,
@@ -681,9 +898,58 @@ fn has_permission_decision(events: &[crate::event::StoredEvent], tool_call_id: &
     events.iter().any(|event| {
         matches!(
             &event.payload,
-            EventPayload::PermissionDecision { tool_call_id: id, .. } if id == tool_call_id
+            EventPayload::PermissionAllow { tool_call_id: id, .. }
+                | EventPayload::PermissionDeny { tool_call_id: id, .. }
+                if id == tool_call_id
         )
     })
+}
+
+fn persist_blocked_tool_result(
+    events_path: &std::path::Path,
+    turn: u64,
+    tool_call_id: &str,
+    summary: &str,
+) -> Result<()> {
+    let mut store = EventStore::open(events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn,
+        ts: now_timestamp()?,
+        tool_call_id: tool_call_id.to_string(),
+        status: "blocked".to_string(),
+        summary: summary.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        structured: None,
+    })?;
+    Ok(())
+}
+
+fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error: &Error) {
+    let Error::Provider { kind, message, .. } = error else {
+        return;
+    };
+    let _ = append_model_error(
+        &streaming.pending.events_path,
+        streaming.pending.turn,
+        streaming.request_id.clone(),
+        provider_failure_event_kind(*kind),
+        message,
+    );
+    let _ = append_turn_end(&streaming.pending.events_path, streaming.pending.turn);
+}
+
+fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {
+    match kind {
+        crate::provider::types::ProviderFailureKind::Authentication => "authentication",
+        crate::provider::types::ProviderFailureKind::RateLimited => "rate_limited",
+        crate::provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
+        crate::provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
+        crate::provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
+        crate::provider::types::ProviderFailureKind::Transport => "transport",
+        crate::provider::types::ProviderFailureKind::Internal => "internal",
+        crate::provider::types::ProviderFailureKind::Unknown => "unknown",
+    }
 }
 
 async fn run_session_end_hooks(output: &super::types::RunOutput, turn: u64) {
@@ -730,7 +996,8 @@ pub(super) fn find_tool_definition<'a>(
 mod tests {
     use super::*;
     use crate::event::{EventPayload, EventStore};
-    use crate::query::types::CumulativeUsage;
+    use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
+    use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
@@ -739,6 +1006,7 @@ mod tests {
             default_tier: "balanced".to_string(),
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
+            logs: crate::config::LogsConfig::default(),
             plugin: crate::config::PluginConfig::default(),
             update: crate::config::UpdateConfig::default(),
         }
@@ -757,6 +1025,7 @@ mod tests {
             slot_event_rx,
             cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         }
     }
 
@@ -777,6 +1046,7 @@ mod tests {
             cumulative: CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: std::collections::VecDeque::new(),
+            resumed_permission_requests: std::collections::VecDeque::new(),
             config: std::sync::Arc::new(test_config()),
             prompts_dir: None,
             subagent_registry: None,
@@ -786,6 +1056,7 @@ mod tests {
             child_session_count: 0,
             tool_registry_override: None,
             pending_events: std::collections::VecDeque::new(),
+            pending_error: None,
             catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token,
             handoff_triggered: false,
@@ -800,7 +1071,254 @@ mod tests {
             tool_names: Vec::new(),
             tool_denied: 0,
             tool_errors: 0,
+            runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
         }
+    }
+
+    fn make_waiting_run(
+        events_path: std::path::PathBuf,
+        dir: &std::path::Path,
+        request_id: &str,
+        request_tool_call_id: &str,
+        queued_tool_call_id: &str,
+    ) -> Run {
+        let pending = make_test_pending(
+            events_path,
+            dir,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        let mut pending = pending;
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call: ProviderToolCall {
+                id: queued_tool_call_id.to_string(),
+                name: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+                index: 0,
+            },
+            display_summary: "print hi".to_string(),
+        });
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::WaitingForPermission(Box::new(PendingPermission {
+                pending,
+                request: PermissionRequest {
+                    id: request_id.to_string(),
+                    tool_call_id: request_tool_call_id.to_string(),
+                    tool: "run_command".to_string(),
+                    risk: "command".to_string(),
+                    summary: "print hi".to_string(),
+                    candidate: "printf hi".to_string(),
+                    source: "default_ask".to_string(),
+                },
+            })),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn test_resolved_runtime() -> ResolvedRuntime {
+        ResolvedRuntime {
+            config: ResolvedProvider {
+                kind: ProviderKind::OpenAiCompatible,
+                model: "test-model".to_string(),
+                base_url: "https://example.test".to_string(),
+                api_key: SecretString::new("test-key"),
+                max_context_tokens: 1000,
+                max_output_tokens: 1000,
+                think_level: crate::config::ThinkLevel::Off,
+                thinking: crate::config::ResolvedThinking::default(),
+            },
+            registry: vec![ToolDefinition {
+                name: "run_command".to_string(),
+                description: "test command".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                read_only: false,
+                max_result_chars: 8000,
+                risk: "command".to_string(),
+            }],
+        }
+    }
+
+    fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Run {
+        let mut pending = make_test_pending(
+            events_path,
+            dir,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.resolved = Some(test_resolved_runtime());
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call: ProviderToolCall {
+                id: "tool_queued".to_string(),
+                name: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+                index: 0,
+            },
+            display_summary: "print hi".to_string(),
+        });
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(pending)),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn assert_blocked_tool_result(events_path: &std::path::Path, summary: &str) {
+        let events = EventStore::replay(events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolResult {
+                tool_call_id,
+                status,
+                summary: stored_summary,
+                model_content,
+                structured,
+                ..
+            } if tool_call_id == "tool_queued"
+                && status == "blocked"
+                && stored_summary == summary
+                && model_content.is_empty()
+                && structured.is_none()
+        )));
+    }
+
+    fn write_blocking_pre_hook(pkg_dir: &std::path::Path, stderr_message: &str) {
+        std::fs::create_dir_all(pkg_dir.join("hooks")).unwrap();
+
+        #[cfg(windows)]
+        let (command, hook_path, hook_body) = (
+            "hooks/block.cmd",
+            pkg_dir.join("hooks").join("block.cmd"),
+            format!("@echo off\r\n<nul set /p ={stderr_message} 1>&2\r\nexit /b 2\r\n"),
+        );
+
+        #[cfg(not(windows))]
+        let (command, hook_path, hook_body) = (
+            "hooks/block.sh",
+            pkg_dir.join("hooks").join("block.sh"),
+            format!("#!/bin/sh\nprintf '{stderr_message}' >&2\nexit 2\n"),
+        );
+
+        std::fs::write(
+            pkg_dir.join("kuku.toml"),
+            format!(
+                "[package]\nname = \"test-hook\"\nversion = \"1.0.0\"\n\n[[hooks]]\nevent = \"tool.pre_execute\"\ncommand = \"{command}\"\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(&hook_path, hook_body).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, permissions).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_deny_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(
+            dir.path().join("policy.md"),
+            "# policy\n\n## allow\n\n## deny\n- run_command(printf hi)\n",
+        )
+        .unwrap();
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+
+        let event = run.next().await.unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "permission denied");
+    }
+
+    #[tokio::test]
+    async fn queued_pre_hook_block_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(
+            dir.path().join("policy.md"),
+            "# policy\n\n## allow\n- run_command(printf hi)\n\n## deny\n",
+        )
+        .unwrap();
+        let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
+        write_blocking_pre_hook(&pkg_dir, "blocked by hook");
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+        if let RunState::Pending(pending) = &mut run.state {
+            pending.plugin_registry = Some(std::sync::Arc::new(
+                crate::plugin::PluginRegistry::builder()
+                    .load_packages(dir.path(), dir.path())
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+            ));
+        }
+
+        let event = run.next().await.unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "blocked by hook");
+    }
+
+    #[tokio::test]
+    async fn decide_pre_hook_block_persists_blocked_tool_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(dir.path().join("policy.md"), "# policy\n").unwrap();
+        let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
+        write_blocking_pre_hook(&pkg_dir, "blocked after allow");
+        let mut run = make_queued_run(events_path.clone(), dir.path());
+        let waiting = match std::mem::replace(&mut run.state, RunState::Done(None)) {
+            RunState::Pending(mut pending) => {
+                pending.plugin_registry = Some(std::sync::Arc::new(
+                    crate::plugin::PluginRegistry::builder()
+                        .load_packages(dir.path(), dir.path())
+                        .unwrap()
+                        .build()
+                        .unwrap(),
+                ));
+                PendingPermission {
+                    request: PermissionRequest {
+                        id: "tool_queued".to_string(),
+                        tool_call_id: "tool_queued".to_string(),
+                        tool: "run_command".to_string(),
+                        risk: "command".to_string(),
+                        summary: "print hi".to_string(),
+                        candidate: "printf hi".to_string(),
+                        source: "default_ask".to_string(),
+                    },
+                    pending: *pending,
+                }
+            }
+            other => panic!("expected pending run, got {other:?}"),
+        };
+        run.state = RunState::WaitingForPermission(Box::new(waiting));
+
+        let event = run
+            .decide("tool_queued", PermissionChoice::Once, None)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+        );
+        assert_blocked_tool_result(&events_path, "blocked after allow");
     }
 
     #[tokio::test]
@@ -857,10 +1375,131 @@ mod tests {
             slot_event_rx,
             cancel_token: cancel_token.clone(),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         };
 
         cancel_token.notify_waiters();
         assert!(matches!(&run.state, RunState::Cancelled { .. }));
+    }
+
+    #[test]
+    fn runtime_log_emit_fans_out_before_best_effort_persistence_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pending = make_test_pending(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer =
+            crate::log::BufferedLogWriter::with_flush_every(dir.path().join("runtime.jsonl"), 1);
+        pending.runtime_log_writer.set_fail_after_bytes(Some(0));
+
+        let result = crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Info,
+            "runtime.test",
+            "test log",
+            None,
+        );
+
+        assert!(result.is_ok());
+        let Some(UiEvent::Log { record }) = pending.pending_events.pop_front() else {
+            panic!("expected host-visible log event before persistence failure");
+        };
+        assert_eq!(record.kind, "runtime.test");
+    }
+
+    #[tokio::test]
+    async fn runtime_log_persists_only_after_host_consumes_log_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("runtime.jsonl");
+        let mut pending = make_test_pending(
+            events_path,
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer = crate::log::BufferedLogWriter::with_flush_every(&log_path, 1);
+        crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Warn,
+            "runtime.warn",
+            "warn log",
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !log_path.exists(),
+            "disk write happened before host delivery"
+        );
+
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        let mut run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(pending)),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        };
+
+        let event = run.next().await.unwrap().expect("log event");
+        assert!(matches!(event, UiEvent::Log { .. }));
+        assert!(
+            !log_path.exists(),
+            "disk write happened before host consumed log"
+        );
+
+        let _ = run.next().await;
+        assert!(
+            log_path.exists(),
+            "disk write should happen after host consumption"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_flush_failure_does_not_block_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pending = make_test_pending(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer =
+            crate::log::BufferedLogWriter::with_flush_every(dir.path().join("runtime.jsonl"), 64);
+        pending.runtime_log_writer.set_fail_after_bytes(Some(0));
+        crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Info,
+            "runtime.test",
+            "test log",
+            None,
+        )
+        .unwrap();
+
+        let state = StreamingChunkState {
+            pending,
+            request_id: "req_1".to_string(),
+            stream: Box::pin(tokio_stream::empty()),
+            accumulated_text: "complete".to_string(),
+            accumulated_thinking: String::new(),
+            stop_reason: Some("end_turn".to_string()),
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+            lead_events: Vec::new(),
+            handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
+        };
+
+        let step = crate::query::step::finish_streaming(state).await;
+
+        assert!(matches!(step, Ok(PendingStep::Done(output, _, 1)) if output.text == "complete"));
     }
 
     #[tokio::test]
@@ -920,6 +1559,7 @@ mod tests {
             slot_event_rx,
             cancel_token: cancel_token.clone(),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         };
 
         let result = Run::poll_stream_chunk(&cancel_token, &mut streaming)
@@ -940,6 +1580,166 @@ mod tests {
             result.structured,
             Some(serde_json::json!({"kind": "cancelled"}))
         );
+    }
+
+    #[test]
+    fn cancel_pending_permission_rejects_mismatched_queued_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut run = make_waiting_run(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            "req_cancel",
+            "tool_request",
+            "tool_queued",
+        );
+
+        let error = run.cancel_pending_permission("req_cancel").unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidEventStream(message) if message.contains("tool_request") && message.contains("tool_queued"))
+        );
+        assert!(matches!(
+            &run.state,
+            RunState::WaitingForPermission(waiting)
+                if waiting.request.tool_call_id == "tool_request"
+                    && waiting.pending.queued_tool_calls.front().unwrap().tool_call.id == "tool_queued"
+        ));
+    }
+
+    #[test]
+    fn cancel_pending_permission_restores_state_when_persistence_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events_dir");
+        std::fs::create_dir(&events_path).unwrap();
+        let mut run = make_waiting_run(
+            events_path,
+            dir.path(),
+            "req_cancel",
+            "tool_cancel",
+            "tool_cancel",
+        );
+
+        let error = run.cancel_pending_permission("req_cancel").unwrap_err();
+
+        assert!(matches!(error, Error::Io(_)));
+        assert!(matches!(
+            &run.state,
+            RunState::WaitingForPermission(waiting)
+                if waiting.request.id == "req_cancel"
+                    && waiting.pending.queued_tool_calls.front().unwrap().tool_call.id == "tool_cancel"
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_waiting_permission_writes_cancelled_result_without_deny() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let mut run = make_waiting_run(
+            events_path.clone(),
+            dir.path(),
+            "req_cancel",
+            "tool_cancel",
+            "tool_cancel",
+        );
+
+        run.cancel();
+        let event = run.next().await.unwrap();
+
+        assert!(matches!(event, Some(UiEvent::Cancelled { turn: 1 })));
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::ToolResult { ref tool_call_id, ref status, ref structured, .. }
+                if tool_call_id == "tool_cancel"
+                    && status == "cancelled"
+                    && structured == &Some(serde_json::json!({"kind": "cancelled"}))
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "tool_cancel"
+        )));
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&events_path).unwrap();
+        store
+            .append(EventPayload::TurnStart {
+                turn: 1,
+                ts: "2026-05-20T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        store
+            .append(EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-05-20T00:00:01Z".to_string(),
+                tool_call_id: "tool_cancelled".to_string(),
+                request_id: "req_1".to_string(),
+                index: 0,
+                tool: "run_command".to_string(),
+                args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            })
+            .unwrap();
+
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            "tool_cancelled".to_string(),
+            ExecSlot {
+                tool_call_id: "tool_cancelled".to_string(),
+                kind: ToolKind::Command { pid: None },
+                ordered_with_simple_tools: false,
+                label: "print hi".to_string(),
+                cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+                child_permissions: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+            },
+        );
+        let mut run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Cancelled {
+                events_path: events_path.clone(),
+                turn: 1,
+            },
+            slots,
+            slot_event_tx: slot_event_tx.clone(),
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        };
+
+        slot_event_tx
+            .send((
+                "tool_cancelled".to_string(),
+                SlotEvent::Done {
+                    status: "ok".to_string(),
+                    summary: "finished after cancellation".to_string(),
+                    model_content: String::new(),
+                    result: Some(serde_json::json!({"kind": "command_result"})),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let event = run.next().await.unwrap();
+
+        assert!(matches!(
+            event,
+            Some(UiEvent::ToolEnd { ref id, ref status, .. })
+                if id == "tool_cancelled" && status == "ok"
+        ));
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolResult { tool_call_id, status, summary, .. }
+                if tool_call_id == "tool_cancelled"
+                    && status == "ok"
+                    && summary == "finished after cancellation"
+        )));
     }
 
     #[tokio::test]
@@ -977,9 +1777,7 @@ mod tests {
                     request_id: "req_1".to_string(),
                     text: "partial".to_string(),
                     thinking: None,
-                    stop_reason: "cancelled".to_string(),
-                    tool_call_count: None,
-                    usage: serde_json::json!({}),
+                    input_tokens_total: None,
                 })
                 .unwrap();
             store

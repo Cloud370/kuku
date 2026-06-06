@@ -1,6 +1,59 @@
 mod common;
 
 use common::mock_provider;
+use std::fmt::Debug;
+use tokio_stream::StreamExt;
+
+async fn next_json_line<S, B, E>(stream: &mut S, buf: &mut Vec<u8>) -> serde_json::Value
+where
+    S: tokio_stream::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+    E: Debug,
+{
+    loop {
+        if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8(buf.drain(..=pos).collect()).unwrap();
+            return serde_json::from_str(line.trim()).unwrap();
+        }
+        let chunk = stream.next().await.unwrap().unwrap();
+        buf.extend_from_slice(chunk.as_ref());
+    }
+}
+
+async fn next_event_of_type<S, B, E>(
+    stream: &mut S,
+    buf: &mut Vec<u8>,
+    event_type: &str,
+) -> serde_json::Value
+where
+    S: tokio_stream::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+    E: Debug,
+{
+    loop {
+        let event = next_json_line(stream, buf).await;
+        if event["type"] == event_type {
+            return event;
+        }
+    }
+}
+
+async fn next_terminal_event<S, B, E>(stream: &mut S, buf: &mut Vec<u8>) -> serde_json::Value
+where
+    S: tokio_stream::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+    E: Debug,
+{
+    loop {
+        let event = next_json_line(stream, buf).await;
+        if matches!(
+            event["type"].as_str(),
+            Some("cancelled") | Some("done") | Some("error")
+        ) {
+            return event;
+        }
+    }
+}
 
 async fn wait_for_server(base_url: &str) {
     let client = wreq::Client::new();
@@ -71,6 +124,13 @@ async fn full_run_lifecycle() {
 
     let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
     assert_eq!(last["type"], "done");
+
+    let log = lines
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|value| value["type"] == "log" && value["record"]["kind"] == "runtime.model_request")
+        .expect("expected runtime log record in server stream");
+    assert_eq!(log["record"]["scope"], "runtime");
 }
 
 #[tokio::test]
@@ -115,4 +175,88 @@ async fn invalid_workspace_returns_error() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], false);
     assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_while_waiting_for_permission_stops_run() {
+    let mock = mock_provider::start_mock_provider().await;
+    let final_mock = mock.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("permission gate denied this tool call");
+        then.status(200)
+            .header("request-id", "req_after_cancel")
+            .header("connection", "close")
+            .body(mock_provider::anthropic_sse_response(serde_json::json!({
+                "id": "msg_after_cancel",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Should not continue after cancel."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    mock.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("cancel permission wait");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .header("connection", "close")
+            .body(mock_provider::anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cancel_wait", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print cancelled marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
+
+    let client = wreq::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "cancel permission wait",
+            "workspace": server.workspace.path().to_str().unwrap(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+
+    let mut stream = resp.bytes_stream();
+    let mut stream_buf = Vec::new();
+    let run_start = next_event_of_type(&mut stream, &mut stream_buf, "run_start").await;
+    let _permission = next_event_of_type(&mut stream, &mut stream_buf, "permission").await;
+
+    let cancel_resp = client
+        .delete(format!(
+            "{}/runs/{}",
+            server.base_url,
+            run_start["run_id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(cancel_resp.status(), 200);
+    let body: serde_json::Value = cancel_resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+
+    let terminal = next_terminal_event(&mut stream, &mut stream_buf).await;
+    assert_eq!(terminal["type"], "cancelled");
+    final_mock.assert_hits(0);
 }

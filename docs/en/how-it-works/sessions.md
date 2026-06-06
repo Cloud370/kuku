@@ -14,22 +14,44 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 `- subs/
 ```
 
-`events.jsonl` is the durable history. Child subagent sessions live under `subs/`.
+`events.jsonl` is the durable session fact log. Child subagent sessions live under `subs/`.
 
 ## Event log
 
-Each line in `events.jsonl` is one event. Common event types include:
+Each line in `events.jsonl` is one session fact. Common event types include:
 
 - `session.meta`
+- `context.prelude`
+- `context.sources`
 - `turn.start`
 - `user.input`
-- `model.request`
 - `model.response`
 - `tool.call`
+- `permission.requested`
+- `permission.allow`
+- `permission.deny`
 - `tool.result`
+- `handoff`
 - `turn.end`
 
+The full event set is documented in [Events](../reference/events.md).
+
 Readers trust file order. Trailing partial lines are ignored during recovery.
+
+Observability records are written separately under `$KUKU_HOME/logs/`; pruning those logs never changes `events.jsonl`.
+
+## Observability logs
+
+`$KUKU_HOME/logs/` is the observability tree:
+
+```text
+$KUKU_HOME/logs/
+|- session/<session-id>.jsonl
+|- runtime/<yyyy-mm-dd>.jsonl
+`- host/cli|server|webui/<yyyy-mm-dd>.jsonl
+```
+
+Logs are for host and runtime visibility. Retention and defaults are configured under [`[logs]`](../reference/config.md#logs).
 
 ## Lifecycle
 
@@ -40,6 +62,8 @@ Starting a run without a session id creates a new session directory and writes `
 ### Continuing a session
 
 Starting a run with an existing session id appends a new turn to that session. kuku rebuilds prior context from the event log.
+
+If a previous run stopped after `permission.requested` and before `permission.allow` or `permission.deny`, restart can re-present that unresolved permission request from `events.jsonl`. This recovery uses the session fact log, not observability logs.
 
 ### Status
 
@@ -69,9 +93,9 @@ Three scopes exist:
 
 | Scope | Effect |
 |-------|--------|
-| `ConversationOnly` | Removes prior turns from future context rebuilds. |
-| `FilesOnly` | Reverts workspace files to an earlier turn. |
-| `Both` | Applies both behaviors. |
+| `conversation_only` | Removes prior turns from future context rebuilds. |
+| `files_only` | Reverts workspace files to an earlier turn. |
+| `both` | Applies both behaviors. |
 
 File rollback uses snapshots already captured in `tool.result` data and stores pre-revert backups in `pre-revert-<id>/`.
 

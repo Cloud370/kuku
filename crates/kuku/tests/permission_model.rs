@@ -93,17 +93,17 @@ fn deny_rule_wins_over_allow_paths() {
 }
 
 #[test]
-fn session_allow_is_recovered_from_prior_permission_decision_events() {
+fn session_allow_is_recovered_from_prior_permission_allow_events() {
     let events = vec![kuku::event::StoredEvent {
         id: 7,
-        payload: kuku::event::EventPayload::PermissionDecision {
+        payload: kuku::event::EventPayload::PermissionAllow {
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
             tool_call_id: "toolu_1".to_string(),
-            decision: "allow".to_string(),
+            tool: "run_command".to_string(),
             scope: "session".to_string(),
+            matcher: "run_command(cargo test *)".to_string(),
             source: "host".to_string(),
-            rule: "run_command(cargo test *)".to_string(),
         },
     }];
 

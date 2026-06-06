@@ -11,7 +11,7 @@
 |---|---|
 | `kuku run <prompt...>` | 执行一个任务 |
 | `kuku show <session-id>` | 显示某个 Session 的最终输出 |
-| `kuku events <session-id>` | 显示已持久化的事件 |
+| `kuku events <session-id>` | 显示已持久化的 Session 事实 |
 | `kuku list` | 列出 Session |
 | `kuku delete <session-id>` | 删除一个 Session |
 | `kuku config ...` | 显示、校验或修改配置 |
@@ -40,6 +40,7 @@ Flags:
 | `--stream-json` | 输出实时 JSON 行 |
 | `--show-thinking` | 显示 thinking 内容 |
 | `--raw` | 纯文本输出 |
+| `--verbose` | 显示详细运行指标（usage、tools、response） |
 | `--config <path>` | 使用指定配置文件 |
 | `--prompts-dir <dir>` | 覆盖内嵌 Prompt 资源 |
 | `--no-agents` | 禁用 `agent` Tool |
@@ -61,6 +62,8 @@ kuku events [-v|-vv] <session-id>
 
 - `-v` 显示元数据
 - `-vv` 显示完整上下文
+
+此命令读取 Session 的 `events.jsonl` 事实日志。可观测性日志单独位于 `$KUKU_HOME/logs/`；见 [Sessions](../how-it-works/sessions.md#observability-logs)。
 
 ## `kuku list`
 
@@ -127,5 +130,7 @@ kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-conc
 
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
+
+`kuku web` 需要二进制包含内嵌 Web UI 资源。发布流程和发布产物会包含这些资源。对于本地源码构建，请先准备 `apps/web/dist`，再使用 `--features embedded-web-assets` 构建 `kuku-app`。
 
 请求和流格式见 [Server API](server-api.md)。

@@ -1,5 +1,6 @@
 use std::io::ErrorKind;
 
+use kuku::context::FileSource;
 use kuku::error::Error;
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 
@@ -168,34 +169,44 @@ fn append_writes_newline_terminated_jsonl() {
 }
 
 #[test]
-fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
+fn fact_only_events_roundtrip_without_observability_fields() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
 
     store
-        .append(EventPayload::ModelRequest {
+        .append(EventPayload::ContextPrelude {
+            ts: "2026-05-13T00:00:00Z".to_string(),
+            messages: vec![kuku::event::types::ContextMessage {
+                role: "user".to_string(),
+                content: "<kuku_execution_context>workspace: /tmp</kuku_execution_context>"
+                    .to_string(),
+            }],
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ContextSources {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
             request_id: "req_1".to_string(),
-            tier: "balanced".to_string(),
-            think: "auto".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-            request_params: serde_json::json!({"temperature": 0.2}),
-            base_url: Some("https://api.anthropic.com".to_string()),
-            history: Some(kuku::event::types::RequestHistory {
-                first: Some(1),
-                last: Some(9),
-                message_count: Some(3),
-            }),
-            tools: Some(kuku::event::types::RequestTools {
-                hash: Some("sha256:tools".to_string()),
-                count: Some(6),
-                names: Some(vec!["find_files".to_string()]),
-            }),
-            context: None,
-            provenance: None,
+            project_instruction_sources: vec![FileSource {
+                path: "/workspace/AGENTS.md".to_string(),
+                hash: "sha256:agents".to_string(),
+            }],
+            memory_sources: vec![FileSource {
+                path: "/home/user/.kuku/memory.md".to_string(),
+                hash: "sha256:memory".to_string(),
+            }],
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ModelResponse {
+            turn: 1,
+            ts: "2026-05-13T00:00:00Z".to_string(),
+            request_id: "req_1".to_string(),
+            text: "answer".to_string(),
+            thinking: Some("reasoning".to_string()),
+            input_tokens_total: Some(123),
         })
         .unwrap();
     store
@@ -205,50 +216,55 @@ fn model_request_and_model_error_accept_optional_provider_provenance_fields() {
             request_id: "req_1".to_string(),
             kind: "RateLimited".to_string(),
             message: "HTTP 429: rate limited".to_string(),
-            status: Some(429),
-            retryable: Some(true),
-            provider: Some("anthropic".to_string()),
-            model: Some("claude-sonnet-4-6".to_string()),
         })
         .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
-    assert_eq!(replayed.len(), 2);
+    assert_eq!(replayed.len(), 4);
 
     match &replayed[0].payload {
-        EventPayload::ModelRequest {
-            base_url,
-            history,
-            tools,
-            context,
-            ..
-        } => {
-            assert_eq!(base_url.as_deref(), Some("https://api.anthropic.com"));
-            let h = history.as_ref().unwrap();
-            assert_eq!(h.message_count, Some(3));
-            assert_eq!(h.first, Some(1));
-            assert_eq!(h.last, Some(9));
-            let t = tools.as_ref().unwrap();
-            assert_eq!(t.hash.as_deref(), Some("sha256:tools"));
-            assert_eq!(t.count, Some(6));
-            assert_eq!(t.names.as_ref().unwrap()[0], "find_files");
-            assert!(context.is_none());
+        EventPayload::ContextPrelude { messages, .. } => {
+            assert_eq!(messages.len(), 1);
+            assert!(messages[0].content.contains("<kuku_execution_context>"));
         }
-        other => panic!("expected model.request, got {other:?}"),
+        other => panic!("expected context.prelude, got {other:?}"),
     }
 
     match &replayed[1].payload {
-        EventPayload::ModelError {
-            status,
-            retryable,
-            provider,
-            model,
+        EventPayload::ContextSources {
+            request_id,
+            project_instruction_sources,
+            memory_sources,
             ..
         } => {
-            assert_eq!(*status, Some(429));
-            assert_eq!(*retryable, Some(true));
-            assert_eq!(provider.as_deref(), Some("anthropic"));
-            assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
+            assert_eq!(request_id, "req_1");
+            assert_eq!(project_instruction_sources[0].path, "/workspace/AGENTS.md");
+            assert_eq!(memory_sources[0].hash, "sha256:memory");
+        }
+        other => panic!("expected context.sources, got {other:?}"),
+    }
+
+    match &replayed[2].payload {
+        EventPayload::ModelError { kind, message, .. } => {
+            panic!("expected model.response before model.error, got model.error kind={kind} message={message}");
+        }
+        EventPayload::ModelResponse {
+            text,
+            thinking,
+            input_tokens_total,
+            ..
+        } => {
+            assert_eq!(text, "answer");
+            assert_eq!(thinking.as_deref(), Some("reasoning"));
+            assert_eq!(*input_tokens_total, Some(123));
+        }
+        other => panic!("expected model.response, got {other:?}"),
+    }
+
+    match &replayed[3].payload {
+        EventPayload::ModelError { kind, message, .. } => {
+            assert_eq!(kind, "RateLimited");
+            assert_eq!(message, "HTTP 429: rate limited");
         }
         other => panic!("expected model.error, got {other:?}"),
     }
@@ -271,126 +287,63 @@ fn open_returns_io_error_for_missing_parent_file_path() {
 }
 
 #[test]
-fn model_request_context_survives_roundtrip() {
-    use kuku::event::types::{ContextMessage, RequestContext, RequestHistory, RequestTools};
-
-    let event = StoredEvent {
-        id: 5,
-        payload: EventPayload::ModelRequest {
-            turn: 1,
-            ts: "2026-05-18T00:00:00Z".to_string(),
-            request_id: "req_1".to_string(),
-            tier: "balanced".to_string(),
-            think: "medium".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-            request_params: serde_json::json!({}),
-            base_url: None,
-            history: Some(RequestHistory {
-                first: Some(1),
-                last: Some(4),
-                message_count: Some(3),
-            }),
-            tools: Some(RequestTools {
-                hash: Some("sha256:abc".to_string()),
-                count: Some(8),
-                names: Some(vec!["find_files".to_string()]),
-            }),
-            context: Some(RequestContext {
-                system: "<kuku_identity>test identity</kuku_identity>".to_string(),
-                prelude: Some(vec![
-                    ContextMessage {
-                        role: "user".to_string(),
-                        content:
-                            "<kuku_execution_context>workspace: /test</kuku_execution_context>"
-                                .to_string(),
-                    },
-                    ContextMessage {
-                        role: "user".to_string(),
-                        content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
-                    },
-                ]),
-                notices: vec![],
-            }),
-            provenance: None,
-        },
-    };
-
-    let json = serde_json::to_string(&event).unwrap();
-    let roundtripped: StoredEvent = serde_json::from_str(&json).unwrap();
-
-    match &roundtripped.payload {
-        EventPayload::ModelRequest { context, .. } => {
-            let ctx = context.as_ref().unwrap();
-            assert!(ctx.system.contains("<kuku_identity>"));
-            let prelude = ctx.prelude.as_ref().unwrap();
-            assert_eq!(prelude.len(), 2);
-            assert!(prelude[0].content.contains("<kuku_execution_context>"));
-            assert!(prelude[1].content.contains("<kuku_tool_guidance>"));
-            assert!(ctx.notices.is_empty());
-        }
-        other => panic!("expected ModelRequest, got {other:?}"),
-    }
-}
-
-#[test]
-fn model_request_context_with_notices_survives_roundtrip() {
-    use kuku::event::types::{ContextMessage, RequestContext, RequestHistory, RequestTools};
+fn fact_event_json_omits_removed_observability_fields() {
+    use kuku::event::types::ContextMessage;
 
     let event = StoredEvent {
         id: 10,
-        payload: EventPayload::ModelRequest {
+        payload: EventPayload::ContextPrelude {
+            ts: "2026-05-18T00:01:00Z".to_string(),
+            messages: vec![ContextMessage {
+                role: "user".to_string(),
+                content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
+            }],
+        },
+    };
+    let response = StoredEvent {
+        id: 11,
+        payload: EventPayload::ModelResponse {
             turn: 2,
             ts: "2026-05-18T00:01:00Z".to_string(),
             request_id: "req_2".to_string(),
-            tier: "balanced".to_string(),
-            think: "medium".to_string(),
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-            request_params: serde_json::json!({}),
-            base_url: None,
-            history: Some(RequestHistory {
-                first: Some(1),
-                last: Some(9),
-                message_count: Some(5),
-            }),
-            tools: Some(RequestTools {
-                hash: Some("sha256:abc".to_string()),
-                count: Some(8),
-                names: Some(vec!["find_files".to_string()]),
-            }),
-            context: Some(RequestContext {
-                system: "<kuku_identity>test identity</kuku_identity>".to_string(),
-                prelude: Some(vec![
-                    ContextMessage {
-                        role: "user".to_string(),
-                        content: "<kuku_execution_context>workspace: /test</kuku_execution_context>".to_string(),
-                    },
-                    ContextMessage {
-                        role: "user".to_string(),
-                        content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
-                    },
-                ]),
-                notices: vec![
-                    ContextMessage {
-                        role: "user".to_string(),
-                        content: "<kuku_system_notice>Context drift detected: AGENTS.md changed</kuku_system_notice>".to_string(),
-                    },
-                ],
-            }),
-            provenance: None,
+            text: "hi".to_string(),
+            thinking: None,
+            input_tokens_total: Some(7),
         },
     };
 
-    let json = serde_json::to_string(&event).unwrap();
-    let roundtripped: StoredEvent = serde_json::from_str(&json).unwrap();
+    let prelude_json = serde_json::to_value(&event).unwrap();
+    let response_json = serde_json::to_value(&response).unwrap();
 
-    match &roundtripped.payload {
-        EventPayload::ModelRequest { context, .. } => {
-            let ctx = context.as_ref().unwrap();
-            assert_eq!(ctx.notices.len(), 1);
-            assert!(ctx.notices[0].content.contains("Context drift"));
-        }
-        other => panic!("expected ModelRequest, got {other:?}"),
-    }
+    assert!(prelude_json.get("context").is_none());
+    assert!(prelude_json.get("provenance").is_none());
+    assert!(response_json.get("usage").is_none());
+    assert!(response_json.get("stop_reason").is_none());
+    assert!(response_json.get("tool_call_count").is_none());
+    assert_eq!(response_json["input_tokens_total"], 7);
+}
+
+#[test]
+fn permission_requested_roundtrips_as_fact_event() {
+    let event = StoredEvent {
+        id: 12,
+        payload: EventPayload::PermissionRequested {
+            turn: 2,
+            ts: "2026-05-18T00:02:00Z".to_string(),
+            tool_call_id: "toolu_cmd".to_string(),
+            tool: "run_command".to_string(),
+            risk: "write".to_string(),
+            summary: "run tests".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        },
+    };
+
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "permission.requested");
+    assert_eq!(json["candidate"], "cargo test");
+    assert_eq!(event.payload.type_name(), "permission.requested");
+
+    let back: StoredEvent = serde_json::from_value(json).unwrap();
+    assert_eq!(back, event);
 }

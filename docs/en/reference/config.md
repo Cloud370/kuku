@@ -23,6 +23,7 @@ $KUKU_HOME/config.toml
 | `provider.<name>` | table | Provider definition |
 | `discovery` | table | Agent and skill discovery settings |
 | `handoff` | table | Long-session handoff settings |
+| `logs` | table | Observability log retention settings |
 | `plugin` | table | Package hook execution toggle |
 | `update` | table | Update source and channel |
 
@@ -69,7 +70,16 @@ Any string config value whose first character is `$` is treated as an environmen
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-When the estimated context usage crosses `threshold`, kuku writes a handoff summary and keeps only the most recent `keep_turns` in active history.
+When estimated context usage crosses `threshold`, kuku injects a handoff instruction. The summary is persisted only if the model returns a handoff document; future context then keeps only the most recent `keep_turns` turns before that boundary.
+
+## `logs`
+
+| Field | Type | Default |
+|---|---|---|
+| `max_age_days` | integer | `14` |
+| `max_total_size_mb` | integer | `512` |
+
+Observability logs are on by default and have no disable switch. kuku prunes logs by age first, then by total size budget. Pruning never touches session `events.jsonl` files.
 
 ## `plugin`
 
@@ -106,4 +116,4 @@ custom = "https://example.com/latest.json"
 
 ## Default Config Example
 
-The canonical starter file lives in `crates/kuku/assets/default-config.toml`.
+The starter config file lives in `crates/kuku/assets/default-config.toml`.

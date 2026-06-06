@@ -4,7 +4,5 @@ pub(crate) mod registry;
 pub(crate) mod result;
 
 pub(crate) use dispatch::dispatch;
-pub(crate) use registry::{
-    builtin_registry, registry_hash, to_tool_schemas, tool_names, ToolDefinition,
-};
+pub(crate) use registry::{builtin_registry, to_tool_schemas, ToolDefinition};
 pub(crate) use result::ToolResultEnvelope;

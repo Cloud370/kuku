@@ -11,7 +11,7 @@
 |---|---|
 | `kuku run <prompt...>` | Execute a task |
 | `kuku show <session-id>` | Show final output from a session |
-| `kuku events <session-id>` | Show persisted events |
+| `kuku events <session-id>` | Show persisted session facts |
 | `kuku list` | List sessions |
 | `kuku delete <session-id>` | Delete a session |
 | `kuku config ...` | Show, validate, or change config |
@@ -62,6 +62,8 @@ kuku events [-v|-vv] <session-id>
 
 - `-v` shows metadata
 - `-vv` shows full context
+
+This command reads the session `events.jsonl` fact log. Observability logs live separately under `$KUKU_HOME/logs/`; see [Sessions](../how-it-works/sessions.md#observability-logs).
 
 ## `kuku list`
 

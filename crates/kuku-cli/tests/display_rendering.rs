@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use kuku_cli::display::render_event_brief;
 use kuku_cli::display::{Display, OutputLine};
 
 #[test]
@@ -116,11 +117,47 @@ fn json_tool_call_serializes() {
 }
 
 #[test]
+fn json_permission_ask_serializes_existing_schema() {
+    let line = OutputLine::permission_ask(
+        "perm_1".into(),
+        "run_command".into(),
+        "execute".into(),
+        "cargo test".into(),
+    );
+    let json: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
+
+    assert_eq!(json["type"], "permission_ask");
+    assert_eq!(json["request_id"], "perm_1");
+    assert_eq!(json["tool"], "run_command");
+    assert_eq!(json["risk"], "execute");
+    assert_eq!(json["summary"], "cargo test");
+}
+
+#[test]
 fn json_error_serializes() {
     let line = OutputLine::error("provider".into(), "auth".into(), "invalid key".into(), None);
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"error\""));
     assert!(json.contains("\"source\":\"provider\""));
+}
+
+#[test]
+fn json_log_serializes_record_for_host_streams() {
+    let mut record = kuku::log::LogRecord::new(
+        "2026-06-06T00:00:00Z",
+        kuku::log::LogLevel::Info,
+        kuku::log::LogScope::Runtime,
+    );
+    record.kind = "runtime.model_request".into();
+    record.message = "requesting model".into();
+    record.session_id = Some("s_log".into());
+
+    let line = OutputLine::log(record).to_json_line();
+    let json: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+    assert_eq!(json["type"], "log");
+    assert_eq!(json["record"]["kind"], "runtime.model_request");
+    assert_eq!(json["record"]["session_id"], "s_log");
 }
 
 #[test]
@@ -156,4 +193,27 @@ fn all_json_types_have_type_field() {
     for line in &lines {
         assert!(line.contains("\"type\":\""), "missing type field: {line}");
     }
+}
+
+#[test]
+fn event_brief_renders_permission_requested() {
+    let event = kuku::event::StoredEvent {
+        id: 5,
+        payload: kuku::event::EventPayload::PermissionRequested {
+            turn: 1,
+            ts: "t".to_string(),
+            tool_call_id: "toolu_cmd".to_string(),
+            tool: "run_command".to_string(),
+            risk: "execute".to_string(),
+            summary: "run tests".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        },
+    };
+
+    let line = render_event_brief(&event, 1);
+
+    assert!(line.contains("permission.requested"));
+    assert!(line.contains("request  run_command  execute  cargo test"));
+    assert!(line.contains("source=default_ask"));
 }

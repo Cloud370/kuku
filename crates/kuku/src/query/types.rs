@@ -7,6 +7,7 @@ use futures_core::Stream;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
@@ -26,6 +27,7 @@ pub struct Query {
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
+    pub(crate) captured_kuku_home: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
@@ -57,6 +59,8 @@ pub struct PermissionRequest {
     pub tool: String,
     pub risk: String,
     pub summary: String,
+    pub candidate: String,
+    pub source: String,
 }
 
 /// The host's response to a permission request.
@@ -166,6 +170,9 @@ pub enum UiEvent {
         model: String,
         provider: String,
     },
+    Log {
+        record: LogRecord,
+    },
     TurnStart {
         turn: u64,
     },
@@ -189,6 +196,7 @@ pub struct Run {
     pub(crate) slot_event_rx: tokio::sync::mpsc::Receiver<(String, SlotEvent)>,
     pub(crate) cancel_token: Arc<tokio::sync::Notify>,
     pub(crate) lock_path: PathBuf,
+    pub(crate) deferred_runtime_logs: VecDeque<LogRecord>,
 }
 
 pub(crate) struct ExecSlot {
@@ -272,6 +280,7 @@ pub(super) struct PendingRun {
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
+    pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
@@ -282,6 +291,7 @@ pub(super) struct PendingRun {
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
+    pub(super) pending_error: Option<Error>,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,
@@ -295,9 +305,14 @@ pub(super) struct PendingRun {
     pub(super) tool_denied: u64,
     pub(super) tool_errors: u64,
     pub(super) thinking_duration_ms: u64,
+    pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
 }
 
 impl PendingRun {
+    pub(super) fn flush_runtime_logs(&mut self) {
+        let _ = self.runtime_log_writer.flush();
+    }
+
     pub(super) fn record_tool_call(&mut self, name: &str) {
         self.tool_calls += 1;
         if !self.tool_names.iter().any(|n| n == name) {
@@ -314,15 +329,22 @@ impl PendingRun {
         self.record_tool_call(name);
         self.tool_errors += 1;
     }
+
+    pub(super) fn take_resumed_permission_request(
+        &mut self,
+        tool_call_id: &str,
+    ) -> Option<PermissionRequest> {
+        self.resumed_permission_requests
+            .iter()
+            .position(|request| request.tool_call_id == tool_call_id)
+            .and_then(|index| self.resumed_permission_requests.remove(index))
+    }
 }
 
 #[derive(Debug)]
 pub(super) struct ResolvedRuntime {
     pub(super) config: ResolvedProvider,
     pub(super) registry: Vec<ToolDefinition>,
-    pub(super) registry_hash: String,
-    pub(super) tool_names: Vec<String>,
-    pub(super) tool_count: usize,
 }
 
 #[derive(Debug)]
@@ -353,6 +375,7 @@ pub(super) enum PendingStep {
         Option<crate::provider::types::ProviderUsage>,
         u64,
     ),
+    Failed(Error),
 }
 
 pub(super) struct StreamingChunkState {
@@ -427,6 +450,7 @@ impl Query {
             max_output_tokens: None,
             temperature: None,
             workspace_path: None,
+            captured_kuku_home: None,
             prompts_dir: None,
             disable_agents: false,
             disable_skills: false,

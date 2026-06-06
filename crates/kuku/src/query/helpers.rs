@@ -4,7 +4,6 @@ use time::OffsetDateTime;
 use crate::context::{InstructionSource, MemorySource};
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
-use crate::provider;
 use crate::provider::types::ProviderKind;
 use crate::session::{global_memory_path, project_memory_path};
 
@@ -123,13 +122,6 @@ pub(super) fn display_summary(
     }
 }
 
-pub(super) fn permission_decision(choice: PermissionChoice) -> &'static str {
-    match choice {
-        PermissionChoice::Deny => "deny",
-        PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => "allow",
-    }
-}
-
 pub(super) fn permission_scope(choice: PermissionChoice) -> &'static str {
     match choice {
         PermissionChoice::Once | PermissionChoice::Deny => "once",
@@ -173,13 +165,15 @@ pub(super) fn append_permission_request(
 ) -> Result<()> {
     append_event(
         events_path,
-        EventPayload::PermissionRequest {
+        EventPayload::PermissionRequested {
             turn,
             ts: now_timestamp()?,
             tool_call_id: request.tool_call_id.clone(),
             tool: request.tool.clone(),
             risk: request.risk.clone(),
             summary: request.summary.clone(),
+            candidate: request.candidate.clone(),
+            source: request.source.clone(),
         },
     )
 }
@@ -192,18 +186,28 @@ pub(super) fn append_permission_decision(
     source: &str,
     rule: &str,
 ) -> Result<()> {
-    append_event(
-        events_path,
-        EventPayload::PermissionDecision {
+    let payload = match choice {
+        PermissionChoice::Deny => EventPayload::PermissionDeny {
             turn,
             ts: now_timestamp()?,
             tool_call_id: tool_call_id.to_string(),
-            decision: permission_decision(choice).to_string(),
-            scope: permission_scope(choice).to_string(),
+            tool: rule.split('(').next().unwrap_or("").trim().to_string(),
+            reason: rule.to_string(),
             source: source.to_string(),
-            rule: rule.to_string(),
         },
-    )
+        PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => {
+            EventPayload::PermissionAllow {
+                turn,
+                ts: now_timestamp()?,
+                tool_call_id: tool_call_id.to_string(),
+                tool: rule.split('(').next().unwrap_or("").trim().to_string(),
+                scope: permission_scope(choice).to_string(),
+                matcher: rule.to_string(),
+                source: source.to_string(),
+            }
+        }
+    };
+    append_event(events_path, payload)
 }
 
 pub(super) fn append_model_error(
@@ -212,8 +216,6 @@ pub(super) fn append_model_error(
     request_id: String,
     kind: &str,
     message: &str,
-    provider: Option<String>,
-    model: Option<String>,
 ) -> Result<()> {
     append_event(
         events_path,
@@ -223,10 +225,6 @@ pub(super) fn append_model_error(
             request_id,
             kind: kind.to_string(),
             message: message.to_string(),
-            status: None,
-            retryable: Some(false),
-            provider,
-            model,
         },
     )
 }
@@ -268,33 +266,12 @@ pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
         + 1
 }
 
-pub(super) fn provider_failure_kind(kind: &provider::types::ProviderFailureKind) -> &'static str {
-    match kind {
-        provider::types::ProviderFailureKind::Authentication => "authentication",
-        provider::types::ProviderFailureKind::RateLimited => "rate_limited",
-        provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
-        provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
-        provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
-        provider::types::ProviderFailureKind::Transport => "transport",
-        provider::types::ProviderFailureKind::Internal => "internal",
-        provider::types::ProviderFailureKind::Unknown => "unknown",
-    }
-}
-
 pub(super) fn platform_label() -> &'static str {
     std::env::consts::OS
 }
 
 pub(super) fn current_date_string() -> String {
     OffsetDateTime::now_utc().date().to_string()
-}
-
-pub(super) fn provider_format_name(kind: &ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::OpenAiCompatible => "openai-compatible",
-        ProviderKind::OpenAiResponses => "openai-responses",
-    }
 }
 
 pub(super) fn now_timestamp() -> Result<String> {
@@ -347,12 +324,16 @@ pub(super) fn last_input_tokens(
     kind: &ProviderKind,
     events: &[crate::event::StoredEvent],
 ) -> Option<u32> {
+    let _ = kind;
     events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ModelResponse { usage, .. } => extract_input_tokens(kind, usage),
+        EventPayload::ModelResponse {
+            input_tokens_total, ..
+        } => *input_tokens_total,
         _ => None,
     })
 }
 
+#[cfg(test)]
 pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Value) -> Option<u32> {
     let total = match kind {
         ProviderKind::Anthropic | ProviderKind::OpenAiResponses => {

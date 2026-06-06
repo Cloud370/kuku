@@ -27,9 +27,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             request_id: "req_1".to_string(),
             text: "Done.".to_string(),
             thinking: None,
-            stop_reason: "end_turn".to_string(),
-            tool_call_count: None,
-            usage: json!({"input_tokens": 3}),
+            input_tokens_total: Some(3),
         })
         .unwrap();
 
@@ -320,9 +318,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             request_id: "req_1".to_string(),
             text: "I will inspect.".to_string(),
             thinking: None,
-            stop_reason: "tool_use".to_string(),
-            tool_call_count: Some(2),
-            usage: json!({"input_tokens": 10}),
+            input_tokens_total: Some(10),
         })
         .unwrap();
     store
@@ -366,9 +362,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             request_id: "req_2".to_string(),
             text: "Done.".to_string(),
             thinking: None,
-            stop_reason: "end_turn".to_string(),
-            tool_call_count: None,
-            usage: json!({"input_tokens": 12}),
+            input_tokens_total: Some(12),
         })
         .unwrap();
 
@@ -410,6 +404,130 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
                 }),
             ]),
             CanonicalMessage::assistant(vec![MessageBlock::Text("Done.".to_string())]),
+        ]
+    );
+}
+
+#[test]
+fn restores_frozen_prelude_from_fact_event() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: EventPayload::ContextPrelude {
+                ts: "2026-05-18T00:00:00Z".to_string(),
+                messages: vec![
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
+                    },
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content:
+                            "<kuku_execution_context>workspace: /tmp/evlog</kuku_execution_context>"
+                                .to_string(),
+                    },
+                ],
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::UserInput {
+                turn: 1,
+                ts: "2026-05-18T00:00:01Z".to_string(),
+                text: "inspect".to_string(),
+            },
+        },
+    ];
+
+    let restored = kuku::context::restore_frozen_prelude(&events).unwrap();
+    assert_eq!(restored.len(), 2);
+    assert_eq!(
+        restored[0],
+        CanonicalMessage::user_text("<kuku_tool_guidance>use tools</kuku_tool_guidance>")
+    );
+    assert_eq!(
+        restored[1],
+        CanonicalMessage::user_text(
+            "<kuku_execution_context>workspace: /tmp/evlog</kuku_execution_context>"
+        )
+    );
+}
+
+#[test]
+fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: EventPayload::ContextSources {
+                turn: 1,
+                ts: "2026-05-18T00:00:00Z".to_string(),
+                request_id: "req_1".to_string(),
+                project_instruction_sources: vec![FileSource {
+                    path: "/workspace/AGENTS.md".to_string(),
+                    hash: "sha256:before".to_string(),
+                }],
+                memory_sources: vec![],
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::UserInput {
+                turn: 1,
+                ts: "2026-05-18T00:00:01Z".to_string(),
+                text: "old".to_string(),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: EventPayload::ModelResponse {
+                turn: 1,
+                ts: "2026-05-18T00:00:02Z".to_string(),
+                request_id: "req_1".to_string(),
+                text: "old answer".to_string(),
+                thinking: None,
+                input_tokens_total: Some(10),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 4,
+            payload: EventPayload::Handoff {
+                turn: 1,
+                ts: "2026-05-18T00:00:03Z".to_string(),
+                request_id: "req_1".to_string(),
+                summary: "carry forward".to_string(),
+                keep_turns: 1,
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 5,
+            payload: EventPayload::UserInput {
+                turn: 2,
+                ts: "2026-05-18T00:00:04Z".to_string(),
+                text: "new".to_string(),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 6,
+            payload: EventPayload::ModelResponse {
+                turn: 2,
+                ts: "2026-05-18T00:00:05Z".to_string(),
+                request_id: "req_2".to_string(),
+                text: "new answer".to_string(),
+                thinking: None,
+                input_tokens_total: Some(12),
+            },
+        },
+    ];
+
+    let (summary, history) = rebuild_history(&events);
+    assert_eq!(summary.as_deref(), Some("carry forward"));
+    assert_eq!(
+        history,
+        vec![
+            CanonicalMessage::user_text("old"),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("old answer".to_string())]),
+            CanonicalMessage::user_text("new"),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("new answer".to_string())]),
         ]
     );
 }

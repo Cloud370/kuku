@@ -17,7 +17,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff", "HandoffTrigger", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "PermissionAllow", "PermissionDeny", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" },
@@ -83,7 +83,11 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_LIMIT as u64) as usize;
 
-    let turn_map = build_turn_map(&all_events);
+    let turn_map = if skip_rolled_back {
+        build_turn_map_from_filtered(events)
+    } else {
+        build_turn_map_from_events(&all_events)
+    };
 
     let iter: Box<dyn Iterator<Item = &crate::event::StoredEvent>> = if skip_rolled_back {
         Box::new(events.iter().rev().copied())
@@ -146,7 +150,9 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
     Ok((output, matched.len()))
 }
 
-fn build_turn_map(events: &[crate::event::StoredEvent]) -> std::collections::HashMap<u64, usize> {
+fn build_turn_map_from_events(
+    events: &[crate::event::StoredEvent],
+) -> std::collections::HashMap<u64, usize> {
     let mut map = std::collections::HashMap::new();
     let mut current_turn: usize = 0;
     let mut seen_turn_end = false;
@@ -163,14 +169,36 @@ fn build_turn_map(events: &[crate::event::StoredEvent]) -> std::collections::Has
     map
 }
 
+fn build_turn_map_from_filtered(
+    events: &[&crate::event::StoredEvent],
+) -> std::collections::HashMap<u64, usize> {
+    let mut map = std::collections::HashMap::new();
+    let mut current_turn: usize = 0;
+    let mut seen_turn_end = false;
+
+    for event in events.iter().rev() {
+        map.insert(event.id, current_turn);
+        if matches!(event.payload, EventPayload::TurnEnd { .. }) {
+            if seen_turn_end {
+                current_turn += 1;
+            }
+            seen_turn_end = true;
+        }
+    }
+
+    map
+}
+
 fn normalize_type_filter(raw: &str) -> String {
     match raw {
         "UserInput" => "user.input".to_string(),
         "ModelResponse" => "model.response".to_string(),
         "ToolCall" => "tool.call".to_string(),
         "ToolResult" => "tool.result".to_string(),
+        "PermissionRequested" => "permission.requested".to_string(),
+        "PermissionAllow" => "permission.allow".to_string(),
+        "PermissionDeny" => "permission.deny".to_string(),
         "Handoff" => "handoff".to_string(),
-        "HandoffTrigger" => "handoff.trigger".to_string(),
         "TurnRollback" => "turn.rollback".to_string(),
         "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
         other => other.to_lowercase(),
@@ -183,19 +211,18 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         EventPayload::ModelResponse { .. } => "model.response",
         EventPayload::ToolCall { .. } => "tool.call",
         EventPayload::ToolResult { .. } => "tool.result",
+        EventPayload::PermissionRequested { .. } => "permission.requested",
+        EventPayload::PermissionAllow { .. } => "permission.allow",
+        EventPayload::PermissionDeny { .. } => "permission.deny",
         EventPayload::Handoff { .. } => "handoff",
-        EventPayload::HandoffTrigger { .. } => "handoff.trigger",
         EventPayload::TurnRollback { .. } => "turn.rollback",
         EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
         EventPayload::SessionMeta { .. }
+        | EventPayload::ContextPrelude { .. }
+        | EventPayload::ContextSources { .. }
         | EventPayload::TurnStart { .. }
         | EventPayload::TurnEnd { .. }
-        | EventPayload::ModelRequest { .. }
         | EventPayload::ModelError { .. }
-        | EventPayload::PolicyLoaded { .. }
-        | EventPayload::PermissionRequest { .. }
-        | EventPayload::PermissionDecision { .. }
-        | EventPayload::PluginHook { .. }
         | EventPayload::Unknown(_) => return false,
     };
     type_tag == filter
@@ -286,9 +313,7 @@ mod tests {
                     request_id: "r1".into(),
                     text: "hi".into(),
                     thinking: None,
-                    stop_reason: "end_turn".into(),
-                    tool_call_count: None,
-                    usage: json!({}),
+                    input_tokens_total: None,
                 },
                 EventPayload::TurnEnd {
                     turn: 1,
@@ -546,5 +571,148 @@ mod tests {
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("turn.rollback"));
         assert!(!result.model_content.contains("hello"));
+    }
+
+    #[test]
+    fn query_session_type_filter_permission_requested() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::PermissionRequested {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_cmd".into(),
+                    tool: "run_command".into(),
+                    risk: "command".into(),
+                    summary: "run tests".into(),
+                    candidate: "cargo test".into(),
+                    source: "default_ask".into(),
+                },
+            ],
+        );
+
+        let result = query_session(&json!({"type": "PermissionRequested"}), &path);
+
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("permission.requested"));
+        assert!(result.model_content.contains("cargo test"));
+        assert!(!result.model_content.contains("hello"));
+    }
+
+    #[test]
+    fn query_session_type_filter_permission_allow_and_deny() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::PermissionAllow {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_allow".into(),
+                    tool: "run_command".into(),
+                    scope: "session".into(),
+                    matcher: "cargo test".into(),
+                    source: "user".into(),
+                },
+                EventPayload::PermissionDeny {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_deny".into(),
+                    tool: "run_command".into(),
+                    reason: "too risky".into(),
+                    source: "user".into(),
+                },
+            ],
+        );
+
+        let allow = query_session(&json!({"type": "permission.allow"}), &path);
+        let deny = query_session(&json!({"type": "permission.deny"}), &path);
+
+        assert_eq!(allow.status, "ok");
+        assert!(allow.model_content.contains("permission.allow"));
+        assert!(allow.model_content.contains("cargo test"));
+        assert!(!allow.model_content.contains("permission.deny"));
+        assert!(!allow.model_content.contains("hello"));
+        assert_eq!(deny.status, "ok");
+        assert!(deny.model_content.contains("permission.deny"));
+        assert!(deny.model_content.contains("too risky"));
+        assert!(!deny.model_content.contains("permission.allow"));
+        assert!(!deny.model_content.contains("hello"));
+    }
+
+    #[test]
+    fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::TurnStart {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "first".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 1,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnStart {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 2,
+                    ts: ts("t"),
+                    text: "second active".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 2,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnStart {
+                    turn: 3,
+                    ts: ts("t"),
+                },
+                EventPayload::UserInput {
+                    turn: 3,
+                    ts: ts("t"),
+                    text: "third rolled back".into(),
+                },
+                EventPayload::TurnEnd {
+                    turn: 3,
+                    ts: ts("t"),
+                },
+                EventPayload::TurnRollback {
+                    turn: 4,
+                    ts: ts("t"),
+                    target_turn: 3,
+                    scope: crate::event::RollbackScope::ConversationOnly,
+                },
+            ],
+        );
+
+        let result = query_session(
+            &json!({"skip_rolled_back": true, "from_turn": 1, "to_turn": 1}),
+            &path,
+        );
+
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("first"));
+        assert!(!result.model_content.contains("second active"));
+        assert!(!result.model_content.contains("third rolled back"));
     }
 }

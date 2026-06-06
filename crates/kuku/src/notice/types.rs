@@ -48,6 +48,7 @@ pub(crate) enum ContextBudgetTier {
 }
 
 impl ContextBudgetTier {
+    #[cfg(test)]
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             ContextBudgetTier::Tight => "tight",

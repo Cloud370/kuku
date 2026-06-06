@@ -21,6 +21,7 @@ pub(crate) struct HookInput {
 
 /// Result of executing a single hook, including output, timing, and exit status.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct HookExecResult {
     pub output: HookOutput,
     pub exit_code: i32,

@@ -177,6 +177,28 @@ fn filter_undo_restores_events() {
     assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
 }
 
+#[test]
+fn filter_undo_latest_rollback_reactivates_previous_rollback() {
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "a"),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "b"),
+        te(6, 2),
+        ts(7, 3),
+        ui(8, 3, "c"),
+        te(9, 3),
+        rb(10, 4, 2, RollbackScope::ConversationOnly),
+        rb(11, 5, 3, RollbackScope::ConversationOnly),
+        rb_undo(12, 6, 11),
+    ];
+
+    let f = filter_rolled_back_events(&events);
+
+    assert_eq!(extract_user_texts(&f), vec!["a"]);
+}
+
 // compute_file_revert_plan tests
 
 #[test]
@@ -349,6 +371,21 @@ fn active_rollback_found() {
 fn active_rollback_undone_returns_none() {
     let events = vec![rb(10, 5, 3, RollbackScope::Both), rb_undo(11, 6, 10)];
     assert!(find_active_rollback(&events).is_none());
+}
+
+#[test]
+fn undo_latest_rollback_reactivates_previous_rollback() {
+    let events = vec![
+        rb(10, 5, 2, RollbackScope::Both),
+        rb(11, 6, 3, RollbackScope::ConversationOnly),
+        rb_undo(12, 7, 11),
+    ];
+
+    let active = find_active_rollback(&events).unwrap();
+
+    assert_eq!(active.rollback_event_id, 10);
+    assert_eq!(active.target_turn, 2);
+    assert_eq!(active.scope, RollbackScope::Both);
 }
 
 // list_user_turns tests

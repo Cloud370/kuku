@@ -61,6 +61,9 @@ pub struct ConfigFile {
     #[serde(default, deserialize_with = "deserialize_handoff")]
     pub handoff: Option<HandoffConfig>,
 
+    #[serde(default, deserialize_with = "deserialize_logs")]
+    pub logs: Option<LogsConfig>,
+
     #[serde(default)]
     pub plugin: Option<PluginConfig>,
 
@@ -123,6 +126,7 @@ pub struct Config {
     pub default_tier: String,
     pub discovery: DiscoveryConfig,
     pub handoff: HandoffConfig,
+    pub logs: LogsConfig,
     pub plugin: PluginConfig,
     pub update: UpdateConfig,
 }
@@ -145,11 +149,32 @@ impl Default for HandoffConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogsConfig {
+    pub max_age_days: u32,
+    pub max_total_size_mb: u32,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            max_age_days: 14,
+            max_total_size_mb: 512,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RawHandoffConfig {
     enabled: Option<bool>,
     threshold: Option<f64>,
     keep_turns: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct RawLogsConfig {
+    max_age_days: Option<u32>,
+    max_total_size_mb: Option<u32>,
 }
 
 impl From<RawHandoffConfig> for HandoffConfig {
@@ -159,6 +184,16 @@ impl From<RawHandoffConfig> for HandoffConfig {
             enabled: raw.enabled.unwrap_or(defaults.enabled),
             threshold: raw.threshold.unwrap_or(defaults.threshold),
             keep_turns: raw.keep_turns.unwrap_or(defaults.keep_turns),
+        }
+    }
+}
+
+impl From<RawLogsConfig> for LogsConfig {
+    fn from(raw: RawLogsConfig) -> Self {
+        let defaults = LogsConfig::default();
+        Self {
+            max_age_days: raw.max_age_days.unwrap_or(defaults.max_age_days),
+            max_total_size_mb: raw.max_total_size_mb.unwrap_or(defaults.max_total_size_mb),
         }
     }
 }
@@ -195,6 +230,14 @@ where
 {
     let raw = Option::<RawHandoffConfig>::deserialize(deserializer)?;
     Ok(raw.map(HandoffConfig::from))
+}
+
+fn deserialize_logs<'de, D>(deserializer: D) -> std::result::Result<Option<LogsConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<RawLogsConfig>::deserialize(deserializer)?;
+    Ok(raw.map(LogsConfig::from))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -311,6 +354,11 @@ impl Config {
         self.handoff.clone()
     }
 
+    /// Return the logs configuration.
+    pub fn logs(&self) -> LogsConfig {
+        self.logs.clone()
+    }
+
     /// All tier names with their purpose.
     pub fn tier_infos(&self) -> Vec<TierInfo> {
         self.tiers
@@ -350,6 +398,13 @@ impl Config {
             }
             out.push('\n');
         }
+
+        out.push_str("[logs]\n");
+        out.push_str(&format!("max_age_days = {}\n", self.logs.max_age_days));
+        out.push_str(&format!(
+            "max_total_size_mb = {}\n\n",
+            self.logs.max_total_size_mb
+        ));
         out
     }
 }

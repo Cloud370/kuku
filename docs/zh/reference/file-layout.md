@@ -23,8 +23,11 @@ $KUKU_HOME/
 ├── packages/
 ├── agents/
 ├── skills/
+├── logs/
 └── p/
 ```
+
+`logs/` 存放可观测性日志。Session 事实仍保存在每个 Session 的 `events.jsonl` 中。
 
 ## 项目作用域布局
 
@@ -56,7 +59,7 @@ $KUKU_HOME/p/<workspace>/sessions/<session-id>/
 说明：
 
 - `lock` 记录当前活跃写入者。
-- `events.jsonl` 是规范的 Session 日志。
+- `events.jsonl` 是 Session 事实日志。
 - `pre-revert-<event-id>/` 会在文件回滚创建备份时出现。
 - `subs/` 用于存在子 Session 的情况。
 

@@ -181,9 +181,13 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             } else {
                 Some(accumulated_thinking.clone())
             },
-            stop_reason: final_stop_reason.clone(),
-            tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
-            usage: serde_json::to_value(&usage).unwrap_or_default(),
+            input_tokens_total: usage.as_ref().and_then(|u| {
+                let input = u.input_tokens.unwrap_or(0);
+                let cache_read = u.cache_read_input_tokens.unwrap_or(0);
+                let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
+                let total = input + cache_read + cache_creation;
+                u32::try_from(total).ok().filter(|value| *value > 0)
+            }),
         })?;
 
         if let Some(detector) = handoff_detector {
@@ -201,14 +205,12 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 } else {
                     trimmed
                 };
-                store.append(EventPayload::HandoffTrigger {
-                    ts: now_timestamp()?,
-                    trigger: crate::event::HandoffTriggerReason::ContextThreshold,
-                })?;
                 store.append(EventPayload::Handoff {
+                    turn: pending.turn,
                     ts: now_timestamp()?,
+                    request_id: request_id.clone(),
                     summary: final_summary,
-                    kept_turns: pending.handoff_keep_turns,
+                    keep_turns: pending.handoff_keep_turns,
                 })?;
             }
         }
@@ -267,6 +269,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 turn: pending.turn,
                 ts: now_timestamp()?,
             })?;
+            pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
                 input_tokens: Some(pending.cumulative.input_tokens),
                 output_tokens: Some(pending.cumulative.output_tokens),
@@ -330,38 +333,40 @@ pub(super) async fn advance_pending(
     slot_event_tx: tokio::sync::mpsc::Sender<(String, super::types::SlotEvent)>,
     active_slot_count: usize,
 ) -> Result<PendingStep> {
-    {
+    let is_cancelled = {
         let notified = pending.cancel_token.notified();
         tokio::pin!(notified);
-        if notified.enable() {
-            let mut store = EventStore::open(&pending.events_path)?;
-            store.append(EventPayload::TurnEnd {
+        notified.enable()
+    };
+    if is_cancelled {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::TurnEnd {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+        })?;
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Done(
+            super::types::RunOutput {
+                session_id: pending.session_id.clone(),
+                text: String::new(),
+                usage: None,
                 turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
-            return Ok(PendingStep::Done(
-                super::types::RunOutput {
-                    session_id: pending.session_id.clone(),
-                    text: String::new(),
-                    usage: None,
-                    turn: pending.turn,
-                    model_request_count: pending.model_request_count,
-                    thinking_duration_ms: pending.thinking_duration_ms,
-                    tool_summary: super::types::ToolSummary {
-                        total_calls: pending.tool_calls,
-                        names: pending.tool_names.clone(),
-                        denied: pending.tool_denied,
-                        errors: pending.tool_errors,
-                        rounds: pending.tool_rounds,
-                    },
-                    plugin_registry: pending.plugin_registry.clone(),
-                    session_dir: pending.events_path.parent().unwrap().to_path_buf(),
-                    workspace: pending.workspace.clone(),
+                model_request_count: pending.model_request_count,
+                thinking_duration_ms: pending.thinking_duration_ms,
+                tool_summary: super::types::ToolSummary {
+                    total_calls: pending.tool_calls,
+                    names: pending.tool_names.clone(),
+                    denied: pending.tool_denied,
+                    errors: pending.tool_errors,
+                    rounds: pending.tool_rounds,
                 },
-                None,
-                pending.turn,
-            ));
-        }
+                plugin_registry: pending.plugin_registry.clone(),
+                session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+                workspace: pending.workspace.clone(),
+            },
+            None,
+            pending.turn,
+        ));
     }
 
     // Drain pending_events from previous inline executions (deny/blocked/skill)
@@ -371,6 +376,11 @@ pub(super) async fn advance_pending(
             slot: None,
             event: Some(event),
         });
+    }
+
+    if let Some(error) = pending.pending_error.take() {
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Failed(error));
     }
 
     if let Some(mut queued) = pending.queued_tool_calls.pop_front() {
@@ -488,6 +498,15 @@ pub(super) async fn advance_pending(
             return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---
+            if let Some(request) = pending.take_resumed_permission_request(&id) {
+                pending.queued_tool_calls.push_front(queued);
+                return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
+                    pending,
+                    request,
+                })));
+            }
+
+            super::provider::ensure_resolved(&mut pending)?;
             let definition =
                 find_tool_definition(&pending, &queued.tool_call.name).ok_or_else(|| {
                     crate::error::Error::InvalidArgument(format!(
@@ -495,6 +514,7 @@ pub(super) async fn advance_pending(
                         queued.tool_call.name
                     ))
                 })?;
+            let risk = definition.risk.clone();
             let candidate = permission_candidate(
                 &pending.kuku_home,
                 &pending.workspace,
@@ -506,7 +526,7 @@ pub(super) async fn advance_pending(
             let session_grants = recover_session_grants(&prior_events);
             let decision = decide_tool_call(
                 &queued.tool_call.name,
-                &definition.risk,
+                &risk,
                 &candidate,
                 &policy,
                 &session_grants,
@@ -519,8 +539,10 @@ pub(super) async fn advance_pending(
                         id: tc_id.clone(),
                         tool_call_id: tc_id,
                         tool: queued.tool_call.name.clone(),
-                        risk: definition.risk.clone(),
+                        risk: risk.clone(),
                         summary: summary.clone(),
+                        candidate: candidate.clone(),
+                        source: gate_source_name(decision.source).to_string(),
                     };
                     append_permission_request(&pending.events_path, pending.turn, &request)?;
                     pending.queued_tool_calls.push_front(queued);
@@ -610,8 +632,10 @@ pub(super) async fn advance_pending(
                             id: id.clone(),
                             tool_call_id: id.clone(),
                             tool: queued.tool_call.name.clone(),
-                            risk: definition.risk.clone(),
+                            risk: risk.clone(),
                             summary: summary.clone(),
+                            candidate,
+                            source: gate_source_name(decision.source).to_string(),
                         },
                     )?;
                     append_permission_decision(

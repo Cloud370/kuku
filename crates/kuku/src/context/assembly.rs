@@ -100,11 +100,11 @@ impl ContextAssembly {
     }
 }
 
-/// Restore frozen prelude messages from the first ModelRequest that carries them.
-/// Returns None if no ModelRequest with prelude exists yet (first turn).
+/// Restore frozen prelude messages from the first context.prelude fact event.
+/// Returns None if no frozen prelude has been recorded yet.
 pub fn restore_frozen_prelude(events: &[StoredEvent]) -> Option<Vec<CanonicalMessage>> {
     let prelude = events.iter().find_map(|ev| match &ev.payload {
-        EventPayload::ModelRequest { context, .. } => context.as_ref()?.prelude.as_ref(),
+        EventPayload::ContextPrelude { messages, .. } => Some(messages),
         _ => None,
     })?;
 

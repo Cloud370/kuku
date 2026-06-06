@@ -23,8 +23,11 @@ $KUKU_HOME/
 ├── packages/
 ├── agents/
 ├── skills/
+├── logs/
 └── p/
 ```
+
+`logs/` stores observability logs. Session facts remain in each session's `events.jsonl`.
 
 ## Project-Scoped Layout
 
@@ -56,7 +59,7 @@ $KUKU_HOME/p/<workspace>/sessions/<session-id>/
 Notes:
 
 - `lock` records the active writer.
-- `events.jsonl` is the canonical session log.
+- `events.jsonl` is the session fact log.
 - `pre-revert-<event-id>/` appears when file rollback creates backups.
 - `subs/` is used when child sessions are present.
 

@@ -20,7 +20,11 @@ pub fn generate_default() -> &'static str {
 pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
     let file: ConfigFile = parse_config_file(raw)?;
 
-    if file.handoff.is_some() && file.plugin.is_some() && file.update.is_some() {
+    if file.handoff.is_some()
+        && file.logs.is_some()
+        && file.plugin.is_some()
+        && file.update.is_some()
+    {
         return Ok((raw.to_string(), false));
     }
 
@@ -30,6 +34,9 @@ pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
 
     if file.handoff.is_none() {
         inject_handoff_section(&mut doc);
+    }
+    if file.logs.is_none() {
+        inject_logs_section(&mut doc);
     }
     if file.plugin.is_none() {
         inject_plugin_section(&mut doc);
@@ -64,6 +71,17 @@ fn inject_plugin_section(doc: &mut toml_edit::DocumentMut) {
     // New installs use assets/default-config.toml which sets enabled = true.
     section["enabled"] = toml_edit::value(false);
     doc["plugin"] = toml_edit::Item::Table(section);
+}
+
+fn inject_logs_section(doc: &mut toml_edit::DocumentMut) {
+    let mut section = toml_edit::Table::new();
+    *section.decor_mut() = toml_edit::Decor::new(
+        "\n\n# Logs: retention policy for session, runtime, and host JSONL logs.\n",
+        "",
+    );
+    section["max_age_days"] = toml_edit::value(14);
+    section["max_total_size_mb"] = toml_edit::value(512);
+    doc["logs"] = toml_edit::Item::Table(section);
 }
 
 fn inject_update_section(doc: &mut toml_edit::DocumentMut) {
@@ -136,7 +154,7 @@ pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
     }
 
     let new_value = match leaf {
-        "context_window" | "max_output_tokens" => {
+        "context_window" | "max_output_tokens" | "max_age_days" | "max_total_size_mb" => {
             let n: i64 = value.parse().map_err(|_| {
                 Error::ConfigLoad(format!(
                     "'{dot_key}' must be a positive integer, got '{value}'"
