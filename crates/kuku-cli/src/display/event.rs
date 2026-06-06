@@ -85,6 +85,19 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
                 format!("{status}  {summary}")
             }
         }
+        EventPayload::PermissionRequested {
+            tool,
+            risk,
+            candidate,
+            source,
+            ..
+        } => {
+            if verbose {
+                format!("request  {tool}  {risk}  {candidate}  source={source}")
+            } else {
+                format!("request  {tool}  {risk}  {candidate}")
+            }
+        }
         EventPayload::PermissionAllow {
             tool,
             scope,

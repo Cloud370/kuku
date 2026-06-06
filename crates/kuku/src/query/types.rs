@@ -58,6 +58,8 @@ pub struct PermissionRequest {
     pub tool: String,
     pub risk: String,
     pub summary: String,
+    pub candidate: String,
+    pub source: String,
 }
 
 /// The host's response to a permission request.

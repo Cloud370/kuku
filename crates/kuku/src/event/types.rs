@@ -118,6 +118,18 @@ pub enum EventPayload {
         source: String,
     },
 
+    #[serde(rename = "permission.requested")]
+    PermissionRequested {
+        turn: u64,
+        ts: String,
+        tool_call_id: String,
+        tool: String,
+        risk: String,
+        summary: String,
+        candidate: String,
+        source: String,
+    },
+
     #[serde(rename = "permission.deny")]
     PermissionDeny {
         turn: u64,
@@ -185,6 +197,7 @@ impl EventPayload {
             Self::ModelResponse { .. } => "model.response",
             Self::ModelError { .. } => "model.error",
             Self::ToolCall { .. } => "tool.call",
+            Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionAllow { .. } => "permission.allow",
             Self::PermissionDeny { .. } => "permission.deny",
             Self::ToolResult { .. } => "tool.result",

@@ -163,8 +163,19 @@ pub(super) fn append_permission_request(
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
-    let _ = (events_path, turn, request);
-    Ok(())
+    append_event(
+        events_path,
+        EventPayload::PermissionRequested {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: request.tool_call_id.clone(),
+            tool: request.tool.clone(),
+            risk: request.risk.clone(),
+            summary: request.summary.clone(),
+            candidate: request.candidate.clone(),
+            source: request.source.clone(),
+        },
+    )
 }
 
 pub(super) fn append_permission_decision(

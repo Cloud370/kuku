@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use kuku_cli::display::{Display, OutputLine};
+use kuku_cli::display::render_event_brief;
 
 #[test]
 fn thinking_default_hides_text() {
@@ -175,4 +176,27 @@ fn all_json_types_have_type_field() {
     for line in &lines {
         assert!(line.contains("\"type\":\""), "missing type field: {line}");
     }
+}
+
+#[test]
+fn event_brief_renders_permission_requested() {
+    let event = kuku::event::StoredEvent {
+        id: 5,
+        payload: kuku::event::EventPayload::PermissionRequested {
+            turn: 1,
+            ts: "t".to_string(),
+            tool_call_id: "toolu_cmd".to_string(),
+            tool: "run_command".to_string(),
+            risk: "execute".to_string(),
+            summary: "run tests".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        },
+    };
+
+    let line = render_event_brief(&event, 1);
+
+    assert!(line.contains("permission.requested"));
+    assert!(line.contains("request  run_command  execute  cargo test"));
+    assert!(line.contains("source=default_ask"));
 }

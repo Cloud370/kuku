@@ -17,7 +17,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" },
@@ -195,6 +195,7 @@ fn normalize_type_filter(raw: &str) -> String {
         "ModelResponse" => "model.response".to_string(),
         "ToolCall" => "tool.call".to_string(),
         "ToolResult" => "tool.result".to_string(),
+        "PermissionRequested" => "permission.requested".to_string(),
         "Handoff" => "handoff".to_string(),
         "TurnRollback" => "turn.rollback".to_string(),
         "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
@@ -208,6 +209,7 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         EventPayload::ModelResponse { .. } => "model.response",
         EventPayload::ToolCall { .. } => "tool.call",
         EventPayload::ToolResult { .. } => "tool.result",
+        EventPayload::PermissionRequested { .. } => "permission.requested",
         EventPayload::Handoff { .. } => "handoff",
         EventPayload::TurnRollback { .. } => "turn.rollback",
         EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
@@ -566,6 +568,38 @@ mod tests {
         );
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("turn.rollback"));
+        assert!(!result.model_content.contains("hello"));
+    }
+
+    #[test]
+    fn query_session_type_filter_permission_requested() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+                EventPayload::PermissionRequested {
+                    turn: 1,
+                    ts: ts("t"),
+                    tool_call_id: "toolu_cmd".into(),
+                    tool: "run_command".into(),
+                    risk: "command".into(),
+                    summary: "run tests".into(),
+                    candidate: "cargo test".into(),
+                    source: "default_ask".into(),
+                },
+            ],
+        );
+
+        let result = query_session(&json!({"type": "PermissionRequested"}), &path);
+
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("permission.requested"));
+        assert!(result.model_content.contains("cargo test"));
         assert!(!result.model_content.contains("hello"));
     }
 

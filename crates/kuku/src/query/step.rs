@@ -531,6 +531,8 @@ pub(super) async fn advance_pending(
                         tool: queued.tool_call.name.clone(),
                         risk: definition.risk.clone(),
                         summary: summary.clone(),
+                        candidate: candidate.clone(),
+                        source: gate_source_name(decision.source).to_string(),
                     };
                     append_permission_request(&pending.events_path, pending.turn, &request)?;
                     pending.queued_tool_calls.push_front(queued);
@@ -622,6 +624,8 @@ pub(super) async fn advance_pending(
                             tool: queued.tool_call.name.clone(),
                             risk: definition.risk.clone(),
                             summary: summary.clone(),
+                            candidate,
+                            source: gate_source_name(decision.source).to_string(),
                         },
                     )?;
                     append_permission_decision(

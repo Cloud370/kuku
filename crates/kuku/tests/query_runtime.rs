@@ -558,10 +558,49 @@ async fn run_emits_permission_requested_for_gated_tool() {
     }
 
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
+    let tool_call_pos = events
+        .iter()
+        .position(|event| {
+            matches!(event.payload, EventPayload::ToolCall { ref tool_call_id, .. } if tool_call_id == "toolu_cmd")
+        })
+        .expect("tool.call event");
+    let permission_pos = events
+        .iter()
+        .position(|event| {
+            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_cmd")
+        })
+        .expect("permission.requested event");
+
+    assert!(tool_call_pos < permission_pos);
+    match &events[permission_pos].payload {
+        EventPayload::PermissionRequested {
+            turn,
+            tool_call_id,
+            tool,
+            risk,
+            summary,
+            candidate,
+            source,
+            ..
+        } => {
+            assert_eq!(*turn, 1);
+            assert_eq!(tool_call_id, "toolu_cmd");
+            assert_eq!(tool, "run_command");
+            assert_eq!(risk, "command");
+            assert_eq!(summary, "run tests");
+            assert_eq!(candidate, "cargo test");
+            assert_eq!(source, "default_ask");
+        }
+        other => panic!("expected permission.requested, got {other:?}"),
+    }
     assert!(!events.iter().any(|event| matches!(
         event.payload,
         EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
     )));
+    assert!(!events.iter().any(|event| {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        payload.get("log").is_some() || payload.get("debug").is_some()
+    }));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -758,10 +797,108 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
 
     assert_eq!(output.text, "Command was blocked.");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    let requested = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::PermissionRequested {
+                tool_call_id,
+                tool,
+                risk,
+                candidate,
+                source,
+                ..
+            } if tool_call_id == "toolu_cmd" => {
+                Some((tool.as_str(), risk.as_str(), candidate.as_str(), source.as_str()))
+            }
+            _ => None,
+        })
+        .expect("permission.requested event");
+    assert_eq!(requested, ("run_command", "command", "cargo test", "default_ask"));
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. })));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn queued_deny_path_emits_permission_requested_before_deny() {
+    let env = TestEnv::new();
+    std::fs::write(env.workspace.path().join("notes.md"), "hello\n").unwrap();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("read two files");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tools",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Reading files."},
+                    {"type": "tool_use", "id": "toolu_read_ok", "name": "read_file", "input": {"path": "notes.md"}},
+                    {"type": "tool_use", "id": "toolu_read_denied", "name": "read_file", "input": {"path": ".env.local"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+
+    let mut run = query("read two files")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let mut saw_first_start = false;
+    loop {
+        let event = run.next().await.unwrap().expect("event");
+        match event {
+            UiEvent::ToolStart { id, .. } if id == "toolu_read_ok" => saw_first_start = true,
+            UiEvent::ToolEnd { id, status, .. } if id == "toolu_read_denied" => {
+                assert!(saw_first_start, "first slot should be active before queued deny");
+                assert_eq!(status, "blocked");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
+    let request_pos = events
+        .iter()
+        .position(|event| {
+            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
+        })
+        .expect("permission.requested event");
+    let deny_pos = events
+        .iter()
+        .position(|event| {
+            matches!(event.payload, EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
+        })
+        .expect("permission.deny event");
+
+    assert!(request_pos < deny_pos);
+    match &events[request_pos].payload {
+        EventPayload::PermissionRequested {
+            tool,
+            risk,
+            candidate,
+            source,
+            ..
+        } => {
+            assert_eq!(tool, "read_file");
+            assert_eq!(risk, "read");
+            assert_eq!(candidate, ".env.local");
+            assert_eq!(source, "hard_guard");
+        }
+        other => panic!("expected permission.requested, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

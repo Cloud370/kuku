@@ -102,6 +102,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             | EventPayload::ToolCall { turn, .. }
             | EventPayload::ToolResult { turn, .. }
             | EventPayload::ModelError { turn, .. }
+            | EventPayload::PermissionRequested { turn, .. }
             | EventPayload::PermissionAllow { turn, .. }
             | EventPayload::PermissionDeny { turn, .. }
             | EventPayload::ContextSources { turn, .. }

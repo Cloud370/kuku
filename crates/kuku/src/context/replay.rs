@@ -116,6 +116,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
             | EventPayload::ContextSources { .. }
             | EventPayload::TurnStart { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
             | EventPayload::Handoff { .. }

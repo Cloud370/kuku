@@ -249,6 +249,8 @@ mod tests {
                 tool: "run_command".to_string(),
                 risk: "command".to_string(),
                 summary: "cargo test".to_string(),
+                candidate: "cargo test".to_string(),
+                source: "default_ask".to_string(),
             },
         };
         let wire = to_wire(&event).unwrap();

@@ -322,3 +322,28 @@ fn fact_event_json_omits_removed_observability_fields() {
     assert!(response_json.get("tool_call_count").is_none());
     assert_eq!(response_json["input_tokens_total"], 7);
 }
+
+#[test]
+fn permission_requested_roundtrips_as_fact_event() {
+    let event = StoredEvent {
+        id: 12,
+        payload: EventPayload::PermissionRequested {
+            turn: 2,
+            ts: "2026-05-18T00:02:00Z".to_string(),
+            tool_call_id: "toolu_cmd".to_string(),
+            tool: "run_command".to_string(),
+            risk: "write".to_string(),
+            summary: "run tests".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        },
+    };
+
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "permission.requested");
+    assert_eq!(json["candidate"], "cargo test");
+    assert_eq!(event.payload.type_name(), "permission.requested");
+
+    let back: StoredEvent = serde_json::from_value(json).unwrap();
+    assert_eq!(back, event);
+}

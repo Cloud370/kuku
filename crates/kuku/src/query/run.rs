@@ -8,14 +8,14 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_model_error, append_permission_decision, append_turn_end, display_summary,
-    now_timestamp, permission_candidate, permission_rule,
+    append_model_error, append_permission_decision, append_permission_request, append_turn_end,
+    display_summary, now_timestamp, permission_candidate, permission_rule,
 };
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState, SlotEvent,
-    StreamingChunkState, UiEvent,
+    PendingRun, PendingStep, PermissionChoice, PermissionRequest, QueuedToolCall, Run, RunState,
+    SlotEvent, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -433,8 +433,35 @@ impl Run {
                 }))
             }
             crate::permission::GateDecisionKind::Deny => {
+                let risk = definition.risk.clone();
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
+                append_permission_request(
+                    &pending.events_path,
+                    pending.turn,
+                    &PermissionRequest {
+                        id: tool_call.id.clone(),
+                        tool_call_id: tool_call.id.clone(),
+                        tool: tool_call.name.clone(),
+                        risk,
+                        summary: display_summary(&tool_call.name, &tool_call.args, None),
+                        candidate,
+                        source: super::helpers::gate_source_name(decision.source).to_string(),
+                    },
+                )?;
+                append_permission_decision(
+                    &pending.events_path,
+                    pending.turn,
+                    &tool_call.id,
+                    PermissionChoice::Deny,
+                    super::helpers::gate_source_name(decision.source),
+                    &permission_rule(
+                        &pending.kuku_home,
+                        &pending.workspace,
+                        &tool_call.name,
+                        &tool_call.args,
+                    ),
+                )?;
                 pending.record_tool_denied(&tool_call.name);
                 Ok(Some(UiEvent::ToolEnd {
                     id: tool_call.id,
