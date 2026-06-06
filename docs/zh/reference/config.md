@@ -23,6 +23,7 @@ $KUKU_HOME/config.toml
 | `provider.<name>` | table | provider 定义 |
 | `discovery` | table | Agent 和 Skill 的发现设置 |
 | `handoff` | table | 长 Session 的 handoff 设置 |
+| `logs` | table | 可观测性日志保留设置 |
 | `plugin` | table | package hook 执行开关 |
 | `update` | table | 更新源和 channel |
 
@@ -46,8 +47,10 @@ $KUKU_HOME/config.toml
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | string | `anthropic`、`openai-chat` 或 `openai-responses` |
-| `base_url` | string | provider API 基础 URL |
+| `base_url` | string | provider API 基础 URL，或 `$ENV_VAR_NAME` |
 | `api_key` | string | 直接填写的 key，或 `$ENV_VAR_NAME` |
+
+任何第一个字符为 `$` 的字符串配置值都会被视为环境变量引用，并在校验前解析；但 `api_key` 会保留环境变量引用，并在使用 provider 时再解析。
 
 ## `discovery`
 
@@ -67,7 +70,16 @@ $KUKU_HOME/config.toml
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-当估算的上下文使用量超过 `threshold` 时，kuku 会写入 handoff 摘要，并只在活动历史中保留最近的 `keep_turns` 轮。
+当估算的上下文使用量超过 `threshold` 时，kuku 会注入 handoff 指令。只有当模型返回 handoff 文档时，摘要才会被持久化；之后的上下文会在该边界前只保留最近的 `keep_turns` 轮。
+
+## `logs`
+
+| Field | Type | Default |
+|---|---|---|
+| `max_age_days` | integer | `14` |
+| `max_total_size_mb` | integer | `512` |
+
+可观测性日志默认开启，且没有禁用开关。kuku 会先按时间清理日志，再按总大小预算清理。清理日志永远不会触碰 Session 的 `events.jsonl` 文件。
 
 ## `plugin`
 
@@ -104,4 +116,4 @@ custom = "https://example.com/latest.json"
 
 ## 默认配置示例
 
-规范的起始文件位于 `crates/kuku/assets/default-config.toml`。
+起始配置文件位于 `crates/kuku/assets/default-config.toml`。

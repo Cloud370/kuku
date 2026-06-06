@@ -79,6 +79,14 @@ enabled = true
 threshold = 0.7          # 0.0–1.0, triggers handoff at this context usage ratio
 keep_turns = 2           # number of recent turns preserved after handoff
 
+# ── Logs ──────────────────────────────────────────────────────────────────────
+# JSONL logs are kept separately from session facts under KUKU_HOME/logs/.
+# Retention is age-first, then capped by total size across the logs tree.
+
+[logs]
+max_age_days = 14
+max_total_size_mb = 512
+
 # ── Plugin system ─────────────────────────────────────────────────────────────
 # Enable hook execution from .kuku/packages/ extension packages.
 # Hooks are external processes that run at lifecycle events (session start/end,

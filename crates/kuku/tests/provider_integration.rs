@@ -135,16 +135,20 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 7);
     assert!(matches!(
         events[3].payload,
-        EventPayload::ModelRequest { .. }
+        EventPayload::ContextPrelude { .. }
     ));
     assert!(matches!(
         events[4].payload,
+        EventPayload::ContextSources { .. }
+    ));
+    assert!(matches!(
+        events[5].payload,
         EventPayload::ModelResponse { .. }
     ));
-    assert!(matches!(events[5].payload, EventPayload::TurnEnd { .. }));
+    assert!(matches!(events[6].payload, EventPayload::TurnEnd { .. }));
 }
 
 // ---------------------------------------------------------------------------
@@ -198,21 +202,17 @@ async fn executes_find_files_and_continues_to_final_response() {
     assert_eq!(output.text, "I found README.md and src/main.rs.");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ModelRequest {
-            ref tools,
-            ..
-        } if tools.as_ref().is_some_and(|t| t.count == Some(13))
-            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names[0] == "find_files"))
-            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"remember_memory".to_string())))
-            && tools.as_ref().is_some_and(|t| t.names.as_ref().is_some_and(|names| names.contains(&"forget_memory".to_string())))
-            && tools.as_ref().is_some_and(|t| t.hash.as_ref().is_some_and(|hash| hash.starts_with("sha256:")))
-    )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e.payload, EventPayload::ContextSources { .. }))
+            .count(),
+        2
+    );
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelResponse {
-            tool_call_count: Some(1),
+            input_tokens_total: Some(_),
             ..
         }
     )));
@@ -229,21 +229,10 @@ async fn executes_find_files_and_continues_to_final_response() {
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e.payload, EventPayload::ModelRequest { .. }))
-            .count(),
-        2
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| matches!(e.payload, EventPayload::PermissionRequest { .. }))
-            .count(),
-        0
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| matches!(e.payload, EventPayload::PermissionDecision { .. }))
+            .filter(|e| matches!(
+                e.payload,
+                EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
+            ))
             .count(),
         0
     );
@@ -409,14 +398,10 @@ async fn executes_read_file_and_search_text() {
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e.payload, EventPayload::PermissionRequest { .. }))
-            .count(),
-        0
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| matches!(e.payload, EventPayload::PermissionDecision { .. }))
+            .filter(|e| matches!(
+                e.payload,
+                EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
+            ))
             .count(),
         0
     );
@@ -726,8 +711,8 @@ async fn can_allow_run_command_once_via_run_decide() {
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::PermissionDecision { ref decision, ref scope, .. }
-            if decision == "allow" && scope == "session"
+        EventPayload::PermissionAllow { ref scope, .. }
+            if scope == "session"
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
@@ -851,8 +836,8 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::PermissionDecision { ref decision, ref scope, .. }
-            if decision == "allow" && scope == "project"
+        EventPayload::PermissionAllow { ref scope, .. }
+            if scope == "project"
     )));
 }
 
@@ -911,13 +896,8 @@ async fn records_denied_run_command_and_continues() {
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::PermissionRequest { ref tool, ref risk, .. }
-            if tool == "run_command" && risk == "command"
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionDecision { ref tool_call_id, ref decision, .. }
-            if tool_call_id == "toolu_cmd" && decision == "deny"
+        EventPayload::PermissionDeny { ref tool_call_id, ref tool, .. }
+            if tool_call_id == "toolu_cmd" && tool == "run_command"
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
@@ -960,10 +940,10 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 7);
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelResponse { ref stop_reason, .. } if stop_reason == "end_turn"
+        EventPayload::ModelResponse { ref text, .. } if text == "Hi from GPT!"
     )));
 }
 

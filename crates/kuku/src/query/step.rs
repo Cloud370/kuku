@@ -181,9 +181,13 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             } else {
                 Some(accumulated_thinking.clone())
             },
-            stop_reason: final_stop_reason.clone(),
-            tool_call_count: has_tool_calls.then_some(tool_calls.len() as u64),
-            usage: serde_json::to_value(&usage).unwrap_or_default(),
+            input_tokens_total: usage.as_ref().and_then(|u| {
+                let input = u.input_tokens.unwrap_or(0);
+                let cache_read = u.cache_read_input_tokens.unwrap_or(0);
+                let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
+                let total = input + cache_read + cache_creation;
+                u32::try_from(total).ok().filter(|value| *value > 0)
+            }),
         })?;
 
         if let Some(detector) = handoff_detector {
@@ -201,14 +205,12 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 } else {
                     trimmed
                 };
-                store.append(EventPayload::HandoffTrigger {
-                    ts: now_timestamp()?,
-                    trigger: crate::event::HandoffTriggerReason::ContextThreshold,
-                })?;
                 store.append(EventPayload::Handoff {
+                    turn: pending.turn,
                     ts: now_timestamp()?,
+                    request_id: request_id.clone(),
                     summary: final_summary,
-                    kept_turns: pending.handoff_keep_turns,
+                    keep_turns: pending.handoff_keep_turns,
                 })?;
             }
         }
@@ -267,6 +269,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 turn: pending.turn,
                 ts: now_timestamp()?,
             })?;
+            pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
                 input_tokens: Some(pending.cumulative.input_tokens),
                 output_tokens: Some(pending.cumulative.output_tokens),
@@ -330,38 +333,40 @@ pub(super) async fn advance_pending(
     slot_event_tx: tokio::sync::mpsc::Sender<(String, super::types::SlotEvent)>,
     active_slot_count: usize,
 ) -> Result<PendingStep> {
-    {
+    let is_cancelled = {
         let notified = pending.cancel_token.notified();
         tokio::pin!(notified);
-        if notified.enable() {
-            let mut store = EventStore::open(&pending.events_path)?;
-            store.append(EventPayload::TurnEnd {
+        notified.enable()
+    };
+    if is_cancelled {
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::TurnEnd {
+            turn: pending.turn,
+            ts: now_timestamp()?,
+        })?;
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Done(
+            super::types::RunOutput {
+                session_id: pending.session_id.clone(),
+                text: String::new(),
+                usage: None,
                 turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
-            return Ok(PendingStep::Done(
-                super::types::RunOutput {
-                    session_id: pending.session_id.clone(),
-                    text: String::new(),
-                    usage: None,
-                    turn: pending.turn,
-                    model_request_count: pending.model_request_count,
-                    thinking_duration_ms: pending.thinking_duration_ms,
-                    tool_summary: super::types::ToolSummary {
-                        total_calls: pending.tool_calls,
-                        names: pending.tool_names.clone(),
-                        denied: pending.tool_denied,
-                        errors: pending.tool_errors,
-                        rounds: pending.tool_rounds,
-                    },
-                    plugin_registry: pending.plugin_registry.clone(),
-                    session_dir: pending.events_path.parent().unwrap().to_path_buf(),
-                    workspace: pending.workspace.clone(),
+                model_request_count: pending.model_request_count,
+                thinking_duration_ms: pending.thinking_duration_ms,
+                tool_summary: super::types::ToolSummary {
+                    total_calls: pending.tool_calls,
+                    names: pending.tool_names.clone(),
+                    denied: pending.tool_denied,
+                    errors: pending.tool_errors,
+                    rounds: pending.tool_rounds,
                 },
-                None,
-                pending.turn,
-            ));
-        }
+                plugin_registry: pending.plugin_registry.clone(),
+                session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+                workspace: pending.workspace.clone(),
+            },
+            None,
+            pending.turn,
+        ));
     }
 
     // Drain pending_events from previous inline executions (deny/blocked/skill)
@@ -371,6 +376,11 @@ pub(super) async fn advance_pending(
             slot: None,
             event: Some(event),
         });
+    }
+
+    if let Some(error) = pending.pending_error.take() {
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Failed(error));
     }
 
     if let Some(mut queued) = pending.queued_tool_calls.pop_front() {

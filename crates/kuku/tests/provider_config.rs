@@ -1,6 +1,6 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, PluginConfig, ProviderConfig,
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
         ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig, UpdateConfig,
     };
 }
@@ -74,6 +74,7 @@ fn default_config() -> Config {
         default_tier: "balanced".to_string(),
         discovery: config::DiscoveryConfig::default(),
         handoff: config::HandoffConfig::default(),
+        logs: config::LogsConfig::default(),
         plugin: config::PluginConfig::default(),
         update: config::UpdateConfig::default(),
     }
@@ -157,6 +158,7 @@ fn explicit_tier_selects_different_tier() {
         default_tier: "balanced".to_string(),
         discovery: config::DiscoveryConfig::default(),
         handoff: config::HandoffConfig::default(),
+        logs: config::LogsConfig::default(),
         plugin: config::PluginConfig::default(),
         update: config::UpdateConfig::default(),
     };

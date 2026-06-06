@@ -1,13 +1,10 @@
-use sha2::Digest;
-
 use crate::context::{
     assemble_context, rebuild_history, restore_frozen_prelude, ContextInput, EnvironmentSource,
-    FileSource, HistoryRange, RequestProvenance, SubagentRegistryProvenance,
-    ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
-use crate::notice::types::{ContextHeadroom, Notice, NoticeKind, NoticeSeverity};
+use crate::log::{LogLevel, LogRecord, LogScope};
+use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
@@ -18,7 +15,6 @@ use crate::tool;
 use super::helpers::{
     append_model_error, append_turn_end, current_date_string, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, platform_label,
-    provider_failure_kind, provider_format_name,
 };
 use super::tool_exec::record_plugin_hooks;
 use super::types::{PendingRun, PendingStep, ResolvedRuntime, StreamingChunkState, UiEvent};
@@ -31,6 +27,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     check_loop_limit(&pending)?;
 
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
+    let resolved_config = resolved.config.clone();
+    let registry = resolved.registry.clone();
     let existing_events = EventStore::replay(&pending.events_path)?;
     let (handoff_summary, history) = rebuild_history(&existing_events);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
@@ -51,13 +49,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let (runtime_blocks, notice_snapshots) = build_runtime_blocks(
+    let (runtime_blocks, _notice_snapshots) = build_runtime_blocks(
         &pending.workspace,
         pending.turn,
         pending.subagent_registry.as_ref(),
         pending.skill_registry.as_mut(),
         &mut pending.skill_content_hash,
-        &resolved.config,
+        &resolved_config,
         &pending.config.discovery,
         &existing_events,
     )?;
@@ -96,7 +94,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             global_memory,
             project_memory,
             history,
-            tools: tool::to_tool_schemas(&resolved.registry),
+            tools: tool::to_tool_schemas(&registry),
             model_tiers,
             runtime_blocks,
         },
@@ -111,8 +109,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 request_id,
                 "prompt_render",
                 &error.to_string(),
-                Some(resolved.config.kind.as_str().to_string()),
-                Some(resolved.config.model.clone()),
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
             return Err(error);
@@ -127,14 +123,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     assembly.handoff_summary = handoff_summary;
 
-    let estimated_input = last_input_tokens(&resolved.config.kind, &existing_events);
-    let thinking_overhead = resolved.config.think_level.overhead_tokens();
+    let estimated_input = last_input_tokens(&resolved_config.kind, &existing_events);
+    let thinking_overhead = resolved_config.think_level.overhead_tokens();
     let headroom = compute_context_headroom(
-        resolved
-            .config
+        resolved_config
             .max_context_tokens
             .saturating_sub(thinking_overhead),
-        Some(resolved.config.max_output_tokens),
+        Some(resolved_config.max_output_tokens),
         estimated_input,
     );
 
@@ -220,86 +215,85 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     let request_id = format!("req_{}", pending.request_num);
-    let tier_name = pending
+    let _tier_name = pending
         .query
         .tier
         .clone()
         .unwrap_or_else(|| pending.config.default_tier().to_string());
-    let think = resolved.config.think_level;
-    let max_output = resolved.config.max_output_tokens;
-    let params = serde_json::json!({
+    let think = resolved_config.think_level;
+    let max_output = resolved_config.max_output_tokens;
+    let _params = serde_json::json!({
         "max_output_tokens": max_output,
         "temperature": pending.query.temperature,
     });
 
-    let provenance = build_model_request_provenance(
-        &pending,
-        resolved,
-        &assembly,
-        &existing_events,
-        &headroom,
-        &request_id,
-        &tier_name,
-        &params,
-    );
-
     {
         let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::ModelRequest {
+        if is_first_request {
+            store.append(EventPayload::ContextPrelude {
+                ts: now_timestamp()?,
+                messages: prelude_snapshot,
+            })?;
+        }
+        store.append(EventPayload::ContextSources {
             turn: pending.turn,
             ts: now_timestamp()?,
             request_id: request_id.clone(),
-            tier: tier_name,
-            think: think.as_str().to_string(),
-            provider: resolved.config.kind.as_str().to_string(),
-            model: resolved.config.model.clone(),
-            request_params: params,
-            base_url: Some(resolved.config.base_url.clone()),
-            history: Some(crate::event::types::RequestHistory {
-                first: existing_events.first().map(|event| event.id),
-                last: existing_events.last().map(|event| event.id),
-                message_count: Some(1 + assembly.prelude_messages.len() + assembly.history.len()),
-            }),
-            tools: Some(crate::event::types::RequestTools {
-                hash: Some(resolved.registry_hash.clone()),
-                count: Some(resolved.tool_count),
-                names: Some(resolved.tool_names.clone()),
-            }),
-            context: Some(crate::event::types::RequestContext {
-                system: assembly.system_prompt.clone(),
-                prelude: if is_first_request {
-                    Some(prelude_snapshot)
-                } else {
-                    None
-                },
-                notices: notice_snapshots,
-            }),
-            provenance: Some(serde_json::to_value(&provenance)?),
+            project_instruction_sources: assembly
+                .project_instruction_sources
+                .iter()
+                .map(|source| crate::context::FileSource {
+                    path: source.path.clone(),
+                    hash: source.hash.clone(),
+                })
+                .collect(),
+            memory_sources: assembly
+                .memory_sources
+                .iter()
+                .map(|source| crate::context::FileSource {
+                    path: source.path.clone(),
+                    hash: source.hash.clone(),
+                })
+                .collect(),
         })?;
     }
 
     let request = crate::provider::types::ProviderRequest {
         assembly,
         catalog: &catalog,
-        model: resolved.config.model.clone(),
+        model: resolved_config.model.clone(),
         max_output_tokens: Some(max_output),
         temperature: pending.query.temperature,
         stream: true,
         think_level: think,
-        thinking: resolved.config.thinking.clone(),
+        thinking: resolved_config.thinking.clone(),
     };
 
     let mut lead_events = Vec::new();
+    let provider_name = resolved_config.kind.as_str().to_string();
+    let model_name = resolved_config.model.clone();
+    emit_runtime_log(
+        &mut pending,
+        LogLevel::Info,
+        "runtime.model_request",
+        format!("requesting {provider_name} model {model_name}"),
+        Some(serde_json::json!({
+            "provider": provider_name,
+            "model": model_name,
+            "request_id": request_id,
+        })),
+    )?;
+    lead_events.extend(pending.pending_events.drain(..));
+    lead_events.push(UiEvent::ModelRequest {
+        model: model_name,
+        provider: provider_name,
+    });
     if pending.request_num == 1 {
         lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
-    lead_events.push(UiEvent::ModelRequest {
-        model: resolved.config.model.clone(),
-        provider: resolved.config.kind.as_str().to_string(),
-    });
 
     let handoff_active = pending.handoff_triggered;
-    match crate::provider::stream_provider(&resolved.config, &request).await {
+    match crate::provider::stream_provider(&resolved_config, &request).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             pending,
             request_id,
@@ -335,49 +329,109 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 })
                 .unwrap_or_default();
             let mut store = EventStore::open(&pending.events_path)?;
-            store.append(EventPayload::HandoffTrigger {
-                ts: now_timestamp()?,
-                trigger: crate::event::HandoffTriggerReason::OverflowError,
-            })?;
             store.append(EventPayload::Handoff {
+                turn: pending.turn,
                 ts: now_timestamp()?,
+                request_id: request_id.clone(),
                 summary: user_input,
-                kept_turns: pending.handoff_keep_turns,
+                keep_turns: pending.handoff_keep_turns,
+            })?;
+            store.append(EventPayload::ModelError {
+                turn: pending.turn,
+                ts: now_timestamp()?,
+                request_id: request_id.clone(),
+                kind: "context_too_large".to_string(),
+                message: failure.message.clone(),
             })?;
             store.append(EventPayload::TurnEnd {
                 turn: pending.turn,
                 ts: now_timestamp()?,
             })?;
-            Err(crate::error::Error::Provider {
-                kind: failure.kind,
-                message: failure.message,
-                provider: Some(resolved.config.kind.as_str().to_string()),
-                model: Some(resolved.config.model.clone()),
-            })
+            Ok(pending_failure_step(
+                pending,
+                lead_events,
+                crate::error::Error::Provider {
+                    kind: failure.kind,
+                    message: failure.message,
+                    provider: Some(resolved_config.kind.as_str().to_string()),
+                    model: Some(resolved_config.model.clone()),
+                },
+            ))
         }
         Err(failure) => {
-            lead_events.push(UiEvent::Error {
-                code: provider_failure_kind(&failure.kind).to_string(),
-                message: failure.message.clone(),
-            });
             append_model_error(
                 &pending.events_path,
                 pending.turn,
                 request_id,
-                provider_failure_kind(&failure.kind),
+                failure.kind.as_event_kind(),
                 &failure.message,
-                Some(resolved.config.kind.as_str().to_string()),
-                Some(resolved.config.model.clone()),
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
-            Err(crate::error::Error::Provider {
-                kind: failure.kind,
-                message: failure.message,
-                provider: Some(resolved.config.kind.as_str().to_string()),
-                model: Some(resolved.config.model.clone()),
-            })
+            Ok(pending_failure_step(
+                pending,
+                lead_events,
+                crate::error::Error::Provider {
+                    kind: failure.kind,
+                    message: failure.message,
+                    provider: Some(resolved_config.kind.as_str().to_string()),
+                    model: Some(resolved_config.model.clone()),
+                },
+            ))
         }
     }
+}
+
+trait ProviderFailureKindEventName {
+    fn as_event_kind(&self) -> &'static str;
+}
+
+impl ProviderFailureKindEventName for crate::provider::types::ProviderFailureKind {
+    fn as_event_kind(&self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::RateLimited => "rate_limited",
+            Self::ContextTooLarge => "context_too_large",
+            Self::InvalidRequest => "invalid_request",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Transport => "transport",
+            Self::Internal => "internal",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn pending_failure_step(
+    mut pending: PendingRun,
+    lead_events: Vec<UiEvent>,
+    error: crate::error::Error,
+) -> PendingStep {
+    pending.pending_events.extend(lead_events.into_iter().rev());
+    pending.flush_runtime_logs();
+    pending.pending_error = Some(error);
+    PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: None,
+    }
+}
+
+pub(super) fn emit_runtime_log(
+    pending: &mut PendingRun,
+    level: LogLevel,
+    kind: impl Into<String>,
+    message: impl Into<String>,
+    data: Option<serde_json::Value>,
+) -> Result<()> {
+    let mut record = LogRecord::new(now_timestamp()?, level, LogScope::Runtime);
+    record.kind = kind.into();
+    record.message = message.into();
+    record.session_id = Some(pending.session_id.clone());
+    record.run_id = Some(pending.session_id.clone());
+    record.workspace = Some(pending.workspace.display().to_string());
+    record.turn = Some(pending.turn);
+    record.data = data;
+    pending.pending_events.push_back(UiEvent::Log { record });
+    Ok(())
 }
 
 fn check_loop_limit(pending: &PendingRun) -> Result<()> {
@@ -398,8 +452,6 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             format!("req_{}", pending.request_num),
             "loop_limit",
             "tool loop exceeded maximum provider requests",
-            Some(provider_name.clone()),
-            Some(model.clone()),
         )?;
         append_turn_end(&pending.events_path, pending.turn)?;
         return Err(crate::error::Error::Provider {
@@ -547,80 +599,6 @@ fn inject_runtime_context(
     user_msg.blocks = new_blocks;
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_model_request_provenance(
-    pending: &PendingRun,
-    resolved: &ResolvedRuntime,
-    assembly: &crate::context::ContextAssembly,
-    existing_events: &[crate::event::StoredEvent],
-    headroom: &ContextHeadroom,
-    request_id: &str,
-    tier_name: &str,
-    params: &serde_json::Value,
-) -> crate::context::RequestProvenance {
-    RequestProvenance {
-        request_id: request_id.to_string(),
-        tier: tier_name.to_string(),
-        workspace: pending.workspace.display().to_string(),
-        platform: platform_label().to_string(),
-        current_date: current_date_string(),
-        project_instruction_sources: assembly
-            .project_instruction_sources
-            .iter()
-            .map(|s| FileSource {
-                path: s.path.clone(),
-                hash: s.hash.clone(),
-            })
-            .collect(),
-        memory_sources: assembly
-            .memory_sources
-            .iter()
-            .map(|s| FileSource {
-                path: s.path.clone(),
-                hash: s.hash.clone(),
-            })
-            .collect(),
-        prompt_asset_sources: assembly.prompt_asset_sources.clone(),
-        history_range: HistoryRange {
-            first_event_id: existing_events.first().map(|e| e.id),
-            last_event_id: existing_events.last().map(|e| e.id),
-        },
-        tool_registry: ToolRegistryProvenance {
-            hash: resolved.registry_hash.clone(),
-            names: resolved.tool_names.clone(),
-            tool_count: resolved.tool_count,
-        },
-        subagent_registry: pending
-            .subagent_registry
-            .as_ref()
-            .map(|r| SubagentRegistryProvenance {
-                hash: r.hash().to_string(),
-                names: r.names().to_vec(),
-            }),
-        skill_registry: pending.skill_registry.as_ref().map(|reg| {
-            crate::context::provenance::SkillRegistryProvenance {
-                hash: reg.hash().to_string(),
-                names: reg.names().to_vec(),
-            }
-        }),
-        plugin_registry: pending.plugin_registry.as_ref().map(|reg| {
-            crate::context::provenance::PluginRegistryProvenance {
-                hash: reg.hash().to_string(),
-                names: reg.names().to_vec(),
-                count: reg.len(),
-            }
-        }),
-        provider_format: provider_format_name(&resolved.config.kind).to_string(),
-        provider: resolved.config.kind.as_str().to_string(),
-        model: resolved.config.model.clone(),
-        request_params: params.clone(),
-        token_estimate: None,
-        context_budget_tier: headroom.tier.as_str().to_string(),
-        max_context_tokens: Some(headroom.max_context_tokens),
-        remaining_input_tokens: headroom.remaining_input_tokens,
-    }
-}
-
 fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     if pending.resolved.is_some() {
         return Ok(());
@@ -647,8 +625,6 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
                 request_id,
                 "missing_config",
                 &error.to_string(),
-                None,
-                None,
             )?;
             append_turn_end(&pending.events_path, pending.turn)?;
             return Err(error);
@@ -660,25 +636,6 @@ fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     } else {
         tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
     };
-    let registry_hash = tool::registry_hash(&registry);
-    let tool_names = tool::tool_names(&registry);
-    let tool_count = registry.len();
-    if let Ok(policy_text) = std::fs::read_to_string(&pending.policy_path) {
-        let policy_hash = sha2::Sha256::digest(policy_text.as_bytes());
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::PolicyLoaded {
-            ts: now_timestamp()?,
-            policy_hash: format!("sha256:{:x}", policy_hash),
-            mode: "default".to_string(),
-        })?;
-    }
-
-    pending.resolved = Some(ResolvedRuntime {
-        config,
-        registry,
-        registry_hash,
-        tool_names,
-        tool_count,
-    });
+    pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())
 }

@@ -1437,6 +1437,7 @@ dependencies = [
 name = "kuku"
 version = "0.1.0"
 dependencies = [
+ "fslock",
  "futures-core",
  "home",
  "htmd",

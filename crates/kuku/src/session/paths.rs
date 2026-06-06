@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf, Prefix};
 use home::env::{self, Env};
 
 use crate::error::{Error, Result};
+pub use crate::log::HostKind as HostLogKind;
 
 /// Resolve the kuku home directory from KUKU_HOME env or platform default.
 pub fn kuku_home() -> Result<PathBuf> {
@@ -124,6 +125,21 @@ pub fn session_events_path(
     Ok(path)
 }
 
+/// Resolve the session log path under KUKU_HOME/logs/session/.
+pub fn session_log_path(kuku_home: &Path, session_id: &str) -> Result<PathBuf> {
+    crate::log::session_log_path(kuku_home, session_id)
+}
+
+/// Resolve the runtime log path under KUKU_HOME/logs/runtime/.
+pub fn runtime_log_path(kuku_home: &Path, day: &str) -> Result<PathBuf> {
+    crate::log::runtime_log_path(kuku_home, day)
+}
+
+/// Resolve the host log path under KUKU_HOME/logs/host/<host>/.
+pub fn host_log_path(kuku_home: &Path, host: HostLogKind, day: &str) -> Result<PathBuf> {
+    crate::log::host_log_path(kuku_home, host, day)
+}
+
 /// Resolve the policy.md path for a workspace.
 pub fn project_policy_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
     let mut path = project_home(kuku_home, workspace)?;
@@ -157,6 +173,7 @@ pub(crate) fn session_lock_path(kuku_home: &Path, workspace: &Path, session_id: 
 #[cfg(test)]
 mod tests {
     use super::kuku_home_with_env;
+    use super::{host_log_path, runtime_log_path, session_log_path, HostLogKind};
     use crate::error::Error;
     use home::env::Env;
     use std::collections::HashMap;
@@ -265,5 +282,61 @@ mod tests {
         let err = super::project_home(&kuku_home, &workspace).unwrap_err();
 
         assert!(matches!(err, crate::error::Error::InvalidWorkspacePath(_)));
+    }
+
+    #[test]
+    fn session_log_path_uses_logs_root() {
+        let kuku_home = PathBuf::from("/tmp/kuku-home");
+
+        let path = session_log_path(&kuku_home, "sess_123").unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/kuku-home/logs/session/sess_123.jsonl")
+        );
+    }
+
+    #[test]
+    fn runtime_log_path_uses_daily_runtime_layout() {
+        let kuku_home = PathBuf::from("/tmp/kuku-home");
+
+        let path = runtime_log_path(&kuku_home, "2026-06-06").unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/kuku-home/logs/runtime/2026-06-06.jsonl")
+        );
+    }
+
+    #[test]
+    fn host_log_path_uses_host_kind_subdirectory() {
+        let kuku_home = PathBuf::from("/tmp/kuku-home");
+
+        let path = host_log_path(&kuku_home, HostLogKind::Server, "2026-06-06").unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/kuku-home/logs/host/server/2026-06-06.jsonl")
+        );
+    }
+
+    #[test]
+    fn session_log_path_rejects_invalid_session_id() {
+        let kuku_home = PathBuf::from("/tmp/kuku-home");
+
+        let error = session_log_path(&kuku_home, "../outside").unwrap_err();
+
+        assert!(matches!(error, Error::InvalidSessionId(value) if value == "../outside"));
+    }
+
+    #[test]
+    fn runtime_log_path_rejects_invalid_day_segment() {
+        let kuku_home = PathBuf::from("/tmp/kuku-home");
+
+        let error = runtime_log_path(&kuku_home, "2026-06-06/../../etc").unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidArgument(message) if message.contains("invalid log day segment"))
+        );
     }
 }

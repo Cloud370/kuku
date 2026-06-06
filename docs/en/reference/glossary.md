@@ -8,7 +8,7 @@
 | `kuku home` | Runtime home directory, default `~/.kuku` |
 | `Session` | One persisted execution history stored as a directory |
 | `turn` | One user-input to model-response cycle |
-| `events.jsonl` | Canonical append-only event log for a session |
+| `events.jsonl` | Append-only session fact log |
 | `Memory` | Long-lived context stored in `memory.md` files |
 
 ## Model and Context Terms

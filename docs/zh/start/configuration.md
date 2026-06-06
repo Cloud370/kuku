@@ -25,6 +25,8 @@ $KUKU_HOME/config.toml
 
 你可以把 secret 放在环境变量里，也可以在 `config.toml` 中直接写入字面量 `api_key`。
 
+其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。
+
 ## Model Tiers
 
 默认安装定义了三个 tier：
@@ -55,14 +57,17 @@ kuku config validate
 kuku config set model.balanced.think high
 ```
 
-## Discovery, Handoff, Plugins, and Updates
+## Discovery, Handoff, Logs, Plugins, and Updates
 
 主要的非 provider 分区有：
 
 - `[discovery]`，用于 Agent 和 Skill 自动发现
 - `[handoff]`，用于长 Session 摘要阈值
+- `[logs]`，用于可观测性日志保留策略
 - `[plugin]`，用于 package hook 执行
 - `[update]`，用于 release 来源和 channel 设置
+
+日志默认开启，且没有禁用开关。默认保留策略为 `max_age_days = 14` 和 `max_total_size_mb = 512`。
 
 准确的键定义见 [Config](../reference/config.md)。
 

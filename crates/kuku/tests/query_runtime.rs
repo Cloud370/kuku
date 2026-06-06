@@ -4,6 +4,7 @@ use common::{anthropic_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::event::{EventPayload, EventStore};
+use kuku::log::{LogLevel, LogRecord, LogScope};
 use kuku::{query, Error, PermissionChoice, Provider, UiEvent};
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
@@ -55,6 +56,45 @@ async fn start_creates_session_events_under_kuku_home() {
         }
         other => panic!("expected user.input, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn start_persists_session_scoped_log_without_event_payload() {
+    let env = TestEnv::new();
+
+    let run = query("inspect this project")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+    let session_id = run.session_id().to_string();
+
+    let session_log_path = env
+        .home
+        .path()
+        .join("logs")
+        .join("session")
+        .join(format!("{session_id}.jsonl"));
+    let content = std::fs::read_to_string(session_log_path).unwrap();
+    let records: Vec<LogRecord> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    assert!(records.iter().any(|record| {
+        record.kind == "session.turn_start"
+            && record.scope == LogScope::Session
+            && record.session_id.as_deref() == Some(session_id.as_str())
+            && record.run_id.as_deref() == Some(session_id.as_str())
+            && record.turn == Some(1)
+    }));
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(!events.iter().any(|event| {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        payload.get("log").is_some() || payload.get("debug").is_some()
+    }));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -119,6 +159,268 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
     }
 
     mock.assert();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_flush() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200).body(
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"stream overloaded\"}}\n\n",
+        );
+    });
+
+    let mut run = query("emit diagnostics")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let session_id = run.session_id().to_string();
+    let log_dir = env.home.path().join("logs").join("runtime");
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::TurnStart { turn: 1 })
+    ));
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::ModelRequest { .. })
+    ));
+    let log = run.next().await.unwrap().expect("runtime log");
+    match log {
+        UiEvent::Log { record } => {
+            assert_eq!(record.kind, "runtime.model_request");
+            assert_eq!(record.level, LogLevel::Info);
+            assert_eq!(record.scope, LogScope::Runtime);
+            assert_eq!(record.session_id.as_deref(), Some(session_id.as_str()));
+            assert_eq!(record.run_id.as_deref(), Some(session_id.as_str()));
+            assert!(
+                !log_dir.exists() || std::fs::read_dir(&log_dir).unwrap().next().is_none(),
+                "info log should be host-visible before disk flush"
+            );
+        }
+        other => panic!("expected runtime log, got {other:?}"),
+    }
+
+    let error = run.next().await.unwrap_err();
+    assert!(matches!(error, Error::Provider { .. }));
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_failed_turn_facts(&events, 1);
+    assert!(!events.iter().any(|event| {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        payload.get("log").is_some() || payload.get("debug").is_some()
+    }));
+
+    let records: Vec<kuku::log::LogRecord> = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .flat_map(|entry| {
+            let content = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            content
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(records
+        .iter()
+        .any(|record| record.kind == "runtime.model_request"
+            && record.session_id.as_deref() == Some(session_id.as_str())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_convenience_path_persists_buffered_runtime_info_logs_on_completion() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_log_run",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Run response."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+
+    let output = query("persist diagnostics")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+
+    let log_dir = env.home.path().join("logs").join("runtime");
+    let records: Vec<kuku::log::LogRecord> = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .flat_map(|entry| {
+            let content = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            content
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert_eq!(output.text, "Run response.");
+    assert!(records
+        .iter()
+        .any(|record| record.kind == "runtime.model_request"
+            && record.session_id.as_deref() == Some(output.session_id.as_str())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_log_preserves_turn_model_log_event_order() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_log_order",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Ordered response."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+
+    let mut run = query("ordered diagnostics")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let first = run.next().await.unwrap().expect("turn start");
+    let second = run.next().await.unwrap().expect("model request");
+    let third = run.next().await.unwrap().expect("log");
+
+    assert!(matches!(first, UiEvent::TurnStart { turn: 1 }));
+    assert!(matches!(second, UiEvent::ModelRequest { .. }));
+    assert!(matches!(third, UiEvent::Log { ref record } if record.kind == "runtime.model_request"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_start_failure_still_delivers_runtime_model_request_log() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+
+    let mut run = query("provider fails")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+    let session_id = run.session_id().to_string();
+    let log_dir = env.home.path().join("logs").join("runtime");
+
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::TurnStart { turn: 1 })
+    ));
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::ModelRequest { .. })
+    ));
+    let log = run.next().await.unwrap().expect("runtime log");
+    assert!(matches!(log, UiEvent::Log { ref record } if record.kind == "runtime.model_request"));
+
+    let error = run.next().await.unwrap_err();
+    assert!(matches!(error, Error::Provider { .. }));
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_failed_turn_facts(&events, 1);
+    assert!(!events.iter().any(|event| {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        payload.get("log").is_some() || payload.get("debug").is_some()
+    }));
+
+    let records: Vec<kuku::log::LogRecord> = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .flat_map(|entry| {
+            let content = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            content
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(records
+        .iter()
+        .any(|record| record.kind == "runtime.model_request"
+            && record.session_id.as_deref() == Some(session_id.as_str())));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_too_large_failure_still_delivers_runtime_model_request_log() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(413).body("context too large");
+    });
+
+    let mut run = query("context overflow")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+    let session_id = run.session_id().to_string();
+
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::TurnStart { turn: 1 })
+    ));
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::ModelRequest { .. })
+    ));
+    let log = run.next().await.unwrap().expect("runtime log");
+    assert!(matches!(log, UiEvent::Log { ref record } if record.kind == "runtime.model_request"));
+
+    let error = run.next().await.unwrap_err();
+    assert!(matches!(error, Error::Provider { .. }));
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_failed_turn_facts(&events, 1);
+    assert!(!events.iter().any(|event| {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        payload.get("log").is_some() || payload.get("debug").is_some()
+    }));
+}
+
+fn assert_failed_turn_facts(events: &[kuku::event::StoredEvent], turn: u64) {
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelError { turn: event_turn, .. } if event_turn == turn
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::TurnEnd { turn: event_turn, .. } if event_turn == turn
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -256,12 +558,10 @@ async fn run_emits_permission_requested_for_gated_tool() {
     }
 
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::PermissionRequest { .. })));
-    assert!(!events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::PermissionDecision { .. })));
+    assert!(!events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -399,7 +699,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
     }
 
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "session")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionAllow { ref scope, .. } if scope == "session")));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
 }
 
@@ -458,7 +758,9 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
 
     assert_eq!(output.text, "Command was blocked.");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "deny" && scope == "once")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. })));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
 }
 
@@ -512,7 +814,7 @@ async fn run_with_permission_choice_allows_gated_tool_and_continues() {
 
     assert_eq!(output.text, "Command was allowed.");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionDecision { ref decision, ref scope, .. } if decision == "allow" && scope == "once")));
+    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionAllow { ref scope, .. } if scope == "once")));
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
 }
 
@@ -554,7 +856,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
     std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
 
     let second_server = MockServer::start();
-    second_server.mock(|when, then| {
+    let specific = second_server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains("<kuku_system_notice>")
@@ -584,6 +886,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
         .run()
         .await
         .unwrap();
+    assert_eq!(specific.hits(), 1);
     assert_eq!(second.text, "second ok");
 }
 
@@ -727,57 +1030,26 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
         .unwrap();
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    let model_request = events
+    let context_sources = events
         .iter()
         .find_map(|event| match &event.payload {
-            EventPayload::ModelRequest {
-                provenance: Some(provenance),
+            EventPayload::ContextSources {
+                project_instruction_sources,
+                memory_sources,
                 ..
-            } => Some(provenance.clone()),
+            } => Some((project_instruction_sources.clone(), memory_sources.clone())),
             _ => None,
         })
-        .expect("model.request provenance");
+        .expect("context.sources fact event");
 
-    assert_eq!(
-        model_request["prompt_asset_sources"]
-            .as_array()
-            .unwrap()
-            .len(),
-        5
-    );
-    assert_eq!(
-        model_request["project_instruction_sources"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(model_request["memory_sources"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        model_request["platform"].as_str().unwrap(),
-        match std::env::consts::OS {
-            "linux" => "linux",
-            "windows" => "windows",
-            "macos" => "macos",
-            _ => "unknown",
-        }
-    );
-    assert_eq!(
-        model_request["current_date"].as_str().unwrap(),
-        time::OffsetDateTime::now_utc().date().to_string()
-    );
-    assert!(model_request["tool_registry"]["hash"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
-    let prompt_assets = model_request["prompt_asset_sources"].as_array().unwrap();
-    assert!(prompt_assets
+    assert_eq!(context_sources.0.len(), 1);
+    assert_eq!(context_sources.1.len(), 2);
+    assert!(context_sources
+        .0
         .iter()
-        .any(|entry| entry["path"] == "crates/kuku/prompts/system.md"));
-    assert!(prompt_assets
+        .any(|entry| entry.path.ends_with("AGENTS.md")));
+    assert!(context_sources
+        .1
         .iter()
-        .any(|entry| entry["path"] == "crates/kuku/prompts/project-context.md"));
-    assert!(prompt_assets
-        .iter()
-        .any(|entry| entry["path"] == "crates/kuku/prompts/tool-guidance.md"));
+        .any(|entry| entry.path.ends_with("memory.md")));
 }

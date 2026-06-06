@@ -8,7 +8,7 @@
 | `kuku home` | 运行时 home 目录，默认是 `~/.kuku` |
 | `Session` | 以目录形式存储的一段已持久化执行历史 |
 | `turn` | 一次从用户输入到模型响应的循环 |
-| `events.jsonl` | 某个 Session 规范的追加式事件日志 |
+| `events.jsonl` | 追加式 Session 事实日志 |
 | `Memory` | 存储在 `memory.md` 文件中的长期上下文 |
 
 ## 模型与上下文术语

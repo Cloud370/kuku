@@ -65,8 +65,8 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
     events.iter().any(|event| {
         matches!(
             &event.payload,
-            crate::event::EventPayload::PermissionDecision { tool_call_id: id, decision, .. }
-                if id == tool_call_id && decision == "deny"
+            crate::event::EventPayload::PermissionDeny { tool_call_id: id, .. }
+                if id == tool_call_id
         )
     })
 }
@@ -120,14 +120,13 @@ mod tests {
     fn denied_event(tool_call_id: &str) -> StoredEvent {
         StoredEvent {
             id: 99,
-            payload: EventPayload::PermissionDecision {
+            payload: EventPayload::PermissionDeny {
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
                 tool_call_id: tool_call_id.to_string(),
-                decision: "deny".to_string(),
-                scope: "once".to_string(),
+                tool: "run_command".to_string(),
+                reason: "permission gate unavailable".to_string(),
                 source: "runtime".to_string(),
-                rule: "permission_gate_unavailable".to_string(),
             },
         }
     }

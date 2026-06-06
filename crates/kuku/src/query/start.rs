@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
+use crate::log::{
+    runtime_log_path, session_log_path, BufferedLogWriter, LogLevel, LogRecord, LogScope,
+};
 use crate::session::{
     current_workspace, kuku_home, new_session_id, project_policy_path, session_events_path,
     validate_session_id,
@@ -76,6 +79,20 @@ impl Query {
             ts: now_timestamp()?,
             text: self.prompt.clone(),
         })?;
+
+        if let (Ok(session_log_path), Ok(ts)) =
+            (session_log_path(&kuku_home, &session_id), now_timestamp())
+        {
+            let mut record = LogRecord::new(ts, LogLevel::Info, LogScope::Session);
+            record.kind = "session.turn_start".to_string();
+            record.message = format!("starting turn {turn}");
+            record.session_id = Some(session_id.clone());
+            record.run_id = Some(session_id.clone());
+            record.workspace = Some(workspace.display().to_string());
+            record.turn = Some(turn);
+            let mut session_log_writer = BufferedLogWriter::with_flush_every(session_log_path, 1);
+            let _ = session_log_writer.push(record);
+        }
 
         let prompts_dir = self.prompts_dir.take();
         let skill_body = self.skill_body.take();
@@ -154,6 +171,26 @@ impl Query {
         } else {
             crate::prompt::builtin_prompt_catalog()
         };
+        let logs_config = config.logs();
+        let runtime_log_path =
+            runtime_log_path(&kuku_home, &super::helpers::current_date_string())?;
+        maybe_prune_logs_on_startup(&kuku_home, &logs_config, &runtime_log_path);
+        let runtime_log_writer = BufferedLogWriter::new(&runtime_log_path).with_post_flush_every(
+            32,
+            Box::new({
+                let kuku_home = kuku_home.clone();
+                let active_path = runtime_log_path.clone();
+                move || {
+                    let _ = crate::log::prune_logs(
+                        &kuku_home,
+                        &logs_config,
+                        std::time::SystemTime::now(),
+                        crate::log::PruneOptions::default().with_active_path(active_path.clone()),
+                    );
+                    Ok(())
+                }
+            }),
+        );
         Ok(Run {
             session_id: session_id.clone(),
             state: RunState::Pending(Box::new(PendingRun {
@@ -169,6 +206,7 @@ impl Query {
                 resolved: None,
                 queued_tool_calls: std::collections::VecDeque::new(),
                 pending_events: std::collections::VecDeque::new(),
+                pending_error: None,
                 config,
                 prompts_dir,
                 subagent_registry,
@@ -191,12 +229,14 @@ impl Query {
                 tool_denied: 0,
                 tool_errors: 0,
                 thinking_duration_ms: 0,
+                runtime_log_writer,
             })),
             slots: std::collections::HashMap::new(),
             slot_event_tx,
             slot_event_rx,
             cancel_token,
             lock_path,
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }
 
@@ -237,5 +277,52 @@ impl Query {
                 }
             }
         }
+    }
+}
+
+fn maybe_prune_logs_on_startup(
+    kuku_home: &std::path::Path,
+    logs_config: &crate::config::LogsConfig,
+    active_path: &std::path::Path,
+) {
+    static STARTUP_PRUNE_GATE: std::sync::OnceLock<std::sync::Mutex<crate::log::StartupPruneGate>> =
+        std::sync::OnceLock::new();
+    let gate = STARTUP_PRUNE_GATE.get_or_init(|| {
+        std::sync::Mutex::new(crate::log::StartupPruneGate::new(
+            std::time::Duration::from_secs(24 * 60 * 60),
+        ))
+    });
+    let mut gate = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !gate.should_prune(kuku_home, std::time::SystemTime::now()) {
+        return;
+    }
+    let kuku_home = kuku_home.to_path_buf();
+    let logs_config = logs_config.clone();
+    let active_path = active_path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = crate::log::prune_logs(
+            &kuku_home,
+            &logs_config,
+            std::time::SystemTime::now(),
+            startup_prune_options(&active_path),
+        );
+    });
+}
+
+fn startup_prune_options(active_path: &std::path::Path) -> crate::log::PruneOptions {
+    crate::log::PruneOptions::default().with_active_path(active_path.to_path_buf())
+}
+
+#[cfg(test)]
+mod startup_prune_tests {
+    use std::path::Path;
+
+    #[test]
+    fn startup_prune_options_exclude_active_runtime_path() {
+        let active_path = Path::new("/tmp/kuku/logs/runtime/2026-06-06.jsonl");
+
+        let options = super::startup_prune_options(active_path);
+
+        assert!(options.excludes_active_path(active_path));
     }
 }

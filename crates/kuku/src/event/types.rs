@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::context::provenance::FileSource;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// A single event persisted in a session's events.jsonl.
 pub struct StoredEvent {
@@ -10,46 +12,10 @@ pub struct StoredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// History metadata attached to a model request event.
-pub struct RequestHistory {
-    pub first: Option<u64>,
-    pub last: Option<u64>,
-    pub message_count: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Tool registry metadata attached to a model request event.
-pub struct RequestTools {
-    pub hash: Option<String>,
-    pub count: Option<usize>,
-    pub names: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Rendered context snapshot attached to a model request event.
-pub struct RequestContext {
-    pub system: String,
-    pub prelude: Option<Vec<ContextMessage>>,
-    pub notices: Vec<ContextMessage>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// A single message in the rendered context snapshot.
+/// A single message in a frozen prelude snapshot.
 pub struct ContextMessage {
     pub role: String,
     pub content: String,
-}
-
-/// Reason for triggering a context handoff.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HandoffTriggerReason {
-    #[serde(rename = "context_threshold")]
-    ContextThreshold,
-    #[serde(rename = "overflow_error")]
-    OverflowError,
-    /// Manual handoff requested by the user.
-    #[serde(rename = "user")]
-    User,
 }
 
 /// Scope of a turn rollback operation.
@@ -77,9 +43,7 @@ impl RollbackScope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
-// ModelRequest is the largest variant; boxing adds indirection with no benefit for a serialization data enum.
-#[allow(clippy::large_enum_variant)]
-/// All event types that can be written to and read from a session's events.jsonl.
+/// All fact events that can be written to and read from a session's events.jsonl.
 pub enum EventPayload {
     #[serde(rename = "session.meta")]
     SessionMeta {
@@ -90,33 +54,26 @@ pub enum EventPayload {
         kuku_version: String,
     },
 
+    #[serde(rename = "context.prelude")]
+    ContextPrelude {
+        ts: String,
+        messages: Vec<ContextMessage>,
+    },
+
+    #[serde(rename = "context.sources")]
+    ContextSources {
+        turn: u64,
+        ts: String,
+        request_id: String,
+        project_instruction_sources: Vec<FileSource>,
+        memory_sources: Vec<FileSource>,
+    },
+
     #[serde(rename = "turn.start")]
     TurnStart { turn: u64, ts: String },
 
     #[serde(rename = "user.input")]
     UserInput { turn: u64, ts: String, text: String },
-
-    #[serde(rename = "model.request")]
-    ModelRequest {
-        turn: u64,
-        ts: String,
-        request_id: String,
-        tier: String,
-        think: String,
-        provider: String,
-        model: String,
-        request_params: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        base_url: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        history: Option<RequestHistory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tools: Option<RequestTools>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<RequestContext>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provenance: Option<Value>,
-    },
 
     #[serde(rename = "model.response")]
     ModelResponse {
@@ -126,10 +83,8 @@ pub enum EventPayload {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thinking: Option<String>,
-        stop_reason: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool_call_count: Option<u64>,
-        usage: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens_total: Option<u32>,
     },
 
     #[serde(rename = "model.error")]
@@ -139,14 +94,6 @@ pub enum EventPayload {
         request_id: String,
         kind: String,
         message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        status: Option<u16>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        retryable: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
     },
 
     #[serde(rename = "tool.call")]
@@ -160,32 +107,25 @@ pub enum EventPayload {
         args: Value,
     },
 
-    #[serde(rename = "policy.loaded")]
-    PolicyLoaded {
-        ts: String,
-        policy_hash: String,
-        mode: String,
-    },
-
-    #[serde(rename = "permission.request")]
-    PermissionRequest {
+    #[serde(rename = "permission.allow")]
+    PermissionAllow {
         turn: u64,
         ts: String,
         tool_call_id: String,
         tool: String,
-        risk: String,
-        summary: String,
+        scope: String,
+        matcher: String,
+        source: String,
     },
 
-    #[serde(rename = "permission.decision")]
-    PermissionDecision {
+    #[serde(rename = "permission.deny")]
+    PermissionDeny {
         turn: u64,
         ts: String,
         tool_call_id: String,
-        decision: String,
-        scope: String,
+        tool: String,
+        reason: String,
         source: String,
-        rule: String,
     },
 
     #[serde(rename = "tool.result")]
@@ -201,21 +141,17 @@ pub enum EventPayload {
         structured: Option<Value>,
     },
 
-    #[serde(rename = "turn.end")]
-    TurnEnd { turn: u64, ts: String },
-
-    #[serde(rename = "handoff.trigger")]
-    HandoffTrigger {
-        ts: String,
-        trigger: HandoffTriggerReason,
-    },
-
     #[serde(rename = "handoff")]
     Handoff {
+        turn: u64,
         ts: String,
+        request_id: String,
         summary: String,
-        kept_turns: usize,
+        keep_turns: usize,
     },
+
+    #[serde(rename = "turn.end")]
+    TurnEnd { turn: u64, ts: String },
 
     #[serde(rename = "turn.rollback")]
     TurnRollback {
@@ -232,20 +168,6 @@ pub enum EventPayload {
         rollback_event_id: u64,
     },
 
-    #[serde(rename = "plugin.hook")]
-    PluginHook {
-        turn: u64,
-        ts: String,
-        event: String,
-        package: String,
-        command: String,
-        exit_code: i32,
-        blocked: bool,
-        duration_ms: u64,
-        #[serde(skip_serializing_if = "String::is_empty")]
-        output_summary: String,
-    },
-
     /// Unknown event type — raw JSON preserved for display, excluded from messages[].
     /// Not deserialized by serde; created manually in two-step deserialization.
     #[serde(skip)]
@@ -256,22 +178,20 @@ impl EventPayload {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::SessionMeta { .. } => "session.meta",
+            Self::ContextPrelude { .. } => "context.prelude",
+            Self::ContextSources { .. } => "context.sources",
             Self::TurnStart { .. } => "turn.start",
             Self::UserInput { .. } => "user.input",
-            Self::ModelRequest { .. } => "model.request",
             Self::ModelResponse { .. } => "model.response",
             Self::ModelError { .. } => "model.error",
             Self::ToolCall { .. } => "tool.call",
-            Self::PolicyLoaded { .. } => "policy.loaded",
-            Self::PermissionRequest { .. } => "permission.request",
-            Self::PermissionDecision { .. } => "permission.decision",
+            Self::PermissionAllow { .. } => "permission.allow",
+            Self::PermissionDeny { .. } => "permission.deny",
             Self::ToolResult { .. } => "tool.result",
-            Self::TurnEnd { .. } => "turn.end",
-            Self::HandoffTrigger { .. } => "handoff.trigger",
             Self::Handoff { .. } => "handoff",
+            Self::TurnEnd { .. } => "turn.end",
             Self::TurnRollback { .. } => "turn.rollback",
             Self::TurnRollbackUndo { .. } => "turn.rollback.undo",
-            Self::PluginHook { .. } => "plugin.hook",
             Self::Unknown(_) => "unknown",
         }
     }
@@ -282,12 +202,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handoff_trigger_round_trip() {
+    fn context_prelude_round_trip() {
         let event = StoredEvent {
-            id: 42,
-            payload: EventPayload::HandoffTrigger {
+            id: 1,
+            payload: EventPayload::ContextPrelude {
                 ts: "2026-05-27T00:00:00Z".to_string(),
-                trigger: HandoffTriggerReason::ContextThreshold,
+                messages: vec![ContextMessage {
+                    role: "user".to_string(),
+                    content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
+                }],
             },
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -300,9 +223,11 @@ mod tests {
         let event = StoredEvent {
             id: 43,
             payload: EventPayload::Handoff {
+                turn: 3,
                 ts: "2026-05-27T00:00:01Z".to_string(),
+                request_id: "req_3".to_string(),
                 summary: "## Goal\nBuild feature X".to_string(),
-                kept_turns: 2,
+                keep_turns: 2,
             },
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -311,30 +236,15 @@ mod tests {
     }
 
     #[test]
-    fn handoff_trigger_reason_variants_serialize_correctly() {
-        let cases = [
-            (
-                HandoffTriggerReason::ContextThreshold,
-                r#""context_threshold""#,
-            ),
-            (HandoffTriggerReason::OverflowError, r#""overflow_error""#),
-            (HandoffTriggerReason::User, r#""user""#),
-        ];
-        for (variant, expected) in &cases {
-            assert_eq!(serde_json::to_string(variant).unwrap(), *expected);
-            let back: HandoffTriggerReason = serde_json::from_str(expected).unwrap();
-            assert_eq!(back, *variant);
-        }
-    }
-
-    #[test]
     fn handoff_event_type_tag_is_handoff() {
         let event = StoredEvent {
             id: 1,
             payload: EventPayload::Handoff {
+                turn: 1,
                 ts: "t".to_string(),
+                request_id: "req_1".to_string(),
                 summary: "s".to_string(),
-                kept_turns: 0,
+                keep_turns: 0,
             },
         };
         let json = serde_json::to_value(&event).unwrap();
@@ -401,61 +311,5 @@ mod tests {
             serde_json::to_value(&event).unwrap()["type"],
             "turn.rollback"
         );
-    }
-
-    #[test]
-    fn turn_rollback_undo_event_type_tag() {
-        let event = StoredEvent {
-            id: 1,
-            payload: EventPayload::TurnRollbackUndo {
-                turn: 1,
-                ts: "t".to_string(),
-                rollback_event_id: 0,
-            },
-        };
-        assert_eq!(
-            serde_json::to_value(&event).unwrap()["type"],
-            "turn.rollback.undo"
-        );
-    }
-
-    #[test]
-    fn plugin_hook_round_trip() {
-        let event = StoredEvent {
-            id: 60,
-            payload: EventPayload::PluginHook {
-                turn: 3,
-                ts: "2026-05-31T00:00:00Z".to_string(),
-                event: "tool.pre_execute".to_string(),
-                package: "safety-guard".to_string(),
-                command: "hooks/check.sh".to_string(),
-                exit_code: 2,
-                blocked: true,
-                duration_ms: 150,
-                output_summary: "blocked: rm -rf".to_string(),
-            },
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        let back: StoredEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(event, back);
-    }
-
-    #[test]
-    fn plugin_hook_event_type_tag() {
-        let event = StoredEvent {
-            id: 1,
-            payload: EventPayload::PluginHook {
-                turn: 1,
-                ts: "t".to_string(),
-                event: "e".to_string(),
-                package: "p".to_string(),
-                command: "c".to_string(),
-                exit_code: 0,
-                blocked: false,
-                duration_ms: 0,
-                output_summary: String::new(),
-            },
-        };
-        assert_eq!(serde_json::to_value(&event).unwrap()["type"], "plugin.hook");
     }
 }

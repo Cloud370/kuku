@@ -214,26 +214,6 @@ pub(super) fn record_plugin_hooks(
     hook_event_name: &str,
     results: &[crate::plugin::executor::HookExecResult],
 ) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
-    for r in results {
-        if r.exit_code != 0 || r.output.block || r.timed_out {
-            store.append(EventPayload::PluginHook {
-                turn,
-                ts: now_timestamp()?,
-                event: hook_event_name.to_string(),
-                package: r.package_name.clone(),
-                command: String::new(),
-                exit_code: r.exit_code,
-                blocked: r.output.block,
-                duration_ms: r.duration_ms,
-                output_summary: r
-                    .output
-                    .additional_context
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_string(),
-            })?;
-        }
-    }
+    let _ = (events_path, turn, hook_event_name, results);
     Ok(())
 }

@@ -48,7 +48,7 @@ enum FileStateAt {
 }
 
 /// Filter events to exclude turns that have been rolled back (conversation scope).
-pub(crate) fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
+pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
     let mut undone_ids: HashSet<u64> = HashSet::new();
     let mut active_rollback: Option<(u64, u64, RollbackScope)> = None;
 
@@ -92,30 +92,25 @@ pub(crate) fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEv
         _ => HashSet::new(),
     };
 
-    let mut current_turn: Option<u64> = None;
     events
         .iter()
         .filter(|event| match &event.payload {
-            EventPayload::TurnStart { turn, .. } => {
-                current_turn = Some(*turn);
-                !skipped_turns.contains(turn)
-            }
+            EventPayload::TurnStart { turn, .. } => !skipped_turns.contains(turn),
             EventPayload::TurnEnd { turn, .. }
             | EventPayload::UserInput { turn, .. }
             | EventPayload::ModelResponse { turn, .. }
             | EventPayload::ToolCall { turn, .. }
             | EventPayload::ToolResult { turn, .. }
-            | EventPayload::ModelRequest { turn, .. }
             | EventPayload::ModelError { turn, .. }
-            | EventPayload::PermissionRequest { turn, .. }
-            | EventPayload::PermissionDecision { turn, .. } => !skipped_turns.contains(turn),
-            EventPayload::Handoff { .. } | EventPayload::HandoffTrigger { .. } => {
-                match current_turn {
-                    Some(t) => !skipped_turns.contains(&t),
-                    None => true,
-                }
-            }
-            _ => true,
+            | EventPayload::PermissionAllow { turn, .. }
+            | EventPayload::PermissionDeny { turn, .. }
+            | EventPayload::ContextSources { turn, .. }
+            | EventPayload::Handoff { turn, .. } => !skipped_turns.contains(turn),
+            EventPayload::ContextPrelude { .. } => true,
+            EventPayload::SessionMeta { .. }
+            | EventPayload::TurnRollback { .. }
+            | EventPayload::TurnRollbackUndo { .. }
+            | EventPayload::Unknown(_) => true,
         })
         .collect()
 }

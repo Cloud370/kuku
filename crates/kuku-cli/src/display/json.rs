@@ -62,6 +62,8 @@ pub enum OutputLine {
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    #[serde(rename = "log")]
+    Log { record: kuku::log::LogRecord },
     #[serde(rename = "session")]
     SessionStarted {
         session_id: String,
@@ -192,6 +194,10 @@ impl OutputLine {
             message,
             detail,
         }
+    }
+
+    pub fn log(record: kuku::log::LogRecord) -> Self {
+        OutputLine::Log { record }
     }
 
     pub fn session_started(

@@ -1,16 +1,15 @@
 # Agent Loop
 
-Nothing counts until it is written to `events.jsonl`.
+Nothing counts as a session fact until it is written to `events.jsonl`.
 
 ## Turn flow
 
 ```text
 turn.start
   -> user.input
-  -> model.request
   -> model.response
       stop_reason = tool_use ?
-        yes -> tool.call -> permission.request -> permission.decision -> tool.result -> loop
+        yes -> tool.call -> permission.allow|permission.deny -> tool.result -> loop
         no  -> turn.end
 ```
 
@@ -18,10 +17,9 @@ turn.start
 
 1. kuku appends `turn.start` and `user.input`.
 2. It rebuilds the model context from files and persisted events.
-3. It appends `model.request` with the resolved provider, model, and provenance.
-4. It streams the model response to the host and appends `model.response` when complete.
-5. If the response ends the turn, kuku appends `turn.end`.
-6. If the response asks for tools, kuku appends `tool.call`, evaluates permissions, executes the tools, appends `tool.result`, and rebuilds context for the next model call.
+3. It streams the model response to the host and appends `model.response` when complete.
+4. If the response ends the turn, kuku appends `turn.end`.
+5. If the response asks for tools, kuku appends `tool.call`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
 
 ## Tool execution
 
@@ -43,6 +41,8 @@ Two session behaviors change what the next model call sees:
 - rollback appends marker events that remove prior turns from future context rebuilds, and can also revert files
 
 See [Sessions](sessions.md) for both behaviors.
+
+Runtime streams and observability logs are separate from the session fact log. See [Events](../reference/events.md) and [Sessions](sessions.md#observability-logs).
 
 ## Maintainer view
 

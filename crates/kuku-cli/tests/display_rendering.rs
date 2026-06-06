@@ -124,6 +124,25 @@ fn json_error_serializes() {
 }
 
 #[test]
+fn json_log_serializes_record_for_host_streams() {
+    let mut record = kuku::log::LogRecord::new(
+        "2026-06-06T00:00:00Z",
+        kuku::log::LogLevel::Info,
+        kuku::log::LogScope::Runtime,
+    );
+    record.kind = "runtime.model_request".into();
+    record.message = "requesting model".into();
+    record.session_id = Some("s_log".into());
+
+    let line = OutputLine::log(record).to_json_line();
+    let json: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+    assert_eq!(json["type"], "log");
+    assert_eq!(json["record"]["kind"], "runtime.model_request");
+    assert_eq!(json["record"]["session_id"], "s_log");
+}
+
+#[test]
 fn json_session_serializes() {
     let line = OutputLine::session_started(
         "abc123".into(),

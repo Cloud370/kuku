@@ -1,6 +1,6 @@
 # Events
 
-`events.jsonl` 是追加写入的日志。每一行都是一个已持久化事件。
+`events.jsonl` 是追加写入的 Session 事实日志。每一行都是一个 Session 的已持久化事实。
 
 ## 命名规则
 
@@ -15,22 +15,20 @@
 | Event | Meaning |
 |---|---|
 | `session.meta` | Session 元数据。新 Session 中的第一个事件。 |
-| `policy.loaded` | 已加载 `policy.md` 的哈希。可选。 |
+| `context.prelude` | 用于上下文重建的运行时 prelude。 |
+| `context.sources` | 上下文来源摘要。 |
 | `turn.start` | 一轮开始。 |
 | `user.input` | 本轮的用户 Prompt。 |
-| `model.request` | 已解析的 provider 请求元数据。 |
 | `model.response` | 已完成的 provider 响应。 |
 | `model.error` | provider 失败。 |
 | `tool.call` | 一次请求的 Tool 调用。 |
+| `permission.allow` | Tool 授权允许决策。 |
+| `permission.deny` | Tool 授权拒绝决策。 |
 | `tool.result` | 一次 Tool 调用的结果。 |
-| `permission.request` | 等待授权的 Tool。 |
-| `permission.decision` | 授权结果。 |
+| `handoff` | handoff 摘要载荷。 |
 | `turn.end` | 一轮结束。 |
 | `turn.rollback` | 回滚标记。 |
 | `turn.rollback.undo` | 撤销一次回滚。 |
-| `handoff.trigger` | 上下文 handoff 触发器。 |
-| `handoff` | handoff 摘要载荷。 |
-| `plugin.hook` | hook 执行结果。 |
 
 ## 通用字段
 
@@ -47,12 +45,12 @@
 
 `turn.rollback` 会记录以下作用域值之一：
 
-- `ConversationOnly`
-- `FilesOnly`
-- `Both`
+- `conversation_only`
+- `files_only`
+- `both`
 
-## 仅运行时与已持久化
+## Session 事实与运行时流
 
-并非每个运行时事件都会被持久化。流式增量，例如文本块、thinking 块和实时 Tool 输出，都是面向 host 的运行时事件，不会写入 `events.jsonl`。
+并非每个运行时事件都是 Session 事实。流式增量，例如文本块、thinking 块、实时 Tool 输出，以及 host 可见的日志记录，都是运行时流事件，不会写入 `events.jsonl`。
 
 HTTP 线路事件见 [Server API](server-api.md)。

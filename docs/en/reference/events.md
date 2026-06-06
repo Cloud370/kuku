@@ -1,6 +1,6 @@
 # Events
 
-`events.jsonl` is an append-only log. Each line is one persisted event.
+`events.jsonl` is the append-only session fact log. Each line is one persisted fact for a session.
 
 ## Naming Rule
 
@@ -15,22 +15,20 @@ Lowercase and dot-separated.
 | Event | Meaning |
 |---|---|
 | `session.meta` | Session metadata. First event in a new session. |
-| `policy.loaded` | Hash of the loaded `policy.md`. Optional. |
+| `context.prelude` | Runtime prelude included for context rebuilds. |
+| `context.sources` | Context source summary. |
 | `turn.start` | Start of one turn. |
 | `user.input` | User prompt for the turn. |
-| `model.request` | Resolved provider request metadata. |
 | `model.response` | Completed provider response. |
 | `model.error` | Provider failure. |
 | `tool.call` | One requested tool call. |
+| `permission.allow` | Tool authorization allow decision. |
+| `permission.deny` | Tool authorization deny decision. |
 | `tool.result` | Result of one tool call. |
-| `permission.request` | Tool awaiting authorization. |
-| `permission.decision` | Authorization outcome. |
+| `handoff` | Handoff summary payload. |
 | `turn.end` | End of one turn. |
 | `turn.rollback` | Rollback marker. |
 | `turn.rollback.undo` | Undo of a rollback. |
-| `handoff.trigger` | Context handoff trigger. |
-| `handoff` | Handoff summary payload. |
-| `plugin.hook` | Hook execution outcome. |
 
 ## Common Fields
 
@@ -47,12 +45,12 @@ Every persisted event line includes at least:
 
 `turn.rollback` records one of these scope values:
 
-- `ConversationOnly`
-- `FilesOnly`
-- `Both`
+- `conversation_only`
+- `files_only`
+- `both`
 
-## Runtime-Only vs Persisted
+## Session Facts vs Runtime Streams
 
-Not every runtime event is persisted. Streaming deltas such as text chunks, thinking chunks, and live tool output are host-facing runtime events, not `events.jsonl` entries.
+Not every runtime event is a session fact. Streaming deltas such as text chunks, thinking chunks, live tool output, and host-visible log records are runtime stream events, not `events.jsonl` entries.
 
 For HTTP wire events, see [Server API](server-api.md).

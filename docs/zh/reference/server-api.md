@@ -80,6 +80,7 @@ server 当前发出的顶层事件类型：
 - `tool_output`
 - `tool_end`
 - `permission`
+- `log`
 - `done`
 - `cancelled`
 - `error`
@@ -89,8 +90,24 @@ server 当前发出的顶层事件类型：
 ```json
 {"type":"run_start","run_id":"..."}
 {"type":"text","content":"hello"}
-{"type":"done","session_id":"...","text":"done","turn":1,"usage":null}
+{"type":"done","session_id":"...","text":"done","turn":1,"usage":null,"model_request_count":1,"thinking_duration_ms":0,"tool_summary":{"total_calls":0,"names":[],"denied":0,"errors":0,"rounds":0}}
 ```
+
+`done` 事件包含 run 指标：
+
+| Field | Type | Description |
+|---|---|---|
+| `model_request_count` | `u64` | 本 Session 中的模型 API 调用次数 |
+| `thinking_duration_ms` | `u64` | thinking block 的累计耗时 |
+| `tool_summary.total_calls` | `u64` | Tool 调用总数（包括被阻止的调用） |
+| `tool_summary.names` | `string[]` | 按首次出现顺序排列的唯一 Tool 名称 |
+| `tool_summary.denied` | `u64` | 权限拒绝次数 |
+| `tool_summary.errors` | `u64` | 状态为错误的 Tool 执行次数 |
+| `tool_summary.rounds` | `u64` | 模型到 Tool 再到结果的循环次数 |
+
+run 会以 `done`、`cancelled` 或 `error` 结束。`done` 携带最终文本、usage 和 `tool_summary`；取消和错误表示终止，不包含最终 run 指标。
+
+`log` 记录是活动流中 host 可见的可观测性信息。它们不是已持久化的 Session 事实。
 
 ## `DELETE /runs/{id}`
 
@@ -164,3 +181,5 @@ server 当前发出的顶层事件类型：
 
 - 仅历史事件：JSON 数组
 - 历史事件加实时缓冲行：带 `events` 和 `active_stream` 的对象
+
+持久化的 `/events` 数据是来自 `events.jsonl` 的 Session 事实日志。当存在活动流时，它也可能包含 host 可见的运行时记录，包括适用场景下的日志记录；持久化的 Session 语义仍然聚焦于事实。

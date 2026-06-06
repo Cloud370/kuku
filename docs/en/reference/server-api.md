@@ -80,6 +80,7 @@ Top-level event types currently emitted by the server:
 - `tool_output`
 - `tool_end`
 - `permission`
+- `log`
 - `done`
 - `cancelled`
 - `error`
@@ -104,7 +105,9 @@ The `done` event includes run metrics:
 | `tool_summary.errors` | `u64` | Tool executions with error status |
 | `tool_summary.rounds` | `u64` | Model→tools→result cycles |
 
-On interrupt (`session_interrupted`), `response` is partial text or `null`. `usage` and `tools` use the same structure as above.
+Runs finish with `done`, `cancelled`, or `error`. `done` carries final text, usage, and `tool_summary`; cancellation and errors report termination without the final run metrics.
+
+`log` records are host-visible observability in active streams. They are not persisted session facts.
 
 ## `DELETE /runs/{id}`
 
@@ -178,3 +181,5 @@ Response shapes:
 
 - historical events only: JSON array
 - historical events plus live buffered lines: object with `events` and `active_stream`
+
+Persisted `/events` data is the session fact log from `events.jsonl`. When an active stream is present, it may also include host-visible runtime records, including log records where applicable; the persisted session semantics remain fact-focused.

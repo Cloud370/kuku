@@ -71,6 +71,13 @@ async fn full_run_lifecycle() {
 
     let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
     assert_eq!(last["type"], "done");
+
+    let log = lines
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|value| value["type"] == "log" && value["record"]["kind"] == "runtime.model_request")
+        .expect("expected runtime log record in server stream");
+    assert_eq!(log["record"]["scope"], "runtime");
 }
 
 #[tokio::test]

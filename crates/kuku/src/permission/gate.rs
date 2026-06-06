@@ -43,17 +43,20 @@ pub struct GateDecision {
     pub rule: String,
 }
 
-/// Extract session-scoped permission grants from previously recorded permission decisions.
+/// Extract session-scoped permission grants from previously recorded permission facts.
 pub fn recover_session_grants(events: &[StoredEvent]) -> Vec<SessionGrant> {
     events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::PermissionDecision {
-                decision,
+            EventPayload::PermissionAllow {
+                tool,
                 scope,
-                rule,
+                matcher,
                 ..
-            } if decision == "allow" && scope == "session" => parse_session_rule(rule),
+            } if scope == "session" => Some(SessionGrant {
+                tool: tool.clone(),
+                pattern: matcher_from_rule(matcher),
+            }),
             _ => None,
         })
         .collect()
@@ -130,16 +133,17 @@ pub fn decide_tool_call(
     }
 }
 
-fn parse_session_rule(rule: &str) -> Option<SessionGrant> {
-    let open = rule.find('(')?;
-    let close = rule.rfind(')')?;
+fn matcher_from_rule(rule: &str) -> String {
+    let Some(open) = rule.find('(') else {
+        return rule.to_string();
+    };
+    let Some(close) = rule.rfind(')') else {
+        return rule.to_string();
+    };
     if close <= open + 1 || close != rule.len() - 1 {
-        return None;
+        return rule.to_string();
     }
-    Some(SessionGrant {
-        tool: rule[..open].trim().to_string(),
-        pattern: rule[open + 1..close].trim().to_string(),
-    })
+    rule[open + 1..close].trim().to_string()
 }
 
 fn hard_guard_rule(tool: &str, risk: &str, candidate: &str) -> Option<String> {

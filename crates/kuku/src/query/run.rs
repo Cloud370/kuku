@@ -8,8 +8,8 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_permission_decision, display_summary, now_timestamp, permission_candidate,
-    permission_rule,
+    append_model_error, append_permission_decision, append_turn_end, display_summary,
+    now_timestamp, permission_candidate, permission_rule,
 };
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
@@ -57,11 +57,29 @@ impl Run {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
         }
-        let (events_path, turn) = match &self.state {
-            RunState::Pending(p) => (p.events_path.clone(), p.turn),
-            RunState::Streaming(s) => (s.pending.events_path.clone(), s.pending.turn),
-            RunState::WaitingForPermission(w) => (w.pending.events_path.clone(), w.pending.turn),
-            RunState::Cancelled { .. } | RunState::Done(_) => return,
+        let (events_path, turn) = match std::mem::replace(&mut self.state, RunState::Done(None)) {
+            RunState::Pending(mut pending) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut pending);
+                pending.flush_runtime_logs();
+                (pending.events_path.clone(), pending.turn)
+            }
+            RunState::Streaming(mut streaming) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
+                streaming.pending.flush_runtime_logs();
+                (
+                    streaming.pending.events_path.clone(),
+                    streaming.pending.turn,
+                )
+            }
+            RunState::WaitingForPermission(mut waiting) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut waiting.pending);
+                waiting.pending.flush_runtime_logs();
+                (waiting.pending.events_path.clone(), waiting.pending.turn)
+            }
+            other @ (RunState::Cancelled { .. } | RunState::Done(_)) => {
+                self.state = other;
+                return;
+            }
         };
         self.state = RunState::Cancelled { events_path, turn };
         self.cancel_token.notify_waiters();
@@ -70,10 +88,12 @@ impl Run {
     /// Poll for the next UI event from the running query.
     pub async fn next(&mut self) -> Result<Option<UiEvent>> {
         loop {
+            self.persist_deferred_runtime_logs();
+
             // 1. Permission queue priority — don't wait for slots
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
-                    return Ok(Some(event));
+                    return Ok(Some(self.defer_runtime_log_if_needed(event)));
                 }
             }
 
@@ -143,12 +163,12 @@ impl Run {
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
-                        return Ok(Some(event));
+                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
                     }
                 }
                 RunState::Streaming(streaming) => {
                     if let Some(event) = self.advance_from_streaming(streaming).await? {
-                        return Ok(Some(event));
+                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
                     }
                 }
                 RunState::WaitingForPermission(waiting) => {
@@ -175,6 +195,37 @@ impl Run {
                 }
                 RunState::Done(None) => return Ok(None),
             }
+        }
+    }
+
+    fn defer_runtime_log_if_needed(&mut self, event: UiEvent) -> UiEvent {
+        if let UiEvent::Log { record } = &event {
+            self.deferred_runtime_logs.push_back(record.clone());
+        }
+        event
+    }
+
+    fn persist_deferred_runtime_logs(&mut self) {
+        let Some(record) = self.deferred_runtime_logs.pop_front() else {
+            return;
+        };
+        match &mut self.state {
+            RunState::Pending(pending) => {
+                let _ = pending.runtime_log_writer.push(record);
+            }
+            RunState::Streaming(streaming) => {
+                let _ = streaming.pending.runtime_log_writer.push(record);
+            }
+            RunState::WaitingForPermission(waiting) => {
+                let _ = waiting.pending.runtime_log_writer.push(record);
+            }
+            RunState::Cancelled { .. } | RunState::Done(_) => {}
+        }
+    }
+
+    fn persist_deferred_runtime_logs_for_pending(&mut self, pending: &mut PendingRun) {
+        while let Some(record) = self.deferred_runtime_logs.pop_front() {
+            let _ = pending.runtime_log_writer.push(record);
         }
     }
 
@@ -214,6 +265,10 @@ impl Run {
                     turn,
                 }))
             }
+            PendingStep::Failed(error) => {
+                self.state = RunState::Done(None);
+                Err(error)
+            }
         }
     }
 
@@ -225,12 +280,20 @@ impl Run {
             self.state = RunState::Streaming(streaming);
             return Ok(Some(event));
         }
-        match Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await? {
-            Some(event) => {
+        let poll = Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await;
+        match poll {
+            Err(error) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
+                record_streaming_provider_error_facts(&streaming, &error);
+                streaming.pending.flush_runtime_logs();
+                Err(error)
+            }
+            Ok(Some(event)) => {
                 self.state = RunState::Streaming(streaming);
                 Ok(Some(event))
             }
-            None => {
+            Ok(None) => {
+                self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
                 let step = super::step::finish_streaming(*streaming).await?;
                 match step {
                     PendingStep::Pending { pending, .. } => {
@@ -500,7 +563,12 @@ impl Run {
                     );
                 }
                 ProviderChunk::ServerError { code, message } => {
-                    return Ok(Some(UiEvent::Error { code, message }));
+                    return Err(crate::error::Error::Provider {
+                        kind: crate::provider::types::ProviderFailureKind::Unknown,
+                        message: format!("{code}: {message}"),
+                        provider: None,
+                        model: None,
+                    });
                 }
                 ProviderChunk::StreamEnd => {}
             }
@@ -681,9 +749,38 @@ fn has_permission_decision(events: &[crate::event::StoredEvent], tool_call_id: &
     events.iter().any(|event| {
         matches!(
             &event.payload,
-            EventPayload::PermissionDecision { tool_call_id: id, .. } if id == tool_call_id
+            EventPayload::PermissionAllow { tool_call_id: id, .. }
+                | EventPayload::PermissionDeny { tool_call_id: id, .. }
+                if id == tool_call_id
         )
     })
+}
+
+fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error: &Error) {
+    let Error::Provider { kind, message, .. } = error else {
+        return;
+    };
+    let _ = append_model_error(
+        &streaming.pending.events_path,
+        streaming.pending.turn,
+        streaming.request_id.clone(),
+        provider_failure_event_kind(*kind),
+        message,
+    );
+    let _ = append_turn_end(&streaming.pending.events_path, streaming.pending.turn);
+}
+
+fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {
+    match kind {
+        crate::provider::types::ProviderFailureKind::Authentication => "authentication",
+        crate::provider::types::ProviderFailureKind::RateLimited => "rate_limited",
+        crate::provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
+        crate::provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
+        crate::provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
+        crate::provider::types::ProviderFailureKind::Transport => "transport",
+        crate::provider::types::ProviderFailureKind::Internal => "internal",
+        crate::provider::types::ProviderFailureKind::Unknown => "unknown",
+    }
 }
 
 async fn run_session_end_hooks(output: &super::types::RunOutput, turn: u64) {
@@ -739,6 +836,7 @@ mod tests {
             default_tier: "balanced".to_string(),
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
+            logs: crate::config::LogsConfig::default(),
             plugin: crate::config::PluginConfig::default(),
             update: crate::config::UpdateConfig::default(),
         }
@@ -757,6 +855,7 @@ mod tests {
             slot_event_rx,
             cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         }
     }
 
@@ -786,6 +885,7 @@ mod tests {
             child_session_count: 0,
             tool_registry_override: None,
             pending_events: std::collections::VecDeque::new(),
+            pending_error: None,
             catalog: crate::prompt::builtin_prompt_catalog(),
             cancel_token,
             handoff_triggered: false,
@@ -800,6 +900,7 @@ mod tests {
             tool_names: Vec::new(),
             tool_denied: 0,
             tool_errors: 0,
+            runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
         }
     }
 
@@ -857,10 +958,131 @@ mod tests {
             slot_event_rx,
             cancel_token: cancel_token.clone(),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         };
 
         cancel_token.notify_waiters();
         assert!(matches!(&run.state, RunState::Cancelled { .. }));
+    }
+
+    #[test]
+    fn runtime_log_emit_fans_out_before_best_effort_persistence_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pending = make_test_pending(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer =
+            crate::log::BufferedLogWriter::with_flush_every(dir.path().join("runtime.jsonl"), 1);
+        pending.runtime_log_writer.set_fail_after_bytes(Some(0));
+
+        let result = crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Info,
+            "runtime.test",
+            "test log",
+            None,
+        );
+
+        assert!(result.is_ok());
+        let Some(UiEvent::Log { record }) = pending.pending_events.pop_front() else {
+            panic!("expected host-visible log event before persistence failure");
+        };
+        assert_eq!(record.kind, "runtime.test");
+    }
+
+    #[tokio::test]
+    async fn runtime_log_persists_only_after_host_consumes_log_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("runtime.jsonl");
+        let mut pending = make_test_pending(
+            events_path,
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer = crate::log::BufferedLogWriter::with_flush_every(&log_path, 1);
+        crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Warn,
+            "runtime.warn",
+            "warn log",
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !log_path.exists(),
+            "disk write happened before host delivery"
+        );
+
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        let mut run = Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(pending)),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        };
+
+        let event = run.next().await.unwrap().expect("log event");
+        assert!(matches!(event, UiEvent::Log { .. }));
+        assert!(
+            !log_path.exists(),
+            "disk write happened before host consumed log"
+        );
+
+        let _ = run.next().await;
+        assert!(
+            log_path.exists(),
+            "disk write should happen after host consumption"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_flush_failure_does_not_block_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pending = make_test_pending(
+            dir.path().join("events.jsonl"),
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer =
+            crate::log::BufferedLogWriter::with_flush_every(dir.path().join("runtime.jsonl"), 64);
+        pending.runtime_log_writer.set_fail_after_bytes(Some(0));
+        crate::query::provider::emit_runtime_log(
+            &mut pending,
+            crate::log::LogLevel::Info,
+            "runtime.test",
+            "test log",
+            None,
+        )
+        .unwrap();
+
+        let state = StreamingChunkState {
+            pending,
+            request_id: "req_1".to_string(),
+            stream: Box::pin(tokio_stream::empty()),
+            accumulated_text: "complete".to_string(),
+            accumulated_thinking: String::new(),
+            stop_reason: Some("end_turn".to_string()),
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+            lead_events: Vec::new(),
+            handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
+        };
+
+        let step = crate::query::step::finish_streaming(state).await;
+
+        assert!(matches!(step, Ok(PendingStep::Done(output, _, 1)) if output.text == "complete"));
     }
 
     #[tokio::test]
@@ -920,6 +1142,7 @@ mod tests {
             slot_event_rx,
             cancel_token: cancel_token.clone(),
             lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
         };
 
         let result = Run::poll_stream_chunk(&cancel_token, &mut streaming)
@@ -977,9 +1200,7 @@ mod tests {
                     request_id: "req_1".to_string(),
                     text: "partial".to_string(),
                     thinking: None,
-                    stop_reason: "cancelled".to_string(),
-                    tool_call_count: None,
-                    usage: serde_json::json!({}),
+                    input_tokens_total: None,
                 })
                 .unwrap();
             store

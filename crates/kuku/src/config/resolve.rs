@@ -17,6 +17,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
             provider: BTreeMap::new(),
             discovery: None,
             handoff: None,
+            logs: None,
             plugin: None,
             update: None,
         });
@@ -153,6 +154,18 @@ impl ConfigFile {
             ));
         }
 
+        let logs = self.logs.clone().unwrap_or_default();
+        if logs.max_age_days == 0 {
+            return Err(Error::ConfigLoad(
+                "logs.max_age_days must be >= 1".to_string(),
+            ));
+        }
+        if logs.max_total_size_mb == 0 {
+            return Err(Error::ConfigLoad(
+                "logs.max_total_size_mb must be >= 1".to_string(),
+            ));
+        }
+
         let plugin = self.plugin.clone().unwrap_or_default();
 
         let update = self.update.clone().unwrap_or_default();
@@ -163,6 +176,7 @@ impl ConfigFile {
             default_tier,
             discovery,
             handoff,
+            logs,
             plugin,
             update,
         })

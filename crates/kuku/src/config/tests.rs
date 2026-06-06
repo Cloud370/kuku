@@ -366,6 +366,33 @@ auto_discover = false
     assert!(!config.discovery.auto_discover);
 }
 
+// -- logs_config tests --
+
+#[test]
+fn logs_config_defaults_when_absent() {
+    let file: ConfigFile = toml::from_str(HANDOFF_VALID_CONFIG).unwrap();
+
+    assert!(file.logs.is_none());
+
+    let config = file.resolve().unwrap();
+    assert_eq!(config.logs.max_age_days, 14);
+    assert_eq!(config.logs.max_total_size_mb, 512);
+}
+
+#[test]
+fn logs_config_partial_uses_defaults_for_missing_fields() {
+    let toml_str = format!("{HANDOFF_VALID_CONFIG}\n[logs]\nmax_age_days = 30\n");
+    let file: ConfigFile = toml::from_str(&toml_str).unwrap();
+
+    let logs = file.logs.as_ref().unwrap();
+    assert_eq!(logs.max_age_days, 30);
+    assert_eq!(logs.max_total_size_mb, 512);
+
+    let config = file.resolve().unwrap();
+    assert_eq!(config.logs.max_age_days, 30);
+    assert_eq!(config.logs.max_total_size_mb, 512);
+}
+
 // ── handoff_config tests ──
 
 const HANDOFF_VALID_CONFIG: &str = r#"
@@ -467,6 +494,9 @@ fn generate_default_includes_all_sections() {
     assert!(h.enabled);
     assert!((h.threshold - 0.7).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 2);
+    let logs = file.logs.unwrap();
+    assert_eq!(logs.max_age_days, 14);
+    assert_eq!(logs.max_total_size_mb, 512);
     assert!(file.update.is_some());
     let u = file.update.unwrap();
     assert_eq!(u.source, "github");
@@ -615,6 +645,10 @@ enabled = true
 threshold = 0.8
 keep_turns = 3
 
+[logs]
+max_age_days = 14
+max_total_size_mb = 512
+
 [plugin]
 enabled = true
 
@@ -707,6 +741,53 @@ enabled = true
 }
 
 #[test]
+fn fills_missing_logs() {
+    let input = r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "high"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+think = "medium"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+think = "off"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key"
+
+[handoff]
+enabled = true
+threshold = 0.7
+keep_turns = 2
+
+[plugin]
+enabled = true
+
+[update]
+source = "github"
+channel = "stable"
+"#;
+    let (patched, changed) = config_patch_defaults(input).unwrap();
+
+    assert!(changed);
+
+    let file: ConfigFile = toml::from_str(&patched).unwrap();
+    let logs = file.logs.unwrap();
+    assert_eq!(logs.max_age_days, 14);
+    assert_eq!(logs.max_total_size_mb, 512);
+}
+
+#[test]
 fn preserves_user_comments() {
     let input = r#"# My custom config
 default_model = "balanced"
@@ -765,6 +846,10 @@ enabled = false
 threshold = 0.5
 keep_turns = 5
 
+[logs]
+max_age_days = 14
+max_total_size_mb = 512
+
 [plugin]
 enabled = true
 
@@ -779,6 +864,16 @@ channel = "stable"
     assert!(!h.enabled);
     assert!((h.threshold - 0.5).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 5);
+}
+
+#[test]
+fn generate_default_includes_logs_section() {
+    let toml_str = generate_default();
+    let file: ConfigFile = toml::from_str(toml_str).unwrap();
+
+    let logs = file.logs.unwrap();
+    assert_eq!(logs.max_age_days, 14);
+    assert_eq!(logs.max_total_size_mb, 512);
 }
 
 #[test]

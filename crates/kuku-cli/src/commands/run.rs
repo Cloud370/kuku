@@ -188,19 +188,13 @@ fn build_query(
         {
             if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
                 for event in events.iter().rev() {
-                    if let kuku::event::EventPayload::ModelResponse { usage, .. } = &event.payload {
-                        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                            let cache_read = usage
-                                .get("cache_read_input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let cache_creation = usage
-                                .get("cache_creation_input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            previous_input_tokens = input + cache_read + cache_creation;
-                            break;
-                        }
+                    if let kuku::event::EventPayload::ModelResponse {
+                        input_tokens_total: Some(input_tokens_total),
+                        ..
+                    } = &event.payload
+                    {
+                        previous_input_tokens = u64::from(*input_tokens_total);
+                        break;
                     }
                 }
             }
@@ -505,6 +499,11 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(UiEvent::TurnStart { turn }) => {
                 current_turn = turn;
+            }
+            Some(UiEvent::Log { record }) => {
+                if use_stream_json {
+                    println!("{}", OutputLine::log(record).to_json_line());
+                }
             }
             Some(_) => {}
             None => break,

@@ -112,17 +112,15 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
             }
             EventPayload::TurnEnd { .. } => flush_group(&mut messages, &mut current_group),
             EventPayload::SessionMeta { .. }
+            | EventPayload::ContextPrelude { .. }
+            | EventPayload::ContextSources { .. }
             | EventPayload::TurnStart { .. }
-            | EventPayload::ModelRequest { .. }
             | EventPayload::ModelError { .. }
-            | EventPayload::PolicyLoaded { .. }
-            | EventPayload::PermissionRequest { .. }
-            | EventPayload::PermissionDecision { .. }
-            | EventPayload::HandoffTrigger { .. }
+            | EventPayload::PermissionAllow { .. }
+            | EventPayload::PermissionDeny { .. }
             | EventPayload::Handoff { .. }
             | EventPayload::TurnRollback { .. }
             | EventPayload::TurnRollbackUndo { .. }
-            | EventPayload::PluginHook { .. }
             | EventPayload::Unknown(_) => {}
         }
     }
@@ -216,14 +214,7 @@ mod tests {
         )
     }
 
-    fn model_response(
-        id: u64,
-        turn: u64,
-        request_id: &str,
-        text: &str,
-        stop_reason: &str,
-        tool_call_count: Option<u64>,
-    ) -> StoredEvent {
+    fn model_response(id: u64, turn: u64, request_id: &str, text: &str) -> StoredEvent {
         event(
             id,
             EventPayload::ModelResponse {
@@ -232,9 +223,7 @@ mod tests {
                 request_id: request_id.to_string(),
                 text: text.to_string(),
                 thinking: None,
-                stop_reason: stop_reason.to_string(),
-                tool_call_count,
-                usage: json!({"input_tokens": 10}),
+                input_tokens_total: Some(10),
             },
         )
     }
@@ -291,10 +280,10 @@ mod tests {
     fn preserves_stream_order_across_multiple_response_groups() {
         let events = vec![
             user_input(1, 1, "first"),
-            model_response(2, 1, "req_2", "first answer", "end_turn", None),
+            model_response(2, 1, "req_2", "first answer"),
             turn_end(3, 1),
             user_input(4, 2, "second"),
-            model_response(5, 2, "req_10", "second answer", "end_turn", None),
+            model_response(5, 2, "req_10", "second answer"),
             turn_end(6, 2),
         ];
 
@@ -315,10 +304,10 @@ mod tests {
     fn preserves_multiple_response_groups_inside_one_turn() {
         let events = vec![
             user_input(1, 1, "inspect"),
-            model_response(2, 1, "req_1", "I will inspect.", "tool_use", Some(1)),
+            model_response(2, 1, "req_1", "I will inspect."),
             tool_call(3, 1, "req_1", "tool_1", 0, "read"),
             tool_result(4, 1, "tool_1", "read output"),
-            model_response(5, 1, "req_2", "Done.", "end_turn", None),
+            model_response(5, 1, "req_2", "Done."),
             turn_end(6, 1),
         ];
 
@@ -353,7 +342,7 @@ mod tests {
     fn orders_tool_use_and_tool_results_by_tool_call_index() {
         let events = vec![
             user_input(1, 1, "inspect"),
-            model_response(2, 1, "req_1", "I will inspect.", "tool_use", Some(2)),
+            model_response(2, 1, "req_1", "I will inspect."),
             tool_call(3, 1, "req_1", "tool_b", 1, "grep"),
             tool_call(4, 1, "req_1", "tool_a", 0, "read"),
             tool_result(5, 1, "tool_b", "grep output"),
@@ -406,7 +395,7 @@ mod tests {
     fn synthesizes_cancelled_results_for_unmatched_tool_calls() {
         let events = vec![
             user_input(1, 1, "inspect"),
-            model_response(2, 1, "req_1", "I will inspect.", "tool_use", Some(2)),
+            model_response(2, 1, "req_1", "I will inspect."),
             tool_call(3, 1, "req_1", "tool_a", 0, "read"),
             tool_call(4, 1, "req_1", "tool_b", 1, "grep"),
             tool_result(5, 1, "tool_a", "read output"),
@@ -467,9 +456,7 @@ mod tests {
                     request_id: "req_1".to_string(),
                     text: "Hello!".to_string(),
                     thinking: Some("The user said hi".to_string()),
-                    stop_reason: "end_turn".to_string(),
-                    tool_call_count: None,
-                    usage: json!({"input_tokens": 10}),
+                    input_tokens_total: Some(10),
                 },
             ),
             turn_end(3, 1),
@@ -501,9 +488,7 @@ mod tests {
                     request_id: "req_1".to_string(),
                     text: "I will inspect.".to_string(),
                     thinking: Some("Need to read the file first".to_string()),
-                    stop_reason: "tool_use".to_string(),
-                    tool_call_count: Some(1),
-                    usage: json!({"input_tokens": 10}),
+                    input_tokens_total: Some(10),
                 },
             ),
             tool_call(3, 1, "req_1", "tool_1", 0, "read"),
@@ -516,9 +501,7 @@ mod tests {
                     request_id: "req_2".to_string(),
                     text: "Done.".to_string(),
                     thinking: Some("File looks good".to_string()),
-                    stop_reason: "end_turn".to_string(),
-                    tool_call_count: None,
-                    usage: json!({"input_tokens": 12}),
+                    input_tokens_total: Some(12),
                 },
             ),
             turn_end(6, 1),
@@ -559,9 +542,11 @@ mod tests {
         event(
             id,
             EventPayload::Handoff {
+                turn: 2,
                 ts: "2026-05-27T00:00:01Z".to_string(),
+                request_id: "req_handoff".to_string(),
                 summary: summary.to_string(),
-                kept_turns: 2,
+                keep_turns: 2,
             },
         )
     }
@@ -570,7 +555,7 @@ mod tests {
     fn rebuild_history_returns_none_summary_when_no_handoff() {
         let events = vec![
             user_input(1, 1, "hello"),
-            model_response(2, 1, "req_1", "hi", "end_turn", None),
+            model_response(2, 1, "req_1", "hi"),
             turn_end(3, 1),
         ];
         let (summary, history) = rebuild_history(&events);
@@ -582,11 +567,11 @@ mod tests {
     fn rebuild_history_returns_summary_and_skips_pre_handoff() {
         let events = vec![
             user_input(1, 1, "old question"),
-            model_response(2, 1, "req_1", "old answer", "end_turn", None),
+            model_response(2, 1, "req_1", "old answer"),
             turn_end(3, 1),
             handoff_event(4, "## Goal\nDo stuff"),
             user_input(5, 2, "new question"),
-            model_response(6, 2, "req_2", "new answer", "end_turn", None),
+            model_response(6, 2, "req_2", "new answer"),
             turn_end(7, 2),
         ];
         let (summary, history) = rebuild_history(&events);
@@ -599,15 +584,15 @@ mod tests {
     fn rebuild_history_uses_last_handoff_when_multiple() {
         let events = vec![
             user_input(1, 1, "first"),
-            model_response(2, 1, "req_1", "answer1", "end_turn", None),
+            model_response(2, 1, "req_1", "answer1"),
             turn_end(3, 1),
             handoff_event(4, "first summary"),
             user_input(5, 2, "second"),
-            model_response(6, 2, "req_2", "answer2", "end_turn", None),
+            model_response(6, 2, "req_2", "answer2"),
             turn_end(7, 2),
             handoff_event(8, "second summary"),
             user_input(9, 3, "third"),
-            model_response(10, 3, "req_3", "answer3", "end_turn", None),
+            model_response(10, 3, "req_3", "answer3"),
             turn_end(11, 3),
         ];
         let (summary, history) = rebuild_history(&events);

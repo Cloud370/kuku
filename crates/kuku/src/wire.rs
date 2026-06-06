@@ -96,6 +96,10 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "model": model,
             "provider": provider,
         })),
+        UiEvent::Log { record } => Some(json!({
+            "type": "log",
+            "record": record,
+        })),
     }
 }
 
