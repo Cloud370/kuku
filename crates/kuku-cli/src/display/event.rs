@@ -61,17 +61,20 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
             bootstrap_loaded,
             ..
         } => {
+            let skill_count = registry
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
             if verbose {
+                let hash = registry.get("hash").and_then(|v| v.as_str()).unwrap_or("");
                 format!(
-                    "skills={}  bootstrap_loaded={}  hash={}",
-                    registry.len(),
+                    "skills={skill_count}  bootstrap_loaded={}  hash={hash}",
                     bootstrap_loaded.len(),
-                    registry.hash()
                 )
             } else {
                 format!(
-                    "skills={}  bootstrap_loaded={}",
-                    registry.len(),
+                    "skills={skill_count}  bootstrap_loaded={}",
                     bootstrap_loaded.len()
                 )
             }

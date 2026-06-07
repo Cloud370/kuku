@@ -265,7 +265,7 @@ mod tests {
                 payload: EventPayload::ContextSkills {
                     turn: 1,
                     ts: "t1".to_string(),
-                    registry: registry(),
+                    registry: serde_json::to_value(registry()).unwrap(),
                     bootstrap_loaded: vec![],
                 },
             },

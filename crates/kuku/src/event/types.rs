@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::provenance::FileSource;
-use crate::skill::registry::SkillRegistry;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// A single event persisted in a session's events.jsonl.
@@ -74,7 +73,7 @@ pub enum EventPayload {
     ContextSkills {
         turn: u64,
         ts: String,
-        registry: SkillRegistry,
+        registry: Value,
         bootstrap_loaded: Vec<String>,
     },
 

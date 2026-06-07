@@ -155,7 +155,7 @@ impl Query {
                     store.append(EventPayload::ContextSkills {
                         turn,
                         ts: now_timestamp()?,
-                        registry: registry.clone(),
+                        registry: serde_json::to_value(&registry)?,
                         bootstrap_loaded: bootstrap_loaded_names(bootstrap_skill.as_ref()),
                     })?;
                     (
@@ -613,7 +613,7 @@ mod startup_prune_tests {
             .append(EventPayload::ContextSkills {
                 turn: 1,
                 ts: "2026-06-07T00:00:03Z".to_string(),
-                registry: persisted_registry.clone(),
+                registry: serde_json::to_value(&persisted_registry).unwrap(),
                 bootstrap_loaded: vec![],
             })
             .unwrap();
@@ -730,7 +730,7 @@ mod startup_prune_tests {
             .append(EventPayload::ContextSkills {
                 turn: 1,
                 ts: "2026-06-07T00:00:02Z".to_string(),
-                registry: persisted_registry,
+                registry: serde_json::to_value(&persisted_registry).unwrap(),
                 bootstrap_loaded: vec!["resume-skill".to_string()],
             })
             .unwrap();
@@ -834,7 +834,7 @@ mod startup_prune_tests {
             .append(EventPayload::ContextSkills {
                 turn: 1,
                 ts: "2026-06-07T00:00:03Z".to_string(),
-                registry: persisted_registry,
+                registry: serde_json::to_value(&persisted_registry).unwrap(),
                 bootstrap_loaded: vec!["resume-skill".to_string()],
             })
             .unwrap();
@@ -969,10 +969,15 @@ mod startup_prune_tests {
             crate::session::session_events_path(kuku_home.path(), workspace.path(), &session_id)
                 .unwrap();
         let events = EventStore::replay(&events_path).unwrap();
-        let registry = events
+        let registry: crate::skill::registry::SkillRegistry = events
             .iter()
             .find_map(|event| match &event.payload {
-                EventPayload::ContextSkills { registry, .. } => Some(registry.clone()),
+                EventPayload::ContextSkills { registry, .. } => Some(
+                    serde_json::from_value::<crate::skill::registry::SkillRegistry>(
+                        registry.clone(),
+                    )
+                    .unwrap(),
+                ),
                 _ => None,
             })
             .expect("context.skills event");

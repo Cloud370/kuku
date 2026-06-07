@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
@@ -10,6 +8,7 @@ use crate::plugin::PluginRegistry;
 
 use super::registry::SkillRegistry;
 
+/// Build a skill registry including plugin-contributed skills.
 pub fn build_registry_snapshot_for_host(
     kuku_home: &Path,
     workspace: &Path,
@@ -70,10 +69,13 @@ pub(crate) fn previous_snapshot_before_turn(
                 registry,
                 bootstrap_loaded,
                 ..
-            } if *event_turn < turn => Some(TurnSkillSnapshot {
-                registry: registry.clone(),
-                bootstrap_loaded: bootstrap_loaded.clone(),
-            }),
+            } if *event_turn < turn => {
+                let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
+                Some(TurnSkillSnapshot {
+                    registry,
+                    bootstrap_loaded: bootstrap_loaded.clone(),
+                })
+            }
             _ => None,
         })
 }
@@ -130,35 +132,15 @@ fn restore_turn_snapshot_from_filtered(
             registry,
             bootstrap_loaded,
             ..
-        } if *event_turn == turn => Some(TurnSkillSnapshot {
-            registry: registry.clone(),
-            bootstrap_loaded: bootstrap_loaded.clone(),
-        }),
+        } if *event_turn == turn => {
+            let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
+            Some(TurnSkillSnapshot {
+                registry,
+                bootstrap_loaded: bootstrap_loaded.clone(),
+            })
+        }
         _ => None,
     })
-}
-
-fn event_turn(payload: &EventPayload) -> Option<u64> {
-    match payload {
-        EventPayload::ContextSkills { turn, .. }
-        | EventPayload::ContextSources { turn, .. }
-        | EventPayload::Handoff { turn, .. }
-        | EventPayload::ModelError { turn, .. }
-        | EventPayload::ModelResponse { turn, .. }
-        | EventPayload::PermissionAllow { turn, .. }
-        | EventPayload::PermissionDeny { turn, .. }
-        | EventPayload::PermissionRequested { turn, .. }
-        | EventPayload::ToolCall { turn, .. }
-        | EventPayload::ToolResult { turn, .. }
-        | EventPayload::TurnEnd { turn, .. }
-        | EventPayload::TurnRollback { turn, .. }
-        | EventPayload::TurnRollbackUndo { turn, .. }
-        | EventPayload::TurnStart { turn, .. }
-        | EventPayload::UserInput { turn, .. } => Some(*turn),
-        EventPayload::ContextPrelude { .. }
-        | EventPayload::SessionMeta { .. }
-        | EventPayload::Unknown(_) => None,
-    }
 }
 
 #[cfg(test)]
@@ -189,7 +171,7 @@ mod tests {
         definition
     }
 
-    fn registry(names: &[&str]) -> SkillRegistry {
+    fn skill_registry(names: &[&str]) -> SkillRegistry {
         names
             .iter()
             .fold(SkillRegistry::builder(), |builder, name| {
@@ -198,21 +180,23 @@ mod tests {
             .build()
     }
 
+    fn registry(names: &[&str]) -> serde_json::Value {
+        serde_json::to_value(skill_registry(names)).unwrap()
+    }
+
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent { id, payload }
     }
 
     #[test]
     fn restores_current_and_previous_turn_snapshots() {
-        let alpha = registry(&["alpha"]);
-        let beta = registry(&["beta"]);
         let events = vec![
             event(
                 1,
                 EventPayload::ContextSkills {
                     turn: 1,
                     ts: "t1".to_string(),
-                    registry: alpha.clone(),
+                    registry: registry(&["alpha"]),
                     bootstrap_loaded: vec!["bootstrap-alpha".to_string()],
                 },
             ),
@@ -221,7 +205,7 @@ mod tests {
                 EventPayload::ContextSkills {
                     turn: 2,
                     ts: "t2".to_string(),
-                    registry: beta.clone(),
+                    registry: registry(&["beta"]),
                     bootstrap_loaded: vec!["bootstrap-beta".to_string()],
                 },
             ),
@@ -230,14 +214,14 @@ mod tests {
         assert_eq!(
             restore_turn_snapshot(&events, 2),
             Some(TurnSkillSnapshot {
-                registry: beta,
+                registry: skill_registry(&["beta"]),
                 bootstrap_loaded: vec!["bootstrap-beta".to_string()],
             })
         );
         assert_eq!(
             previous_snapshot_before_turn(&events, 2),
             Some(TurnSkillSnapshot {
-                registry: alpha,
+                registry: skill_registry(&["alpha"]),
                 bootstrap_loaded: vec!["bootstrap-alpha".to_string()],
             })
         );
@@ -245,15 +229,13 @@ mod tests {
 
     #[test]
     fn ignores_rolled_back_snapshots_when_restoring() {
-        let keep = registry(&["keep"]);
-        let rollback = registry(&["rollback"]);
         let events = vec![
             event(
                 1,
                 EventPayload::ContextSkills {
                     turn: 1,
                     ts: "t1".to_string(),
-                    registry: keep.clone(),
+                    registry: registry(&["keep"]),
                     bootstrap_loaded: vec!["keep".to_string()],
                 },
             ),
@@ -269,7 +251,7 @@ mod tests {
                 EventPayload::ContextSkills {
                     turn: 2,
                     ts: "t3".to_string(),
-                    registry: rollback,
+                    registry: registry(&["rollback"]),
                     bootstrap_loaded: vec!["rollback".to_string()],
                 },
             ),
@@ -288,7 +270,7 @@ mod tests {
         assert_eq!(
             previous_snapshot_before_turn(&events, 3),
             Some(TurnSkillSnapshot {
-                registry: keep,
+                registry: skill_registry(&["keep"]),
                 bootstrap_loaded: vec!["keep".to_string()],
             })
         );

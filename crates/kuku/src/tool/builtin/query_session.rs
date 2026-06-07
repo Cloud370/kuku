@@ -346,7 +346,10 @@ mod tests {
                 EventPayload::ContextSkills {
                     turn: 1,
                     ts: ts("t"),
-                    registry: crate::skill::registry::SkillRegistry::builder().build(),
+                    registry: serde_json::to_value(
+                        crate::skill::registry::SkillRegistry::builder().build(),
+                    )
+                    .unwrap(),
                     bootstrap_loaded: vec!["bootstrap-alpha".into()],
                 },
                 EventPayload::UserInput {

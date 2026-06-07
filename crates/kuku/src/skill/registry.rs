@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::definition::{SkillDefinition, SkillSource};
 
+/// In-memory index of loaded skill definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRegistry {
     definitions: BTreeMap<String, SkillDefinition>,
@@ -17,18 +18,22 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Create an empty builder for constructing a registry.
     pub fn builder() -> SkillRegistryBuilder {
         SkillRegistryBuilder::default()
     }
 
+    /// Look up a skill definition by name.
     pub fn get(&self, name: &str) -> Option<&SkillDefinition> {
         self.definitions.get(name)
     }
 
+    /// Return sorted skill names.
     pub fn names(&self) -> &[String] {
         &self.names
     }
 
+    /// Return all skill definitions.
     pub fn definitions(&self) -> Vec<&SkillDefinition> {
         self.names
             .iter()
@@ -36,30 +41,36 @@ impl SkillRegistry {
             .collect()
     }
 
+    /// Return the number of loaded skills.
     pub fn len(&self) -> usize {
         self.definitions.len()
     }
 
+    /// Return whether no skills are loaded.
     pub fn is_empty(&self) -> bool {
         self.definitions.is_empty()
     }
 
+    /// Return the deterministic hash of the registry.
     pub fn hash(&self) -> &str {
         &self.hash
     }
 }
 
+/// Builder for constructing a SkillRegistry from multiple sources.
 #[derive(Default)]
 pub struct SkillRegistryBuilder {
     definitions: BTreeMap<String, SkillDefinition>,
 }
 
 impl SkillRegistryBuilder {
+    /// Add a single skill definition to the builder.
     pub fn with_definition(mut self, def: SkillDefinition) -> Self {
         self.add(def);
         self
     }
 
+    /// Load all skills from a directory of SKILL.md files.
     pub fn load_from_dir(mut self, dir: &Path, source: SkillSource) -> Result<Self> {
         let defs = super::loader::load_from_dir(dir, source)?;
         for def in defs {
@@ -68,6 +79,7 @@ impl SkillRegistryBuilder {
         Ok(self)
     }
 
+    /// Build the registry by scanning workspace and discovery config.
     pub fn build_with_discovery(
         mut self,
         workspace: &Path,
@@ -84,6 +96,7 @@ impl SkillRegistryBuilder {
         self.definitions.insert(def.name.clone(), def);
     }
 
+    /// Finalize the builder into an immutable SkillRegistry.
     pub fn build(self) -> SkillRegistry {
         let mut names: Vec<String> = self.definitions.keys().cloned().collect();
         names.sort();
@@ -96,9 +109,13 @@ impl SkillRegistryBuilder {
     }
 }
 
+/// Summary of skill additions, updates, and removals between snapshots.
 pub struct SkillChanges {
+    /// Names of newly added skills.
     pub added: Vec<String>,
+    /// Names of skills whose content changed.
     pub updated: Vec<String>,
+    /// Names of skills that were removed.
     pub removed: Vec<String>,
 }
 
