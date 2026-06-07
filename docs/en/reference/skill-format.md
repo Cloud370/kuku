@@ -60,7 +60,7 @@ Skills guide model behavior, but they do not change permissions. Tool access and
 
 ## Runtime Snapshotting
 
-At the start of each turn, the runtime discovers the available Skill definitions and snapshots that catalog into the session event log.
+At the start of each turn, the runtime discovers the available Skill definitions and snapshots that catalog into the session event log. Package-provided Skills participate in that snapshot only when package loading is enabled via `plugin.enabled`.
 
 - `list_skills` and `search_skills` read from the current turn snapshot.
 - `use_skill` loads the full instructions from that same snapshot, not from a fresh disk read later in the turn.

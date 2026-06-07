@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn build_registry_for_includes_package_skills_when_hooks_are_disabled() {
+    fn build_registry_for_excludes_package_skills_when_plugins_are_disabled() {
         let workspace = temp_dir("kuku-skills-disabled-workspace");
         let home = temp_dir("kuku-skills-disabled-home");
 
@@ -153,7 +153,7 @@ mod tests {
 
         let registry = build_registry_for(&workspace, &home).unwrap();
 
-        assert!(registry.get("packaged-skill").is_some());
+        assert!(registry.get("packaged-skill").is_none());
 
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(home);

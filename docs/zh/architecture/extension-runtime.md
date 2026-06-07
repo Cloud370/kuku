@@ -43,7 +43,7 @@ hook 可以在特定位置添加上下文、修改部分输入或输出，或阻
 
 ## Skills inside packages
 
-package 内打包的 Skill 会由与独立 Skill 相同的 skill registry 发现。运行时模型保持不变；package 化只改变分发方式，以及它与 hook 的共址关系。
+启用 package 加载时，package 内打包的 Skill 会由与独立 Skill 相同的 skill registry 发现。运行时模型保持不变；package 化只改变分发方式，以及它与 hook 的共址关系。关闭 `plugin.enabled` 后，运行时会同时移除 package 提供的 hook 和 package 提供的 Skill。
 
 ## Forward path
 

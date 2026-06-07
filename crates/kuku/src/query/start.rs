@@ -136,12 +136,6 @@ impl Query {
             }
         }
 
-        let extra_skill_dirs = if plugin_registry_opt.is_some() {
-            Vec::new()
-        } else {
-            crate::skill::session::package_skill_dirs(&kuku_home, &workspace)?
-        };
-
         let (skill_registry, previous_skill_registry) = if self.disable_skills {
             (None, None)
         } else if let Some(snapshot) = restore_turn_snapshot(&existing_events, turn) {
@@ -156,7 +150,6 @@ impl Query {
                 &workspace,
                 &config.discovery,
                 plugin_registry_opt.as_ref(),
-                &extra_skill_dirs,
             )?;
             store.append(EventPayload::ContextSkills {
                 turn,
@@ -583,7 +576,6 @@ mod startup_prune_tests {
             workspace.path(),
             &config.discovery,
             None,
-            &[],
         )
         .unwrap();
 
@@ -701,7 +693,6 @@ mod startup_prune_tests {
             workspace.path(),
             &config.discovery,
             None,
-            &[],
         )
         .unwrap();
 
@@ -806,7 +797,6 @@ mod startup_prune_tests {
             workspace.path(),
             &config.discovery,
             None,
-            &[],
         )
         .unwrap();
 
@@ -936,7 +926,7 @@ mod startup_prune_tests {
     }
 
     #[tokio::test]
-    async fn fresh_turn_discovers_package_skills_even_when_hooks_are_disabled() {
+    async fn fresh_turn_excludes_package_skills_when_plugins_are_disabled() {
         let workspace = tempfile::tempdir().unwrap();
         let kuku_home = tempfile::tempdir().unwrap();
         let mut config = test_config();
@@ -983,6 +973,6 @@ mod startup_prune_tests {
             })
             .expect("context.skills event");
 
-        assert!(registry.get("packaged-skill").is_some());
+        assert!(registry.get("packaged-skill").is_none());
     }
 }

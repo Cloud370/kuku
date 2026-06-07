@@ -60,7 +60,7 @@ Skill 会指导模型行为，但不会改变权限。Tool 访问和权限提示
 
 ## 运行时快照
 
-每个 turn 开始时，运行时会发现当前可用的 Skill 定义，并把这个目录快照写入 Session 事件日志。
+每个 turn 开始时，运行时会发现当前可用的 Skill 定义，并把这个目录快照写入 Session 事件日志。只有在 `plugin.enabled` 开启时，package 提供的 Skill 才会参与这个快照。
 
 - `list_skills` 和 `search_skills` 读取当前 turn 的快照。
 - `use_skill` 也从同一个快照加载完整指令，而不是在本 turn 中稍后再次从磁盘重新读取。
