@@ -309,6 +309,29 @@ fn sensitive_file_detected() {
 }
 
 #[test]
+fn untrusted_absolute_event_path_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "outside").unwrap();
+    let outside_path = outside.path().to_string_lossy().into_owned();
+    let events = vec![
+        ts(1, 1),
+        tool_result_read(2, 1, &outside_path, "before", true),
+        te(3, 1),
+        ts(4, 2),
+        tr(5, 2, "tc2", "file_write", &outside_path, "after"),
+        te(6, 2),
+    ];
+
+    let plan = compute_file_revert_plan(&events, 1, dir.path());
+
+    assert!(plan.restores.is_empty());
+    assert!(plan.deletes.is_empty());
+    assert!(plan.unrecoverable.is_empty());
+    assert!(plan.sensitive_files.is_empty());
+}
+
+#[test]
 fn target_turn_zero_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
     let events = vec![ts(1, 1), te(2, 1)];
@@ -355,6 +378,56 @@ fn apply_deletes_created_file() {
     let _warnings = apply_file_revert(&plan, dir.path(), dir.path(), 99).unwrap();
     assert!(!dir.path().join("new.txt").exists());
     assert!(dir.path().join("pre-revert-99").join("new.txt").exists());
+}
+
+#[test]
+fn apply_file_revert_rejects_paths_outside_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "outside").unwrap();
+    let plan = RevertPlan {
+        restores: vec![FileRestore {
+            path: outside.path().to_path_buf(),
+            old_content: "restored".into(),
+            old_hash: String::new(),
+            new_content_on_plan: "outside".into(),
+        }],
+        deletes: vec![],
+        unrecoverable: vec![],
+        sensitive_files: vec![],
+    };
+
+    let result = apply_file_revert(&plan, dir.path(), dir.path(), 99);
+
+    assert!(result.is_err());
+    assert_eq!("outside", std::fs::read_to_string(outside.path()).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_file_revert_rejects_workspace_symlink_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside_path = outside_dir.path().join("outside.txt");
+    std::fs::write(&outside_path, "outside").unwrap();
+    std::os::unix::fs::symlink(outside_dir.path(), dir.path().join("link")).unwrap();
+
+    let plan = RevertPlan {
+        restores: vec![FileRestore {
+            path: dir.path().join("link/outside.txt"),
+            old_content: "restored".into(),
+            old_hash: String::new(),
+            new_content_on_plan: "outside".into(),
+        }],
+        deletes: vec![],
+        unrecoverable: vec![],
+        sensitive_files: vec![],
+    };
+
+    let result = apply_file_revert(&plan, dir.path(), dir.path(), 99);
+
+    assert!(result.is_err());
+    assert_eq!("outside", std::fs::read_to_string(outside_path).unwrap());
 }
 
 // find_active_rollback tests

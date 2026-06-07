@@ -599,11 +599,29 @@ impl Run {
                     if let Some((_, buf)) =
                         streaming.tool_arg_buffers.iter().find(|(i, _)| *i == index)
                     {
-                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(buf) {
-                            if let Some(tc) =
-                                streaming.tool_calls.iter_mut().find(|t| t.index == index)
-                            {
-                                tc.args = args;
+                        match serde_json::from_str::<serde_json::Value>(buf) {
+                            Ok(args) => {
+                                if let Some(tc) =
+                                    streaming.tool_calls.iter_mut().find(|t| t.index == index)
+                                {
+                                    tc.args = args;
+                                }
+                            }
+                            Err(error) => {
+                                let tool_call_id = streaming
+                                    .tool_calls
+                                    .iter()
+                                    .find(|t| t.index == index)
+                                    .map(|tool_call| tool_call.id.clone())
+                                    .unwrap_or_else(|| format!("index {index}"));
+                                return Err(crate::error::Error::Provider {
+                                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+                                    message: format!(
+                                        "tool call {tool_call_id} has invalid JSON arguments: {error}"
+                                    ),
+                                    provider: None,
+                                    model: None,
+                                });
                             }
                         }
                     }
@@ -1661,6 +1679,72 @@ mod tests {
             .unwrap();
         assert!(result.is_none());
         assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_call_arguments_fail_instead_of_staying_empty_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(&events_path, "").unwrap();
+        let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let pending = make_test_pending(events_path, dir.path(), cancel_token.clone());
+        let stream: std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = std::result::Result<
+                            crate::provider::chunk::ProviderChunk,
+                            crate::provider::types::ProviderFailure,
+                        >,
+                    > + Send,
+            >,
+        > = Box::pin(tokio_stream::iter(vec![
+            Ok(ProviderChunk::ToolCallStart {
+                index: 0,
+                id: "tool_bad_args".to_string(),
+                name: "run_command".to_string(),
+            }),
+            Ok(ProviderChunk::ToolCallArgDelta {
+                index: 0,
+                fragment: "{\"command\":".to_string(),
+            }),
+            Ok(ProviderChunk::ContentBlockStop { index: 0 }),
+            Ok(ProviderChunk::StopReason {
+                reason: "tool_use".to_string(),
+            }),
+            Ok(ProviderChunk::StreamEnd),
+        ]));
+
+        let mut streaming = StreamingChunkState {
+            pending,
+            request_id: "req_bad_args".to_string(),
+            stream,
+            accumulated_text: String::new(),
+            accumulated_thinking: String::new(),
+            stop_reason: None,
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+            lead_events: Vec::new(),
+            handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
+        };
+
+        let error = loop {
+            match Run::poll_stream_chunk(&cancel_token, &mut streaming).await {
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("expected malformed tool args to fail"),
+                Err(error) => break error,
+            }
+        };
+
+        assert!(matches!(
+            error,
+            Error::Provider { kind: crate::provider::types::ProviderFailureKind::InvalidRequest, message, .. }
+                if message.contains("tool_bad_args")
+        ));
     }
 
     #[tokio::test]

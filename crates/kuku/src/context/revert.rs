@@ -1,6 +1,7 @@
 //! File revert plan computation and execution for turn rollbacks.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use time::format_description::well_known::Rfc3339;
@@ -100,6 +101,9 @@ pub fn compute_file_revert_plan(
     target_turn: u64,
     workspace: &Path,
 ) -> RevertPlan {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     if target_turn == 0 {
         return RevertPlan {
             restores: vec![],
@@ -140,8 +144,10 @@ pub fn compute_file_revert_plan(
         if is_system_dir_path(file_path) {
             continue;
         }
+        let Some(disk_path) = resolve_revert_path(&canonical_workspace, file_path) else {
+            continue;
+        };
         let target_state = find_file_state_at(events, file_path, turn_end_pos);
-        let disk_path = workspace.join(file_path);
 
         let file_name = disk_path.file_name().unwrap_or_default().to_string_lossy();
         if crate::util::path::is_sensitive_file_name(&file_name) {
@@ -185,6 +191,53 @@ fn is_system_dir_path(path: &str) -> bool {
     normalized
         .split('/')
         .any(|part| part == ".git" || part == ".ssh")
+}
+
+fn resolve_revert_path(workspace: &Path, event_path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(event_path);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace.join(candidate)
+    };
+    canonicalize_revert_target(workspace, &joined).ok()
+}
+
+fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, std::io::Error> {
+    let normalized =
+        crate::tool::builtin::common::normalize_existing_components(path.to_path_buf());
+    let mut existing = normalized.as_path();
+    let mut suffix = Vec::<OsString>::new();
+
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("path outside workspace: {}", normalized.display()),
+            ));
+        };
+        suffix.push(name.to_os_string());
+        existing = existing.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("path outside workspace: {}", normalized.display()),
+            )
+        })?;
+    }
+
+    let mut resolved = existing.canonicalize()?;
+    while let Some(component) = suffix.pop() {
+        resolved.push(component);
+    }
+
+    if resolved.starts_with(workspace) {
+        Ok(resolved)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("path outside workspace: {}", resolved.display()),
+        ))
+    }
 }
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
@@ -372,12 +425,16 @@ pub fn apply_file_revert(
     session_dir: &Path,
     rollback_event_id: u64,
 ) -> Result<Vec<String>, std::io::Error> {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     let backup_dir = session_dir.join(format!("pre-revert-{rollback_event_id}"));
     let mut warnings = Vec::new();
 
     for restore in &plan.restores {
+        ensure_path_within_workspace(&canonical_workspace, &restore.path)?;
         if restore.path.exists() {
-            if let Ok(relative) = restore.path.strip_prefix(workspace) {
+            if let Ok(relative) = restore.path.strip_prefix(&canonical_workspace) {
                 let backup_path = backup_dir.join(relative);
                 if let Some(parent) = backup_path.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -387,8 +444,9 @@ pub fn apply_file_revert(
         }
     }
     for delete_path in &plan.deletes {
+        ensure_path_within_workspace(&canonical_workspace, delete_path)?;
         if delete_path.exists() {
-            if let Ok(relative) = delete_path.strip_prefix(workspace) {
+            if let Ok(relative) = delete_path.strip_prefix(&canonical_workspace) {
                 let backup_path = backup_dir.join(relative);
                 if let Some(parent) = backup_path.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -426,6 +484,10 @@ pub fn apply_file_revert(
     }
 
     Ok(warnings)
+}
+
+fn ensure_path_within_workspace(workspace: &Path, path: &Path) -> Result<(), std::io::Error> {
+    canonicalize_revert_target(workspace, path).map(|_| ())
 }
 
 /// Result of a rollback operation.
@@ -570,7 +632,7 @@ fn restore_dir_recursive(
             let relative = path
                 .strip_prefix(base)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            let target = workspace.join(relative);
+            let target = canonicalize_revert_target(workspace, &workspace.join(relative))?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }

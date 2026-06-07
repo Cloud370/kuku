@@ -193,3 +193,27 @@ fn pruning_logs_does_not_break_session_listing() {
         EventPayload::SessionMeta { session_id, .. } if session_id == "s_keep"
     ));
 }
+
+#[test]
+fn oversized_final_event_line_still_marks_session_done() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let workspace = std::fs::canonicalize(dir.path()).unwrap();
+    let sessions_dir = expected_sessions_dir(home, &workspace);
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+
+    let large_text = "x".repeat(5000);
+    write_session(
+        &sessions_dir,
+        "s_large_tail",
+        &format!(
+            "{{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_large_tail\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}}\n{{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}}\n{{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"hello\"}}\n{{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\",\"summary\":\"{}\"}}\n",
+            large_text
+        ),
+    );
+
+    let sessions = list_sessions(home, Some(&workspace)).unwrap();
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].status, SessionStatus::Done);
+}

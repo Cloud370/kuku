@@ -917,3 +917,45 @@ fn think_level_from_str_invalid() {
     let err = "invalid".parse::<ThinkLevel>().unwrap_err();
     assert!(err.to_string().contains("ThinkLevel"));
 }
+
+#[test]
+fn load_and_patch_config_returns_current_disk_content_after_concurrent_edit() {
+    let dir = temp_config(
+        r#"
+default_model = "balanced"
+
+[model.strong]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.balanced]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[model.light]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "test-key-anthropic"
+"#,
+    );
+    let path = dir.path().join("config.toml");
+
+    let file = super::mutate::load_and_patch_config_with_hook(&path, || {
+        let raced = fs::read_to_string(&path).unwrap().replace(
+            "https://api.anthropic.com",
+            "https://gateway-after-race.example",
+        );
+        fs::write(&path, raced).unwrap();
+    })
+    .unwrap();
+    let resolved = file.resolve().unwrap();
+
+    assert_eq!(
+        resolved.provider("anthropic").unwrap().base_url,
+        "https://gateway-after-race.example"
+    );
+}

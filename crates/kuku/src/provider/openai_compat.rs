@@ -1,5 +1,6 @@
 use super::http_client;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 
@@ -7,6 +8,8 @@ use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
 use super::sse::stream_sse_events;
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
+
+const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
 
 pub(crate) fn chat_completions_url(base_url: &str) -> String {
     format!("{}/chat/completions", base_url.trim_end_matches('/'))
@@ -220,17 +223,21 @@ pub(crate) async fn stream(
         return Err(failure);
     }
 
-    let mut parser = OpenAiCompatSseParser::new();
-    Ok(stream_sse_events(response, move |frame| {
-        parser.feed(frame);
-        parser.take_chunks()
-    }))
+    let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new()));
+    let frame_parser = Arc::clone(&parser);
+    let eof_parser = Arc::clone(&parser);
+    Ok(stream_sse_events(
+        response,
+        move |frame| frame_parser.lock().unwrap().feed(frame),
+        move || eof_parser.lock().unwrap().finish(),
+    ))
 }
 
 struct OpenAiCompatSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
     tool_call_indices: Vec<u64>,
+    saw_done: bool,
 }
 
 impl OpenAiCompatSseParser {
@@ -239,33 +246,29 @@ impl OpenAiCompatSseParser {
             chunks: Vec::new(),
             started: false,
             tool_call_indices: Vec::new(),
+            saw_done: false,
         }
     }
 
-    fn feed(&mut self, frame: &str) {
+    fn feed(&mut self, frame: &str) -> Result<Vec<ProviderChunk>, ProviderFailure> {
         if frame.is_empty() {
-            if !self
-                .chunks
-                .iter()
-                .any(|c| matches!(c, ProviderChunk::StreamEnd))
-            {
-                self.chunks.push(ProviderChunk::StreamEnd);
-            }
-            return;
+            return Ok(self.take_chunks());
         }
 
         let data_str = match frame.strip_prefix("data:") {
             Some(s) => s.trim(),
-            None => return,
+            None => return Ok(self.take_chunks()),
         };
 
         if data_str == "[DONE]" {
-            return;
+            self.saw_done = true;
+            self.chunks.push(ProviderChunk::StreamEnd);
+            return Ok(self.take_chunks());
         }
 
         let data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(_) => return Ok(self.take_chunks()),
         };
 
         if let Some(err) = data.get("error") {
@@ -281,7 +284,7 @@ impl OpenAiCompatSseParser {
                 .to_string();
             self.chunks
                 .push(ProviderChunk::ServerError { code, message });
-            return;
+            return Ok(self.take_chunks());
         }
 
         if !self.started {
@@ -316,7 +319,7 @@ impl OpenAiCompatSseParser {
                         cache_creation_input_tokens: 0,
                     });
                 }
-                return;
+                return Ok(self.take_chunks());
             }
         };
 
@@ -391,6 +394,22 @@ impl OpenAiCompatSseParser {
                 reason: normalize_stop_reason(reason),
             });
         }
+
+        Ok(self.take_chunks())
+    }
+
+    fn finish(&mut self) -> Result<Vec<ProviderChunk>, ProviderFailure> {
+        if self.saw_done {
+            return Ok(self.take_chunks());
+        }
+
+        Err(ProviderFailure {
+            kind: crate::provider::types::ProviderFailureKind::Transport,
+            message: TRUNCATED_STREAM_MESSAGE.to_string(),
+            status: None,
+            provider_request_id: None,
+            retryable: true,
+        })
     }
 
     fn take_chunks(&mut self) -> Vec<ProviderChunk> {
@@ -407,8 +426,7 @@ mod tests {
         let mut parser = OpenAiCompatSseParser::new();
         let frame =
             r#"data: {"error": {"type": "server_error", "message": "something went wrong"}}"#;
-        parser.feed(frame);
-        let chunks = parser.take_chunks();
+        let chunks = parser.feed(frame).unwrap();
         assert_eq!(chunks.len(), 1);
         match &chunks[0] {
             ProviderChunk::ServerError { code, message } => {
@@ -417,5 +435,24 @@ mod tests {
             }
             other => panic!("expected ServerError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn truncated_stream_does_not_emit_stream_end() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let mut chunks = parser
+            .feed(
+            r#"data: {"id":"chatcmpl_truncated","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}"#,
+        )
+            .unwrap();
+        chunks.extend(parser.feed("").unwrap());
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::TextDelta { text } if text == "partial"
+        )));
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
     }
 }

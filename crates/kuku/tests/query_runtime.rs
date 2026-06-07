@@ -138,6 +138,47 @@ async fn run_without_config_fails_before_writing_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn builder_only_provider_config_starts_without_file_config() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_builder_only",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Builder config works."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+
+    let mut run = query("builder only")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .session("s_builder_only")
+        .start()
+        .await
+        .unwrap();
+
+    let mut saw_done = false;
+    while let Some(event) = run.next().await.unwrap() {
+        if let UiEvent::Done { output, .. } = event {
+            assert_eq!(output.text, "Builder config works.");
+            saw_done = true;
+            break;
+        }
+    }
+
+    assert!(saw_done, "expected done event");
+    let events = EventStore::replay(env.events_path("s_builder_only")).unwrap();
+    assert!(!events.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
     let env = TestEnv::new();
     std::fs::write(env.home.path().join("memory.md"), "captured-session-memory").unwrap();
@@ -445,6 +486,54 @@ fn assert_failed_turn_facts(events: &[kuku::event::StoredEvent], turn: u64) {
         event.payload,
         EventPayload::TurnEnd { turn: event_turn, .. } if event_turn == turn
     )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn truncated_provider_stream_is_recorded_as_failed_turn() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200).body(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_truncated\",\"type\":\"message\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":7}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+        );
+    });
+
+    let mut run = query("trigger truncation")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let session_id = run.session_id().to_string();
+
+    loop {
+        match run.next().await {
+            Ok(Some(UiEvent::TextDelta { .. }))
+            | Ok(Some(UiEvent::TurnStart { .. }))
+            | Ok(Some(UiEvent::ModelRequest { .. }))
+            | Ok(Some(UiEvent::Log { .. })) => continue,
+            Ok(Some(other)) => panic!("unexpected event: {other:?}"),
+            Ok(None) => panic!("expected provider error"),
+            Err(error) => {
+                assert!(matches!(
+                    error,
+                    Error::Provider {
+                        kind: kuku::ProviderFailureKind::Transport,
+                        ..
+                    }
+                ));
+                break;
+            }
+        }
+    }
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_failed_turn_facts(&events, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1989,14 +2078,14 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("project memory entry")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("<kuku_working_style>");
-        then.status(200).json_body(serde_json::json!({
+        then.status(200).body(anthropic_sse_response(serde_json::json!({
             "id": "msg_final",
             "type": "message",
             "role": "assistant",
             "content": [{"type": "text", "text": "ok"}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 5, "output_tokens": 6}
-        }));
+        })));
     });
 
     let output = query("say ok")

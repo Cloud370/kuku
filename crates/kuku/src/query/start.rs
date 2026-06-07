@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -18,6 +19,54 @@ use super::helpers::{next_turn, now_timestamp, validate_existing_session};
 use super::types::{
     PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState, UiEvent,
 };
+
+struct StartupLockGuard {
+    lock_path: std::path::PathBuf,
+    held: bool,
+}
+
+impl StartupLockGuard {
+    fn acquire(lock_path: std::path::PathBuf) -> Result<Self> {
+        crate::session::acquire_lock(&lock_path)?;
+        Ok(Self {
+            lock_path,
+            held: true,
+        })
+    }
+
+    fn into_path(mut self) -> std::path::PathBuf {
+        self.held = false;
+        self.lock_path.clone()
+    }
+}
+
+impl Drop for StartupLockGuard {
+    fn drop(&mut self) {
+        if self.held {
+            crate::session::release_lock(&self.lock_path);
+        }
+    }
+}
+
+fn has_builder_provider_config(query: &Query) -> bool {
+    query.provider.is_some()
+        && query.model.is_some()
+        && query.base_url.is_some()
+        && query.api_key.is_some()
+}
+
+fn synthetic_builder_config() -> crate::config::Config {
+    crate::config::Config {
+        tiers: BTreeMap::new(),
+        providers: BTreeMap::new(),
+        default_tier: String::new(),
+        discovery: crate::config::DiscoveryConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
+        logs: crate::config::LogsConfig::default(),
+        plugin: crate::config::PluginConfig::default(),
+        update: crate::config::UpdateConfig::default(),
+    }
+}
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
@@ -44,9 +93,13 @@ impl Query {
                 Arc::new(file.resolve()?)
             }
             (None, None) => {
-                return Err(Error::MissingProviderConfig(
-                    "no config provided; set .config_path() or .config()".to_string(),
-                ));
+                if has_builder_provider_config(&self) {
+                    Arc::new(synthetic_builder_config())
+                } else {
+                    return Err(Error::MissingProviderConfig(
+                        "no config provided; set .config_path() or .config()".to_string(),
+                    ));
+                }
             }
         };
         let handoff_keep_turns = config.handoff().keep_turns;
@@ -60,6 +113,8 @@ impl Query {
         };
         validate_session_id(&session_id)?;
 
+        let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
+        let lock_guard = StartupLockGuard::acquire(lock_path)?;
         let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = EventStore::replay(&events_path)?;
@@ -201,8 +256,6 @@ impl Query {
 
         let plugin_registry = plugin_registry_opt.map(std::sync::Arc::new);
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
-        let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        crate::session::acquire_lock(&lock_path)?;
         let (slot_event_tx, slot_event_rx) =
             tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
         let catalog = if let Some(dir) = &prompts_dir {
@@ -287,7 +340,7 @@ impl Query {
             slot_event_tx,
             slot_event_rx,
             cancel_token,
-            lock_path,
+            lock_path: lock_guard.into_path(),
             deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }
@@ -983,5 +1036,35 @@ mod startup_prune_tests {
             .expect("context.skills event");
 
         assert!(registry.get("packaged-skill").is_none());
+    }
+
+    #[tokio::test]
+    async fn locked_session_does_not_write_new_turn_events() {
+        let workspace = tempfile::tempdir().unwrap();
+        let kuku_home = tempfile::tempdir().unwrap();
+        let session_id = "locked-session";
+        let lock_path =
+            crate::session::session_lock_path(kuku_home.path(), workspace.path(), session_id);
+        let lock_content = format!("{}\n2026-06-07T00:00:00Z\n", std::process::id());
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        std::fs::write(&lock_path, lock_content).unwrap();
+
+        let mut query = Query::new("should not persist")
+            .session(session_id)
+            .workspace(workspace.path())
+            .config(test_config());
+        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
+
+        let error = query.start().await.unwrap_err();
+        assert!(matches!(error, crate::error::Error::SessionLocked { .. }));
+
+        let events_path =
+            crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
+                .unwrap();
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(
+            events.is_empty(),
+            "locked session start wrote events before failing"
+        );
     }
 }

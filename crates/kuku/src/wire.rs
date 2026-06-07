@@ -60,9 +60,12 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
         UiEvent::PermissionRequested { request } => Some(json!({
             "type": "permission",
             "id": request.id,
+            "tool_call_id": request.tool_call_id,
             "tool": request.tool,
             "risk": request.risk,
             "summary": request.summary,
+            "candidate": request.candidate,
+            "source": request.source,
         })),
         UiEvent::Done {
             output,
@@ -140,7 +143,7 @@ fn tool_event_to_wire(event: &crate::query::ToolEvent) -> serde_json::Value {
         ToolEvent::Stdout { text } => json!({"stdout": text}),
         ToolEvent::Stderr { text } => json!({"stderr": text}),
         ToolEvent::PermissionRequested { request } => {
-            json!({"permission": {"id": request.id, "tool": request.tool, "risk": request.risk, "summary": request.summary}})
+            json!({"permission": {"id": request.id, "tool_call_id": request.tool_call_id, "tool": request.tool, "risk": request.risk, "summary": request.summary, "candidate": request.candidate, "source": request.source}})
         }
         ToolEvent::Error { code, message } => json!({"error": {"code": code, "message": message}}),
     }
@@ -259,6 +262,29 @@ mod tests {
         assert_eq!(wire["tool"], "run_command");
         assert_eq!(wire["risk"], "command");
         assert_eq!(wire["summary"], "cargo test");
+        assert_eq!(wire["tool_call_id"], "tc_1");
+        assert_eq!(wire["candidate"], "cargo test");
+        assert_eq!(wire["source"], "default_ask");
+    }
+
+    #[test]
+    fn nested_permission_wire_format_includes_full_request_fields() {
+        let wire = tool_event_to_wire(&ToolEvent::PermissionRequested {
+            request: PermissionRequest {
+                id: "req_2".to_string(),
+                tool_call_id: "tc_2".to_string(),
+                tool: "write_file".to_string(),
+                risk: "filesystem".to_string(),
+                summary: "write config".to_string(),
+                candidate: "config.toml".to_string(),
+                source: "policy".to_string(),
+            },
+        });
+
+        assert_eq!(wire["permission"]["id"], "req_2");
+        assert_eq!(wire["permission"]["tool_call_id"], "tc_2");
+        assert_eq!(wire["permission"]["candidate"], "config.toml");
+        assert_eq!(wire["permission"]["source"], "policy");
     }
 
     #[test]
