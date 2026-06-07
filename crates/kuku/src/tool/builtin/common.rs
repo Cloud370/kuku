@@ -435,6 +435,7 @@ pub(super) fn find_write_snapshot(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
