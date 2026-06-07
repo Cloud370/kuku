@@ -98,11 +98,9 @@ fn build_skill_body(
         return Ok(None);
     };
     let dir = def.source_path.as_deref().unwrap_or("").to_string();
-    let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
-    let (_, body) = kuku::util::yaml::split_yaml_frontmatter(&content);
     Ok(Some(BootstrapSkillInput {
         name: skill_name.to_string(),
-        body: format!("<!-- loaded: {dir} -->\n\n{body}"),
+        body: format!("<!-- loaded: {dir} -->\n\n{}", def.instructions),
     }))
 }
 

@@ -128,13 +128,8 @@ where
             format!("{prefix}{}", candidate_names.join(", "))
         } else {
             format!(
-                "{prefix}{}{}, ... +{remaining} more",
-                selected.join(", "),
-                if selected.is_empty() {
-                    name.to_string()
-                } else {
-                    format!(", {name}")
-                }
+                "{prefix}{}... +{remaining} more",
+                candidate_names.join(", ")
             )
         };
         if candidate.len() <= max_bytes {
