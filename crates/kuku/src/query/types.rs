@@ -565,6 +565,12 @@ impl Query {
         self
     }
 
+    /// Override the kuku home directory used for session and config side effects.
+    pub fn kuku_home(mut self, path: impl Into<PathBuf>) -> Self {
+        self.captured_kuku_home = Some(path.into());
+        self
+    }
+
     /// Directory containing prompt files to override embedded defaults.
     pub fn prompts_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.prompts_dir = Some(path.into());

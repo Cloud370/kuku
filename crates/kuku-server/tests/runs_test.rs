@@ -81,6 +81,38 @@ async fn full_run_lifecycle() {
     assert_eq!(log["record"]["scope"], "runtime");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_start_uses_server_scoped_home_after_other_server_drops() {
+    let mock = mock_provider::start_mock_provider().await;
+    mock_provider::mock_text_response(&mock, "Hello from isolated home!");
+
+    let config = mock_provider::make_test_config(mock.port());
+    let server_a = common::TestServer::start(config.clone()).await;
+    let server_b = common::TestServer::start(config).await;
+    wait_for_server(&server_b.base_url).await;
+    drop(server_a);
+
+    let client = wreq::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post(format!("{}/runs", server_b.base_url))
+        .json(&serde_json::json!({
+            "prompt": "hello after drop",
+            "workspace": server_b.workspace.path().to_str().unwrap(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    let first: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+    assert_eq!(first["type"], "run_start");
+}
+
 #[tokio::test]
 async fn cancel_nonexistent_run_returns_not_found() {
     let mock = mock_provider::start_mock_provider().await;

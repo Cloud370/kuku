@@ -36,6 +36,7 @@ pub async fn create_run(
 
     let mut query = kuku::Query::new(body.prompt)
         .workspace(body.workspace)
+        .kuku_home(state.kuku_home.clone())
         .config((**config).clone());
 
     if let Some(sid) = body.session_id {

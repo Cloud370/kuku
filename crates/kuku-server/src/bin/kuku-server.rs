@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -58,11 +59,16 @@ async fn main() {
         config_path.clone(),
         config_store.clone(),
     );
+    let kuku_home = std::env::var_os("KUKU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home::home_dir().map(|dir| dir.join(".kuku")))
+        .unwrap_or_else(|| PathBuf::from(".kuku"));
 
     let state = Arc::new(kuku_server::AppState {
         run_manager: Mutex::new(RunManager::new(args.max_concurrent_runs)),
         config: config_store,
         password: args.password,
+        kuku_home,
     });
 
     let app = kuku_server::build_app(state.clone());

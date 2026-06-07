@@ -6,6 +6,7 @@ pub mod server_args;
 pub mod wire;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub run_manager: Mutex<RunManager>,
     pub config: Arc<ArcSwap<kuku::config::Config>>,
     pub password: Option<String>,
+    pub kuku_home: PathBuf,
 }
 
 fn is_loopback(addr: &SocketAddr) -> bool {
@@ -88,12 +90,14 @@ pub async fn start_server(
     password: Option<String>,
     max_concurrent_runs: usize,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let kuku_home = kuku::session::kuku_home().unwrap_or_else(|_| PathBuf::from(".kuku"));
     let config_store = Arc::new(ArcSwap::from_pointee(config));
 
     let state = Arc::new(AppState {
         run_manager: Mutex::new(RunManager::new(max_concurrent_runs)),
         config: config_store,
         password,
+        kuku_home,
     });
 
     let app = build_app(state);

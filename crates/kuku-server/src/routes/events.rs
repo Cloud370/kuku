@@ -18,10 +18,7 @@ pub async fn events(
     Path(session_id): Path<String>,
     Query(params): Query<EventsQuery>,
 ) -> Json<serde_json::Value> {
-    let home = match kuku::session::kuku_home() {
-        Ok(h) => h,
-        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
-    };
+    let home = &state.kuku_home;
 
     let workspace = match params.workspace {
         Some(ws) => std::path::PathBuf::from(ws),
@@ -35,7 +32,7 @@ pub async fn events(
         },
     };
 
-    let events_path = match kuku::session::session_events_path(&home, &workspace, &session_id) {
+    let events_path = match kuku::session::session_events_path(home, &workspace, &session_id) {
         Ok(p) => p,
         Err(_) => {
             return Json(
