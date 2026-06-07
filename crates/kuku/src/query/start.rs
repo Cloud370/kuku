@@ -146,22 +146,26 @@ impl Query {
                     .map(|snapshot| snapshot.registry),
             )
         } else {
-            let registry = build_registry_snapshot(
+            match build_registry_snapshot(
                 &workspace,
                 &config.discovery,
                 plugin_registry_opt.as_ref(),
-            )?;
-            store.append(EventPayload::ContextSkills {
-                turn,
-                ts: now_timestamp()?,
-                registry: registry.clone(),
-                bootstrap_loaded: bootstrap_loaded_names(bootstrap_skill.as_ref()),
-            })?;
-            (
-                Some(registry),
-                previous_snapshot_before_turn(&existing_events, turn)
-                    .map(|snapshot| snapshot.registry),
-            )
+            ) {
+                Ok(registry) => {
+                    store.append(EventPayload::ContextSkills {
+                        turn,
+                        ts: now_timestamp()?,
+                        registry: registry.clone(),
+                        bootstrap_loaded: bootstrap_loaded_names(bootstrap_skill.as_ref()),
+                    })?;
+                    (
+                        Some(registry),
+                        previous_snapshot_before_turn(&existing_events, turn)
+                            .map(|snapshot| snapshot.registry),
+                    )
+                }
+                Err(_) => (None, None),
+            }
         };
 
         if let (None, Some(ref plugin_reg)) = (&resumed_permission, &plugin_registry_opt) {
