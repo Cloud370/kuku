@@ -129,6 +129,7 @@ mod tests {
         let home = temp_dir("kuku-skills-disabled-home");
 
         let config = kuku::config::generate_default()
+            .replace("\r\n", "\n")
             .replace("[plugin]\nenabled = true", "[plugin]\nenabled = false")
             .replace("auto_discover = true", "auto_discover = false");
         std::fs::write(home.join("config.toml"), config).unwrap();
