@@ -58,13 +58,17 @@ Before writing any code:
 
 Skill 会指导模型行为，但不会改变权限。Tool 访问和权限提示仍然由当前 Session 的运行时策略决定。
 
-## 加载模型
+## 运行时快照
 
-Skill 分三阶段加载：
+每个 turn 开始时，运行时会发现当前可用的 Skill 定义，并把这个目录快照写入 Session 事件日志。
 
-1. Session 启动时加载 metadata
-2. 使用 Skill 时加载完整 `SKILL.md`
-3. 按需加载 `references/`、`scripts/`、`examples/` 和 `assets/`
+- `list_skills` 和 `search_skills` 读取当前 turn 的快照。
+- `use_skill` 也从同一个快照加载完整指令，而不是在本 turn 中稍后再次从磁盘重新读取。
+- 如果一个 turn 被恢复，运行时会恢复该 turn 已持久化的快照，而不是重新发现磁盘上的最新 Skill。
+
+磁盘上的变更会在下一次新的 turn 中生效，不会在 turn 中途生效，也不会在恢复旧 turn 时生效。
+
+运行时不会单独预加载 `references/`、`scripts/`、`examples/` 和 `assets/`。这些目录仍然保留在 Skill 目录下，供指令或工具按需引用。
 
 ## Path Resolution
 

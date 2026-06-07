@@ -44,9 +44,9 @@ Flags:
 | `--config <path>` | 使用指定配置文件 |
 | `--prompts-dir <dir>` | 覆盖内嵌 Prompt 资源 |
 | `--no-agents` | 禁用 `agent` Tool |
-| `--no-skills` | 禁用默认的 Skill Tool surface：`list_skills`、`search_skills` 和 `use_skill` |
+| `--no-skills` | 禁用默认的 Skill Tool surface：`list_skills`、`search_skills`、`use_skill` 以及斜杠 Skill 加载 |
 
-如果 prompt 以 `/skill-name` 开头，且 skills 处于启用状态，`kuku run` 会加载这个 Skill，并把剩余文本作为用户 prompt 发送。`--no-skills` 会关闭这个快捷方式，因为它会禁用默认的 Skill Tool surface。
+如果 prompt 以 `/skill-name` 开头，且第一个 token 是合法 Skill 名称，`kuku run` 会加载这个 Skill，并把剩余文本作为用户 prompt 发送。像 `/tmp/foo` 这样的路径型 prompt 会保持为普通用户输入。`--no-skills` 会关闭这个快捷方式，因为它会禁用默认的 Skill Tool surface。
 
 ## `kuku show`
 

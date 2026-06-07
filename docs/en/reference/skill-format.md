@@ -58,13 +58,17 @@ Optional:
 
 Skills guide model behavior, but they do not change permissions. Tool access and permission prompts still come from the runtime policy for the current session.
 
-## Loading Model
+## Runtime Snapshotting
 
-Skills load in three stages:
+At the start of each turn, the runtime discovers the available Skill definitions and snapshots that catalog into the session event log.
 
-1. metadata at session startup
-2. full `SKILL.md` when the skill is used
-3. `references/`, `scripts/`, `examples/`, and `assets/` on demand
+- `list_skills` and `search_skills` read from the current turn snapshot.
+- `use_skill` loads the full instructions from that same snapshot, not from a fresh disk read later in the turn.
+- If a turn is resumed, the runtime restores the persisted snapshot for that turn instead of re-discovering Skills from live disk.
+
+Changes on disk appear on the next fresh turn, not mid-turn and not while resuming an older turn.
+
+`references/`, `scripts/`, `examples/`, and `assets/` are not preloaded separately by the runtime. They stay available under the Skill directory for instructions or tools to reference when needed.
 
 ## Path Resolution
 

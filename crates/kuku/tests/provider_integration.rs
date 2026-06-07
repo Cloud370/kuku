@@ -376,6 +376,95 @@ async fn first_turn_request_includes_budgeted_skill_block_and_hints() {
     assert_eq!(output.text, "skills ok");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn executes_list_skills_and_continues_to_final_response() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let mut config = test_config();
+    config.discovery.auto_discover = false;
+    config.discovery.extra_project_paths = vec![env.workspace.path().join(".claude")];
+    let skill_dir = env
+        .workspace
+        .path()
+        .join(".claude")
+        .join("skills")
+        .join("review");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: review\ndescription: Review code carefully\n---\n\nReview instructions.\n",
+    )
+    .unwrap();
+
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "browse skills")
+            .method(POST)
+            .path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_list_skills")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will list skills."},
+                    {"type": "tool_use", "id": "toolu_list_skills", "name": "list_skills", "input": {"limit": 5}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let final_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_final")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Listed skills."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = query("browse skills")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config)
+        .run()
+        .await
+        .unwrap();
+
+    tool_mock.assert();
+    final_mock.assert();
+    assert_eq!(output.text, "Listed skills.");
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolCall { ref tool, ref tool_call_id, .. }
+            if tool == "list_skills" && tool_call_id == "toolu_list_skills"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ToolResult {
+            ref status,
+            ref model_content,
+            ref structured,
+            ..
+        } if status == "ok"
+            && model_content.contains("review")
+            && structured.as_ref().is_some_and(|value| {
+                value["skills"]
+                    .as_array()
+                    .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == "review"))
+            })
+    )));
+}
+
 // ---------------------------------------------------------------------------
 // tool loop — multi-tool auto-execute
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ use crate::config::DiscoveryConfig;
 use crate::context::revert::filter_rolled_back_events;
 use crate::event::{EventPayload, StoredEvent};
 use crate::plugin::PluginRegistry;
+use crate::skill::definition::SkillSource;
 
 use super::registry::SkillRegistry;
 
@@ -15,6 +16,12 @@ pub fn build_registry_snapshot_for_host(
     workspace: &Path,
     config: &crate::config::Config,
 ) -> crate::error::Result<SkillRegistry> {
+    let extra_skill_dirs = if config.plugin.enabled {
+        Vec::new()
+    } else {
+        package_skill_dirs(kuku_home, workspace)?
+    };
+
     let plugin_registry = if config.plugin.enabled {
         Some(
             crate::plugin::PluginRegistry::builder()
@@ -25,7 +32,12 @@ pub fn build_registry_snapshot_for_host(
         None
     };
 
-    build_registry_snapshot(workspace, &config.discovery, plugin_registry.as_ref())
+    build_registry_snapshot(
+        workspace,
+        &config.discovery,
+        plugin_registry.as_ref(),
+        &extra_skill_dirs,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,14 +50,32 @@ pub(crate) fn build_registry_snapshot(
     workspace: &Path,
     discovery_config: &DiscoveryConfig,
     plugin_registry: Option<&PluginRegistry>,
+    extra_skill_dirs: &[(std::path::PathBuf, SkillSource)],
 ) -> crate::error::Result<SkillRegistry> {
     let mut builder = SkillRegistry::builder().build_with_discovery(workspace, discovery_config)?;
+    for (skill_dir, source) in extra_skill_dirs {
+        builder = builder.load_from_dir(skill_dir, *source)?;
+    }
     if let Some(plugin_registry) = plugin_registry {
         for (skill_dir, tier) in plugin_registry.skill_dirs() {
             builder = builder.load_from_dir(skill_dir, (*tier).into())?;
         }
     }
     Ok(builder.build())
+}
+
+pub(crate) fn package_skill_dirs(
+    kuku_home: &Path,
+    workspace: &Path,
+) -> crate::error::Result<Vec<(std::path::PathBuf, SkillSource)>> {
+    Ok(
+        crate::plugin::loader::collect_skill_dirs(&crate::plugin::loader::discover_packages(
+            kuku_home, workspace,
+        )?)
+        .into_iter()
+        .map(|(path, tier)| (path, tier.into()))
+        .collect(),
+    )
 }
 
 pub(crate) fn restore_turn_snapshot(
@@ -103,8 +133,12 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent]) -> Vec<String> {
             EventPayload::ToolResult {
                 tool_call_id,
                 status,
+                truncated,
                 ..
             } if status == "ok" => {
+                if *truncated {
+                    continue;
+                }
                 if let Some(skill_name) = pending_use_skill.get(tool_call_id) {
                     loaded.insert(skill_name.clone());
                 }
@@ -425,6 +459,48 @@ mod tests {
         ];
 
         assert_eq!(loaded_skill_names(&events), vec!["alpha".to_string()]);
+    }
+
+    #[test]
+    fn loaded_skill_names_ignores_truncated_use_skill_results() {
+        let events = vec![
+            event(
+                1,
+                EventPayload::ContextSkills {
+                    turn: 4,
+                    ts: "t1".to_string(),
+                    registry: registry(&["alpha"]),
+                    bootstrap_loaded: vec![],
+                },
+            ),
+            event(
+                2,
+                EventPayload::ToolCall {
+                    turn: 4,
+                    ts: "t2".to_string(),
+                    tool_call_id: "tool_alpha".to_string(),
+                    request_id: "req_4".to_string(),
+                    index: 0,
+                    tool: "use_skill".to_string(),
+                    args: json!({ "skill_name": "alpha" }),
+                },
+            ),
+            event(
+                3,
+                EventPayload::ToolResult {
+                    turn: 4,
+                    ts: "t3".to_string(),
+                    tool_call_id: "tool_alpha".to_string(),
+                    status: "ok".to_string(),
+                    summary: "loaded skill: alpha".to_string(),
+                    model_content: "partial alpha".to_string(),
+                    truncated: true,
+                    structured: None,
+                },
+            ),
+        ];
+
+        assert!(loaded_skill_names(&events).is_empty());
     }
 
     #[test]
