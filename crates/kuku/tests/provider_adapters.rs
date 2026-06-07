@@ -618,9 +618,53 @@ event: response.output_text.delta
 data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial text\"}
 ";
     let chunks = parse_responses_sse(sse);
-    assert!(chunks
-        .last()
-        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
+    assert!(!chunks
+        .iter()
+        .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+}
+
+#[test]
+fn openai_responses_truncated_sse_does_not_emit_stream_end() {
+    let sse = "\
+event: response.created
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_partial\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\",\"output\":[]}}
+
+event: response.output_text.delta
+data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial text\"}
+";
+    let chunks = parse_responses_sse(sse);
+    assert!(!chunks
+        .iter()
+        .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+}
+
+#[test]
+fn render_responses_body_includes_prior_assistant_function_call() {
+    let catalog = test_catalog();
+    let body = render_responses_body(&ProviderRequest {
+        stream: false,
+        assembly: assembly_with_tool_history(),
+        catalog: &catalog,
+        model: "gpt-5.4".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        think_level: kuku::config::ThinkLevel::Off,
+        thinking: ResolvedThinking::default(),
+    });
+
+    let input = body["input"].as_array().unwrap();
+
+    assert!(input.iter().any(|item| {
+        item["type"] == "function_call"
+            && item["call_id"] == "toolu_01"
+            && item["name"] == "find_files"
+            && item["arguments"] == json!({"path": "."})
+    }));
+    assert!(input.iter().any(|item| {
+        item["type"] == "function_call_output"
+            && item["call_id"] == "toolu_01"
+            && item["output"] == "README.md"
+    }));
 }
 
 #[test]

@@ -196,7 +196,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     assert_eq!(provenance.history_range.first_event_id, Some(1));
     assert_eq!(provenance.history_range.last_event_id, Some(2));
     assert_eq!(provenance.prompt_asset_sources.len(), 3);
-    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    assert!(events_path.exists());
 }
 
 #[test]

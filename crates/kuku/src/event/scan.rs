@@ -4,6 +4,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
+const LAST_EVENT_SCAN_CHUNK_BYTES: u64 = 4096;
+
 /// Read events.jsonl from the start and return the text of the first `user.input` event.
 pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
@@ -73,24 +75,73 @@ pub(crate) fn scan_turn_count(path: &Path) -> u64 {
 }
 
 /// Read the last complete JSON line from events.jsonl and return its `type` tag.
-/// Seeks to end - 4096 bytes, reads forward to find the final line.
+/// Scans backward in bounded chunks until it finds the final complete line.
 pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     let mut file = File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     if file_len == 0 {
         return None;
     }
-    let start = file_len.saturating_sub(4096);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
-    let last_line = buf.lines().rfind(|l| !l.trim().is_empty())?;
-    let value: Value = serde_json::from_str(last_line).ok()?;
-    match value.get("type").and_then(|t| t.as_str()) {
-        Some("turn.end") => Some("turn.end"),
-        Some("turn.start") => Some("turn.start"),
-        Some("model.response") => Some("model.response"),
-        Some("tool.result") => Some("tool.result"),
-        _ => None,
+    let mut start = file_len;
+    let mut buffer = Vec::new();
+
+    while start > 0 {
+        let chunk_start = start.saturating_sub(LAST_EVENT_SCAN_CHUNK_BYTES);
+        let chunk_len = (start - chunk_start) as usize;
+        let mut chunk = vec![0_u8; chunk_len];
+        file.seek(SeekFrom::Start(chunk_start)).ok()?;
+        file.read_exact(&mut chunk).ok()?;
+        chunk.extend_from_slice(&buffer);
+        buffer = chunk;
+
+        let complete = if chunk_start == 0 {
+            buffer.as_slice()
+        } else if let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+            &buffer[index + 1..]
+        } else {
+            start = chunk_start;
+            continue;
+        };
+
+        if let Some(last_line) = complete
+            .split(|byte| *byte == b'\n')
+            .rev()
+            .find(|line| !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()))
+        {
+            let value: Value = serde_json::from_slice(last_line).ok()?;
+            return match value.get("type").and_then(|t| t.as_str()) {
+                Some("turn.end") => Some("turn.end"),
+                Some("turn.start") => Some("turn.start"),
+                Some("model.response") => Some("model.response"),
+                Some("tool.result") => Some("tool.result"),
+                _ => None,
+            };
+        }
+
+        start = chunk_start;
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_last_event_type;
+
+    #[test]
+    fn scan_last_event_type_reads_large_final_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let large = "x".repeat(5000);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"id\":1,\"type\":\"turn.start\"}}\n{{\"id\":2,\"type\":\"turn.end\",\"summary\":\"{}\"}}\n",
+                large
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(Some("turn.end"), scan_last_event_type(&path));
     }
 }

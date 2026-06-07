@@ -4,6 +4,7 @@ use home::env::{self, Env};
 
 use crate::error::{Error, Result};
 pub use crate::log::HostKind as HostLogKind;
+use crate::session::validate_session_id;
 
 /// Resolve the kuku home directory from KUKU_HOME env or platform default.
 pub fn kuku_home() -> Result<PathBuf> {
@@ -118,6 +119,7 @@ pub fn session_events_path(
     workspace: &Path,
     session_id: &str,
 ) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     let mut path = project_home(kuku_home, workspace)?;
     path.push("sessions");
     path.push(session_id);

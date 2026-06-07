@@ -1,4 +1,5 @@
 use kuku::session::{project_home, project_policy_path, session_events_path};
+use kuku::Error;
 
 #[test]
 fn maps_unix_workspace_path_under_kuku_home() {
@@ -131,4 +132,14 @@ fn builds_project_policy_path() {
         path,
         kuku_home.join("p").join("code/kuku/example/policy.md")
     );
+}
+
+#[test]
+fn session_events_path_rejects_invalid_session_id() {
+    let kuku_home = std::env::temp_dir().join("kuku-home");
+    let workspace = std::path::PathBuf::from("/code/kuku/example");
+
+    let error = session_events_path(&kuku_home, &workspace, "../escape").unwrap_err();
+
+    assert!(matches!(error, Error::InvalidSessionId(ref value) if value == "../escape"));
 }

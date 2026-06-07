@@ -13,16 +13,11 @@ pub struct SessionsQuery {
 }
 
 pub async fn list(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<SessionsQuery>,
 ) -> Json<serde_json::Value> {
-    let home = match kuku::session::kuku_home() {
-        Ok(h) => h,
-        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
-    };
-
     let workspace = params.workspace.map(std::path::PathBuf::from);
-    let sessions = match kuku::list_sessions(&home, workspace.as_deref()) {
+    let sessions = match kuku::list_sessions(&state.kuku_home, workspace.as_deref()) {
         Ok(s) => s,
         Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
     };
@@ -47,17 +42,12 @@ pub async fn list(
 }
 
 pub async fn delete(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Query(params): Query<SessionsQuery>,
 ) -> Json<serde_json::Value> {
-    let home = match kuku::session::kuku_home() {
-        Ok(h) => h,
-        Err(_) => return Json(json!({"ok": false, "code": "internal", "message": "missing home"})),
-    };
-
     let workspace = params.workspace.map(std::path::PathBuf::from);
-    match kuku::delete_session(&home, workspace.as_deref(), &session_id) {
+    match kuku::delete_session(&state.kuku_home, workspace.as_deref(), &session_id) {
         Ok(()) => Json(json!({"ok": true})),
         Err(e) => {
             let code = match &e {

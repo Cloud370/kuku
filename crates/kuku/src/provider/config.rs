@@ -105,9 +105,13 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             )));
         }
         None => {
-            return Err(Error::MissingProviderConfig(format!(
-                "no provider config for '{provider_name}'; define [provider.{provider_name}] or set builder .provider()"
-            )));
+            if let Some(provider) = input.provider {
+                ProviderKind::from(provider)
+            } else {
+                return Err(Error::MissingProviderConfig(format!(
+                    "no provider config for '{provider_name}'; define [provider.{provider_name}] or set builder .provider()"
+                )));
+            }
         }
     };
 

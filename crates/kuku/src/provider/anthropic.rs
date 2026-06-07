@@ -1,5 +1,6 @@
 use super::http_client;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 
@@ -10,6 +11,8 @@ use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
+
+const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_stop";
 
 pub(crate) fn messages_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -165,32 +168,32 @@ pub(crate) async fn stream(
         return Err(failure);
     }
 
-    let mut parser = AnthropicSseParser::new();
-    Ok(stream_sse_events(response, move |frame| {
-        parser.feed(frame);
-        parser.take_chunks()
-    }))
+    let parser = Arc::new(Mutex::new(AnthropicSseParser::new()));
+    let frame_parser = Arc::clone(&parser);
+    let eof_parser = Arc::clone(&parser);
+    Ok(stream_sse_events(
+        response,
+        move |frame| frame_parser.lock().unwrap().feed(frame),
+        move || eof_parser.lock().unwrap().finish(),
+    ))
 }
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
+    saw_terminal: bool,
 }
 
 impl AnthropicSseParser {
     fn new() -> Self {
-        Self { chunks: Vec::new() }
+        Self {
+            chunks: Vec::new(),
+            saw_terminal: false,
+        }
     }
 
-    fn feed(&mut self, frame: &str) {
+    fn feed(&mut self, frame: &str) -> Result<Vec<ProviderChunk>, ProviderFailure> {
         if frame.is_empty() {
-            if !self
-                .chunks
-                .iter()
-                .any(|c| matches!(c, ProviderChunk::StreamEnd))
-            {
-                self.chunks.push(ProviderChunk::StreamEnd);
-            }
-            return;
+            return Ok(self.take_chunks());
         }
 
         let mut event_type = "";
@@ -205,12 +208,12 @@ impl AnthropicSseParser {
         }
 
         if data_str.is_empty() || event_type == "ping" {
-            return;
+            return Ok(self.take_chunks());
         }
 
         let data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(_) => return Ok(self.take_chunks()),
         };
 
         match event_type {
@@ -330,6 +333,7 @@ impl AnthropicSseParser {
                 }
             }
             "message_stop" => {
+                self.saw_terminal = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "error" => {
@@ -350,6 +354,22 @@ impl AnthropicSseParser {
             }
             _ => {}
         }
+
+        Ok(self.take_chunks())
+    }
+
+    fn finish(&mut self) -> Result<Vec<ProviderChunk>, ProviderFailure> {
+        if self.saw_terminal {
+            return Ok(self.take_chunks());
+        }
+
+        Err(ProviderFailure {
+            kind: crate::provider::types::ProviderFailureKind::Transport,
+            message: TRUNCATED_STREAM_MESSAGE.to_string(),
+            status: None,
+            provider_request_id: None,
+            retryable: true,
+        })
     }
 
     fn take_chunks(&mut self) -> Vec<ProviderChunk> {
@@ -439,5 +459,27 @@ mod tests {
             .get("cache_control")
             .expect("cache_control field should be present");
         assert_eq!(cc["type"], "ephemeral");
+    }
+
+    #[test]
+    fn truncated_stream_does_not_emit_stream_end() {
+        let mut parser = AnthropicSseParser::new();
+        let mut chunks = parser
+            .feed(
+            "event: message_start\ndata: {\"message\":{\"id\":\"msg_truncated\",\"usage\":{\"input_tokens\":1}}}",
+        )
+            .unwrap();
+        chunks.extend(parser.feed(
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}",
+        ).unwrap());
+        chunks.extend(parser.feed("").unwrap());
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::TextDelta { text } if text == "partial"
+        )));
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
     }
 }

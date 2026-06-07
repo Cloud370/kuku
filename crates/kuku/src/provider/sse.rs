@@ -7,12 +7,13 @@ use super::ProviderChunkStream;
 
 pub(crate) fn stream_sse_events(
     response: wreq::Response,
-    mut on_frame: impl FnMut(&str) -> Vec<ProviderChunk> + Send + 'static,
+    mut on_frame: impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
+    mut on_eof: impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
 ) -> ProviderChunkStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
 
     tokio::spawn(async move {
-        run_sse_loop(response, &mut on_frame, &tx).await;
+        run_sse_loop(response, &mut on_frame, &mut on_eof, &tx).await;
     });
 
     Box::pin(ReceiverStream::new(rx))
@@ -20,7 +21,8 @@ pub(crate) fn stream_sse_events(
 
 async fn run_sse_loop(
     response: wreq::Response,
-    on_frame: &mut (impl FnMut(&str) -> Vec<ProviderChunk> + Send),
+    on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
+    on_eof: &mut (impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
 ) {
     use tokio_stream::StreamExt;
@@ -38,7 +40,14 @@ async fn run_sse_loop(
                     if trimmed.is_empty() {
                         continue;
                     }
-                    for chunk in on_frame(&trimmed) {
+                    let chunks = match on_frame(&trimmed) {
+                        Ok(chunks) => chunks,
+                        Err(failure) => {
+                            let _ = tx.send(Err(failure)).await;
+                            return;
+                        }
+                    };
+                    for chunk in chunks {
                         if tx.send(Ok(chunk)).await.is_err() {
                             return;
                         }
@@ -52,11 +61,25 @@ async fn run_sse_loop(
             None => {
                 let remaining = buf.trim().to_string();
                 if !remaining.is_empty() {
-                    for chunk in on_frame(&remaining) {
+                    let chunks = match on_frame(&remaining) {
+                        Ok(chunks) => chunks,
+                        Err(failure) => {
+                            let _ = tx.send(Err(failure)).await;
+                            return;
+                        }
+                    };
+                    for chunk in chunks {
                         let _ = tx.send(Ok(chunk)).await;
                     }
                 }
-                for chunk in on_frame("") {
+                let chunks = match on_eof() {
+                    Ok(chunks) => chunks,
+                    Err(failure) => {
+                        let _ = tx.send(Err(failure)).await;
+                        return;
+                    }
+                };
+                for chunk in chunks {
                     let _ = tx.send(Ok(chunk)).await;
                 }
                 return;

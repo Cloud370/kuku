@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use super::manifest::HookDecl;
 use super::matcher::MatcherExpr;
+
+use crate::error::Error;
 
 /// Lifecycle event that triggers plugin hook execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -91,11 +93,17 @@ pub(crate) fn build_hook_instances(
             .timeout_seconds
             .unwrap_or(DEFAULT_TIMEOUT)
             .clamp(1, MAX_TIMEOUT);
+        let command = resolve_hook_command(package_root, &decl.command).map_err(|message| {
+            Error::PluginManifest(
+                package_root.join("kuku.toml"),
+                format!("hook {i}: {message}"),
+            )
+        })?;
 
         for event in events {
             instances.push(HookInstance {
                 event,
-                command: package_root.join(&decl.command),
+                command: command.clone(),
                 matcher: matcher.clone(),
                 timeout: Duration::from_secs(timeout_secs),
                 chain: decl.chain,
@@ -109,7 +117,30 @@ pub(crate) fn build_hook_instances(
     Ok(instances)
 }
 
-fn resolve_events(decl: &HookDecl) -> Result<Vec<HookEvent>, String> {
+fn resolve_hook_command(
+    package_root: &Path,
+    command: &str,
+) -> std::result::Result<PathBuf, String> {
+    let command_path = Path::new(command);
+    if command_path.is_absolute() {
+        return Err("command must stay under the package root".to_string());
+    }
+
+    let mut resolved = PathBuf::from(package_root);
+    for component in command_path.components() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("command must stay under the package root".to_string());
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn resolve_events(decl: &HookDecl) -> std::result::Result<Vec<HookEvent>, String> {
     if let Some(ref ev) = decl.event {
         let event: HookEvent = ev.parse()?;
         Ok(vec![event])
@@ -214,5 +245,33 @@ mod tests {
             assert_eq!(ev.as_str(), *s);
         }
         assert!("unknown.event".parse::<HookEvent>().is_err());
+    }
+
+    #[test]
+    fn rejects_relative_hook_command_that_escapes_package_root() {
+        let m = manifest_with_hook("tool.pre_execute", "../../run-me.sh");
+
+        let error = build_hook_instances(&m, std::path::Path::new("/pkg/plugins/test"), "test")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::error::Error::PluginManifest(_, message)
+                if message.contains("hook 0") && message.contains("package root")
+        ));
+    }
+
+    #[test]
+    fn rejects_absolute_hook_command_path() {
+        let m = manifest_with_hook("tool.pre_execute", "/tmp/run-me.sh");
+
+        let error = build_hook_instances(&m, std::path::Path::new("/pkg/plugins/test"), "test")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::error::Error::PluginManifest(_, message)
+                if message.contains("hook 0") && message.contains("package root")
+        ));
     }
 }

@@ -40,7 +40,7 @@ pub(crate) fn write_tool_result(
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
     let structured = finalize_persisted_tool_result(store.next_id(), result);
-    store.append(crate::event::EventPayload::ToolResult {
+    let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
         tool_call_id: slot.tool_call_id.clone(),
@@ -50,7 +50,10 @@ pub(crate) fn write_tool_result(
         truncated: false,
         structured: structured.clone(),
     })?;
-    Ok(structured)
+    Ok(match stored.payload {
+        EventPayload::ToolResult { structured, .. } => structured,
+        _ => None,
+    })
 }
 
 fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
@@ -229,7 +232,7 @@ pub(super) async fn execute_tool_call(
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ToolResult {
+    let stored = store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
         tool_call_id: tool_call.id.clone(),
@@ -239,6 +242,10 @@ pub(super) async fn execute_tool_call(
         truncated: result.truncated,
         structured: result.structured.clone(),
     })?;
+    let mut result = result;
+    if let EventPayload::ToolResult { structured, .. } = stored.payload {
+        result.structured = structured;
+    }
     Ok(result)
 }
 

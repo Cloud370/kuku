@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 
@@ -16,7 +18,7 @@ struct ReplayScan {
 /// Append-only store for reading and writing events to a session's events.jsonl.
 pub struct EventStore {
     path: PathBuf,
-    next_id: u64,
+    next_id: Arc<Mutex<u64>>,
 }
 
 impl EventStore {
@@ -36,17 +38,35 @@ impl EventStore {
         }
 
         let next_id = scan.events.last().map_or(1, |event| event.id + 1);
-        Ok(Self { path, next_id })
+        Ok(Self {
+            next_id: next_id_counter(&path, next_id),
+            path,
+        })
     }
 
     pub(crate) fn next_id(&self) -> u64 {
-        self.next_id
+        *self.next_id.lock().unwrap()
     }
 
     /// Append a new event to the store and return the stored event with its assigned ID.
     pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
+        let mut next_id = self.next_id.lock().unwrap();
+        let mut file_lock = event_file_lock(&self.path)?;
+        file_lock.lock()?;
+
+        let scan = Self::scan(&self.path)?;
+        if scan.needs_truncation {
+            OpenOptions::new()
+                .write(true)
+                .open(&self.path)?
+                .set_len(scan.last_valid_offset)?;
+        }
+
+        let event_id = scan.events.last().map_or(1, |event| event.id + 1);
+        let mut payload = payload;
+        patch_tool_result_event_id(&mut payload, event_id);
         let event = StoredEvent {
-            id: self.next_id,
+            id: event_id,
             payload,
         };
         let mut file = OpenOptions::new()
@@ -56,7 +76,7 @@ impl EventStore {
         serde_json::to_writer(&mut file, &event)?;
         file.write_all(b"\n")?;
         file.flush()?;
-        self.next_id += 1;
+        *next_id = event.id + 1;
         Ok(event)
     }
 
@@ -153,6 +173,48 @@ impl EventStore {
     fn is_blank_line(line: &[u8]) -> bool {
         line.iter().all(|byte| byte.is_ascii_whitespace())
     }
+}
+
+fn event_file_lock(path: &Path) -> Result<fslock::LockFile> {
+    let lock_path = path.with_extension(format!(
+        "{}lock",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!("{extension}."))
+            .unwrap_or_default()
+    ));
+    Ok(fslock::LockFile::open(&lock_path)?)
+}
+
+fn patch_tool_result_event_id(payload: &mut EventPayload, event_id: u64) {
+    let EventPayload::ToolResult {
+        structured: Some(structured),
+        ..
+    } = payload
+    else {
+        return;
+    };
+
+    if structured["kind"] == "file_content" {
+        structured["read_event_id"] = serde_json::Value::from(event_id);
+    }
+}
+
+fn next_id_counter(path: &Path, initial_next_id: u64) -> Arc<Mutex<u64>> {
+    static NEXT_IDS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<u64>>>>> = OnceLock::new();
+
+    let counters = NEXT_IDS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut counters = counters.lock().unwrap();
+    let counter = counters
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(initial_next_id)))
+        .clone();
+    let mut next_id = counter.lock().unwrap();
+    if *next_id < initial_next_id {
+        *next_id = initial_next_id;
+    }
+    drop(next_id);
+    counter
 }
 
 #[cfg(test)]

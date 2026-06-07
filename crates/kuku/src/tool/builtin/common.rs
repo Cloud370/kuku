@@ -1,4 +1,6 @@
+use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -136,7 +138,7 @@ pub(super) fn resolve_write_path(
     })
 }
 
-pub(super) fn normalize_existing_components(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_existing_components(path: PathBuf) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -206,14 +208,31 @@ pub(crate) fn content_hash(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let temp_path = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("kuku")
-    ));
-    fs::write(&temp_path, bytes)?;
-    fs::rename(temp_path, path)
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path has no parent directory",
+        )
+    })?;
+    let mut builder = tempfile::Builder::new();
+    let prefix = temp_file_prefix(path);
+    builder.prefix(&prefix);
+    let mut temp_file = builder.tempfile_in(parent)?;
+    temp_file.write_all(bytes)?;
+    temp_file.flush()?;
+    temp_file
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+fn temp_file_prefix(path: &Path) -> OsString {
+    let mut prefix = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("kuku"));
+    prefix.push(".");
+    prefix
 }
 
 // ---------- String helpers ----------
@@ -412,4 +431,31 @@ pub(super) fn find_write_snapshot(
             content_hash: structured["content_hash"].as_str()?.to_string(),
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomically_rejects_existing_temp_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("safe.txt");
+        let temp_path = dir.path().join("safe.txt.tmp");
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "outside\n").unwrap();
+
+        std::os::unix::fs::symlink(outside.path(), &temp_path).unwrap();
+
+        let result = write_atomically(&target, b"escaped\n");
+
+        assert!(result.is_ok());
+        assert_eq!("escaped\n", std::fs::read_to_string(&target).unwrap());
+        assert_eq!(
+            "outside\n",
+            std::fs::read_to_string(outside.path()).unwrap()
+        );
+    }
 }

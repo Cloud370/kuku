@@ -31,6 +31,7 @@ pub use paths::{
 pub(crate) use paths::session_lock_path;
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -39,17 +40,6 @@ pub(crate) fn acquire_lock(lock_path: &Path) -> Result<()> {
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if let Ok(existing) = fs::read_to_string(lock_path) {
-        let pid_str = existing.lines().next().unwrap_or("");
-        if let Ok(pid) = pid_str.parse::<i32>() {
-            if process_alive(pid) {
-                return Err(Error::SessionLocked {
-                    session: lock_path.parent().unwrap_or(lock_path).to_path_buf(),
-                    holder_pid: pid,
-                });
-            }
-        }
-    }
     let content = format!(
         "{}\n{}\n",
         std::process::id(),
@@ -57,8 +47,43 @@ pub(crate) fn acquire_lock(lock_path: &Path) -> Result<()> {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
     );
-    fs::write(lock_path, content)?;
-    Ok(())
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+
+                file.write_all(content.as_bytes())?;
+                file.flush()?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let existing = fs::read_to_string(lock_path)?;
+                let pid_str = existing.lines().next().unwrap_or("");
+                let Ok(pid) = pid_str.parse::<i32>() else {
+                    return Err(Error::SessionLocked {
+                        session: lock_path.parent().unwrap_or(lock_path).to_path_buf(),
+                        holder_pid: 0,
+                    });
+                };
+                if process_alive(pid) {
+                    return Err(Error::SessionLocked {
+                        session: lock_path.parent().unwrap_or(lock_path).to_path_buf(),
+                        holder_pid: pid,
+                    });
+                }
+                match fs::remove_file(lock_path) {
+                    Ok(()) => continue,
+                    Err(remove_error) if remove_error.kind() == ErrorKind::NotFound => continue,
+                    Err(remove_error) => return Err(remove_error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 pub(crate) fn release_lock(lock_path: &Path) {
@@ -128,6 +153,9 @@ pub(crate) fn process_alive(pid: i32) -> bool {
 
 #[cfg(test)]
 mod lock_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
     use super::*;
 
     #[test]
@@ -147,5 +175,58 @@ mod lock_tests {
         let content = format!("{}\n2020-01-01T00:00:00Z\n", std::process::id());
         fs::write(&lock_path, &content).unwrap();
         assert!(acquire_lock(&lock_path).is_err());
+    }
+
+    #[test]
+    fn concurrent_acquire_lock_never_allows_two_winners() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("lock");
+        let race_observed = Arc::new(AtomicBool::new(false));
+
+        for _ in 0..2000 {
+            release_lock(&lock_path);
+            let start = Arc::new(Barrier::new(3));
+            let finish = Arc::new(Barrier::new(3));
+            let winners = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+            let left_start = start.clone();
+            let left_finish = finish.clone();
+            let left_winners = winners.clone();
+            let left_path = lock_path.clone();
+            let left = std::thread::spawn(move || {
+                left_start.wait();
+                if acquire_lock(&left_path).is_ok() {
+                    left_winners.lock().unwrap().push(());
+                }
+                left_finish.wait();
+            });
+
+            let right_start = start.clone();
+            let right_finish = finish.clone();
+            let right_winners = winners.clone();
+            let right_path = lock_path.clone();
+            let right = std::thread::spawn(move || {
+                right_start.wait();
+                if acquire_lock(&right_path).is_ok() {
+                    right_winners.lock().unwrap().push(());
+                }
+                right_finish.wait();
+            });
+
+            start.wait();
+            finish.wait();
+            left.join().unwrap();
+            right.join().unwrap();
+
+            if winners.lock().unwrap().len() > 1 {
+                race_observed.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+
+        assert!(
+            !race_observed.load(Ordering::Relaxed),
+            "concurrent acquire_lock calls both succeeded"
+        );
     }
 }

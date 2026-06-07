@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::process::Command;
 
 use kuku::context::FileSource;
 use kuku::error::Error;
@@ -166,6 +167,65 @@ fn append_writes_newline_terminated_jsonl() {
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.ends_with('\n'));
+}
+
+#[test]
+fn concurrent_handles_do_not_reuse_the_same_event_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut left = EventStore::open(&path).unwrap();
+    let mut right = EventStore::open(&path).unwrap();
+
+    let first = left.append(session_meta()).unwrap();
+    let second = right
+        .append(EventPayload::TurnStart {
+            turn: 1,
+            ts: "2026-05-13T00:00:01Z".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(1, first.id);
+    assert_eq!(2, second.id);
+
+    let replayed = EventStore::replay(&path).unwrap();
+    assert_eq!(2, replayed.len());
+    assert_eq!(1, replayed[0].id);
+    assert_eq!(2, replayed[1].id);
+}
+
+#[test]
+fn concurrent_processes_do_not_reuse_the_same_event_id() {
+    if std::env::var("KUKU_EVENT_STORE_CHILD").ok().as_deref() == Some("1") {
+        let path = std::env::var("KUKU_EVENT_STORE_PATH").unwrap();
+        let mut store = EventStore::open(&path).unwrap();
+        store.append(session_meta()).unwrap();
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let current_exe = std::env::current_exe().unwrap();
+
+    let spawn_child = || {
+        Command::new(&current_exe)
+            .env("KUKU_EVENT_STORE_CHILD", "1")
+            .env("KUKU_EVENT_STORE_PATH", &path)
+            .arg("--exact")
+            .arg("concurrent_processes_do_not_reuse_the_same_event_id")
+            .status()
+            .unwrap()
+    };
+
+    let left = spawn_child();
+    let right = spawn_child();
+
+    assert!(left.success());
+    assert!(right.success());
+
+    let replayed = EventStore::replay(&path).unwrap();
+    assert_eq!(2, replayed.len());
+    assert_eq!(1, replayed[0].id);
+    assert_eq!(2, replayed[1].id);
 }
 
 #[test]

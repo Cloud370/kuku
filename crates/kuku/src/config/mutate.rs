@@ -98,12 +98,20 @@ fn inject_update_section(doc: &mut toml_edit::DocumentMut) {
 /// Load config from disk, patch missing sections, write back atomically if changed.
 /// Returns the resolved ConfigFile. Preserves user comments via `toml_edit`.
 pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
+    load_and_patch_config_with_hook(path, || {})
+}
+
+pub(crate) fn load_and_patch_config_with_hook(
+    path: &Path,
+    before_guarded_write: impl FnOnce(),
+) -> Result<ConfigFile> {
     let raw = std::fs::read_to_string(path)
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
     let (patched, changed) = config_patch_defaults(&raw)?;
     if changed {
         // Guard against concurrent edits: only write back if the file hasn't
         // changed since we read it, so we don't overwrite user modifications.
+        before_guarded_write();
         if let Ok(current) = std::fs::read_to_string(path) {
             if current == raw {
                 let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -114,6 +122,8 @@ pub fn load_and_patch_config(path: &Path) -> Result<ConfigFile> {
                     .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
                 temp.persist(path)
                     .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+            } else {
+                return parse_config_file(&current);
             }
         }
     }
