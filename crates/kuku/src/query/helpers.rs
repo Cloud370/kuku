@@ -7,7 +7,26 @@ use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderKind;
 use crate::session::{global_memory_path, project_memory_path};
 
-use super::types::{PermissionChoice, PermissionRequest};
+use super::types::{PendingRun, PermissionChoice, PermissionRequest};
+
+pub(super) fn is_inline_skill_tool(name: &str) -> bool {
+    matches!(name, "list_skills" | "search_skills" | "use_skill")
+}
+
+pub(super) fn resolved_tool_available(pending: &PendingRun, name: &str) -> bool {
+    if is_inline_skill_tool(name) && pending.query.disable_skills {
+        return false;
+    }
+    if let Some(resolved) = pending.resolved.as_ref() {
+        return resolved.registry.iter().any(|tool| tool.name == name);
+    }
+    if let Some(registry) = pending.tool_registry_override.as_ref() {
+        return registry.iter().any(|tool| tool.name == name);
+    }
+    crate::tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
+        .iter()
+        .any(|tool| tool.name == name)
+}
 
 // ---------- Permission helpers ----------
 
@@ -105,6 +124,16 @@ pub(super) fn display_summary(
             .get("skill_name")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
+            .to_string(),
+        "list_skills" => {
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
+            format!("offset: {offset}, limit: {limit}")
+        }
+        "search_skills" => args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("search skills")
             .to_string(),
         "remember_memory" | "forget_memory" => args
             .get("text")

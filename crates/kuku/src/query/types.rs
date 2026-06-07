@@ -31,9 +31,15 @@ pub struct Query {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
-    pub(super) skill_body: Option<String>,
+    pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BootstrapSkill {
+    pub(crate) name: Option<String>,
+    pub(crate) body: String,
 }
 
 /// Final output from a completed query run.
@@ -285,8 +291,8 @@ pub(super) struct PendingRun {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
-    pub(super) skill_content_hash: Option<String>,
-    pub(super) skill_body: Option<String>,
+    pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
+    pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) child_session_count: u32,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) catalog: crate::prompt::PromptCatalog,
@@ -454,7 +460,7 @@ impl Query {
             prompts_dir: None,
             disable_agents: false,
             disable_skills: false,
-            skill_body: None,
+            bootstrap_skill: None,
             subagent_registry: None,
             tool_registry_override: None,
         }
@@ -480,7 +486,16 @@ impl Query {
 
     /// Attach a skill body to be injected as a separate block before user input.
     pub fn skill_body(mut self, body: String) -> Self {
-        self.skill_body = Some(body);
+        self.bootstrap_skill = Some(BootstrapSkill { name: None, body });
+        self
+    }
+
+    /// Attach a named bootstrap skill body to be injected before user input.
+    pub fn bootstrap_skill(mut self, name: impl Into<String>, body: String) -> Self {
+        self.bootstrap_skill = Some(BootstrapSkill {
+            name: Some(name.into()),
+            body,
+        });
         self
     }
 

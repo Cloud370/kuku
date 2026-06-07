@@ -17,7 +17,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "PermissionAllow", "PermissionDeny", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
+                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "PermissionAllow", "PermissionDeny", "ContextSkills", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" },
@@ -99,6 +99,10 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
     for event in iter {
         if matched.len() >= limit {
             break;
+        }
+
+        if type_filter.is_none() && !include_in_default_results(&event.payload) {
+            continue;
         }
 
         let Some(&turn_idx) = turn_map.get(&event.id) else {
@@ -198,6 +202,7 @@ fn normalize_type_filter(raw: &str) -> String {
         "PermissionRequested" => "permission.requested".to_string(),
         "PermissionAllow" => "permission.allow".to_string(),
         "PermissionDeny" => "permission.deny".to_string(),
+        "ContextSkills" => "context.skills".to_string(),
         "Handoff" => "handoff".to_string(),
         "TurnRollback" => "turn.rollback".to_string(),
         "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
@@ -214,6 +219,7 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         EventPayload::PermissionRequested { .. } => "permission.requested",
         EventPayload::PermissionAllow { .. } => "permission.allow",
         EventPayload::PermissionDeny { .. } => "permission.deny",
+        EventPayload::ContextSkills { .. } => "context.skills",
         EventPayload::Handoff { .. } => "handoff",
         EventPayload::TurnRollback { .. } => "turn.rollback",
         EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
@@ -226,6 +232,10 @@ fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
         | EventPayload::Unknown(_) => return false,
     };
     type_tag == filter
+}
+
+fn include_in_default_results(payload: &EventPayload) -> bool {
+    !matches!(payload, EventPayload::ContextSkills { .. })
 }
 
 fn format_event(event: &crate::event::StoredEvent) -> String {
@@ -325,6 +335,41 @@ mod tests {
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("hello"));
         assert!(!result.model_content.contains("\"hi\""));
+    }
+
+    #[test]
+    fn query_session_default_results_exclude_context_skills() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::ContextSkills {
+                    turn: 1,
+                    ts: ts("t"),
+                    registry: serde_json::to_value(
+                        crate::skill::registry::SkillRegistry::builder().build(),
+                    )
+                    .unwrap(),
+                    bootstrap_loaded: vec!["bootstrap-alpha".into()],
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "hello".into(),
+                },
+            ],
+        );
+
+        let default_result = query_session(&json!({}), &path);
+        assert_eq!(default_result.status, "ok");
+        assert!(default_result.model_content.contains("hello"));
+        assert!(!default_result.model_content.contains("context.skills"));
+        assert!(!default_result.model_content.contains("bootstrap-alpha"));
+
+        let explicit_result = query_session(&json!({"type": "ContextSkills"}), &path);
+        assert_eq!(explicit_result.status, "ok");
+        assert!(explicit_result.model_content.contains("context.skills"));
+        assert!(explicit_result.model_content.contains("bootstrap-alpha"));
     }
 
     #[test]

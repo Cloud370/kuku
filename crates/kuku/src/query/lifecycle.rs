@@ -115,6 +115,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             EventPayload::SessionMeta { .. }
             | EventPayload::ContextPrelude { .. }
             | EventPayload::ContextSources { .. }
+            | EventPayload::ContextSkills { .. }
             | EventPayload::TurnStart { .. }
             | EventPayload::UserInput { .. }
             | EventPayload::ModelResponse { .. }

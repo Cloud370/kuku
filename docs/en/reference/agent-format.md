@@ -35,7 +35,7 @@ You are a thorough code reviewer.
 
 Notes:
 
-- Omitting `tools` gives the child the default built-in tool registry without `agent` or `use_skill`.
+- Omitting `tools` gives the child the default built-in tool registry without `agent`, `list_skills`, `search_skills`, or `use_skill`.
 - `tools: []` means no tools.
 
 ## Accepted Tool Names

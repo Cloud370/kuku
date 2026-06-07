@@ -119,6 +119,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
             EventPayload::SessionMeta { .. }
             | EventPayload::ContextPrelude { .. }
             | EventPayload::ContextSources { .. }
+            | EventPayload::ContextSkills { .. }
             | EventPayload::TurnStart { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::PermissionRequested { .. }
@@ -175,6 +176,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::TurnStart { turn, .. }
         | EventPayload::TurnEnd { turn, .. }
         | EventPayload::ContextSources { turn, .. }
+        | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelError { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }

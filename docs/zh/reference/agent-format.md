@@ -35,7 +35,7 @@ You are a thorough code reviewer.
 
 说明：
 
-- 省略 `tools` 时，子 Session 会得到默认的 built-in Tool registry，但不包含 `agent` 和 `use_skill`。
+- 省略 `tools` 时，子 Session 会得到默认的 built-in Tool registry，但不包含 `agent`、`list_skills`、`search_skills` 和 `use_skill`。
 - `tools: []` 表示不允许任何 Tool。
 
 ## 接受的 Tool 名称

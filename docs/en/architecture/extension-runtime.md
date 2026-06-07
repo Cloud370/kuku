@@ -43,7 +43,7 @@ Extensions do not bypass the permission gate. A package can influence behavior a
 
 ## Skills inside packages
 
-Package-bundled Skills are discovered by the same skill registry as standalone Skills. The runtime model stays the same; packaging only changes distribution and co-location with hooks.
+When package loading is enabled, package-bundled Skills are discovered by the same skill registry as standalone Skills. The runtime model stays the same; packaging only changes distribution and co-location with hooks. Disabling `plugin.enabled` removes both package-provided hooks and package-provided Skills from the runtime.
 
 ## Forward path
 

@@ -69,6 +69,14 @@ pub enum EventPayload {
         memory_sources: Vec<FileSource>,
     },
 
+    #[serde(rename = "context.skills")]
+    ContextSkills {
+        turn: u64,
+        ts: String,
+        registry: Value,
+        bootstrap_loaded: Vec<String>,
+    },
+
     #[serde(rename = "turn.start")]
     TurnStart { turn: u64, ts: String },
 
@@ -192,6 +200,7 @@ impl EventPayload {
             Self::SessionMeta { .. } => "session.meta",
             Self::ContextPrelude { .. } => "context.prelude",
             Self::ContextSources { .. } => "context.sources",
+            Self::ContextSkills { .. } => "context.skills",
             Self::TurnStart { .. } => "turn.start",
             Self::UserInput { .. } => "user.input",
             Self::ModelResponse { .. } => "model.response",

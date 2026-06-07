@@ -75,17 +75,33 @@ fn noninteractive_permission_choice(
     }
 }
 
+struct BootstrapSkillInput {
+    name: String,
+    body: String,
+}
+
+fn build_cli_skill_registry(
+    workspace: &std::path::Path,
+    kuku_home: &std::path::Path,
+    config: &kuku::config::Config,
+) -> Result<kuku::skill::registry::SkillRegistry, Box<dyn std::error::Error>> {
+    Ok(kuku::skill::build_registry_snapshot_for_host(
+        kuku_home, workspace, config,
+    )?)
+}
+
 fn build_skill_body(
     skill_name: &str,
     registry: &kuku::skill::registry::SkillRegistry,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Option<BootstrapSkillInput>, Box<dyn std::error::Error>> {
     let Some(def) = registry.get(skill_name) else {
         return Ok(None);
     };
     let dir = def.source_path.as_deref().unwrap_or("").to_string();
-    let content = std::fs::read_to_string(std::path::Path::new(&dir).join("SKILL.md"))?;
-    let (_, body) = kuku::util::yaml::split_yaml_frontmatter(&content);
-    Ok(Some(format!("<!-- loaded: {dir} -->\n\n{body}")))
+    Ok(Some(BootstrapSkillInput {
+        name: skill_name.to_string(),
+        body: format!("<!-- loaded: {dir} -->\n\n{}", def.instructions),
+    }))
 }
 
 struct BuiltQuery {
@@ -108,36 +124,39 @@ fn build_query(
 
     let prompt = args.prompt.join(" ");
 
-    let (user_prompt, skill_body) = if let Some(body) = &args.skill_body {
-        (prompt.clone(), Some(body.clone()))
-    } else if prompt.starts_with('/') && !args.no_skills {
-        let workspace = kuku::session::current_workspace()?;
-        let discovery_config = cfg.discovery.clone();
-        let registry = kuku::skill::registry::SkillRegistry::builder()
-            .build_with_discovery(&workspace, &discovery_config)
-            .map(|b| b.build())
-            .ok();
-        match registry {
-            Some(ref reg) => {
-                let (skill_name, rest) = parse_slash_command(&prompt);
-                match build_skill_body(&skill_name, reg) {
-                    Ok(Some(body)) => (
-                        if rest.is_empty() { String::new() } else { rest },
-                        Some(body),
-                    ),
-                    Ok(None) => {
-                        return Err(format!(
-                            "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
-                        ).into());
-                    }
-                    Err(e) => {
-                        return Err(format!("Error loading skill '{skill_name}': {e}").into());
-                    }
+    let slash_command = slash_command_candidate(&prompt);
+    let (user_prompt, bootstrap_skill) = if let Some(body) = &args.skill_body {
+        (
+            prompt.clone(),
+            Some(BootstrapSkillInput {
+                name: args.bootstrap_skill_name.clone().unwrap_or_default(),
+                body: body.clone(),
+            }),
+        )
+    } else if !args.no_skills {
+        if let Some((skill_name, rest)) = slash_command {
+            let workspace = kuku::session::current_workspace()?;
+            let kuku_home = kuku::session::kuku_home()?;
+            let registry = build_cli_skill_registry(&workspace, &kuku_home, &cfg)?;
+            match build_skill_body(&skill_name, &registry) {
+                Ok(Some(skill)) => (
+                    if rest.is_empty() { String::new() } else { rest },
+                    Some(skill),
+                ),
+                Ok(None) => {
+                    return Err(format!(
+                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
+                    )
+                    .into());
+                }
+                Err(e) => {
+                    return Err(format!("Error loading skill '{skill_name}': {e}").into());
                 }
             }
-            None => (prompt.clone(), None),
+        } else {
+            (prompt.clone(), None)
         }
-    } else if prompt.starts_with('/') && args.no_skills {
+    } else if slash_command.is_some() && args.no_skills {
         eprintln!("warning: slash command used with --no-skills; skill injection skipped");
         (prompt.clone(), None)
     } else {
@@ -145,8 +164,12 @@ fn build_query(
     };
 
     let mut q = query(&user_prompt).config_path(config_path);
-    if let Some(body) = skill_body {
-        q = q.skill_body(body);
+    if let Some(skill) = bootstrap_skill {
+        if skill.name.is_empty() {
+            q = q.skill_body(skill.body);
+        } else {
+            q = q.bootstrap_skill(skill.name, skill.body);
+        }
     }
     if args.no_skills {
         q = q.no_skills();
@@ -651,12 +674,12 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
 
     let config_file =
         kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
+    let config = config_file
+        .resolve()
+        .map_err(|e| format!("config error: {e}"))?;
     let workspace = kuku::session::current_workspace()?;
-    let discovery_config = config_file.discovery.clone().unwrap_or_default();
-    let skill_registry = kuku::skill::registry::SkillRegistry::builder()
-        .build_with_discovery(&workspace, &discovery_config)
-        .map(|b| b.build())
-        .ok();
+    let kuku_home = kuku::session::kuku_home()?;
+    let skill_registry = build_cli_skill_registry(&workspace, &kuku_home, &config)?;
 
     loop {
         print!("> ");
@@ -682,30 +705,28 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             continue;
         }
 
-        let (user_prompt, skill_body) = if prompt.starts_with('/') {
-            if let Some(ref registry) = skill_registry {
-                let (skill_name, rest) = parse_slash_command(&prompt);
-                match build_skill_body(&skill_name, registry) {
-                    Ok(Some(body)) => (
-                        if rest.is_empty() { String::new() } else { rest },
-                        Some(body),
-                    ),
-                    Ok(None) => {
-                        eprintln!(
-                            "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("Error loading skill '{skill_name}': {e}");
-                        continue;
-                    }
+        let (user_prompt, bootstrap_skill_name, skill_body) = if let Some((skill_name, rest)) =
+            slash_command_candidate(&prompt)
+        {
+            match build_skill_body(&skill_name, &skill_registry) {
+                Ok(Some(skill)) => (
+                    if rest.is_empty() { String::new() } else { rest },
+                    Some(skill.name),
+                    Some(skill.body),
+                ),
+                Ok(None) => {
+                    eprintln!(
+                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
+                    );
+                    continue;
                 }
-            } else {
-                (prompt, None)
+                Err(e) => {
+                    eprintln!("Error loading skill '{skill_name}': {e}");
+                    continue;
+                }
             }
         } else {
-            (prompt, None)
+            (prompt, None, None)
         };
 
         let args = RunArgs {
@@ -719,10 +740,11 @@ pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::erro
             show_thinking: false,
             raw: false,
             verbose: false,
-            config: config.clone(),
+            config: Some(config_path.to_string_lossy().into_owned()),
             prompts_dir: None,
             no_agents: false,
             no_skills: false,
+            bootstrap_skill_name,
             skill_body,
         };
         if let Err(e) = run(args).await {
@@ -743,10 +765,54 @@ fn parse_slash_command(input: &str) -> (String, String) {
     }
 }
 
+fn slash_command_candidate(input: &str) -> Option<(String, String)> {
+    if !input.starts_with('/') {
+        return None;
+    }
+    let (name, rest) = parse_slash_command(input);
+    if name.is_empty()
+        || name.contains('/')
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        return None;
+    }
+    Some((name, rest))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{noninteractive_permission_choice, parse_slash_command};
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{
+        build_query, noninteractive_permission_choice, parse_slash_command, slash_command_candidate,
+    };
+    use crate::cli_args::RunArgs;
     use kuku::PermissionChoice;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "kuku-cli-run-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn test_config_path(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, kuku::config::generate_default()).unwrap();
+        path
+    }
 
     #[test]
     fn stream_json_without_yes_denies_permission_requests() {
@@ -799,5 +865,103 @@ mod tests {
         let (name, rest) = parse_slash_command("/  tdd implement login");
         assert_eq!(name, "tdd");
         assert_eq!(rest, "implement login");
+    }
+
+    #[test]
+    fn slash_command_candidate_rejects_path_like_prompts() {
+        assert!(slash_command_candidate("/tmp/foo").is_none());
+        assert!(slash_command_candidate("/etc/hosts").is_none());
+        assert!(slash_command_candidate("/").is_none());
+    }
+
+    #[test]
+    fn build_query_treats_path_like_prompt_as_plain_text() {
+        let _guard = env_lock().lock().unwrap();
+        let workspace = temp_workspace();
+        let previous_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&workspace).unwrap();
+
+        let args = RunArgs {
+            prompt: vec!["/tmp/foo".to_string()],
+            auto_yes: false,
+            model: None,
+            session: None,
+            cont: false,
+            json: false,
+            stream_json: false,
+            show_thinking: false,
+            raw: false,
+            verbose: false,
+            config: None,
+            prompts_dir: None,
+            no_agents: true,
+            no_skills: false,
+            skill_body: None,
+            bootstrap_skill_name: None,
+        };
+
+        let result = build_query(&args, test_config_path(&workspace)).unwrap();
+
+        std::env::set_current_dir(previous_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        assert_eq!(result.query.prompt(), "/tmp/foo");
+    }
+
+    #[test]
+    fn slash_command_candidate_accepts_valid_skill_names() {
+        assert_eq!(
+            slash_command_candidate("/review check this"),
+            Some(("review".to_string(), "check this".to_string()))
+        );
+        assert_eq!(
+            slash_command_candidate("/code-review"),
+            Some(("code-review".to_string(), String::new()))
+        );
+    }
+
+    #[test]
+    fn slash_command_surfaces_skill_discovery_errors() {
+        let _guard = env_lock().lock().unwrap();
+        let workspace = temp_workspace();
+        let previous_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&workspace).unwrap();
+
+        let skill_dir = workspace.join(".kuku").join("skills").join("broken-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: other-name\ndescription: broken\n---\n\n# Broken\n",
+        )
+        .unwrap();
+
+        let args = RunArgs {
+            prompt: vec!["/broken-skill do something".to_string()],
+            auto_yes: false,
+            model: None,
+            session: None,
+            cont: false,
+            json: false,
+            stream_json: false,
+            show_thinking: false,
+            raw: false,
+            verbose: false,
+            config: None,
+            prompts_dir: None,
+            no_agents: true,
+            no_skills: false,
+            skill_body: None,
+            bootstrap_skill_name: None,
+        };
+
+        let error = match build_query(&args, test_config_path(&workspace)) {
+            Ok(_) => panic!("expected discovery failure"),
+            Err(error) => error,
+        };
+
+        std::env::set_current_dir(previous_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        assert!(!error.to_string().is_empty());
     }
 }

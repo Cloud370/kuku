@@ -10,6 +10,10 @@ pub(crate) struct ToolResultEnvelope {
 }
 
 impl ToolResultEnvelope {
+    pub(crate) fn blocked_marker() -> Value {
+        serde_json::json!({"kind": "blocked"})
+    }
+
     pub(crate) fn ok(
         summary: impl Into<String>,
         model_content: impl Into<String>,
@@ -54,7 +58,7 @@ impl ToolResultEnvelope {
             summary: summary.into(),
             model_content: model_content.into(),
             truncated: false,
-            structured: Some(serde_json::json!({"kind": "blocked"})),
+            structured: Some(Self::blocked_marker()),
         }
     }
 

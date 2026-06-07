@@ -56,6 +56,29 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
             let preview: String = text.chars().take(60).collect();
             preview
         }
+        EventPayload::ContextSkills {
+            registry,
+            bootstrap_loaded,
+            ..
+        } => {
+            let skill_count = registry
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if verbose {
+                let hash = registry.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+                format!(
+                    "skills={skill_count}  bootstrap_loaded={}  hash={hash}",
+                    bootstrap_loaded.len(),
+                )
+            } else {
+                format!(
+                    "skills={skill_count}  bootstrap_loaded={}",
+                    bootstrap_loaded.len()
+                )
+            }
+        }
         EventPayload::ToolCall {
             tool,
             args,

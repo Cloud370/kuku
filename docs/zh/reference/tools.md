@@ -19,7 +19,11 @@
 条件性 Tool：
 
 - `agent`，必填参数为 `name`、`prompt`
+- `list_skills`，可选参数为 `offset`、`limit`
+- `search_skills`，必填参数为 `query`，可选参数为 `offset`、`limit`
 - `use_skill`，必填参数为 `skill_name`
+
+启用默认 Skill Tool surface 时，运行时会一并暴露 `list_skills`、`search_skills` 和 `use_skill`。
 
 ## Tool 返回包络
 

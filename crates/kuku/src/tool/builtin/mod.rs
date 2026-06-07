@@ -67,3 +67,54 @@ pub(crate) fn use_skill_definition() -> crate::tool::ToolDefinition {
         risk: "read".to_string(),
     }
 }
+
+pub(crate) fn list_skills_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        name: "list_skills".to_string(),
+        description: "Browse the current skill snapshot available in this session. Use this to inspect skill names and descriptions before loading one.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of skills to skip before returning results. Defaults to 0."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum skills to return. Defaults to 20, capped at 50."
+                }
+            }
+        }),
+        read_only: true,
+        max_result_chars: 20_000,
+        risk: "read".to_string(),
+    }
+}
+
+pub(crate) fn search_skills_definition() -> crate::tool::ToolDefinition {
+    crate::tool::ToolDefinition {
+        name: "search_skills".to_string(),
+        description: "Search the current skill snapshot by name, description, title, headings, and body text to find relevant workflows.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What kind of skill you want to find."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of matches to skip before returning results. Defaults to 0."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum matches to return. Defaults to 10, capped at 25."
+                }
+            },
+            "required": ["query"]
+        }),
+        read_only: true,
+        max_result_chars: 20_000,
+        risk: "read".to_string(),
+    }
+}

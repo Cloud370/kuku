@@ -9,7 +9,8 @@ use crate::tool::ToolDefinition;
 
 use super::helpers::{
     append_model_error, append_permission_decision, append_permission_request, append_turn_end,
-    display_summary, now_timestamp, permission_candidate, permission_rule,
+    display_summary, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    resolved_tool_available,
 };
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
@@ -353,17 +354,19 @@ impl Run {
             }
         }
 
-        if front_tool_name == "agent" || front_tool_name == "use_skill" {
+        let pending = match &mut self.state {
+            RunState::Pending(p) => p.as_mut(),
+            _ => return Ok(None),
+        };
+        if front_tool_name == "agent"
+            || (is_inline_skill_tool(&front_tool_name)
+                && resolved_tool_available(pending, &front_tool_name))
+        {
             return Ok(None);
         }
         if requires_ordered_simple_execution(&front_tool_name) && has_active_ordered_simple_slot {
             return Ok(None);
         }
-
-        let pending = match &mut self.state {
-            RunState::Pending(p) => p.as_mut(),
-            _ => return Ok(None),
-        };
         super::provider::ensure_resolved(pending)?;
         let queued = match pending.queued_tool_calls.front() {
             Some(q) => q,
@@ -432,6 +435,7 @@ impl Run {
                 )
                 .await?;
                 if let Some(block) = hook_result.block {
+                    let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
                     pending.record_tool_call(&tool_call.name);
                     persist_blocked_tool_result(
                         &pending.events_path,
@@ -444,7 +448,7 @@ impl Run {
                         status: "blocked".to_string(),
                         summary: block.reason,
                         model_content: None,
-                        result: None,
+                        result: Some(blocked),
                     }));
                 }
                 pending.record_tool_call(&tool_call.name);
@@ -501,6 +505,7 @@ impl Run {
                     ),
                 )?;
                 pending.record_tool_denied(&tool_call.name);
+                let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
                 persist_blocked_tool_result(
                     &pending.events_path,
                     pending.turn,
@@ -512,7 +517,7 @@ impl Run {
                     status: "blocked".to_string(),
                     summary: "permission denied".to_string(),
                     model_content: None,
-                    result: None,
+                    result: Some(blocked),
                 }))
             }
         }
@@ -852,6 +857,7 @@ impl Run {
         )
         .await?;
         if let Some(block) = hook_result.block {
+            let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
             pending.record_tool_call(&tool_call.name);
             persist_blocked_tool_result(
                 &pending.events_path,
@@ -865,7 +871,7 @@ impl Run {
                 status: "blocked".to_string(),
                 summary: block.reason,
                 model_content: None,
-                result: None,
+                result: Some(blocked),
             }));
         }
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
@@ -911,6 +917,7 @@ fn persist_blocked_tool_result(
     tool_call_id: &str,
     summary: &str,
 ) -> Result<()> {
+    let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
     let mut store = EventStore::open(events_path)?;
     store.append(EventPayload::ToolResult {
         turn,
@@ -920,7 +927,7 @@ fn persist_blocked_tool_result(
         summary: summary.to_string(),
         model_content: String::new(),
         truncated: false,
-        structured: None,
+        structured: Some(blocked),
     })?;
     Ok(())
 }
@@ -1051,8 +1058,8 @@ mod tests {
             prompts_dir: None,
             subagent_registry: None,
             skill_registry: None,
-            skill_content_hash: None,
-            skill_body: None,
+            previous_skill_registry: None,
+            bootstrap_skill: None,
             child_session_count: 0,
             tool_registry_override: None,
             pending_events: std::collections::VecDeque::new(),
@@ -1173,8 +1180,69 @@ mod tests {
         }
     }
 
+    fn make_skill_registry() -> crate::skill::registry::SkillRegistry {
+        let mut definition = crate::skill::definition::SkillDefinition {
+            name: "review".to_string(),
+            description: "Review code".to_string(),
+            instructions: "Review carefully.".to_string(),
+            source: crate::skill::definition::SkillSource::Project,
+            hash: String::new(),
+            source_path: Some("/skills/review".to_string()),
+            allowed_tools: None,
+            disallowed_tools: None,
+            max_turns: None,
+            model: None,
+            license: None,
+            compatibility: None,
+            metadata: serde_json::Value::Null,
+        };
+        definition.hash = definition.compute_hash();
+        crate::skill::registry::SkillRegistry::builder()
+            .with_definition(definition)
+            .build()
+    }
+
+    fn make_skill_queued_run(
+        events_path: std::path::PathBuf,
+        dir: &std::path::Path,
+        registry: Vec<ToolDefinition>,
+        tool_name: &str,
+    ) -> Run {
+        let mut pending = make_test_pending(
+            events_path,
+            dir,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.resolved = Some(ResolvedRuntime {
+            config: test_resolved_runtime().config,
+            registry,
+        });
+        pending.skill_registry = Some(make_skill_registry());
+        pending.queued_tool_calls.push_back(QueuedToolCall {
+            tool_call: ProviderToolCall {
+                id: "tool_skill".to_string(),
+                name: tool_name.to_string(),
+                args: serde_json::json!({"skill_name": "review", "query": "review"}),
+                index: 0,
+            },
+            display_summary: "review".to_string(),
+        });
+        let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+        Run {
+            session_id: "test".to_string(),
+            state: RunState::Pending(Box::new(pending)),
+            slots: std::collections::HashMap::new(),
+            slot_event_tx,
+            slot_event_rx,
+            cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+            lock_path: std::path::PathBuf::new(),
+            deferred_runtime_logs: std::collections::VecDeque::new(),
+        }
+    }
+
     fn assert_blocked_tool_result(events_path: &std::path::Path, summary: &str) {
         let events = EventStore::replay(events_path).unwrap();
+        let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
         assert!(events.iter().any(|event| matches!(
             &event.payload,
             EventPayload::ToolResult {
@@ -1188,7 +1256,7 @@ mod tests {
                 && status == "blocked"
                 && stored_summary == summary
                 && model_content.is_empty()
-                && structured.is_none()
+                && structured.as_ref() == Some(&blocked)
         )));
     }
 
@@ -1241,7 +1309,7 @@ mod tests {
         let event = run.next().await.unwrap();
 
         assert!(
-            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result == Some(crate::tool::ToolResultEnvelope::blocked_marker()))
         );
         assert_blocked_tool_result(&events_path, "permission denied");
     }
@@ -1271,9 +1339,35 @@ mod tests {
         let event = run.next().await.unwrap();
 
         assert!(
-            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result == Some(crate::tool::ToolResultEnvelope::blocked_marker()))
         );
         assert_blocked_tool_result(&events_path, "blocked by hook");
+    }
+
+    #[tokio::test]
+    async fn inline_skill_tools_do_not_bypass_resolved_registry_membership() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = vec![ToolDefinition {
+            name: "run_command".to_string(),
+            description: "test command".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            read_only: false,
+            max_result_chars: 8000,
+            risk: "command".to_string(),
+        }];
+
+        for tool_name in ["use_skill", "list_skills", "search_skills"] {
+            let events_path = dir.path().join(format!("{tool_name}.jsonl"));
+            std::fs::write(&events_path, "").unwrap();
+            let mut run =
+                make_skill_queued_run(events_path, dir.path(), registry.clone(), tool_name);
+
+            let event = run.next().await.unwrap();
+
+            assert!(
+                matches!(event, Some(UiEvent::Error { code, message }) if code == "unknown_tool" && message == format!("unknown tool: {tool_name}"))
+            );
+        }
     }
 
     #[tokio::test]
@@ -1316,7 +1410,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result.is_none())
+            matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result == Some(crate::tool::ToolResultEnvelope::blocked_marker()))
         );
         assert_blocked_tool_result(&events_path, "blocked after allow");
     }

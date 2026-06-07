@@ -120,13 +120,17 @@ pub struct RunArgs {
     #[arg(long = "no-agents")]
     pub no_agents: bool,
 
-    /// Disable the use_skill tool
+    /// Disable the default skill tool surface (`list_skills`, `search_skills`, `use_skill`) and slash-skill loading
     #[arg(long = "no-skills")]
     pub no_skills: bool,
 
     /// Internal: pre-parsed skill body from interactive slash command
     #[arg(skip)]
     pub skill_body: Option<String>,
+
+    /// Internal: name for a pre-parsed bootstrap skill
+    #[arg(skip)]
+    pub bootstrap_skill_name: Option<String>,
 }
 
 // ── Agents ──

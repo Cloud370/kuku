@@ -24,7 +24,11 @@ If a skill is missing, check `[discovery]` in [Config](../reference/config.md).
 
 ## Use Skills During a Run
 
-When the `use_skill` tool is enabled, kuku can load full skill instructions on demand.
+When the default skill tool surface is enabled, kuku can:
+
+- use `list_skills` to browse the current catalog
+- use `search_skills` to find relevant workflows
+- use `use_skill` to load full skill instructions on demand
 
 You can also start `kuku run` with a slash-prefixed Skill name:
 
@@ -39,6 +43,10 @@ To disable that for one run:
 ```bash
 kuku run --no-skills "task"
 ```
+
+`--no-skills` disables the default skill tool surface, so `list_skills`, `search_skills`, `use_skill`, and slash-prefixed skill loading are all unavailable for that run.
+
+Skills can guide how the model works, but they do not expand permissions or bypass tool approval rules.
 
 ## Decide Where a Skill Belongs
 

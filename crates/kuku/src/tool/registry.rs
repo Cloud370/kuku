@@ -187,6 +187,8 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         tools.push(builtin::agent_definition());
     }
     if skills_enabled {
+        tools.push(builtin::list_skills_definition());
+        tools.push(builtin::search_skills_definition());
         tools.push(builtin::use_skill_definition());
     }
     tools
@@ -302,7 +304,9 @@ mod tests {
         let registry = builtin_registry(false, true);
         let names = tool_names(&registry);
         assert!(names.contains(&"use_skill".to_string()));
-        assert_eq!(names.len(), 12);
+        assert!(names.contains(&"list_skills".to_string()));
+        assert!(names.contains(&"search_skills".to_string()));
+        assert_eq!(names.len(), 14);
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 
@@ -311,5 +315,7 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"use_skill".to_string()));
+        assert!(!names.contains(&"list_skills".to_string()));
+        assert!(!names.contains(&"search_skills".to_string()));
     }
 }

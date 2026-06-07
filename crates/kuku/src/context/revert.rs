@@ -83,6 +83,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             | EventPayload::PermissionAllow { turn, .. }
             | EventPayload::PermissionDeny { turn, .. }
             | EventPayload::ContextSources { turn, .. }
+            | EventPayload::ContextSkills { turn, .. }
             | EventPayload::Handoff { turn, .. } => !skipped_turns.contains(turn),
             EventPayload::ContextPrelude { .. } => true,
             EventPayload::SessionMeta { .. }

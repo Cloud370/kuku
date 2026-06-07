@@ -64,7 +64,7 @@ The main non-provider sections are:
 - `[discovery]` for agent and skill auto-discovery
 - `[handoff]` for long-session summarization thresholds
 - `[logs]` for observability log retention
-- `[plugin]` for package hook execution
+- `[plugin]` for package extension loading
 - `[update]` for release source and channel settings
 
 Logs are default-on with no disable switch. The default retention is `max_age_days = 14` and `max_total_size_mb = 512`.

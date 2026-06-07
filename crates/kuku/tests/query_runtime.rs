@@ -29,10 +29,11 @@ async fn start_creates_session_events_under_kuku_home() {
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     assert_eq!(events[0].id, 1);
     assert_eq!(events[1].id, 2);
     assert_eq!(events[2].id, 3);
+    assert_eq!(events[3].id, 4);
 
     match &events[0].payload {
         EventPayload::SessionMeta {
@@ -66,6 +67,18 @@ async fn start_creates_session_events_under_kuku_home() {
             assert!(ts.ends_with('Z'));
         }
         other => panic!("expected user.input, got {other:?}"),
+    }
+
+    match &events[3].payload {
+        EventPayload::ContextSkills {
+            turn,
+            bootstrap_loaded,
+            ..
+        } => {
+            assert_eq!(*turn, 1);
+            assert!(bootstrap_loaded.is_empty());
+        }
+        other => panic!("expected context.skills, got {other:?}"),
     }
 }
 
@@ -101,7 +114,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
     }));
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     assert!(!events.iter().any(|event| {
         let payload = serde_json::to_value(&event.payload).unwrap();
         payload.get("log").is_some() || payload.get("debug").is_some()
@@ -452,7 +465,7 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         .unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
-    assert_eq!(events.len(), 5);
+    assert_eq!(events.len(), 7);
     assert_eq!(
         events
             .iter()
@@ -471,9 +484,34 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     ));
     assert!(matches!(
         events[3].payload,
+        EventPayload::ContextSkills { turn: 1, .. }
+    ));
+    assert!(matches!(
+        events[4].payload,
         EventPayload::TurnStart { turn: 2, .. }
     ));
     match &events[4].payload {
+        EventPayload::UserInput { .. } => {
+            panic!("expected turn.start, got second user.input position")
+        }
+        _ => {}
+    }
+    assert!(matches!(
+        events[5].payload,
+        EventPayload::UserInput { turn: 2, .. }
+    ));
+    match &events[6].payload {
+        EventPayload::ContextSkills {
+            turn,
+            bootstrap_loaded,
+            ..
+        } => {
+            assert_eq!(*turn, 2);
+            assert!(bootstrap_loaded.is_empty());
+        }
+        other => panic!("expected second context.skills, got {other:?}"),
+    }
+    match &events[5].payload {
         EventPayload::UserInput { turn, text, .. } => {
             assert_eq!(*turn, 2);
             assert_eq!(text, "second");

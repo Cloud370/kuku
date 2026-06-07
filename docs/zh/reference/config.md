@@ -24,7 +24,7 @@ $KUKU_HOME/config.toml
 | `discovery` | table | Agent 和 Skill 的发现设置 |
 | `handoff` | table | 长 Session 的 handoff 设置 |
 | `logs` | table | 可观测性日志保留设置 |
-| `plugin` | table | package hook 执行开关 |
+| `plugin` | table | package 扩展加载开关 |
 | `update` | table | 更新源和 channel |
 
 ## `model.<name>`
@@ -87,7 +87,7 @@ $KUKU_HOME/config.toml
 |---|---|---|
 | `enabled` | bool | 新默认配置中为 `true` |
 
-这个开关控制 `.kuku/packages/` 中 package 的 hook 执行。
+这个开关控制 `.kuku/packages/` 中基于 package 的 plugin 加载。关闭后，kuku 不会加载 package 提供的 hook，也不会加载 package 提供的 Skill。
 
 ## `update`
 

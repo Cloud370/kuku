@@ -4,7 +4,6 @@ use crate::context::{
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
-use crate::notice::types::{Notice, NoticeKind, NoticeSeverity};
 use crate::notice::{
     build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
 };
@@ -53,10 +52,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         &pending.workspace,
         pending.turn,
         pending.subagent_registry.as_ref(),
-        pending.skill_registry.as_mut(),
-        &mut pending.skill_content_hash,
+        pending.skill_registry.as_ref(),
+        pending.previous_skill_registry.as_ref(),
         &resolved_config,
-        &pending.config.discovery,
         &existing_events,
     )?;
 
@@ -164,7 +162,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     inject_runtime_context(
         &mut assembly.history,
         assembly.runtime_context.as_deref(),
-        pending.skill_body.as_deref(),
+        pending
+            .bootstrap_skill
+            .as_ref()
+            .map(|skill| skill.body.as_str()),
     );
 
     if !pending.hook_context.is_empty() {
@@ -469,10 +470,9 @@ fn build_runtime_blocks(
     workspace: &std::path::Path,
     turn: u64,
     subagent_registry: Option<&crate::subagent::registry::SubagentRegistry>,
-    mut skill_registry: Option<&mut crate::skill::registry::SkillRegistry>,
-    skill_content_hash: &mut Option<String>,
+    skill_registry: Option<&crate::skill::registry::SkillRegistry>,
+    previous_skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     resolved_config: &crate::provider::types::ResolvedProvider,
-    discovery_config: &crate::config::DiscoveryConfig,
     existing_events: &[crate::event::StoredEvent],
 ) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
@@ -497,40 +497,21 @@ fn build_runtime_blocks(
         }
     }
 
-    if let Some(ref mut skill_reg) = skill_registry {
-        let new_registry = {
-            crate::skill::registry::SkillRegistry::builder()
-                .build_with_discovery(workspace, discovery_config)
-                .map(|b| b.build())
-                .ok()
+    if let Some(skill_reg) = skill_registry {
+        let loaded_skill_names = crate::skill::session::loaded_skill_names(existing_events);
+        let skill_changes = if turn > 1 {
+            previous_skill_registry.and_then(|previous_skill_registry| {
+                crate::skill::registry::detect_skill_changes(previous_skill_registry, skill_reg)
+            })
+        } else {
+            None
         };
 
-        if let Some(new_reg) = new_registry {
-            let new_hash = new_reg.hash().to_string();
-            if skill_content_hash.as_deref() != Some(&new_hash) {
-                if let Some(changes) =
-                    crate::skill::registry::detect_skill_changes(skill_reg, &new_reg)
-                {
-                    **skill_reg = new_reg;
-                    *skill_content_hash = Some(new_hash);
-                    let notice = Notice {
-                        kind: NoticeKind::SkillChanged {
-                            updated: changes.updated,
-                            added: changes.added,
-                            removed: changes.removed,
-                        },
-                        severity: NoticeSeverity::Info,
-                    };
-                    if let Some(body) = render_notice_body(&notice) {
-                        notice_bodies.push(body);
-                    }
-                } else {
-                    *skill_content_hash = Some(new_hash);
-                }
-            }
-        }
-
-        if let Some(catalog_text) = crate::skill::catalog::render_skill_catalog(skill_reg) {
+        if let Some(catalog_text) = crate::skill::catalog::render_skill_catalog(
+            skill_reg,
+            &loaded_skill_names,
+            skill_changes.as_ref(),
+        ) {
             parts.push(catalog_text);
         }
     }

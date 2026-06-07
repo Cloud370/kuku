@@ -6,7 +6,8 @@ use crate::permission::{
 
 use super::helpers::{
     append_permission_decision, append_permission_request, display_summary, gate_choice,
-    gate_source_name, now_timestamp, permission_candidate, permission_rule,
+    gate_source_name, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    resolved_tool_available,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
@@ -28,6 +29,7 @@ fn return_blocked_tool(
     kind: super::types::ToolKind,
     reason: &str,
 ) -> Result<PendingStep> {
+    let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
     let mut store = EventStore::open(&pending.events_path)?;
     store.append(EventPayload::ToolResult {
         turn: pending.turn,
@@ -37,7 +39,7 @@ fn return_blocked_tool(
         summary: reason.to_string(),
         model_content: String::new(),
         truncated: false,
-        structured: None,
+        structured: Some(blocked.clone()),
     })?;
     pending.record_tool_call(tool_name);
     pending.pending_events.push_back(UiEvent::ToolEnd {
@@ -45,7 +47,7 @@ fn return_blocked_tool(
         status: "blocked".to_string(),
         summary: reason.to_string(),
         model_content: None,
-        result: None,
+        result: Some(blocked),
     });
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
@@ -482,19 +484,27 @@ pub(super) async fn advance_pending(
                     kind: super::types::ToolKind::Agent { child_session_id },
                 }),
             });
-        } else if queued.tool_call.name == "use_skill" {
-            let hook_result =
-                run_tool_pre_hooks(&mut pending, "use_skill", &queued.tool_call.args, &id).await?;
+        } else if is_inline_skill_tool(&queued.tool_call.name)
+            && resolved_tool_available(&pending, &queued.tool_call.name)
+        {
+            let hook_result = run_tool_pre_hooks(
+                &mut pending,
+                &queued.tool_call.name,
+                &queued.tool_call.args,
+                &id,
+            )
+            .await?;
             if let Some(block) = hook_result.block {
                 return return_blocked_tool(
                     pending,
                     &id,
-                    "use_skill",
+                    &queued.tool_call.name,
                     &summary,
                     super::types::ToolKind::Simple,
                     &block.reason,
                 );
             }
+            queued.tool_call.args = hook_result.args;
             return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
         } else {
             // --- Regular tool call ---

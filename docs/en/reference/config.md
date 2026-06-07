@@ -24,7 +24,7 @@ $KUKU_HOME/config.toml
 | `discovery` | table | Agent and skill discovery settings |
 | `handoff` | table | Long-session handoff settings |
 | `logs` | table | Observability log retention settings |
-| `plugin` | table | Package hook execution toggle |
+| `plugin` | table | Package extension loading toggle |
 | `update` | table | Update source and channel |
 
 ## `model.<name>`
@@ -87,7 +87,7 @@ Observability logs are on by default and have no disable switch. kuku prunes log
 |---|---|---|
 | `enabled` | bool | `true` on new default configs |
 
-This controls hook execution from `.kuku/packages/` packages.
+This controls package-backed plugin loading from `.kuku/packages/` packages. When disabled, kuku does not load package-provided hooks or package-provided Skills.
 
 ## `update`
 

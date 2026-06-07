@@ -64,7 +64,7 @@ kuku config set model.balanced.think high
 - `[discovery]`，用于 Agent 和 Skill 自动发现
 - `[handoff]`，用于长 Session 摘要阈值
 - `[logs]`，用于可观测性日志保留策略
-- `[plugin]`，用于 package hook 执行
+- `[plugin]`，用于 package 扩展加载
 - `[update]`，用于 release 来源和 channel 设置
 
 日志默认开启，且没有禁用开关。默认保留策略为 `max_age_days = 14` 和 `max_total_size_mb = 512`。
