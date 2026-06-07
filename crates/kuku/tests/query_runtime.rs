@@ -2078,14 +2078,15 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("project memory entry")
             .body_contains("<kuku_tool_guidance>")
             .body_contains("<kuku_working_style>");
-        then.status(200).body(anthropic_sse_response(serde_json::json!({
-            "id": "msg_final",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "ok"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 6}
-        })));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
     });
 
     let output = query("say ok")
