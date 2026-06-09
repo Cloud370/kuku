@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use kuku_cli::display::render_event_brief;
+use kuku_cli::display::{filter_events_for_conversation, render_event_brief};
 use kuku_cli::display::{Display, OutputLine};
 
 #[test]
@@ -267,6 +267,52 @@ fn event_brief_renders_permission_requested() {
     assert!(line.contains("permission.requested"));
     assert!(line.contains("request  run_command  execute  cargo test"));
     assert!(line.contains("source=default_ask"));
+}
+
+#[test]
+fn event_filter_excludes_main_facts_from_non_main_conversation() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: kuku::event::EventPayload::SessionCreated {
+                ts: "t".into(),
+                schema_version: 2,
+                session_id: "s_filter".into(),
+                created_at: "t".into(),
+                kuku_version: "test".into(),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: kuku::event::EventPayload::MessageUser {
+                ts: "t".into(),
+                conversation: "review".into(),
+                turn: 1,
+                text: "review message".into(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: kuku::event::EventPayload::ModelResponse {
+                turn: 1,
+                ts: "t".into(),
+                request_id: "req_main".into(),
+                text: "main response".into(),
+                thinking: None,
+                input_tokens_total: None,
+            },
+        },
+    ];
+
+    let review = filter_events_for_conversation(&events, "review");
+    let review_ids: Vec<u64> = review.iter().map(|event| event.id).collect();
+    let main = filter_events_for_conversation(&events, "main");
+    let main_ids: Vec<u64> = main.iter().map(|event| event.id).collect();
+
+    assert_eq!(review_ids, vec![1, 2]);
+    assert_eq!(main_ids, vec![1, 3]);
 }
 
 #[test]

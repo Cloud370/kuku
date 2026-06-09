@@ -85,6 +85,53 @@ fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
     }
 }
 
+fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
+    match kind {
+        kuku::query::ToolKind::Agent { conversation, .. } => {
+            Some(conversation.as_str().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn tool_call_line(
+    tool: String,
+    id: String,
+    summary: String,
+    kind: &kuku::query::ToolKind,
+) -> OutputLine {
+    OutputLine::tool_call(tool, id, summary, serde_json::Value::Null)
+        .with_conversation(conversation_for_tool_kind(kind))
+}
+
+fn tool_result_line(
+    id: String,
+    status: String,
+    summary: String,
+    conversation: Option<String>,
+) -> OutputLine {
+    OutputLine::tool_result(id, status, summary, None, false).with_conversation(conversation)
+}
+
+fn permission_ask_line(request: &kuku::query::PermissionRequest) -> OutputLine {
+    OutputLine::permission_ask(
+        request.id.clone(),
+        request.tool.clone(),
+        request.risk.clone(),
+        request.summary.clone(),
+    )
+    .with_conversation(Some(request.conversation.as_str().to_string()))
+}
+
+fn permission_decision_line(
+    request: &kuku::query::PermissionRequest,
+    decision: String,
+    rule: String,
+) -> OutputLine {
+    OutputLine::permission_decision(request.id.clone(), request.tool.clone(), decision, rule)
+        .with_conversation(Some(request.conversation.as_str().to_string()))
+}
+
 struct BootstrapSkillInput {
     name: String,
     body: String,
@@ -376,6 +423,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut text_buffer = String::new();
     let mut was_cancelled = false;
     let mut done_output: Option<kuku::RunOutput> = None;
+    let mut tool_conversations = std::collections::HashMap::<String, String>::new();
 
     loop {
         let event = tokio::select! {
@@ -426,7 +474,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 id,
                 tool,
                 summary,
-                kind: _,
+                kind,
             }) => {
                 close_thinking(
                     &mut in_thinking,
@@ -435,10 +483,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if use_stream_json {
+                    if let Some(conversation) = conversation_for_tool_kind(&kind) {
+                        tool_conversations.insert(id.clone(), conversation);
+                    }
                     println!(
                         "{}",
-                        OutputLine::tool_call(tool, id, summary, serde_json::Value::Null,)
-                            .to_json_line()
+                        tool_call_line(tool, id, summary, &kind).to_json_line()
                     );
                 } else {
                     println!("\n{}", display.tool_call(&tool, &summary, &id));
@@ -451,9 +501,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             }) => {
                 if use_stream_json {
+                    let conversation = tool_conversations.remove(&id);
                     println!(
                         "{}",
-                        OutputLine::tool_result(id, status, summary, None, false).to_json_line()
+                        tool_result_line(id, status, summary, conversation).to_json_line()
                     );
                 } else {
                     println!("{}", display.tool_result(&status, &summary, &id));
@@ -472,16 +523,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = run.decide(&request.id, choice, None).await?;
                     if use_stream_json {
                         if matches!(choice, PermissionChoice::Deny) {
-                            println!(
-                                "{}",
-                                OutputLine::permission_ask(
-                                    request.id.clone(),
-                                    request.tool.clone(),
-                                    request.risk,
-                                    request.summary,
-                                )
-                                .to_json_line()
-                            );
+                            println!("{}", permission_ask_line(&request).to_json_line());
                         }
                         let decision = if matches!(choice, PermissionChoice::Deny) {
                             "deny"
@@ -490,9 +532,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         };
                         println!(
                             "{}",
-                            OutputLine::permission_decision(
-                                request.id,
-                                request.tool,
+                            permission_decision_line(
+                                &request,
                                 decision.into(),
                                 "noninteractive".into(),
                             )
@@ -556,16 +597,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         .await?;
                     if use_stream_json {
                         if matches!(choice, PermissionChoice::Deny) {
-                            println!(
-                                "{}",
-                                OutputLine::permission_ask(
-                                    request.id.clone(),
-                                    request.tool.clone(),
-                                    request.risk,
-                                    request.summary,
-                                )
-                                .to_json_line()
-                            );
+                            println!("{}", permission_ask_line(&request).to_json_line());
                         }
                         let decision = if matches!(choice, PermissionChoice::Deny) {
                             "deny"
@@ -574,9 +606,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         };
                         println!(
                             "{}",
-                            OutputLine::permission_decision(
-                                request.id,
-                                request.tool,
+                            permission_decision_line(
+                                &request,
                                 decision.into(),
                                 "noninteractive".into(),
                             )
@@ -882,8 +913,9 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::{
-        build_query, nested_permission_parent_tool_id, noninteractive_permission_choice,
-        parse_slash_command, slash_command_candidate,
+        build_query, conversation_for_tool_kind, nested_permission_parent_tool_id,
+        noninteractive_permission_choice, parse_slash_command, permission_ask_line,
+        permission_decision_line, slash_command_candidate, tool_call_line, tool_result_line,
     };
     use crate::cli_args::RunArgs;
     use kuku::{PermissionChoice, UiEvent};
@@ -959,6 +991,69 @@ mod tests {
             nested_permission_parent_tool_id(&event),
             Some("toolu_agent_parent")
         );
+    }
+
+    #[test]
+    fn stream_json_permission_lines_include_request_conversation() {
+        let request = kuku::query::PermissionRequest {
+            id: "perm_review".to_string(),
+            conversation: kuku::conversation::address::ConversationAddress::parse("review")
+                .unwrap(),
+            turn: 1,
+            tool_call_id: "toolu_review".to_string(),
+            tool: "run_command".to_string(),
+            risk: "command".to_string(),
+            summary: "run gated command".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        };
+
+        let ask: serde_json::Value =
+            serde_json::from_str(&permission_ask_line(&request).to_json_line()).unwrap();
+        let decision: serde_json::Value = serde_json::from_str(
+            &permission_decision_line(&request, "deny".to_string(), "noninteractive".to_string())
+                .to_json_line(),
+        )
+        .unwrap();
+
+        assert_eq!(ask["conversation"], "review");
+        assert_eq!(decision["conversation"], "review");
+    }
+
+    #[test]
+    fn stream_json_agent_tool_call_includes_conversation() {
+        let kind = kuku::query::ToolKind::Agent {
+            conversation: kuku::conversation::address::ConversationAddress::parse("review")
+                .unwrap(),
+            binding_id: "binding_1".to_string(),
+        };
+
+        let line = tool_call_line(
+            "agent".to_string(),
+            "toolu_agent".to_string(),
+            "run review agent".to_string(),
+            &kind,
+        );
+        let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
+
+        assert_eq!(
+            conversation_for_tool_kind(&kind),
+            Some("review".to_string())
+        );
+        assert_eq!(value["conversation"], "review");
+    }
+
+    #[test]
+    fn stream_json_agent_tool_result_includes_conversation() {
+        let line = tool_result_line(
+            "toolu_agent".to_string(),
+            "ok".to_string(),
+            "review complete".to_string(),
+            Some("review".to_string()),
+        );
+        let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
+
+        assert_eq!(value["conversation"], "review");
     }
 
     #[test]

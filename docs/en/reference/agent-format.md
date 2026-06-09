@@ -38,12 +38,12 @@ You are a thorough code reviewer.
 | `name` | no | filename stem | Contact card identifier |
 | `description` | yes | none | When to use this agent |
 | `model` | no | `balanced` | Default tier for first bind |
-| `tools` | no | default built-in registry | Allowed tools |
+| `tools` | no | `tool_profile` default read profile | Allowed tools |
 | `max_turns` | no | `10` | Maximum turns for one delegated conversation |
 
 Notes:
 
-- Omitting `tools` gives the agent the default built-in tool registry without `agent`, `list_skills`, `search_skills`, or `use_skill`.
+- Omitting `tools` uses the agent's `tool_profile`; the default read profile allows `find_files`, `read_file`, `search_text`, `fetch_url`, and `fetch_web`.
 - `tools: []` means no tools.
 - The runtime hashes the effective identity into a `binding_id`.
 
@@ -56,6 +56,7 @@ When the model calls `agent(to, message, tier?)`:
 - the root segment of `to` must match a discovered agent name
 - `tier` overrides the agent file's `model` only on first bind
 - once a conversation address exists, passing `tier` again is rejected
+- once a conversation address has `max_turns` completed turns, continuing it is rejected before a new nested run starts
 - once a conversation address exists, the binding identity must still match
 
 Example:

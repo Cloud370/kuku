@@ -157,6 +157,31 @@ async fn invalid_workspace_returns_error() {
     assert_eq!(body["code"], "invalid_request");
 }
 
+#[tokio::test]
+async fn invalid_conversation_returns_error() {
+    let mock = mock_provider::start_mock_provider().await;
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
+
+    let client = wreq::Client::new();
+    let resp = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "hello",
+            "workspace": server.workspace.path().to_str().unwrap(),
+            "conversation": "main/api",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["code"], "invalid_request");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_waiting_for_permission_stops_run() {
     let mock = mock_provider::start_mock_provider().await;

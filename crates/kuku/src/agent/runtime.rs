@@ -40,6 +40,24 @@ pub(crate) fn prepare_dispatch(
     let existing = crate::conversation::reduce_conversations(existing_events)
         .into_iter()
         .find(|state| state.address == conversation);
+    let completed_turns = existing_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                crate::event::EventPayload::TurnCompleted { conversation: event_conversation, .. }
+                    if event_conversation == conversation.as_str()
+            )
+        })
+        .count();
+    if completed_turns > 0 && completed_turns >= definition.max_turns as usize {
+        return Err(format!(
+            "conversation {} has reached max_turns {} for agent {}",
+            conversation.as_str(),
+            definition.max_turns,
+            definition.name
+        ));
+    }
     if existing.is_some() && tier.is_some() {
         return Err(format!(
             "cannot set tier when continuing existing conversation {}",
@@ -135,4 +153,52 @@ pub(crate) async fn start_run(
     }
 
     query.start_nested().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::registry::AgentRegistry;
+    use crate::event::EventPayload;
+
+    #[test]
+    fn prepare_dispatch_rejects_reused_conversation_after_max_completed_turns() {
+        let registry = AgentRegistry::builder().builtins().build();
+        let from = ConversationAddress::MAIN;
+        let events = review_conversation_with_completed_turns(10);
+
+        let error = prepare_dispatch(
+            Some(&registry),
+            &events,
+            &from,
+            "review",
+            "one more review",
+            None,
+            "toolu_review_again",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("conversation review has reached max_turns 10"));
+    }
+
+    fn review_conversation_with_completed_turns(count: u64) -> Vec<StoredEvent> {
+        let mut events = vec![StoredEvent {
+            id: 1,
+            payload: EventPayload::ConversationOpened {
+                ts: "t0".into(),
+                conversation: "review".into(),
+            },
+        }];
+        for turn in 1..=count {
+            events.push(StoredEvent {
+                id: turn + 1,
+                payload: EventPayload::TurnCompleted {
+                    ts: format!("t{turn}"),
+                    conversation: "review".into(),
+                    turn,
+                },
+            });
+        }
+        events
+    }
 }

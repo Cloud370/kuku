@@ -1,4 +1,4 @@
-use serde::de::{self, Deserializer};
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
@@ -62,7 +62,7 @@ pub struct ContextMessage {
 }
 
 /// Scope of a turn rollback operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum RollbackScope {
     #[serde(rename = "messages")]
     ConversationOnly,
@@ -70,6 +70,46 @@ pub enum RollbackScope {
     FilesOnly,
     #[serde(rename = "both")]
     Both,
+}
+
+impl<'de> Deserialize<'de> for RollbackScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RollbackScopeVisitor;
+
+        impl Visitor<'_> for RollbackScopeVisitor {
+            type Value = RollbackScope;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a rollback scope string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "messages" | "conversation_only" => Ok(RollbackScope::ConversationOnly),
+                    "file_changes" | "files_only" => Ok(RollbackScope::FilesOnly),
+                    "both" => Ok(RollbackScope::Both),
+                    _ => Err(E::unknown_variant(
+                        value,
+                        &[
+                            "messages",
+                            "file_changes",
+                            "both",
+                            "conversation_only",
+                            "files_only",
+                        ],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_str(RollbackScopeVisitor)
+    }
 }
 
 impl RollbackScope {
@@ -351,6 +391,7 @@ impl EventPayload {
             Self::ConversationRollbackUndone { .. } => "conversation.rollback.undone",
             Self::Unknown(value) => value
                 .get("kind")
+                .or_else(|| value.get("type"))
                 .and_then(Value::as_str)
                 .unwrap_or("unknown"),
         }
@@ -361,9 +402,20 @@ impl EventPayload {
     }
 
     fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
-        let kind = object.get("kind").and_then(Value::as_str)?;
+        let kind = event_kind(object)?;
         let value = Value::Object(object.clone());
         match kind {
+            "session.meta" => Some(Self::SessionMeta {
+                ts: string_field(object, "ts")?,
+                schema_version: u32_field(object, "schema_version")?,
+                session_id: string_field(object, "session_id")?,
+                created_at: string_field(object, "created_at")?,
+                kuku_version: string_field(object, "kuku_version")?,
+            }),
+            "context.prelude" => Some(Self::ContextPrelude {
+                ts: string_field(object, "ts")?,
+                messages: serde_json::from_value(object.get("messages")?.clone()).ok()?,
+            }),
             "context.sources" => Some(Self::ContextSources {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
@@ -376,12 +428,17 @@ impl EventPayload {
                     .ok()?,
             }),
             "context.skills" => Some(Self::ContextSkills {
-                conversation: string_field(object, "conversation")?,
+                conversation: optional_string_field(object, "conversation")
+                    .unwrap_or_else(|| "main".to_string()),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 registry: object.get("registry")?.clone(),
                 bootstrap_loaded: serde_json::from_value(object.get("bootstrap_loaded")?.clone())
                     .ok()?,
+            }),
+            "turn.start" => Some(Self::TurnStart {
+                turn: u64_field(object, "turn")?,
+                ts: string_field(object, "ts")?,
             }),
             "user.input" => Some(Self::UserInput {
                 turn: u64_field(object, "turn")?,
@@ -462,6 +519,10 @@ impl EventPayload {
                 request_id: string_field(object, "request_id")?,
                 summary: string_field(object, "summary")?,
                 keep_turns: usize_field(object, "keep_turns")?,
+            }),
+            "turn.end" => Some(Self::TurnEnd {
+                turn: u64_field(object, "turn")?,
+                ts: string_field(object, "ts")?,
             }),
             "turn.rollback" => Some(Self::TurnRollback {
                 turn: u64_field(object, "turn")?,
@@ -1071,6 +1132,10 @@ impl EventPayload {
             })),
         }
     }
+}
+
+fn event_kind(object: &Map<String, Value>) -> Option<&str> {
+    object.get("type").or_else(|| object.get("kind"))?.as_str()
 }
 
 fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {

@@ -555,6 +555,79 @@ fn replay_recognizes_every_new_event_kind() {
 }
 
 #[test]
+fn replay_recognizes_legacy_top_level_type() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"session.meta\",\"schema_version\":1,\"session_id\":\"s_legacy\",\"created_at\":\"2026-06-09T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
+            "{\"id\":2,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"context.prelude\",\"messages\":[{\"role\":\"user\",\"content\":\"legacy prelude\"}]}\n",
+            "{\"id\":3,\"ts\":\"2026-06-09T00:00:01Z\",\"type\":\"user.input\",\"turn\":1,\"text\":\"legacy hello\"}\n",
+            "{\"id\":4,\"ts\":\"2026-06-09T00:00:02Z\",\"type\":\"turn.start\",\"turn\":1}\n",
+            "{\"id\":5,\"ts\":\"2026-06-09T00:00:03Z\",\"type\":\"turn.end\",\"turn\":1}\n",
+            "{\"id\":6,\"ts\":\"2026-06-09T00:00:04Z\",\"type\":\"context.skills\",\"turn\":1,\"registry\":{},\"bootstrap_loaded\":[]}\n",
+            "{\"id\":7,\"ts\":\"2026-06-09T00:00:05Z\",\"type\":\"model.error\",\"turn\":1,\"request_id\":\"req_1\",\"kind\":\"rate_limited\",\"message\":\"slow down\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let replayed = EventStore::replay(&path).unwrap();
+
+    assert_eq!(7, replayed.len());
+    assert!(matches!(
+        &replayed[0].payload,
+        EventPayload::SessionMeta { session_id, .. } if session_id == "s_legacy"
+    ));
+    assert!(matches!(
+        &replayed[1].payload,
+        EventPayload::ContextPrelude { messages, .. } if messages[0].content == "legacy prelude"
+    ));
+    assert!(matches!(
+        &replayed[2].payload,
+        EventPayload::UserInput { text, .. } if text == "legacy hello"
+    ));
+    assert!(matches!(
+        &replayed[3].payload,
+        EventPayload::TurnStart { turn: 1, .. }
+    ));
+    assert!(matches!(
+        &replayed[4].payload,
+        EventPayload::TurnEnd { turn: 1, .. }
+    ));
+    assert!(matches!(
+        &replayed[5].payload,
+        EventPayload::ContextSkills { conversation, .. } if conversation == "main"
+    ));
+    assert!(matches!(
+        &replayed[6].payload,
+        EventPayload::ModelError { kind, message, .. }
+            if kind == "rate_limited" && message == "slow down"
+    ));
+}
+
+#[test]
+fn replay_accepts_legacy_rollback_scope_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    std::fs::write(
+        &path,
+        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"turn.rollback\",\"turn\":3,\"target_turn\":1,\"scope\":\"conversation_only\"}\n",
+    )
+    .unwrap();
+
+    let replayed = EventStore::replay(&path).unwrap();
+
+    assert!(matches!(
+        &replayed[0].payload,
+        EventPayload::TurnRollback {
+            scope: kuku::event::types::RollbackScope::ConversationOnly,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn unknown_kind_stays_readable() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");

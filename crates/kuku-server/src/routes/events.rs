@@ -37,6 +37,19 @@ fn event_conversation(payload: &kuku::event::EventPayload) -> Option<&str> {
     }
 }
 
+fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation: &str) -> bool {
+    match event_conversation(payload) {
+        Some(value) => value == conversation,
+        None => {
+            matches!(
+                payload,
+                kuku::event::EventPayload::SessionCreated { .. }
+                    | kuku::event::EventPayload::SessionMeta { .. }
+            ) || conversation == "main"
+        }
+    }
+}
+
 fn stream_event_matches_conversation(value: &serde_json::Value, conversation: &str) -> bool {
     value
         .get("conversation")
@@ -103,9 +116,8 @@ pub async fn events(
         .iter()
         .filter(|e| e.id > after)
         .filter(|event| {
-            conversation.is_none_or(|conversation| {
-                event_conversation(&event.payload).is_none_or(|value| value == conversation)
-            })
+            conversation
+                .is_none_or(|conversation| event_matches_conversation(&event.payload, conversation))
         })
         .map(|e| {
             json!({

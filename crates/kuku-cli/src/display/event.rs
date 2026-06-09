@@ -21,15 +21,27 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
     }
 }
 
+fn is_session_envelope(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::SessionCreated { .. } | EventPayload::SessionMeta { .. }
+    )
+}
+
+fn event_matches_conversation(payload: &EventPayload, conversation: &str) -> bool {
+    match event_conversation(payload) {
+        Some(value) => value == conversation,
+        None => is_session_envelope(payload) || conversation == "main",
+    }
+}
+
 pub fn filter_events_for_conversation<'a>(
     events: &'a [StoredEvent],
     conversation: &str,
 ) -> Vec<&'a StoredEvent> {
     events
         .iter()
-        .filter(|event| {
-            event_conversation(&event.payload).is_none_or(|value| value == conversation)
-        })
+        .filter(|event| event_matches_conversation(&event.payload, conversation))
         .collect()
 }
 

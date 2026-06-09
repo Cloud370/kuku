@@ -38,12 +38,12 @@ You are a thorough code reviewer.
 | `name` | no | filename stem | 联系人卡片标识符 |
 | `description` | yes | none | 何时使用这个 agent |
 | `model` | no | `balanced` | 首次绑定时的默认 tier |
-| `tools` | no | 默认 built-in registry | 允许的工具 |
+| `tools` | no | `tool_profile` 的默认 read profile | 允许的工具 |
 | `max_turns` | no | `10` | 单个委派 conversation 的最大 turns |
 
 说明：
 
-- 省略 `tools` 时，会给该 agent 默认 built-in tool registry，但不包含 `agent`、`list_skills`、`search_skills`、`use_skill`。
+- 省略 `tools` 时，会使用该 agent 的 `tool_profile`；默认 read profile 允许 `find_files`、`read_file`、`search_text`、`fetch_url`、`fetch_web`。
 - `tools: []` 表示没有工具。
 - 运行时会把有效身份哈希成 `binding_id`。
 
@@ -56,6 +56,7 @@ You are a thorough code reviewer.
 - `to` 的根 segment 必须匹配已发现的 agent 名称
 - `tier` 只会在首次绑定时覆盖 agent 文件中的 `model`
 - 一旦 conversation address 已存在，再传 `tier` 会被拒绝
+- 一旦 conversation address 已有 `max_turns` 个 completed turns，继续该 address 会在启动新的嵌套 run 前被拒绝
 - 一旦 conversation address 已存在，绑定身份仍必须匹配
 
 例如：
