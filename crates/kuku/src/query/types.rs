@@ -221,6 +221,7 @@ pub struct Run {
 
 pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
+    pub(crate) conversation: Option<ConversationAddress>,
     pub(crate) kind: ToolKind,
     pub(crate) ordered_with_simple_tools: bool,
     pub(crate) label: String,

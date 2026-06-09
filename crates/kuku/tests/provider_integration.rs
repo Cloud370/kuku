@@ -86,6 +86,10 @@ fn body_contains_review_not_main(req: &HttpMockRequest) -> bool {
     body_contains(req, b"review snapshot") && !body_contains(req, b"main snapshot")
 }
 
+fn body_contains_review_assistant_history(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"review followup") && body_contains(req, b"previous review answer")
+}
+
 fn has_read_tool_result_only(req: &HttpMockRequest) -> bool {
     body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
         && !body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
@@ -739,6 +743,64 @@ async fn prompt_snapshot_is_conversation_scoped() {
         .await
         .unwrap();
     assert_eq!(second.text, "review ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_main_provider_request_replays_previous_assistant_reply() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    let first_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("first review request")
+            .matches(|req| !body_contains(req, b"review followup"));
+        then.status(200)
+            .header("request-id", "req_review_first")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_first",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "previous review answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let first = anthro("first review request", &server)
+        .session("s_review_assistant_history")
+        .conversation("review")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "previous review answer");
+    first_mock.assert();
+
+    let second_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_review_assistant_history);
+        then.status(200)
+            .header("request-id", "req_review_second")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_second",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review followup ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let second = anthro("review followup", &server)
+        .session("s_review_assistant_history")
+        .conversation("review")
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(second.text, "review followup ok");
+    second_mock.assert();
 }
 
 #[tokio::test(flavor = "current_thread")]

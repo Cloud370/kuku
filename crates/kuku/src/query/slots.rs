@@ -16,6 +16,7 @@ pub(crate) fn requires_ordered_simple_execution(tool_name: &str) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_simple_slot(
     tool_call_id: String,
+    conversation: Option<crate::conversation::address::ConversationAddress>,
     tool_name: String,
     args: serde_json::Value,
     summary: String,
@@ -65,6 +66,7 @@ pub(crate) fn spawn_simple_slot(
 
     ExecSlot {
         tool_call_id,
+        conversation,
         kind: ToolKind::Simple,
         ordered_with_simple_tools,
         label: summary,
@@ -76,6 +78,7 @@ pub(crate) fn spawn_simple_slot(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_agent_slot(
     tool_call_id: String,
+    conversation: Option<crate::conversation::address::ConversationAddress>,
     dispatch: crate::agent::runtime::PreparedDispatch,
     summary: String,
     workspace: std::path::PathBuf,
@@ -210,6 +213,7 @@ pub(crate) fn spawn_agent_slot(
 
     ExecSlot {
         tool_call_id,
+        conversation,
         kind: tool_kind,
         ordered_with_simple_tools: false,
         label: summary,
@@ -220,6 +224,7 @@ pub(crate) fn spawn_agent_slot(
 
 pub(crate) fn spawn_command_slot(
     tool_call_id: String,
+    conversation: Option<crate::conversation::address::ConversationAddress>,
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
@@ -265,6 +270,7 @@ pub(crate) fn spawn_command_slot(
 
     ExecSlot {
         tool_call_id,
+        conversation,
         kind: ToolKind::Command { pid: None },
         ordered_with_simple_tools: false,
         label: summary,
@@ -276,6 +282,7 @@ pub(crate) fn spawn_command_slot(
 pub(crate) struct SlotDispatchArgs {
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
+    pub(crate) conversation: Option<crate::conversation::address::ConversationAddress>,
     pub(crate) args: serde_json::Value,
     pub(crate) summary: String,
     pub(crate) workspace: PathBuf,
@@ -291,6 +298,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
     if args.tool_name == "run_command" {
         let slot = spawn_command_slot(
             args.tool_id,
+            args.conversation,
             args.args,
             args.summary,
             args.workspace,
@@ -300,6 +308,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
     } else {
         let slot = spawn_simple_slot(
             args.tool_id,
+            args.conversation,
             args.tool_name,
             args.args,
             args.summary,

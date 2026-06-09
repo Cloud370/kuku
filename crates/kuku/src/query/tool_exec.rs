@@ -43,7 +43,10 @@ pub(crate) fn write_tool_result(
     let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
-        conversation: None,
+        conversation: slot
+            .conversation
+            .as_ref()
+            .map(|value| value.as_str().to_string()),
         tool_call_id: slot.tool_call_id.clone(),
         status: status.to_string(),
         summary: summary.to_string(),
@@ -390,7 +393,7 @@ mod tests {
 
     use super::*;
     use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
-    use crate::query::types::{CumulativeUsage, PendingRun, Query, ResolvedRuntime};
+    use crate::query::types::{CumulativeUsage, ExecSlot, PendingRun, Query, ResolvedRuntime};
     use crate::skill::definition::{SkillDefinition, SkillSource};
     use crate::tool::ToolDefinition;
 
@@ -571,5 +574,45 @@ mod tests {
             assert!(result.truncated, "{tool_name} should be truncated");
             assert_eq!(result.model_content.chars().count(), 30);
         }
+    }
+
+    #[test]
+    fn slot_tool_result_is_persisted_with_non_main_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(&events_path, "").unwrap();
+        let slot = ExecSlot {
+            tool_call_id: "toolu_read".to_string(),
+            conversation: Some(
+                crate::conversation::address::ConversationAddress::parse("review").unwrap(),
+            ),
+            kind: crate::query::ToolKind::Agent {
+                conversation: crate::conversation::address::ConversationAddress::parse("review")
+                    .unwrap(),
+                binding_id: "binding:review".to_string(),
+            },
+            ordered_with_simple_tools: false,
+            label: "read".to_string(),
+            cancel: Arc::new(tokio::sync::Notify::new()),
+            nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        };
+
+        write_tool_result(
+            &slot,
+            "ok",
+            "read README.md",
+            "README contents",
+            &None,
+            &events_path,
+            1,
+        )
+        .unwrap();
+
+        let events = crate::event::EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            crate::event::EventPayload::ToolResult { conversation, tool_call_id, .. }
+                if conversation.as_deref() == Some("review") && tool_call_id == "toolu_read"
+        )));
     }
 }

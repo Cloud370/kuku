@@ -610,6 +610,77 @@ fn rebuild_history_uses_snapshot_for_target_conversation_only() {
 }
 
 #[test]
+fn rebuild_history_replays_non_main_scoped_tool_result() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: EventPayload::MessageUser {
+                ts: "2026-06-09T00:00:01Z".to_string(),
+                conversation: "review".to_string(),
+                turn: 1,
+                text: "inspect".to_string(),
+                from: Some("main".to_string()),
+                via_tool_call_id: Some("toolu_agent_review".to_string()),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-06-09T00:00:02Z".to_string(),
+                conversation: Some("review".to_string()),
+                request_id: "req_review_1".to_string(),
+                tool_call_id: "toolu_read".to_string(),
+                index: 0,
+                tool: "read_file".to_string(),
+                args: json!({"path": "README.md"}),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: EventPayload::ToolResult {
+                turn: 1,
+                ts: "2026-06-09T00:00:03Z".to_string(),
+                conversation: Some("review".to_string()),
+                tool_call_id: "toolu_read".to_string(),
+                status: "ok".to_string(),
+                summary: "read README.md".to_string(),
+                model_content: "README contents".to_string(),
+                truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: None,
+            },
+        },
+    ];
+
+    let review = ConversationAddress::parse("review").unwrap();
+    let (_, history) = rebuild_history(&events, &review);
+
+    assert_eq!(
+        history,
+        vec![
+            CanonicalMessage::user_text("inspect"),
+            CanonicalMessage::assistant(vec![MessageBlock::ToolUse(ToolUse {
+                id: "toolu_read".to_string(),
+                name: "read_file".to_string(),
+                args: json!({"path": "README.md"}),
+            })]),
+            CanonicalMessage::user(vec![MessageBlock::ToolResult(ToolResult {
+                tool_call_id: "toolu_read".to_string(),
+                status: "ok".to_string(),
+                summary: "read README.md".to_string(),
+                model_content: "README contents".to_string(),
+                structured: None,
+                truncated: false,
+            })]),
+        ]
+    );
+}
+
+#[test]
 fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
     let events = vec![
         kuku::event::StoredEvent {

@@ -246,6 +246,15 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 u32::try_from(total).ok().filter(|value| *value > 0)
             }),
         })?;
+        if !pending.conversation.is_main() && !accumulated_text.is_empty() {
+            store.append(EventPayload::MessageAssistant {
+                ts: now_timestamp()?,
+                conversation: pending.conversation.as_str().to_string(),
+                turn: pending.turn,
+                message_id: request_id.clone(),
+                text: accumulated_text.clone(),
+            })?;
+        }
 
         if let Some(detector) = handoff_detector {
             if let Some(summary) = detector.finish() {
@@ -533,6 +542,7 @@ pub(super) async fn advance_pending(
             );
             let slot = spawn_agent_slot(
                 id.clone(),
+                (!pending.conversation.is_main()).then(|| pending.conversation.clone()),
                 dispatch,
                 label,
                 pending.workspace.clone(),
@@ -690,6 +700,8 @@ pub(super) async fn advance_pending(
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),
+                        conversation: (!pending.conversation.is_main())
+                            .then(|| pending.conversation.clone()),
                         args: queued.tool_call.args.clone(),
                         summary: summary.clone(),
                         workspace: pending.workspace.clone(),

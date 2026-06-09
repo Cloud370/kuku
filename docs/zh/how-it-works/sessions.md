@@ -120,8 +120,8 @@ conversation rollback 按 address 生效：
 
 | Scope | Effect |
 |---|---|
-| `conversation_only` | 在未来 replay 中隐藏该 conversation 后续事件。 |
-| `files_only` | 把工作区文件恢复到较早状态，但不隐藏后续消息。 |
+| `messages` | 在未来 replay 中隐藏该 conversation 后续事件。 |
+| `file_changes` | 把工作区文件恢复到较早状态，但不隐藏后续消息。 |
 | `both` | 同时应用这两种行为。 |
 
 主线程 conversation 的 rollback 可以隐藏较晚的 host turn 事实。agent conversation 的 rollback 只会隐藏该 address 的较晚事件。

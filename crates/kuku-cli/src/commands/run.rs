@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use kuku::agent::registry::AgentRegistry;
-use kuku::{query, PermissionChoice, UiEvent};
+use kuku::{query, PermissionChoice, ToolEvent, UiEvent};
 
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine, RenderMode, RunMetrics, RunUsageSummary};
@@ -72,6 +72,16 @@ fn noninteractive_permission_choice(
         Some(PermissionChoice::Deny)
     } else {
         None
+    }
+}
+
+fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
+    match event {
+        UiEvent::ToolOutput {
+            id,
+            event: ToolEvent::PermissionRequested { .. },
+        } => Some(id.as_str()),
+        _ => None,
     }
 }
 
@@ -518,6 +528,92 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", display.tool_running());
                 }
             }
+            Some(UiEvent::ToolOutput {
+                id: parent_tool_id,
+                event: ToolEvent::PermissionRequested { request },
+            }) => {
+                let event = UiEvent::ToolOutput {
+                    id: parent_tool_id.clone(),
+                    event: ToolEvent::PermissionRequested {
+                        request: request.clone(),
+                    },
+                };
+                let Some(parent_tool_id) = nested_permission_parent_tool_id(&event) else {
+                    continue;
+                };
+                let parent_tool_id = parent_tool_id.to_string();
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                if let Some(choice) =
+                    noninteractive_permission_choice(args.auto_yes, use_stream_json)
+                {
+                    let _ = run
+                        .decide(&request.id, choice, Some(parent_tool_id.as_str()))
+                        .await?;
+                    if use_stream_json {
+                        if matches!(choice, PermissionChoice::Deny) {
+                            println!(
+                                "{}",
+                                OutputLine::permission_ask(
+                                    request.id.clone(),
+                                    request.tool.clone(),
+                                    request.risk,
+                                    request.summary,
+                                )
+                                .to_json_line()
+                            );
+                        }
+                        let decision = if matches!(choice, PermissionChoice::Deny) {
+                            "deny"
+                        } else {
+                            "allow"
+                        };
+                        println!(
+                            "{}",
+                            OutputLine::permission_decision(
+                                request.id,
+                                request.tool,
+                                decision.into(),
+                                "noninteractive".into(),
+                            )
+                            .to_json_line()
+                        );
+                    } else {
+                        println!(
+                            "{}",
+                            display.permission_decision("allow", &request.tool, "posture")
+                        );
+                        println!("{}", display.tool_running());
+                    }
+                } else {
+                    let prompt_line = display.permission_ask(&request.tool, &request.summary);
+                    print!("{prompt_line} ");
+                    io::stdout().flush()?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+                    let (decision, rule) = match input.trim() {
+                        "y" | "" => (PermissionChoice::Once, "user"),
+                        _ => (PermissionChoice::Deny, "user"),
+                    };
+                    let _ = run
+                        .decide(&request.id, decision, Some(parent_tool_id.as_str()))
+                        .await?;
+                    let decision_str = if matches!(decision, PermissionChoice::Once) {
+                        "allow"
+                    } else {
+                        "deny"
+                    };
+                    println!(
+                        "{}",
+                        display.permission_decision(decision_str, &request.tool, rule)
+                    );
+                    println!("{}", display.tool_running());
+                }
+            }
             Some(UiEvent::Done {
                 usage,
                 turn,
@@ -786,10 +882,11 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::{
-        build_query, noninteractive_permission_choice, parse_slash_command, slash_command_candidate,
+        build_query, nested_permission_parent_tool_id, noninteractive_permission_choice,
+        parse_slash_command, slash_command_candidate,
     };
     use crate::cli_args::RunArgs;
-    use kuku::PermissionChoice;
+    use kuku::{PermissionChoice, UiEvent};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -837,6 +934,31 @@ mod tests {
     #[test]
     fn interactive_without_yes_waits_for_user_input() {
         assert_eq!(noninteractive_permission_choice(false, false), None);
+    }
+
+    #[test]
+    fn nested_permission_event_exposes_parent_tool_id() {
+        let request = kuku::query::PermissionRequest {
+            id: "perm_child".to_string(),
+            conversation: kuku::conversation::address::ConversationAddress::parse("review")
+                .unwrap(),
+            turn: 1,
+            tool_call_id: "toolu_child".to_string(),
+            tool: "run_command".to_string(),
+            risk: "command".to_string(),
+            summary: "run gated command".to_string(),
+            candidate: "cargo test".to_string(),
+            source: "default_ask".to_string(),
+        };
+        let event = UiEvent::ToolOutput {
+            id: "toolu_agent_parent".to_string(),
+            event: kuku::query::ToolEvent::PermissionRequested { request },
+        };
+
+        assert_eq!(
+            nested_permission_parent_tool_id(&event),
+            Some("toolu_agent_parent")
+        );
     }
 
     #[test]

@@ -457,6 +457,8 @@ impl Run {
                     super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),
+                        conversation: (!pending.conversation.is_main())
+                            .then(|| pending.conversation.clone()),
                         args: hook_result.args,
                         summary: display_summary.clone(),
                         workspace: pending.workspace.clone(),
@@ -906,6 +908,7 @@ impl Run {
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
+            conversation: (!pending.conversation.is_main()).then(|| pending.conversation.clone()),
             args: hook_result.args,
             summary: summary.clone(),
             workspace: pending.workspace.clone(),
@@ -1897,6 +1900,7 @@ mod tests {
             "tool_cancelled".to_string(),
             ExecSlot {
                 tool_call_id: "tool_cancelled".to_string(),
+                conversation: None,
                 kind: ToolKind::Command { pid: None },
                 ordered_with_simple_tools: false,
                 label: "print hi".to_string(),

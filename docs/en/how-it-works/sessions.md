@@ -120,8 +120,8 @@ Conversation rollbacks are scoped by address:
 
 | Scope | Effect |
 |---|---|
-| `conversation_only` | Hides later events from future replay for that conversation. |
-| `files_only` | Reverts workspace files to an earlier state without hiding later messages. |
+| `messages` | Hides later events from future replay for that conversation. |
+| `file_changes` | Reverts workspace files to an earlier state without hiding later messages. |
 | `both` | Applies both behaviors. |
 
 Main-conversation rollback can hide historical host-turn facts. Agent-conversation rollback hides later events only for that address.

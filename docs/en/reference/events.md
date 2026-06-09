@@ -85,11 +85,11 @@ Conversation-scoped events also carry `conversation`. Turn-scoped events also ca
 
 Rollback events record one of these scope values:
 
-- `conversation_only`
-- `files_only`
+- `messages`
+- `file_changes`
 - `both`
 
-`conversation_only` removes later events from future replay for that conversation. `files_only` reverts workspace files without hiding conversation history. `both` does both.
+`messages` removes later events from future replay for that conversation. `file_changes` reverts workspace files without hiding conversation history. `both` does both.
 
 ## Permission State
 

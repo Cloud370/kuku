@@ -41,7 +41,21 @@ fn stream_event_matches_conversation(value: &serde_json::Value, conversation: &s
     value
         .get("conversation")
         .and_then(|item| item.as_str())
-        .is_none_or(|value| value == conversation)
+        .is_some_and(|value| value == conversation)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::stream_event_matches_conversation;
+
+    #[test]
+    fn stream_conversation_filter_rejects_unscoped_live_events() {
+        let event = json!({"event": "line", "text": "unscoped output"});
+
+        assert!(!stream_event_matches_conversation(&event, "review"));
+    }
 }
 
 pub async fn events(
