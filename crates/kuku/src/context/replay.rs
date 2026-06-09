@@ -32,6 +32,7 @@ pub fn rebuild_history(
 ) -> (Option<String>, Vec<CanonicalMessage>) {
     let filtered = filter_rolled_back_events(events);
     let suppressed_turns = suppressed_turns(&filtered, conversation);
+    let turn_conversations = turn_conversations(&filtered);
 
     let handoff_pos = filtered
         .iter()
@@ -93,11 +94,18 @@ pub fn rebuild_history(
                 messages.push(CanonicalMessage::user_text(text.clone()));
             }
             EventPayload::ModelResponse {
+                turn,
                 request_id,
                 text,
                 thinking,
                 ..
-            } if conversation.is_main() => {
+            } if conversation.is_main()
+                && unscoped_turn_belongs_to_conversation(
+                    *turn,
+                    conversation,
+                    &turn_conversations,
+                ) =>
+            {
                 if current_group
                     .request_id
                     .as_ref()
@@ -324,6 +332,73 @@ fn suppressed_turns(events: &[&StoredEvent], conversation: &ConversationAddress)
             _ => None,
         })
         .collect()
+}
+
+fn turn_conversations(events: &[&StoredEvent]) -> BTreeMap<u64, HashSet<String>> {
+    let mut turns = BTreeMap::<u64, HashSet<String>>::new();
+    for event in events {
+        match &event.payload {
+            EventPayload::TurnStarted {
+                turn, conversation, ..
+            }
+            | EventPayload::MessageUser {
+                turn, conversation, ..
+            }
+            | EventPayload::MessageAssistant {
+                turn, conversation, ..
+            }
+            | EventPayload::TurnCompleted {
+                turn, conversation, ..
+            }
+            | EventPayload::TurnCancelled {
+                turn, conversation, ..
+            }
+            | EventPayload::TurnInterrupted {
+                turn, conversation, ..
+            }
+            | EventPayload::ContextSkills {
+                turn, conversation, ..
+            }
+            | EventPayload::PromptSnapshot {
+                turn, conversation, ..
+            } => {
+                turns.entry(*turn).or_default().insert(conversation.clone());
+            }
+            EventPayload::ToolCall {
+                turn, conversation, ..
+            }
+            | EventPayload::ToolResult {
+                turn, conversation, ..
+            } => {
+                turns.entry(*turn).or_default().insert(
+                    conversation
+                        .clone()
+                        .unwrap_or_else(|| ConversationAddress::MAIN.as_str().to_string()),
+                );
+            }
+            EventPayload::TurnStart { turn, .. }
+            | EventPayload::UserInput { turn, .. }
+            | EventPayload::TurnEnd { turn, .. } => {
+                turns
+                    .entry(*turn)
+                    .or_default()
+                    .insert(ConversationAddress::MAIN.as_str().to_string());
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
+fn unscoped_turn_belongs_to_conversation(
+    turn: u64,
+    conversation: &ConversationAddress,
+    turn_conversations: &BTreeMap<u64, HashSet<String>>,
+) -> bool {
+    turn_conversations.get(&turn).map_or_else(
+        || conversation.is_main(),
+        |conversations| conversations.contains(conversation.as_str()),
+    )
 }
 
 fn event_belongs_to_history_conversation(
@@ -577,6 +652,147 @@ mod tests {
                     truncated: false,
                 })]),
                 CanonicalMessage::assistant(vec![MessageBlock::Text("Done.".to_string())]),
+            ]
+        );
+    }
+
+    #[test]
+    fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
+        let events = vec![
+            event(
+                1,
+                EventPayload::TurnStarted {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:00Z".to_string(),
+                    conversation: "main".to_string(),
+                },
+            ),
+            event(
+                2,
+                EventPayload::MessageUser {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:01Z".to_string(),
+                    conversation: "main".to_string(),
+                    text: "delegate".to_string(),
+                    from: None,
+                    via_tool_call_id: None,
+                },
+            ),
+            model_response(3, 1, "req_1", "Delegating."),
+            event(
+                4,
+                EventPayload::ToolCall {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:03Z".to_string(),
+                    conversation: Some("main".to_string()),
+                    tool_call_id: "agent_1".to_string(),
+                    request_id: "req_1".to_string(),
+                    index: 0,
+                    tool: "agent".to_string(),
+                    args: json!({"to": "explore", "message": "child task"}),
+                },
+            ),
+            event(
+                5,
+                EventPayload::TurnStarted {
+                    turn: 2,
+                    ts: "2026-05-13T00:00:04Z".to_string(),
+                    conversation: "explore".to_string(),
+                },
+            ),
+            model_response(6, 2, "req_1", ""),
+            event(
+                7,
+                EventPayload::ToolCall {
+                    turn: 2,
+                    ts: "2026-05-13T00:00:05Z".to_string(),
+                    conversation: Some("explore".to_string()),
+                    tool_call_id: "read_1".to_string(),
+                    request_id: "req_1".to_string(),
+                    index: 0,
+                    tool: "read_file".to_string(),
+                    args: json!({"path": "README.md"}),
+                },
+            ),
+            event(
+                8,
+                EventPayload::ToolResult {
+                    turn: 2,
+                    ts: "2026-05-13T00:00:06Z".to_string(),
+                    conversation: Some("explore".to_string()),
+                    tool_call_id: "read_1".to_string(),
+                    status: "ok".to_string(),
+                    summary: "read README.md".to_string(),
+                    model_content: "README content".to_string(),
+                    truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
+                    structured: None,
+                },
+            ),
+            model_response(9, 2, "req_2", "CHILD_OK"),
+            event(
+                10,
+                EventPayload::MessageAssistant {
+                    turn: 2,
+                    ts: "2026-05-13T00:00:08Z".to_string(),
+                    conversation: "explore".to_string(),
+                    message_id: "req_2".to_string(),
+                    text: "CHILD_OK".to_string(),
+                },
+            ),
+            event(
+                11,
+                EventPayload::TurnCompleted {
+                    turn: 2,
+                    ts: "2026-05-13T00:00:09Z".to_string(),
+                    conversation: "explore".to_string(),
+                },
+            ),
+            event(
+                12,
+                EventPayload::ToolResult {
+                    turn: 1,
+                    ts: "2026-05-13T00:00:10Z".to_string(),
+                    conversation: None,
+                    tool_call_id: "agent_1".to_string(),
+                    status: "ok".to_string(),
+                    summary: "explore completed".to_string(),
+                    model_content: "CHILD_OK".to_string(),
+                    truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
+                    structured: None,
+                },
+            ),
+        ];
+
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+        assert!(summary.is_none());
+        assert_eq!(
+            history,
+            vec![
+                CanonicalMessage::user_text("delegate"),
+                CanonicalMessage::assistant(vec![
+                    MessageBlock::Text("Delegating.".to_string()),
+                    MessageBlock::ToolUse(ToolUse {
+                        id: "agent_1".to_string(),
+                        name: "agent".to_string(),
+                        args: json!({"to": "explore", "message": "child task"}),
+                    }),
+                ]),
+                CanonicalMessage::user(vec![MessageBlock::ToolResult(ToolResult {
+                    tool_call_id: "agent_1".to_string(),
+                    status: "ok".to_string(),
+                    summary: "explore completed".to_string(),
+                    model_content: "CHILD_OK".to_string(),
+                    structured: None,
+                    truncated: false,
+                })]),
             ]
         );
     }

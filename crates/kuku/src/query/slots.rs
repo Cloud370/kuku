@@ -144,6 +144,7 @@ pub(crate) fn spawn_agent_slot(
             };
             match event {
                 Ok(Some(UiEvent::Done { output, .. })) => {
+                    let output_text = output.text.clone();
                     let _ = event_tx
                         .send((
                             tc_id.clone(),
@@ -154,12 +155,13 @@ pub(crate) fn spawn_agent_slot(
                                     dispatch.conversation.as_str(),
                                     output.turn
                                 ),
-                                model_content: String::new(),
+                                model_content: output.text,
                                 result: Some(serde_json::json!({
                                     "kind": "agent_result",
                                     "conversation": dispatch.conversation.as_str(),
                                     "binding_id": dispatch.binding.binding_id,
                                     "turns_completed": output.turn,
+                                    "text": output_text,
                                 })),
                             },
                         ))

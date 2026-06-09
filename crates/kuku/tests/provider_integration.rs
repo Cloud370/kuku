@@ -7,6 +7,7 @@ use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 use httpmock::prelude::*;
 use httpmock::When;
 use kuku::agent::registry::AgentRegistry;
+use kuku::config::ApiKey;
 use kuku::event::{EventPayload, EventStore};
 use kuku::query::Run;
 use kuku::{query, Error, Provider, UiEvent};
@@ -90,6 +91,15 @@ fn body_contains_review_assistant_history(req: &HttpMockRequest) -> bool {
     body_contains(req, b"review followup") && body_contains(req, b"previous review answer")
 }
 
+fn body_contains_child_agent_result(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"\"tool_use_id\":\"toolu_agent_child\"")
+        && body_contains(req, b"KUKU_CHILD_AGENT_RESULT")
+}
+
+fn body_contains_initial_child_task(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"child task") && is_initial_request(req)
+}
+
 fn has_read_tool_result_only(req: &HttpMockRequest) -> bool {
     body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
         && !body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
@@ -130,12 +140,26 @@ fn context_conditions(when: When, query_text: &str) -> When {
 
 /// Shorthand for the common Anthropic query builder.
 fn anthro(query_text: &str, server: &MockServer) -> query::Query {
+    let mut config = test_config();
+    let light_tier = config
+        .tiers
+        .get("balanced")
+        .expect("test config has balanced tier")
+        .clone();
+    config.tiers.insert("light".to_string(), light_tier);
+    let provider = config
+        .providers
+        .get_mut("anthropic")
+        .expect("test config has anthropic provider");
+    provider.base_url = server.base_url();
+    provider.api_key = ApiKey::Plaintext("test-key".to_string());
+
     query(query_text)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
-        .config(test_config())
+        .config(config)
 }
 
 fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
@@ -1008,6 +1032,72 @@ async fn agent_to_reuses_conversation_address() {
         env.home.path(),
         "child_s_agent_reuse_1"
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_tool_result_includes_child_output_for_parent_followup() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    let main_tool = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_initial_request)
+            .body_contains("delegate child output");
+        then.status(200)
+            .header("request-id", "req_main_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Delegating to explore."},
+                    {"type": "tool_use", "id": "toolu_agent_child", "name": "agent", "input": {"to": "explore", "message": "child task"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let child_done = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_initial_child_task);
+        then.status(200)
+            .header("request-id", "req_child_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_child_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "KUKU_CHILD_AGENT_RESULT"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    let parent_followup = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_child_agent_result);
+        then.status(200)
+            .header("request-id", "req_parent_after_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_parent_after_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "parent saw KUKU_CHILD_AGENT_RESULT"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = anthro_with_agents("delegate child output", &server)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(output.text, "parent saw KUKU_CHILD_AGENT_RESULT");
+    main_tool.assert_hits(1);
+    child_done.assert_hits(1);
+    parent_followup.assert_hits(1);
 }
 
 #[tokio::test(flavor = "current_thread")]
