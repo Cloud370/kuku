@@ -181,7 +181,9 @@ fn queryable_filtered_events(
             };
             match &event.payload {
                 EventPayload::TurnStart { turn, .. }
+                | EventPayload::TurnStarted { turn, .. }
                 | EventPayload::UserInput { turn, .. }
+                | EventPayload::MessageUser { turn, .. }
                 | EventPayload::ModelResponse { turn, .. }
                 | EventPayload::ModelError { turn, .. }
                 | EventPayload::ToolCall {
@@ -200,7 +202,10 @@ fn queryable_filtered_events(
                 | EventPayload::ContextSources { turn, .. }
                 | EventPayload::ContextSkills { turn, .. }
                 | EventPayload::Handoff { turn, .. }
-                | EventPayload::TurnEnd { turn, .. } => *turn < target_turn,
+                | EventPayload::TurnEnd { turn, .. }
+                | EventPayload::TurnCompleted { turn, .. }
+                | EventPayload::TurnCancelled { turn, .. }
+                | EventPayload::TurnInterrupted { turn, .. } => *turn < target_turn,
                 _ => true,
             }
         })
@@ -238,7 +243,13 @@ fn build_turn_map_from_events(
 
     for event in events.iter().rev() {
         map.insert(event.id, current_turn);
-        if matches!(event.payload, EventPayload::TurnEnd { .. }) {
+        if matches!(
+            event.payload,
+            EventPayload::TurnEnd { .. }
+                | EventPayload::TurnCompleted { .. }
+                | EventPayload::TurnCancelled { .. }
+                | EventPayload::TurnInterrupted { .. }
+        ) {
             if seen_turn_end {
                 current_turn += 1;
             }
@@ -257,7 +268,13 @@ fn build_turn_map_from_filtered(
 
     for event in events.iter().rev() {
         map.insert(event.id, current_turn);
-        if matches!(event.payload, EventPayload::TurnEnd { .. }) {
+        if matches!(
+            event.payload,
+            EventPayload::TurnEnd { .. }
+                | EventPayload::TurnCompleted { .. }
+                | EventPayload::TurnCancelled { .. }
+                | EventPayload::TurnInterrupted { .. }
+        ) {
             if seen_turn_end {
                 current_turn += 1;
             }
@@ -497,23 +514,31 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "first turn".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "second turn".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
             ],
         );
@@ -581,31 +606,41 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "original".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "rolled back".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
                 EventPayload::TurnRollback {
                     turn: 3,
@@ -627,31 +662,41 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "original".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "rolled back".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
                 EventPayload::TurnRollback {
                     turn: 3,
@@ -779,44 +824,59 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "first".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "second active".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 2,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 3,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
-                EventPayload::UserInput {
+                EventPayload::MessageUser {
                     turn: 3,
                     ts: ts("t"),
+                    conversation: "main".into(),
                     text: "third rolled back".into(),
+                    from: None,
+                    via_tool_call_id: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 3,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
                 EventPayload::TurnRollback {
                     turn: 4,

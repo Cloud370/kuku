@@ -115,7 +115,7 @@ fn session_status(lock_path: &Path, events: &[event::StoredEvent]) -> SessionSta
         _ => match event::scan::scan_last_event_type(
             &lock_path.parent().unwrap().join("events.jsonl"),
         ) {
-            Some("turn.end") => SessionStatus::Done,
+            Some("turn.completed") => SessionStatus::Done,
             _ => SessionStatus::Interrupted,
         },
     }

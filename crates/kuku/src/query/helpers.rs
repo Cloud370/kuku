@@ -421,7 +421,7 @@ pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) ->
     match events.first().map(|event| &event.payload) {
         Some(EventPayload::SessionMeta { .. } | EventPayload::SessionCreated { .. }) => Ok(()),
         _ => Err(crate::error::Error::InvalidEventStream(
-            "first event must be session.meta".to_string(),
+            "first event must be session.created".to_string(),
         )),
     }
 }

@@ -1465,18 +1465,19 @@ mod tests {
         {
             let mut store = EventStore::open(&events_path).unwrap();
             store
-                .append(EventPayload::SessionMeta {
+                .append(EventPayload::SessionCreated {
                     ts: "2026-05-20T00:00:00Z".to_string(),
-                    schema_version: 1,
+                    schema_version: 2,
                     session_id: "test".to_string(),
                     created_at: "2026-05-20T00:00:00Z".to_string(),
                     kuku_version: "0.1.0".to_string(),
                 })
                 .unwrap();
             store
-                .append(EventPayload::TurnStart {
+                .append(EventPayload::TurnStarted {
                     turn: 1,
                     ts: "2026-05-20T00:00:00Z".to_string(),
+                    conversation: "main".to_string(),
                 })
                 .unwrap();
         }
@@ -1956,25 +1957,29 @@ mod tests {
         {
             let mut store = EventStore::open(&events_path).unwrap();
             store
-                .append(EventPayload::SessionMeta {
+                .append(EventPayload::SessionCreated {
                     ts: "2026-05-20T00:00:00Z".to_string(),
-                    schema_version: 1,
+                    schema_version: 2,
                     session_id: "test".to_string(),
                     created_at: "2026-05-20T00:00:00Z".to_string(),
                     kuku_version: "0.1.0".to_string(),
                 })
                 .unwrap();
             store
-                .append(EventPayload::TurnStart {
+                .append(EventPayload::TurnStarted {
                     turn: 1,
                     ts: "2026-05-20T00:00:00Z".to_string(),
+                    conversation: "main".to_string(),
                 })
                 .unwrap();
             store
-                .append(EventPayload::UserInput {
+                .append(EventPayload::MessageUser {
                     turn: 1,
                     ts: "2026-05-20T00:00:01Z".to_string(),
+                    conversation: "main".to_string(),
                     text: "hello".to_string(),
+                    from: None,
+                    via_tool_call_id: None,
                 })
                 .unwrap();
             store
@@ -1988,9 +1993,10 @@ mod tests {
                 })
                 .unwrap();
             store
-                .append(EventPayload::TurnEnd {
+                .append(EventPayload::TurnCompleted {
                     turn: 1,
                     ts: "2026-05-20T00:00:03Z".to_string(),
+                    conversation: "main".to_string(),
                 })
                 .unwrap();
         }

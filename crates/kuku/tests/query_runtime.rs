@@ -1917,57 +1917,6 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn legacy_permission_request_resume_reemits_request_before_new_turn() {
-    let env = TestEnv::new();
-    let session_id = "s_resume_legacy_permission_request";
-    let events_path = env.events_path(session_id);
-    std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &events_path,
-        concat!(
-            r#"{"id":1,"type":"session.meta","ts":"2026-06-06T00:00:00Z","schema_version":1,"session_id":"s_resume_legacy_permission_request","created_at":"2026-06-06T00:00:00Z","kuku_version":"0"}"#,
-            "\n",
-            r#"{"id":2,"type":"turn.start","turn":1,"ts":"2026-06-06T00:00:01Z"}"#,
-            "\n",
-            r#"{"id":3,"type":"user.input","turn":1,"ts":"2026-06-06T00:00:02Z","text":"run tests"}"#,
-            "\n",
-            r#"{"id":4,"type":"model.response","turn":1,"ts":"2026-06-06T00:00:03Z","request_id":"req_1","text":"Need approval.","thinking":null,"input_tokens_total":null}"#,
-            "\n",
-            r#"{"id":5,"type":"tool.call","turn":1,"ts":"2026-06-06T00:00:04Z","tool_call_id":"toolu_legacy_resume","request_id":"req_1","index":0,"tool":"run_command","args":{"command":"cargo test","timeout":60,"brief":"run tests"}}"#,
-            "\n",
-            r#"{"id":6,"type":"permission.request","turn":1,"ts":"2026-06-06T00:00:05Z","tool_call_id":"toolu_legacy_resume","tool":"run_command","risk":"exec","summary":"run tests"}"#,
-            "\n"
-        ),
-    )
-    .unwrap();
-
-    let events = EventStore::replay(&events_path).unwrap();
-    assert!(matches!(events[5].payload, EventPayload::Unknown(_)));
-
-    let mut resumed = query("second prompt must not be appended yet")
-        .session(session_id)
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url("http://127.0.0.1:1")
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
-
-    match resumed.next().await.unwrap().expect("resumed event") {
-        UiEvent::PermissionRequested { request } => {
-            assert_eq!(request.id, "toolu_legacy_resume");
-            assert_eq!(request.tool_call_id, "toolu_legacy_resume");
-            assert_eq!(request.tool, "run_command");
-            assert_eq!(request.risk, "exec");
-            assert_eq!(request.summary, "run tests");
-        }
-        other => panic!("expected resumed permission request, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     let env = TestEnv::new();
     let server = MockServer::start();

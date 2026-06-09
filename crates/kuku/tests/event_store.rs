@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use kuku::context::FileSource;
+use kuku::context::provenance::{PromptCapabilityMetadata, PromptRendererIdentity, ToolRegistryProvenance};
 use kuku::error::Error;
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 
@@ -25,13 +26,51 @@ fn new_event_lines() -> Vec<&'static str> {
     ]
 }
 
-fn session_meta() -> EventPayload {
-    EventPayload::SessionMeta {
+fn session_created() -> EventPayload {
+    EventPayload::SessionCreated {
         ts: "2026-05-13T00:00:00Z".to_string(),
-        schema_version: 1,
+        schema_version: 2,
         session_id: "s_001".to_string(),
         created_at: "2026-05-13T00:00:00Z".to_string(),
         kuku_version: "0.1.0".to_string(),
+    }
+}
+
+fn prompt_snapshot(turn: u64, content: &str) -> EventPayload {
+    EventPayload::PromptSnapshot {
+        ts: "2026-05-13T00:00:00Z".to_string(),
+        conversation: "main".to_string(),
+        binding_id: "binding:main".to_string(),
+        snapshot_id: format!("snapshot:main:{turn}"),
+        turn,
+        messages: vec![kuku::event::types::ContextMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+        }],
+        project_instruction_sources: vec![],
+        memory_sources: vec![],
+        prompt_asset_sources: vec![],
+        skills: serde_json::json!({"names": [], "hash": "sha256:skills"}),
+        bootstrap_loaded: vec![],
+        provider: "anthropic".to_string(),
+        model: "claude-sonnet-4-6".to_string(),
+        renderer: PromptRendererIdentity {
+            provider: "anthropic".to_string(),
+            renderer: "anthropic".to_string(),
+        },
+        tool_registry: Box::new(ToolRegistryProvenance {
+            hash: "sha256:tools".to_string(),
+            names: vec![],
+            tool_count: 0,
+        }),
+        agent_registry: None,
+        skill_registry: Box::new(None),
+        plugin_registry: Box::new(None),
+        capabilities: PromptCapabilityMetadata {
+            context_budget_tier: "normal".to_string(),
+            max_context_tokens: Some(200000),
+            remaining_input_tokens: Some(180000),
+        },
     }
 }
 
@@ -41,11 +80,12 @@ fn appends_events_with_monotonic_ids() {
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
 
-    let first = store.append(session_meta()).unwrap();
+    let first = store.append(session_created()).unwrap();
     let second = store
-        .append(EventPayload::TurnStart {
+        .append(EventPayload::TurnStarted {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
         })
         .unwrap();
 
@@ -64,7 +104,7 @@ fn ignores_incomplete_trailing_line_on_replay() {
     let path = temp.path().join("events.jsonl");
     std::fs::write(
         &path,
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":",
+        "{\"id\":1,\"ts\":\"2026-05-13T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":",
     )
     .unwrap();
 
@@ -80,9 +120,9 @@ fn rejects_invalid_middle_line_even_when_later_events_are_valid() {
     std::fs::write(
         &path,
         concat!(
-            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
+            "{\"id\":1,\"ts\":\"2026-05-13T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
             "{\"id\":\n",
-            "{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-13T00:00:01Z\"}\n",
+            "{\"id\":2,\"ts\":\"2026-05-13T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}\n",
         ),
     )
     .unwrap();
@@ -97,15 +137,16 @@ fn truncates_partial_tail_before_appending_after_reopen() {
     let path = temp.path().join("events.jsonl");
     std::fs::write(
         &path,
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":",
+        "{\"id\":1,\"ts\":\"2026-05-13T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":",
     )
     .unwrap();
 
     let mut store = EventStore::open(&path).unwrap();
     let appended = store
-        .append(EventPayload::TurnStart {
+        .append(EventPayload::TurnStarted {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
         })
         .unwrap();
 
@@ -136,7 +177,7 @@ fn open_creates_parent_directories() {
 
     let mut store = EventStore::open(&path).unwrap();
 
-    assert_eq!(store.append(session_meta()).unwrap().id, 1);
+    assert_eq!(store.append(session_created()).unwrap().id, 1);
 }
 
 #[test]
@@ -146,8 +187,8 @@ fn rejects_non_monotonic_ids() {
     std::fs::write(
         &path,
         concat!(
-            "{\"id\":2,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
-            "{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-13T00:00:01Z\"}\n",
+            "{\"id\":2,\"ts\":\"2026-05-13T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
+            "{\"id\":2,\"ts\":\"2026-05-13T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}\n",
         ),
     )
     .unwrap();
@@ -164,9 +205,9 @@ fn skips_blank_lines() {
         &path,
         concat!(
             "\n",
-            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
+            "{\"id\":1,\"ts\":\"2026-05-13T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
             "  \n",
-            "{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-13T00:00:01Z\"}\n",
+            "{\"id\":2,\"ts\":\"2026-05-13T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}\n",
         ),
     )
     .unwrap();
@@ -183,7 +224,7 @@ fn append_writes_newline_terminated_jsonl() {
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
 
-    store.append(session_meta()).unwrap();
+    store.append(session_created()).unwrap();
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.ends_with('\n'));
@@ -196,7 +237,7 @@ fn concurrent_handles_do_not_reuse_the_same_event_id() {
     let mut left = EventStore::open(&path).unwrap();
     let mut right = EventStore::open(&path).unwrap();
 
-    let first = left.append(session_meta()).unwrap();
+    let first = left.append(session_created()).unwrap();
     let second = right
         .append(EventPayload::TurnStart {
             turn: 1,
@@ -218,7 +259,7 @@ fn concurrent_processes_do_not_reuse_the_same_event_id() {
     if std::env::var("KUKU_EVENT_STORE_CHILD").ok().as_deref() == Some("1") {
         let path = std::env::var("KUKU_EVENT_STORE_PATH").unwrap();
         let mut store = EventStore::open(&path).unwrap();
-        store.append(session_meta()).unwrap();
+        store.append(session_created()).unwrap();
         return;
     }
 
@@ -254,15 +295,18 @@ fn fact_only_events_roundtrip_without_observability_fields() {
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
 
+    store.append(session_created()).unwrap();
     store
-        .append(EventPayload::ContextPrelude {
+        .append(EventPayload::ConversationOpened {
             ts: "2026-05-13T00:00:00Z".to_string(),
-            messages: vec![kuku::event::types::ContextMessage {
-                role: "user".to_string(),
-                content: "<kuku_execution_context>workspace: /tmp</kuku_execution_context>"
-                    .to_string(),
-            }],
+            conversation: "main".to_string(),
         })
+        .unwrap();
+    store
+        .append(prompt_snapshot(
+            1,
+            "<kuku_execution_context>workspace: /tmp</kuku_execution_context>",
+        ))
         .unwrap();
     store
         .append(EventPayload::ContextSources {
@@ -300,17 +344,17 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
-    assert_eq!(replayed.len(), 4);
+    assert_eq!(replayed.len(), 6);
 
-    match &replayed[0].payload {
-        EventPayload::ContextPrelude { messages, .. } => {
+    match &replayed[2].payload {
+        EventPayload::PromptSnapshot { messages, .. } => {
             assert_eq!(messages.len(), 1);
             assert!(messages[0].content.contains("<kuku_execution_context>"));
         }
-        other => panic!("expected context.prelude, got {other:?}"),
+        other => panic!("expected prompt.snapshot, got {other:?}"),
     }
 
-    match &replayed[1].payload {
+    match &replayed[3].payload {
         EventPayload::ContextSources {
             request_id,
             project_instruction_sources,
@@ -324,7 +368,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected context.sources, got {other:?}"),
     }
 
-    match &replayed[2].payload {
+    match &replayed[4].payload {
         EventPayload::ModelError { kind, message, .. } => {
             panic!("expected model.response before model.error, got model.error kind={kind} message={message}");
         }
@@ -341,7 +385,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected model.response, got {other:?}"),
     }
 
-    match &replayed[3].payload {
+    match &replayed[5].payload {
         EventPayload::ModelError { kind, message, .. } => {
             assert_eq!(kind, "RateLimited");
             assert_eq!(message, "HTTP 429: rate limited");
@@ -372,12 +416,40 @@ fn fact_event_json_omits_removed_observability_fields() {
 
     let event = StoredEvent {
         id: 10,
-        payload: EventPayload::ContextPrelude {
+        payload: EventPayload::PromptSnapshot {
             ts: "2026-05-18T00:01:00Z".to_string(),
+            conversation: "main".to_string(),
+            binding_id: "binding:main".to_string(),
+            snapshot_id: "snapshot:main:2".to_string(),
+            turn: 2,
             messages: vec![ContextMessage {
                 role: "user".to_string(),
                 content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
             }],
+            project_instruction_sources: vec![],
+            memory_sources: vec![],
+            prompt_asset_sources: vec![],
+            skills: serde_json::json!({"names": [], "hash": "sha256:skills"}),
+            bootstrap_loaded: vec![],
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            renderer: PromptRendererIdentity {
+                provider: "anthropic".to_string(),
+                renderer: "anthropic".to_string(),
+            },
+            tool_registry: Box::new(ToolRegistryProvenance {
+                hash: "sha256:tools".to_string(),
+                names: vec![],
+                tool_count: 0,
+            }),
+            agent_registry: None,
+            skill_registry: Box::new(None),
+            plugin_registry: Box::new(None),
+            capabilities: PromptCapabilityMetadata {
+                context_budget_tier: "normal".to_string(),
+                max_context_tokens: Some(200000),
+                remaining_input_tokens: Some(180000),
+            },
         },
     };
     let response = StoredEvent {
@@ -395,7 +467,7 @@ fn fact_event_json_omits_removed_observability_fields() {
     let prelude_json = serde_json::to_value(&event).unwrap();
     let response_json = serde_json::to_value(&response).unwrap();
 
-    assert!(prelude_json.get("context").is_none());
+    assert_eq!(prelude_json["kind"], "prompt.snapshot");
     assert!(prelude_json.get("provenance").is_none());
     assert!(response_json.get("usage").is_none());
     assert!(response_json.get("stop_reason").is_none());
@@ -427,34 +499,6 @@ fn permission_requested_roundtrips_as_fact_event() {
 
     let back: StoredEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
-}
-
-#[test]
-fn replay_reads_legacy_type_events_in_read_only_mode() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("events.jsonl");
-    std::fs::write(
-        &path,
-        concat!(
-            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-13T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_001\",\"created_at\":\"2026-05-13T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
-            "{\"id\":2,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-13T00:00:01Z\",\"text\":\"hello\"}\n",
-            "{\"id\":3,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-13T00:00:02Z\"}\n",
-        ),
-    )
-    .unwrap();
-
-    let replayed = EventStore::replay(&path).unwrap();
-
-    assert_eq!(3, replayed.len());
-    assert!(matches!(
-        replayed[0].payload,
-        EventPayload::SessionMeta { .. }
-    ));
-    assert!(matches!(
-        replayed[1].payload,
-        EventPayload::UserInput { .. }
-    ));
-    assert!(matches!(replayed[2].payload, EventPayload::TurnEnd { .. }));
 }
 
 #[test]

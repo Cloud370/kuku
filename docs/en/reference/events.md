@@ -17,8 +17,6 @@ Lowercase and dot-separated.
 - `agent`: a contact card that can own one or more conversations
 - `address`: the conversation identity; reusing it means continuity
 
-Legacy event names such as `session.meta`, `turn.end`, and `child_session_id` can still appear in older ledgers. They are historical compatibility shapes, not the canonical model.
-
 ## Canonical Event Kinds
 
 | Event | Meaning |
@@ -44,22 +42,6 @@ Legacy event names such as `session.meta`, `turn.end`, and `child_session_id` ca
 | `conversation.rollback` | Conversation-scoped rollback marker. |
 | `conversation.rollback.undone` | Undo of a conversation rollback. |
 
-## Historical Compatibility Kinds
-
-These older kinds still parse when replaying older ledgers:
-
-- `session.meta`
-- `context.prelude`
-- `turn.start`
-- `user.input`
-- `model.response`
-- `model.error`
-- `turn.end`
-- `turn.rollback`
-- `turn.rollback.undo`
-
-New docs should describe canonical conversation events first.
-
 ## Common Fields
 
 Every persisted event line includes at least:
@@ -67,7 +49,7 @@ Every persisted event line includes at least:
 | Field | Meaning |
 |---|---|
 | `id` | Monotonic integer within the session ledger |
-| `type` or `kind` | Event kind |
+| `kind` | Event kind |
 | `ts` | ISO 8601 timestamp |
 
 Conversation-scoped events also carry `conversation`. Turn-scoped events also carry `turn`.

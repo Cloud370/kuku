@@ -20,7 +20,7 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 `- pre-revert-<id>/
 ```
 
-`events.jsonl` 是持久账本。conversation 通过账本中的事件表达，而不是主要依靠 `subs/` 子 Session 目录。
+`events.jsonl` 是持久账本。conversation 通过账本中的事件表达。
 
 ## Event Log
 
@@ -45,8 +45,6 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 - `handoff`
 - `conversation.rollback`
 - `conversation.rollback.undone`
-
-老账本中仍可能包含 `session.meta`、`turn.end`、`turn.rollback` 等兼容事件。
 
 完整事件集合见 [Events](../reference/events.md)。
 

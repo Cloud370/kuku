@@ -224,8 +224,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let content = concat!(
-            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"a\",\"schema_version\":1,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
-            "{\"id\":2,\"type\":\"future.event\",\"ts\":\"b\",\"turn\":1,\"custom\":\"x\"}\n",
+            "{\"id\":1,\"ts\":\"a\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
+            "{\"id\":2,\"ts\":\"b\",\"kind\":\"future.event\",\"turn\":1,\"custom\":\"x\"}\n",
         );
         std::fs::write(&path, content).unwrap();
         let events = EventStore::replay(&path).unwrap();

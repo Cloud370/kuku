@@ -698,25 +698,29 @@ mod startup_prune_tests {
                 .unwrap();
         let mut store = EventStore::open(&events_path).unwrap();
         store
-            .append(EventPayload::SessionMeta {
+            .append(EventPayload::SessionCreated {
                 ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
+                schema_version: 2,
                 session_id: session_id.to_string(),
                 created_at: "2026-06-07T00:00:00Z".to_string(),
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::TurnStart {
+            .append(EventPayload::TurnStarted {
                 turn: 1,
                 ts: "2026-06-07T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::UserInput {
+            .append(EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-06-07T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
                 text: "resume this turn".to_string(),
+                from: None,
+                via_tool_call_id: None,
             })
             .unwrap();
         store
@@ -817,25 +821,29 @@ mod startup_prune_tests {
                 .unwrap();
         let mut store = EventStore::open(&events_path).unwrap();
         store
-            .append(EventPayload::SessionMeta {
+            .append(EventPayload::SessionCreated {
                 ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
+                schema_version: 2,
                 session_id: session_id.to_string(),
                 created_at: "2026-06-07T00:00:00Z".to_string(),
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::TurnStart {
+            .append(EventPayload::TurnStarted {
                 turn: 1,
                 ts: "2026-06-07T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::UserInput {
+            .append(EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-06-07T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
                 text: "resume this turn".to_string(),
+                from: None,
+                via_tool_call_id: None,
             })
             .unwrap();
         store
@@ -923,25 +931,29 @@ mod startup_prune_tests {
                 .unwrap();
         let mut store = EventStore::open(&events_path).unwrap();
         store
-            .append(EventPayload::SessionMeta {
+            .append(EventPayload::SessionCreated {
                 ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
+                schema_version: 2,
                 session_id: session_id.to_string(),
                 created_at: "2026-06-07T00:00:00Z".to_string(),
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::TurnStart {
+            .append(EventPayload::TurnStarted {
                 turn: 1,
                 ts: "2026-06-07T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
             })
             .unwrap();
         store
-            .append(EventPayload::UserInput {
+            .append(EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-06-07T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
                 text: "resume this turn".to_string(),
+                from: None,
+                via_tool_call_id: None,
             })
             .unwrap();
         store

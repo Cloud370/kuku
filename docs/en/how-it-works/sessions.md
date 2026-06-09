@@ -20,7 +20,7 @@ $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 `- pre-revert-<id>/
 ```
 
-`events.jsonl` is the durable ledger. Conversations are encoded in events inside that ledger, not as primary `subs/` compatibility directories.
+`events.jsonl` is the durable ledger. Conversations are encoded in events inside that ledger.
 
 ## Event Log
 
@@ -45,8 +45,6 @@ Each line in `events.jsonl` is one persisted fact. Canonical conversation events
 - `handoff`
 - `conversation.rollback`
 - `conversation.rollback.undone`
-
-Older ledgers may still contain compatibility events such as `session.meta`, `turn.end`, or `turn.rollback`.
 
 The full event set is documented in [Events](../reference/events.md).
 

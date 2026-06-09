@@ -320,8 +320,8 @@ impl Serialize for EventPayload {
 impl EventPayload {
     pub fn kind_name(&self) -> &str {
         match self {
-            Self::SessionMeta { .. } => "session.meta",
-            Self::ContextPrelude { .. } => "context.prelude",
+            Self::SessionMeta { .. } => "session.created",
+            Self::ContextPrelude { .. } => "prompt.snapshot",
             Self::ContextSources { .. } => "context.sources",
             Self::ContextSkills { .. } => "context.skills",
             Self::TurnStart { .. } => "turn.start",
@@ -334,7 +334,7 @@ impl EventPayload {
             Self::PermissionDeny { .. } => "permission.deny",
             Self::ToolResult { .. } => "tool.result",
             Self::Handoff { .. } => "handoff",
-            Self::TurnEnd { .. } => "turn.end",
+            Self::TurnEnd { .. } => "turn.completed",
             Self::TurnRollback { .. } => "turn.rollback",
             Self::TurnRollbackUndo { .. } => "turn.rollback.undo",
             Self::SessionCreated { .. } => "session.created",
@@ -352,7 +352,6 @@ impl EventPayload {
             Self::Unknown(value) => value
                 .get("kind")
                 .and_then(Value::as_str)
-                .or_else(|| value.get("type").and_then(Value::as_str))
                 .unwrap_or("unknown"),
         }
     }
@@ -362,23 +361,9 @@ impl EventPayload {
     }
 
     fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
-        let kind = object
-            .get("kind")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("type").and_then(Value::as_str))?;
+        let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
-            "session.meta" => Some(Self::SessionMeta {
-                ts: string_field(object, "ts")?,
-                schema_version: u32_field(object, "schema_version")?,
-                session_id: string_field(object, "session_id")?,
-                created_at: string_field(object, "created_at")?,
-                kuku_version: string_field(object, "kuku_version")?,
-            }),
-            "context.prelude" => Some(Self::ContextPrelude {
-                ts: string_field(object, "ts")?,
-                messages: serde_json::from_value(object.get("messages")?.clone()).ok()?,
-            }),
             "context.sources" => Some(Self::ContextSources {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
@@ -397,10 +382,6 @@ impl EventPayload {
                 registry: object.get("registry")?.clone(),
                 bootstrap_loaded: serde_json::from_value(object.get("bootstrap_loaded")?.clone())
                     .ok()?,
-            }),
-            "turn.start" => Some(Self::TurnStart {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
             }),
             "user.input" => Some(Self::UserInput {
                 turn: u64_field(object, "turn")?,
@@ -482,10 +463,6 @@ impl EventPayload {
                 summary: string_field(object, "summary")?,
                 keep_turns: usize_field(object, "keep_turns")?,
             }),
-            "turn.end" => Some(Self::TurnEnd {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-            }),
             "turn.rollback" => Some(Self::TurnRollback {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
@@ -540,7 +517,6 @@ impl EventPayload {
                     serde_json::from_value(object.get("tool_registry")?.clone()).ok()?,
                 ),
                 agent_registry: optional_json_field(object, "agent_registry")
-                    .or_else(|| optional_json_field(object, "subagent_registry"))
                     .and_then(|value| serde_json::from_value(value).ok()),
                 skill_registry: Box::new(
                     optional_json_field(object, "skill_registry")
@@ -633,8 +609,26 @@ impl EventPayload {
             Self::ContextPrelude { ts, messages } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
-                "kind": "context.prelude",
+                "kind": "prompt.snapshot",
+                "conversation": "main",
+                "binding_id": "binding:main",
+                "snapshot_id": "snapshot:main:0",
+                "turn": 0,
                 "messages": messages,
+                "project_instruction_sources": [],
+                "memory_sources": [],
+                "prompt_asset_sources": [],
+                "skills": {"names": [], "hash": ""},
+                "bootstrap_loaded": [],
+                "provider": "",
+                "model": "",
+                "renderer": {"provider": "", "renderer": ""},
+                "tool_registry": {"hash": "", "names": [], "tool_count": 0},
+                "capabilities": {
+                    "context_budget_tier": "",
+                    "max_context_tokens": null,
+                    "remaining_input_tokens": null
+                },
             })),
             Self::ContextSources {
                 turn,
@@ -917,14 +911,7 @@ impl EventPayload {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
                 map.insert("ts".into(), Value::from(ts.clone()));
-                map.insert(
-                    "kind".into(),
-                    Value::from(if conversation.is_some() {
-                        "turn.completed"
-                    } else {
-                        "turn.end"
-                    }),
-                );
+                map.insert("kind".into(), Value::from("turn.completed"));
                 map.insert("turn".into(), Value::from(*turn));
                 if let Some(conversation) = conversation {
                     map.insert("conversation".into(), Value::from(conversation));
@@ -1143,7 +1130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_prelude_round_trip() {
+    fn context_prelude_serializes_as_prompt_snapshot() {
         let event = StoredEvent {
             id: 1,
             payload: EventPayload::ContextPrelude {
@@ -1154,9 +1141,8 @@ mod tests {
                 }],
             },
         };
-        let json = serde_json::to_string(&event).unwrap();
-        let back: StoredEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(event, back);
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["kind"], "prompt.snapshot");
     }
 
     #[test]

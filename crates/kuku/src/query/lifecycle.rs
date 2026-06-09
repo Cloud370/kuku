@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use crate::context::revert::filter_rolled_back_events;
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, StoredEvent};
@@ -157,8 +155,8 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             | EventPayload::TurnRollback { .. }
             | EventPayload::TurnRollbackUndo { .. }
             | EventPayload::ConversationRollback { .. }
-            | EventPayload::ConversationRollbackUndone { .. } => {}
-            EventPayload::Unknown(raw) => apply_legacy_permission_event(raw, &mut tools),
+            | EventPayload::ConversationRollbackUndone { .. }
+            | EventPayload::Unknown(_) => {}
         }
     }
 
@@ -258,102 +256,6 @@ fn matching_tool_mut<'a>(
         .map(|(key, _)| key.clone())
         .last()?;
     tools.get_mut(&key)
-}
-
-fn apply_legacy_permission_event(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
-    match raw.get("type").and_then(Value::as_str) {
-        Some("permission.request") => apply_legacy_permission_request(raw, tools),
-        Some("permission.decision") => apply_legacy_permission_decision(raw, tools),
-        _ => {}
-    }
-}
-
-fn apply_legacy_permission_request(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
-    let Some(tool_call_id) = raw.get("tool_call_id").and_then(Value::as_str) else {
-        return;
-    };
-    let Some(lifecycle) =
-        matching_tool_mut(tools, tool_call_id, raw.get("turn").and_then(Value::as_u64))
-    else {
-        return;
-    };
-
-    lifecycle.permission_request = Some(PermissionRequest {
-        id: tool_call_id.to_string(),
-        conversation: lifecycle
-            .conversation
-            .as_deref()
-            .map(|value| ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN))
-            .unwrap_or(ConversationAddress::MAIN),
-        turn: raw
-            .get("turn")
-            .and_then(Value::as_u64)
-            .unwrap_or(lifecycle.turn),
-        tool_call_id: tool_call_id.to_string(),
-        tool: raw
-            .get("tool")
-            .and_then(Value::as_str)
-            .unwrap_or(&lifecycle.tool_call.name)
-            .to_string(),
-        risk: raw
-            .get("risk")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        summary: raw
-            .get("summary")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        candidate: legacy_permission_candidate(&lifecycle.tool_call),
-        source: raw
-            .get("source")
-            .and_then(Value::as_str)
-            .unwrap_or("legacy_permission_request")
-            .to_string(),
-    });
-    if let Some(turn) = raw.get("turn").and_then(Value::as_u64) {
-        lifecycle.turn = turn;
-    }
-}
-
-fn apply_legacy_permission_decision(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
-    let Some(tool_call_id) = raw.get("tool_call_id").and_then(Value::as_str) else {
-        return;
-    };
-    let Some(lifecycle) =
-        matching_tool_mut(tools, tool_call_id, raw.get("turn").and_then(Value::as_u64))
-    else {
-        return;
-    };
-
-    match raw.get("decision").and_then(Value::as_str) {
-        Some("allow") => lifecycle.permission_allowed = true,
-        Some("deny") => lifecycle.permission_denied = true,
-        _ => {}
-    }
-    if let Some(turn) = raw.get("turn").and_then(Value::as_u64) {
-        lifecycle.turn = turn;
-    }
-}
-
-fn legacy_permission_candidate(tool_call: &ProviderToolCall) -> String {
-    match tool_call.name.as_str() {
-        "run_command" => tool_call
-            .args
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        _ => tool_call
-            .args
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -496,10 +398,6 @@ mod tests {
         )
     }
 
-    fn unknown(id: u64, raw: serde_json::Value) -> StoredEvent {
-        event(id, EventPayload::Unknown(raw))
-    }
-
     #[test]
     fn pending_permission_keeps_tool_call_and_request_fields() {
         let state = reduce_lifecycle(&[
@@ -599,61 +497,6 @@ mod tests {
 
         assert!(state.open_tools.is_empty());
         assert!(state.pending_permissions.is_empty());
-    }
-
-    #[test]
-    fn legacy_permission_request_is_recovered_from_unknown_payload() {
-        let state = reduce_lifecycle(&[
-            turn_start(1, 1),
-            tool_call(2, 1, "tc_1", 0),
-            unknown(
-                3,
-                json!({
-                    "id": 3,
-                    "type": "permission.request",
-                    "turn": 1,
-                    "ts": "ts",
-                    "tool_call_id": "tc_1",
-                    "tool": "write",
-                    "risk": "modifies_files",
-                    "summary": "request tc_1"
-                }),
-            ),
-        ]);
-
-        assert!(state.open_tools.is_empty());
-        assert_eq!(state.pending_permissions.len(), 1);
-        let pending = &state.pending_permissions[0];
-        assert_eq!(pending.request.tool_call_id, "tc_1");
-        assert_eq!(pending.request.candidate, "tc_1");
-        assert_eq!(pending.request.source, "legacy_permission_request");
-    }
-
-    #[test]
-    fn legacy_permission_decision_allow_is_recovered_from_unknown_payload() {
-        let state = reduce_lifecycle(&[
-            turn_start(1, 1),
-            tool_call(2, 1, "tc_1", 0),
-            unknown(
-                3,
-                json!({
-                    "id": 3,
-                    "type": "permission.decision",
-                    "turn": 1,
-                    "ts": "ts",
-                    "tool_call_id": "tc_1",
-                    "decision": "allow",
-                    "scope": "once",
-                    "source": "host",
-                    "rule": "write(tc_1)"
-                }),
-            ),
-        ]);
-
-        assert!(state.pending_permissions.is_empty());
-        assert_eq!(state.open_tools.len(), 1);
-        assert_eq!(state.open_tools[0].kind, OpenToolKind::AllowedWithoutResult);
-        assert_eq!(state.open_tools[0].tool_call.id, "tc_1");
     }
 
     #[test]

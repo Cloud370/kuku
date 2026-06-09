@@ -17,8 +17,6 @@
 - `agent`：可拥有一个或多个 conversation 的联系人卡片
 - `address`：conversation 的连续性标识；重复使用同一个 address 就表示延续同一线程
 
-像 `session.meta`、`turn.end`、`child_session_id` 这样的旧事件名仍可能出现在老账本里。它们是历史兼容形态，不是规范模型。
-
 ## Canonical Event Kinds
 
 | Event | Meaning |
@@ -44,22 +42,6 @@
 | `conversation.rollback` | conversation 作用域回滚标记。 |
 | `conversation.rollback.undone` | 撤销一次 conversation rollback。 |
 
-## Historical Compatibility Kinds
-
-这些旧 kind 在回放老账本时仍可解析：
-
-- `session.meta`
-- `context.prelude`
-- `turn.start`
-- `user.input`
-- `model.response`
-- `model.error`
-- `turn.end`
-- `turn.rollback`
-- `turn.rollback.undo`
-
-新文档应优先描述规范的 conversation 事件。
-
 ## Common Fields
 
 每条持久化事件至少都包含：
@@ -67,7 +49,7 @@
 | Field | Meaning |
 |---|---|
 | `id` | Session 账本内单调递增的整数 |
-| `type` 或 `kind` | 事件类型 |
+| `kind` | 事件类型 |
 | `ts` | ISO 8601 时间戳 |
 
 conversation 作用域事件还会带上 `conversation`。turn 作用域事件还会带上 `turn`。

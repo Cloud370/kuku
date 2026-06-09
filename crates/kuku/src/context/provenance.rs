@@ -70,11 +70,7 @@ pub struct RequestProvenance {
     pub prompt_asset_sources: Vec<FileSource>,
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "subagent_registry"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_registry: Option<AgentRegistryProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_registry: Option<SkillRegistryProvenance>,
