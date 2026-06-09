@@ -264,7 +264,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                         .iter()
                         .rev()
                         .find_map(|e| match &e.payload {
-                            EventPayload::UserInput { text, .. } => Some(text.clone()),
+                            EventPayload::MessageUser {
+                                conversation, text, ..
+                            } if conversation == pending.conversation.as_str() => {
+                                Some(text.clone())
+                            }
                             _ => None,
                         })
                         .unwrap_or_else(|| "handoff summary unavailable".to_string())

@@ -71,8 +71,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             }
 
             match &event.payload {
-                EventPayload::ContextPrelude { .. }
-                | EventPayload::SessionCreated { .. }
+                EventPayload::SessionCreated { .. }
                 | EventPayload::ConversationOpened { .. }
                 | EventPayload::ConversationBound { .. }
                 | EventPayload::PromptSnapshot { .. }
@@ -84,11 +83,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
                 | EventPayload::TurnInterrupted { .. }
                 | EventPayload::ConversationRollback { .. }
                 | EventPayload::ConversationRollbackUndone { .. } => true,
-                EventPayload::SessionMeta { .. }
-                | EventPayload::TurnStart { .. }
-                | EventPayload::TurnEnd { .. }
-                | EventPayload::UserInput { .. }
-                | EventPayload::ModelResponse { .. }
+                EventPayload::ModelResponse { .. }
                 | EventPayload::ToolCall { .. }
                 | EventPayload::ToolResult { .. }
                 | EventPayload::ModelError { .. }
@@ -98,8 +93,6 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
                 | EventPayload::ContextSources { .. }
                 | EventPayload::ContextSkills { .. }
                 | EventPayload::Handoff { .. }
-                | EventPayload::TurnRollback { .. }
-                | EventPayload::TurnRollbackUndo { .. }
                 | EventPayload::Unknown(_) => true,
             }
         })
@@ -119,49 +112,26 @@ fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, Acti
 
     let mut active = HashMap::new();
     for event in events.iter().rev() {
-        match &event.payload {
-            EventPayload::ConversationRollback {
-                conversation,
-                to_turn,
-                to_event_id,
-                scope,
-                ..
-            } => {
-                if !scope.affects_conversation() || undone_ids.contains(&event.id) {
-                    continue;
-                }
-                active
-                    .entry(conversation.clone())
-                    .or_insert(ActiveRollback {
-                        conversation: conversation.clone(),
-                        rollback_event_id: event.id,
-                        to_turn: *to_turn,
-                        to_event_id: *to_event_id,
-                        scope: scope.clone(),
-                    });
+        if let EventPayload::ConversationRollback {
+            conversation,
+            to_turn,
+            to_event_id,
+            scope,
+            ..
+        } = &event.payload
+        {
+            if !scope.affects_conversation() || undone_ids.contains(&event.id) {
+                continue;
             }
-            EventPayload::TurnRollback {
-                target_turn, scope, ..
-            } => {
-                if !scope.affects_conversation() || undone_ids.contains(&event.id) {
-                    continue;
-                }
-                active
-                    .entry(ConversationAddress::MAIN.as_str().to_string())
-                    .or_insert(ActiveRollback {
-                        conversation: ConversationAddress::MAIN.as_str().to_string(),
-                        rollback_event_id: event.id,
-                        to_turn: *target_turn,
-                        to_event_id: find_turn_boundary_event_id(
-                            events,
-                            ConversationAddress::MAIN.as_str(),
-                            *target_turn,
-                        )
-                        .unwrap_or(event.id),
-                        scope: scope.clone(),
-                    });
-            }
-            _ => {}
+            active
+                .entry(conversation.clone())
+                .or_insert(ActiveRollback {
+                    conversation: conversation.clone(),
+                    rollback_event_id: event.id,
+                    to_turn: *to_turn,
+                    to_event_id: *to_event_id,
+                    scope: scope.clone(),
+                });
         }
     }
     active
@@ -195,8 +165,6 @@ fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::TurnCompleted { turn, .. }
         | EventPayload::TurnCancelled { turn, .. }
         | EventPayload::TurnInterrupted { turn, .. }
-        | EventPayload::TurnStart { turn, .. }
-        | EventPayload::UserInput { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ModelError { turn, .. }
         | EventPayload::ToolCall { turn, .. }
@@ -205,17 +173,12 @@ fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::PermissionDeny { turn, .. }
         | EventPayload::ToolResult { turn, .. }
         | EventPayload::Handoff { turn, .. }
-        | EventPayload::TurnEnd { turn, .. }
         | EventPayload::ContextSources { turn, .. }
-        | EventPayload::ContextSkills { turn, .. }
-        | EventPayload::TurnRollback { turn, .. }
-        | EventPayload::TurnRollbackUndo { turn, .. } => Some(*turn),
+        | EventPayload::ContextSkills { turn, .. } => Some(*turn),
         EventPayload::ConversationOpened { .. }
         | EventPayload::ConversationBound { .. }
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::SessionMeta { .. }
-        | EventPayload::ContextPrelude { .. }
         | EventPayload::SessionCreated { .. }
         | EventPayload::Unknown(_) => None,
     }
@@ -226,6 +189,7 @@ fn conversation_event_conversation(payload: &EventPayload) -> Option<&str> {
         EventPayload::ConversationOpened { conversation, .. }
         | EventPayload::ConversationBound { conversation, .. }
         | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::ContextSkills { conversation, .. }
         | EventPayload::MessageUser { conversation, .. }
         | EventPayload::MessageAssistant { conversation, .. }
         | EventPayload::TurnStarted { conversation, .. }
@@ -244,9 +208,7 @@ fn event_conversation_key(payload: &EventPayload) -> Option<&str> {
     conversation_event_conversation(payload).or_else(|| {
         if matches!(
             payload,
-            EventPayload::TurnStart { .. }
-                | EventPayload::UserInput { .. }
-                | EventPayload::ModelResponse { .. }
+            EventPayload::ModelResponse { .. }
                 | EventPayload::ModelError { .. }
                 | EventPayload::ToolCall {
                     conversation: None,
@@ -260,9 +222,7 @@ fn event_conversation_key(payload: &EventPayload) -> Option<&str> {
                 | EventPayload::PermissionAllow { .. }
                 | EventPayload::PermissionDeny { .. }
                 | EventPayload::ContextSources { .. }
-                | EventPayload::ContextSkills { .. }
                 | EventPayload::Handoff { .. }
-                | EventPayload::TurnEnd { .. }
         ) {
             Some(ConversationAddress::MAIN.as_str())
         } else {
@@ -433,14 +393,14 @@ fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, 
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
     if let Some(pos) = events.iter().rposition(
-        |e| matches!(&e.payload, EventPayload::TurnEnd { turn, .. } if *turn == target_turn),
+        |e| matches!(&e.payload, EventPayload::TurnCompleted { turn, .. } if *turn == target_turn),
     ) {
         return pos;
     }
     if let Some(pos) = events.iter().position(|e| {
         matches!(
             &e.payload,
-            EventPayload::TurnStart { turn, .. } if *turn > target_turn
+            EventPayload::TurnStarted { turn, .. } if *turn > target_turn
         )
     }) {
         return pos.saturating_sub(1);
@@ -518,7 +478,7 @@ fn collect_file_turns(events: &[StoredEvent], after_turn: Option<u64>) -> HashSe
     let mut file_turns: HashSet<u64> = HashSet::new();
     let mut current_turn: Option<u64> = None;
     for event in events {
-        if let EventPayload::TurnStart { turn, .. } = &event.payload {
+        if let EventPayload::TurnStarted { turn, .. } = &event.payload {
             current_turn = Some(*turn);
         }
         if after_turn.is_some_and(|n| current_turn.is_some_and(|t| t <= n)) {
@@ -547,7 +507,7 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
     let mut turns: Vec<UserTurnEntry> = events
         .iter()
         .filter_map(|e| {
-            if let EventPayload::UserInput { turn, ts, text } = &e.payload {
+            if let EventPayload::MessageUser { turn, ts, text, .. } = &e.payload {
                 Some(UserTurnEntry {
                     turn: *turn,
                     ts: ts.clone(),
@@ -728,7 +688,7 @@ pub fn undo_rollback(
         RollbackScope::FilesOnly => {
             if file_turn_count > 0 {
                 return Err(crate::error::Error::InvalidArgument(format!(
-                    "cannot undo files_only rollback: {file_turn_count} turn(s) with file changes since rollback target"
+                    "cannot undo file_changes rollback: {file_turn_count} turn(s) with file changes since rollback target"
                 )));
             }
             true

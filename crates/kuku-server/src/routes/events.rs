@@ -41,11 +41,8 @@ fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation:
     match event_conversation(payload) {
         Some(value) => value == conversation,
         None => {
-            matches!(
-                payload,
-                kuku::event::EventPayload::SessionCreated { .. }
-                    | kuku::event::EventPayload::SessionMeta { .. }
-            ) || conversation == "main"
+            matches!(payload, kuku::event::EventPayload::SessionCreated { .. })
+                || conversation == "main"
         }
     }
 }

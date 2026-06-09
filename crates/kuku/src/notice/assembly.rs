@@ -492,9 +492,10 @@ mod tests {
         let events = vec![
             StoredEvent {
                 id: 1,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
                     turn: 1,
                     ts: "t1".to_string(),
+                    conversation: "main".to_string(),
                 },
             },
             StoredEvent {
@@ -512,16 +513,18 @@ mod tests {
             },
             StoredEvent {
                 id: 3,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
                     turn: 1,
                     ts: "t1".to_string(),
+                    conversation: "main".to_string(),
                 },
             },
             StoredEvent {
                 id: 4,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
                     turn: 2,
                     ts: "t2".to_string(),
+                    conversation: "main".to_string(),
                 },
             },
             StoredEvent {
@@ -539,17 +542,19 @@ mod tests {
             },
             StoredEvent {
                 id: 6,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
                     turn: 2,
                     ts: "t2".to_string(),
+                    conversation: "main".to_string(),
                 },
             },
             StoredEvent {
                 id: 7,
-                payload: EventPayload::TurnRollback {
-                    turn: 3,
+                payload: EventPayload::ConversationRollback {
                     ts: "t3".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 6,
                     scope: RollbackScope::ConversationOnly,
                 },
             },

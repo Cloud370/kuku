@@ -81,10 +81,6 @@ pub fn rebuild_history(
             continue;
         }
         match &event.payload {
-            EventPayload::UserInput { text, .. } if conversation.is_main() => {
-                flush_group(&mut messages, &mut current_group);
-                messages.push(CanonicalMessage::user_text(text.clone()));
-            }
             EventPayload::MessageUser {
                 conversation: event_conversation,
                 text,
@@ -205,7 +201,10 @@ pub fn rebuild_history(
                     },
                 );
             }
-            EventPayload::TurnEnd { .. } if conversation.is_main() => {
+            EventPayload::TurnCompleted {
+                conversation: event_conversation,
+                ..
+            } if event_conversation == conversation.as_str() => {
                 flush_group(&mut messages, &mut current_group)
             }
             EventPayload::MessageAssistant {
@@ -218,26 +217,20 @@ pub fn rebuild_history(
                     text.clone(),
                 )]));
             }
-            EventPayload::SessionMeta { .. }
-            | EventPayload::SessionCreated { .. }
-            | EventPayload::ContextPrelude { .. }
+            EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
             | EventPayload::ConversationOpened { .. }
             | EventPayload::ConversationBound { .. }
             | EventPayload::PromptSnapshot { .. }
-            | EventPayload::TurnStart { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
             | EventPayload::Handoff { .. }
-            | EventPayload::TurnCompleted { .. }
             | EventPayload::TurnCancelled { .. }
             | EventPayload::TurnInterrupted { .. }
-            | EventPayload::TurnRollback { .. }
-            | EventPayload::TurnRollbackUndo { .. }
             | EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. }
             | EventPayload::Unknown(_) => {}
@@ -282,14 +275,11 @@ fn handoff_start_index(events: &[&StoredEvent], handoff_idx: usize, keep_turns: 
 
 fn event_turn(payload: &EventPayload) -> Option<u64> {
     match payload {
-        EventPayload::UserInput { turn, .. }
-        | EventPayload::MessageUser { turn, .. }
+        EventPayload::MessageUser { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ToolCall { turn, .. }
         | EventPayload::ToolResult { turn, .. }
-        | EventPayload::TurnStart { turn, .. }
         | EventPayload::TurnStarted { turn, .. }
-        | EventPayload::TurnEnd { turn, .. }
         | EventPayload::TurnCompleted { turn, .. }
         | EventPayload::TurnCancelled { turn, .. }
         | EventPayload::TurnInterrupted { turn, .. }
@@ -299,12 +289,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
         | EventPayload::PermissionDeny { turn, .. }
-        | EventPayload::Handoff { turn, .. }
-        | EventPayload::TurnRollback { turn, .. }
-        | EventPayload::TurnRollbackUndo { turn, .. } => Some(*turn),
-        EventPayload::SessionMeta { .. }
-        | EventPayload::SessionCreated { .. }
-        | EventPayload::ContextPrelude { .. }
+        | EventPayload::Handoff { turn, .. } => Some(*turn),
+        EventPayload::SessionCreated { .. }
         | EventPayload::ConversationOpened { .. }
         | EventPayload::ConversationBound { .. }
         | EventPayload::PromptSnapshot { .. }
@@ -376,14 +362,6 @@ fn turn_conversations(events: &[&StoredEvent]) -> BTreeMap<u64, HashSet<String>>
                         .unwrap_or_else(|| ConversationAddress::MAIN.as_str().to_string()),
                 );
             }
-            EventPayload::TurnStart { turn, .. }
-            | EventPayload::UserInput { turn, .. }
-            | EventPayload::TurnEnd { turn, .. } => {
-                turns
-                    .entry(*turn)
-                    .or_default()
-                    .insert(ConversationAddress::MAIN.as_str().to_string());
-            }
             _ => {}
         }
     }
@@ -406,13 +384,9 @@ fn event_belongs_to_history_conversation(
     conversation: &ConversationAddress,
 ) -> bool {
     match payload {
-        EventPayload::UserInput { .. }
-        | EventPayload::ModelResponse { .. }
+        EventPayload::ModelResponse { .. }
         | EventPayload::ModelError { .. }
-        | EventPayload::TurnStart { .. }
-        | EventPayload::TurnEnd { .. }
         | EventPayload::ContextSources { .. }
-        | EventPayload::ContextSkills { .. }
         | EventPayload::Handoff { .. } => conversation.is_main(),
         EventPayload::ToolCall {
             conversation: None, ..
@@ -433,6 +407,10 @@ fn event_belongs_to_history_conversation(
             ..
         }
         | EventPayload::MessageAssistant {
+            conversation: event_conversation,
+            ..
+        }
+        | EventPayload::ContextSkills {
             conversation: event_conversation,
             ..
         } => event_conversation == conversation.as_str(),
@@ -518,10 +496,13 @@ mod tests {
     fn user_input(id: u64, turn: u64, text: &str) -> StoredEvent {
         event(
             id,
-            EventPayload::UserInput {
+            EventPayload::MessageUser {
                 turn,
                 ts: "2026-05-13T00:00:00Z".to_string(),
+                conversation: "main".to_string(),
                 text: text.to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         )
     }
@@ -587,9 +568,10 @@ mod tests {
     fn turn_end(id: u64, turn: u64) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnEnd {
+            EventPayload::TurnCompleted {
                 turn,
                 ts: "2026-05-13T00:00:04Z".to_string(),
+                conversation: "main".to_string(),
             },
         )
     }
@@ -1118,9 +1100,10 @@ mod tests {
     fn ts(id: u64, turn: u64) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnStart {
+            EventPayload::TurnStarted {
                 turn,
                 ts: "t".to_string(),
+                conversation: "main".to_string(),
             },
         )
     }
@@ -1157,7 +1140,7 @@ mod tests {
         events
             .iter()
             .filter_map(|e| match &e.payload {
-                EventPayload::UserInput { text, .. } => Some(text.as_str()),
+                EventPayload::MessageUser { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect()
@@ -1188,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_only_skips_turns() {
+    fn messages_scope_skips_turns() {
         let events = vec![
             ts(1, 1),
             user_input(2, 1, "a"),
@@ -1203,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn files_only_keeps_conversation() {
+    fn file_changes_scope_keeps_conversation() {
         let events = vec![
             ts(1, 1),
             user_input(2, 1, "a"),

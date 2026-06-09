@@ -55,10 +55,13 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     let mut store = EventStore::open(&events_path).unwrap();
 
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
+            conversation: "main".to_string(),
             text: "inspect".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -346,10 +349,13 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
     let mut store = EventStore::open(&events_path).unwrap();
 
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
+            conversation: "main".to_string(),
             text: "inspect".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -484,10 +490,13 @@ fn restores_frozen_prelude_from_fact_event() {
         },
         kuku::event::StoredEvent {
             id: 2,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
                 text: "inspect".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
     ];
@@ -698,10 +707,13 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         },
         kuku::event::StoredEvent {
             id: 2,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
                 text: "old".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
         kuku::event::StoredEvent {
@@ -727,10 +739,13 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         },
         kuku::event::StoredEvent {
             id: 5,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 2,
                 ts: "2026-05-18T00:00:04Z".to_string(),
+                conversation: "main".to_string(),
                 text: "new".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
         kuku::event::StoredEvent {

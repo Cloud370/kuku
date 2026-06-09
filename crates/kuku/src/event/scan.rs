@@ -6,7 +6,7 @@ use serde_json::Value;
 
 const LAST_EVENT_SCAN_CHUNK_BYTES: u64 = 4096;
 
-/// Read events.jsonl from the start and return the text of the first `user.input` event.
+/// Read events.jsonl from the start and return the text of the first `message.user` event.
 pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -16,8 +16,8 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let kind = event_kind(&value);
-            let is_user_input = matches!(kind, Some("user.input") | Some("message.user"));
+            let kind = value.get("kind").and_then(|t| t.as_str());
+            let is_user_input = matches!(kind, Some("message.user"));
             if is_user_input {
                 return value
                     .get("text")
@@ -39,8 +39,8 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let kind = event_kind(&value);
-            let is_session_meta = matches!(kind, Some("session.created") | Some("session.meta"));
+            let kind = value.get("kind").and_then(|t| t.as_str());
+            let is_session_meta = matches!(kind, Some("session.created"));
             if is_session_meta {
                 return value
                     .get("created_at")
@@ -65,9 +65,6 @@ pub(crate) fn scan_turn_count(path: &Path) -> u64 {
         return 0;
     }
     count_occurrences(&buf, b"\"kind\":\"turn.started\"")
-        + count_occurrences(&buf, b"\"type\":\"turn.started\"")
-        + count_occurrences(&buf, b"\"kind\":\"turn.start\"")
-        + count_occurrences(&buf, b"\"type\":\"turn.start\"")
 }
 
 /// Read the last complete JSON line from events.jsonl and return its `kind` tag.
@@ -105,12 +102,10 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
             .find(|line| !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()))
         {
             let value: Value = serde_json::from_slice(last_line).ok()?;
-            let kind = event_kind(&value);
+            let kind = value.get("kind").and_then(|t| t.as_str());
             return match kind {
                 Some("turn.completed") => Some("turn.completed"),
-                Some("turn.end") => Some("turn.completed"),
                 Some("turn.started") => Some("turn.started"),
-                Some("turn.start") => Some("turn.started"),
                 Some("model.response") => Some("model.response"),
                 Some("tool.result") => Some("tool.result"),
                 _ => None,
@@ -121,13 +116,6 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     }
 
     None
-}
-
-fn event_kind(value: &Value) -> Option<&str> {
-    value
-        .get("kind")
-        .or_else(|| value.get("type"))
-        .and_then(|t| t.as_str())
 }
 
 fn count_occurrences(haystack: &[u8], needle: &[u8]) -> u64 {

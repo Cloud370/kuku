@@ -9,7 +9,7 @@
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `fetch_web` | `url`, `prompt`, `model_tier` | none | `read` |
-| `query_session` | none | `search`, `kind`, `type`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
+| `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | none | `edit` |
 | `run_command` | `command`, `timeout`, `brief` | none | `command` |
@@ -56,7 +56,7 @@ Use `agent` when the work benefits from isolated context and its own transcript.
 Important filters:
 
 - `conversation`: limit to one conversation address
-- `kind` or `type`: limit to one event kind
+- `kind`: limit to one event kind
 - `after`: only events with id greater than this value
 - `from_turn` and `to_turn`: relative turn window
 - `skip_rolled_back`: defaults to `true`

@@ -148,13 +148,9 @@ pub fn reduce_conversations(events: &[StoredEvent]) -> Vec<ConversationState> {
                     }
                 }
             }
-            EventPayload::SessionMeta { .. }
-            | EventPayload::SessionCreated { .. }
-            | EventPayload::ContextPrelude { .. }
+            EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
-            | EventPayload::TurnStart { .. }
-            | EventPayload::UserInput { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::ToolCall { .. }
@@ -163,9 +159,6 @@ pub fn reduce_conversations(events: &[StoredEvent]) -> Vec<ConversationState> {
             | EventPayload::PermissionDeny { .. }
             | EventPayload::ToolResult { .. }
             | EventPayload::Handoff { .. }
-            | EventPayload::TurnEnd { .. }
-            | EventPayload::TurnRollback { .. }
-            | EventPayload::TurnRollbackUndo { .. }
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::MessageUser { .. }
             | EventPayload::MessageAssistant { .. }
@@ -276,22 +269,15 @@ fn event_conversation(event: &StoredEvent) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. } => {
             Some(conversation.as_str())
         }
-        EventPayload::SessionMeta { .. }
-        | EventPayload::SessionCreated { .. }
-        | EventPayload::ContextPrelude { .. }
+        EventPayload::SessionCreated { .. }
         | EventPayload::ContextSources { .. }
         | EventPayload::ContextSkills { .. }
-        | EventPayload::TurnStart { .. }
-        | EventPayload::UserInput { .. }
         | EventPayload::ModelResponse { .. }
         | EventPayload::ModelError { .. }
         | EventPayload::PermissionAllow { .. }
         | EventPayload::PermissionRequested { .. }
         | EventPayload::PermissionDeny { .. }
         | EventPayload::Handoff { .. }
-        | EventPayload::TurnEnd { .. }
-        | EventPayload::TurnRollback { .. }
-        | EventPayload::TurnRollbackUndo { .. }
         | EventPayload::Unknown(_) => None,
     }
 }

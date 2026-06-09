@@ -1,4 +1,4 @@
-use serde::de::{self, Deserializer, Visitor};
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
@@ -62,7 +62,7 @@ pub struct ContextMessage {
 }
 
 /// Scope of a turn rollback operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RollbackScope {
     #[serde(rename = "messages")]
     ConversationOnly,
@@ -70,46 +70,6 @@ pub enum RollbackScope {
     FilesOnly,
     #[serde(rename = "both")]
     Both,
-}
-
-impl<'de> Deserialize<'de> for RollbackScope {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct RollbackScopeVisitor;
-
-        impl Visitor<'_> for RollbackScopeVisitor {
-            type Value = RollbackScope;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a rollback scope string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                match value {
-                    "messages" | "conversation_only" => Ok(RollbackScope::ConversationOnly),
-                    "file_changes" | "files_only" => Ok(RollbackScope::FilesOnly),
-                    "both" => Ok(RollbackScope::Both),
-                    _ => Err(E::unknown_variant(
-                        value,
-                        &[
-                            "messages",
-                            "file_changes",
-                            "both",
-                            "conversation_only",
-                            "files_only",
-                        ],
-                    )),
-                }
-            }
-        }
-
-        deserializer.deserialize_str(RollbackScopeVisitor)
-    }
 }
 
 impl RollbackScope {
@@ -127,17 +87,6 @@ impl RollbackScope {
 /// All fact events that can be written to and read from a session's events.jsonl.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPayload {
-    SessionMeta {
-        ts: String,
-        schema_version: u32,
-        session_id: String,
-        created_at: String,
-        kuku_version: String,
-    },
-    ContextPrelude {
-        ts: String,
-        messages: Vec<ContextMessage>,
-    },
     ContextSources {
         turn: u64,
         ts: String,
@@ -151,15 +100,6 @@ pub enum EventPayload {
         ts: String,
         registry: Value,
         bootstrap_loaded: Vec<String>,
-    },
-    TurnStart {
-        turn: u64,
-        ts: String,
-    },
-    UserInput {
-        turn: u64,
-        ts: String,
-        text: String,
     },
     ModelResponse {
         turn: u64,
@@ -234,21 +174,6 @@ pub enum EventPayload {
         request_id: String,
         summary: String,
         keep_turns: usize,
-    },
-    TurnEnd {
-        turn: u64,
-        ts: String,
-    },
-    TurnRollback {
-        turn: u64,
-        ts: String,
-        target_turn: u64,
-        scope: RollbackScope,
-    },
-    TurnRollbackUndo {
-        turn: u64,
-        ts: String,
-        rollback_event_id: u64,
     },
     SessionCreated {
         ts: String,
@@ -360,12 +285,8 @@ impl Serialize for EventPayload {
 impl EventPayload {
     pub fn kind_name(&self) -> &str {
         match self {
-            Self::SessionMeta { .. } => "session.created",
-            Self::ContextPrelude { .. } => "prompt.snapshot",
             Self::ContextSources { .. } => "context.sources",
             Self::ContextSkills { .. } => "context.skills",
-            Self::TurnStart { .. } => "turn.start",
-            Self::UserInput { .. } => "user.input",
             Self::ModelResponse { .. } => "model.response",
             Self::ModelError { .. } => "model.error",
             Self::ToolCall { .. } => "tool.call",
@@ -374,9 +295,6 @@ impl EventPayload {
             Self::PermissionDeny { .. } => "permission.deny",
             Self::ToolResult { .. } => "tool.result",
             Self::Handoff { .. } => "handoff",
-            Self::TurnEnd { .. } => "turn.completed",
-            Self::TurnRollback { .. } => "turn.rollback",
-            Self::TurnRollbackUndo { .. } => "turn.rollback.undo",
             Self::SessionCreated { .. } => "session.created",
             Self::ConversationOpened { .. } => "conversation.opened",
             Self::ConversationBound { .. } => "conversation.bound",
@@ -391,7 +309,6 @@ impl EventPayload {
             Self::ConversationRollbackUndone { .. } => "conversation.rollback.undone",
             Self::Unknown(value) => value
                 .get("kind")
-                .or_else(|| value.get("type"))
                 .and_then(Value::as_str)
                 .unwrap_or("unknown"),
         }
@@ -402,20 +319,9 @@ impl EventPayload {
     }
 
     fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
-        let kind = event_kind(object)?;
+        let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
-            "session.meta" => Some(Self::SessionMeta {
-                ts: string_field(object, "ts")?,
-                schema_version: u32_field(object, "schema_version")?,
-                session_id: string_field(object, "session_id")?,
-                created_at: string_field(object, "created_at")?,
-                kuku_version: string_field(object, "kuku_version")?,
-            }),
-            "context.prelude" => Some(Self::ContextPrelude {
-                ts: string_field(object, "ts")?,
-                messages: serde_json::from_value(object.get("messages")?.clone()).ok()?,
-            }),
             "context.sources" => Some(Self::ContextSources {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
@@ -428,22 +334,12 @@ impl EventPayload {
                     .ok()?,
             }),
             "context.skills" => Some(Self::ContextSkills {
-                conversation: optional_string_field(object, "conversation")
-                    .unwrap_or_else(|| "main".to_string()),
+                conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 registry: object.get("registry")?.clone(),
                 bootstrap_loaded: serde_json::from_value(object.get("bootstrap_loaded")?.clone())
                     .ok()?,
-            }),
-            "turn.start" => Some(Self::TurnStart {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-            }),
-            "user.input" => Some(Self::UserInput {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-                text: string_field(object, "text")?,
             }),
             "model.response" => Some(Self::ModelResponse {
                 turn: u64_field(object, "turn")?,
@@ -457,8 +353,7 @@ impl EventPayload {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
-                kind: string_field(object, "error_kind")
-                    .or_else(|| string_field(object, "kind"))?,
+                kind: string_field(object, "error_kind")?,
                 message: string_field(object, "message")?,
             }),
             "tool.call" => Some(Self::ToolCall {
@@ -519,21 +414,6 @@ impl EventPayload {
                 request_id: string_field(object, "request_id")?,
                 summary: string_field(object, "summary")?,
                 keep_turns: usize_field(object, "keep_turns")?,
-            }),
-            "turn.end" => Some(Self::TurnEnd {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-            }),
-            "turn.rollback" => Some(Self::TurnRollback {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-                target_turn: u64_field(object, "target_turn")?,
-                scope: serde_json::from_value(object.get("scope")?.clone()).ok()?,
-            }),
-            "turn.rollback.undo" => Some(Self::TurnRollbackUndo {
-                turn: u64_field(object, "turn")?,
-                ts: string_field(object, "ts")?,
-                rollback_event_id: u64_field(object, "rollback_event_id")?,
             }),
             "session.created" => Some(Self::SessionCreated {
                 ts: string_field(object, "ts")?,
@@ -645,14 +525,7 @@ impl EventPayload {
     fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
         match self {
             Self::Unknown(value) => Ok(value.clone()),
-            Self::SessionMeta {
-                ts,
-                schema_version,
-                session_id,
-                created_at,
-                kuku_version,
-            }
-            | Self::SessionCreated {
+            Self::SessionCreated {
                 ts,
                 schema_version,
                 session_id,
@@ -666,30 +539,6 @@ impl EventPayload {
                 "session_id": session_id,
                 "created_at": created_at,
                 "kuku_version": kuku_version,
-            })),
-            Self::ContextPrelude { ts, messages } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "prompt.snapshot",
-                "conversation": "main",
-                "binding_id": "binding:main",
-                "snapshot_id": "snapshot:main:0",
-                "turn": 0,
-                "messages": messages,
-                "project_instruction_sources": [],
-                "memory_sources": [],
-                "prompt_asset_sources": [],
-                "skills": {"names": [], "hash": ""},
-                "bootstrap_loaded": [],
-                "provider": "",
-                "model": "",
-                "renderer": {"provider": "", "renderer": ""},
-                "tool_registry": {"hash": "", "names": [], "tool_count": 0},
-                "capabilities": {
-                    "context_budget_tier": "",
-                    "max_context_tokens": null,
-                    "remaining_input_tokens": null
-                },
             })),
             Self::ContextSources {
                 turn,
@@ -721,63 +570,42 @@ impl EventPayload {
                 "registry": registry,
                 "bootstrap_loaded": bootstrap_loaded,
             })),
-            Self::TurnStart { turn, ts } | Self::TurnStarted { turn, ts, .. } => {
-                let conversation = match self {
-                    Self::TurnStarted { conversation, .. } => Some(conversation.as_str()),
-                    _ => None,
-                };
+            Self::TurnStarted {
+                turn,
+                ts,
+                conversation,
+            } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
                 map.insert("ts".into(), Value::from(ts.clone()));
-                map.insert(
-                    "kind".into(),
-                    Value::from(if conversation.is_some() {
-                        "turn.started"
-                    } else {
-                        "turn.start"
-                    }),
-                );
+                map.insert("kind".into(), Value::from("turn.started"));
                 map.insert("turn".into(), Value::from(*turn));
-                if let Some(conversation) = conversation {
-                    map.insert("conversation".into(), Value::from(conversation));
-                }
+                map.insert("conversation".into(), Value::from(conversation.clone()));
                 Ok(Value::Object(map))
             }
-            Self::UserInput { turn, ts, text } | Self::MessageUser { turn, ts, text, .. } => {
-                let (conversation, from, via_tool_call_id) = match self {
-                    Self::MessageUser {
-                        conversation,
-                        from,
-                        via_tool_call_id,
-                        ..
-                    } => (
-                        Some(conversation.as_str()),
-                        from.as_deref(),
-                        via_tool_call_id.as_deref(),
-                    ),
-                    _ => (None, None, None),
-                };
+            Self::MessageUser {
+                turn,
+                ts,
+                text,
+                conversation,
+                from,
+                via_tool_call_id,
+            } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
                 map.insert("ts".into(), Value::from(ts.clone()));
-                map.insert(
-                    "kind".into(),
-                    Value::from(if conversation.is_some() {
-                        "message.user"
-                    } else {
-                        "user.input"
-                    }),
-                );
+                map.insert("kind".into(), Value::from("message.user"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("text".into(), Value::from(text.clone()));
-                if let Some(conversation) = conversation {
-                    map.insert("conversation".into(), Value::from(conversation));
-                }
+                map.insert("conversation".into(), Value::from(conversation.clone()));
                 if let Some(from) = from {
-                    map.insert("from".into(), Value::from(from));
+                    map.insert("from".into(), Value::from(from.clone()));
                 }
                 if let Some(via_tool_call_id) = via_tool_call_id {
-                    map.insert("via_tool_call_id".into(), Value::from(via_tool_call_id));
+                    map.insert(
+                        "via_tool_call_id".into(),
+                        Value::from(via_tool_call_id.clone()),
+                    );
                 }
                 Ok(Value::Object(map))
             }
@@ -964,45 +792,19 @@ impl EventPayload {
                 "summary": summary,
                 "keep_turns": keep_turns,
             })),
-            Self::TurnEnd { turn, ts } | Self::TurnCompleted { turn, ts, .. } => {
-                let conversation = match self {
-                    Self::TurnCompleted { conversation, .. } => Some(conversation.as_str()),
-                    _ => None,
-                };
+            Self::TurnCompleted {
+                turn,
+                ts,
+                conversation,
+            } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
                 map.insert("ts".into(), Value::from(ts.clone()));
                 map.insert("kind".into(), Value::from("turn.completed"));
                 map.insert("turn".into(), Value::from(*turn));
-                if let Some(conversation) = conversation {
-                    map.insert("conversation".into(), Value::from(conversation));
-                }
+                map.insert("conversation".into(), Value::from(conversation.clone()));
                 Ok(Value::Object(map))
             }
-            Self::TurnRollback {
-                turn,
-                ts,
-                target_turn,
-                scope,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "turn.rollback",
-                "turn": turn,
-                "target_turn": target_turn,
-                "scope": scope,
-            })),
-            Self::TurnRollbackUndo {
-                turn,
-                ts,
-                rollback_event_id,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "turn.rollback.undo",
-                "turn": turn,
-                "rollback_event_id": rollback_event_id,
-            })),
             Self::ConversationOpened { ts, conversation } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
@@ -1134,10 +936,6 @@ impl EventPayload {
     }
 }
 
-fn event_kind(object: &Map<String, Value>) -> Option<&str> {
-    object.get("type").or_else(|| object.get("kind"))?.as_str()
-}
-
 fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
     object.get(key)?.as_str().map(ToOwned::to_owned)
 }
@@ -1195,22 +993,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_prelude_serializes_as_prompt_snapshot() {
-        let event = StoredEvent {
-            id: 1,
-            payload: EventPayload::ContextPrelude {
-                ts: "2026-05-27T00:00:00Z".to_string(),
-                messages: vec![ContextMessage {
-                    role: "user".to_string(),
-                    content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
-                }],
-            },
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["kind"], "prompt.snapshot");
-    }
-
-    #[test]
     fn handoff_round_trip() {
         let event = StoredEvent {
             id: 43,
@@ -1255,22 +1037,6 @@ mod tests {
             let back: RollbackScope = serde_json::from_str(expected).unwrap();
             assert_eq!(back, *variant);
         }
-    }
-
-    #[test]
-    fn turn_rollback_round_trip() {
-        let event = StoredEvent {
-            id: 50,
-            payload: EventPayload::TurnRollback {
-                turn: 5,
-                ts: "2026-05-28T00:00:00Z".to_string(),
-                target_turn: 3,
-                scope: RollbackScope::Both,
-            },
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        let back: StoredEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(event, back);
     }
 
     #[test]

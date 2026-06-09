@@ -22,10 +22,7 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
 }
 
 fn is_session_envelope(payload: &EventPayload) -> bool {
-    matches!(
-        payload,
-        EventPayload::SessionCreated { .. } | EventPayload::SessionMeta { .. }
-    )
+    matches!(payload, EventPayload::SessionCreated { .. })
 }
 
 fn event_matches_conversation(payload: &EventPayload, conversation: &str) -> bool {
@@ -52,31 +49,12 @@ pub fn render_event_brief(event: &StoredEvent, verbose: u8) -> String {
         line.push_str(" | ");
         line.push_str(&details);
     }
-    if verbose >= 2 {
-        if let EventPayload::ContextPrelude { messages, .. } = &event.payload {
-            line.push('\n');
-            line.push_str(&render_prelude(messages));
-        }
-    }
     line
-}
-
-fn render_prelude(messages: &[kuku::event::types::ContextMessage]) -> String {
-    let mut out = String::new();
-    out.push_str("    -- prelude -------------------------\n");
-    for msg in messages {
-        for line in msg.content.lines() {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 fn event_details(payload: &EventPayload, verbose: bool) -> String {
     match payload {
-        EventPayload::UserInput { text, .. } => text.chars().take(60).collect(),
+        EventPayload::MessageUser { text, .. } => text.chars().take(60).collect(),
         EventPayload::ContextSources {
             request_id,
             project_instruction_sources,
@@ -236,7 +214,6 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
 fn render_unknown_event_details(value: &serde_json::Value, verbose: bool) -> String {
     let kind = value
         .get("kind")
-        .or_else(|| value.get("type"))
         .and_then(|item| item.as_str())
         .unwrap_or("unknown");
 
@@ -287,7 +264,6 @@ pub fn derive_final_output_for_conversation(
                 turn,
                 ..
             } if event_conversation == conversation => Some(*turn),
-            EventPayload::TurnEnd { turn, .. } if conversation == "main" => Some(*turn),
             _ => None,
         })?;
 
@@ -320,7 +296,8 @@ mod tests {
         let events = vec![
             StoredEvent {
                 id: 1,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t0".to_string(),
                 },
@@ -362,7 +339,8 @@ mod tests {
             },
             StoredEvent {
                 id: 4,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t4".to_string(),
                 },
@@ -420,14 +398,16 @@ mod tests {
             },
             StoredEvent {
                 id: 3,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t2".to_string(),
                 },
             },
             StoredEvent {
                 id: 4,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t2.5".to_string(),
                 },
@@ -445,17 +425,19 @@ mod tests {
             },
             StoredEvent {
                 id: 6,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t4".to_string(),
                 },
             },
             StoredEvent {
                 id: 7,
-                payload: EventPayload::TurnRollback {
-                    turn: 3,
+                payload: EventPayload::ConversationRollback {
                     ts: "t5".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 6,
                     scope: kuku::event::RollbackScope::ConversationOnly,
                 },
             },

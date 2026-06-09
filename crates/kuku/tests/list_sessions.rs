@@ -67,34 +67,6 @@ fn finds_sessions_in_workspace() {
 }
 
 #[test]
-fn finds_legacy_type_tagged_sessions_in_workspace() {
-    let dir = tempdir().unwrap();
-    let home = dir.path();
-    let workspace = std::fs::canonicalize(dir.path()).unwrap();
-    let sessions_dir = expected_sessions_dir(home, &workspace);
-    std::fs::create_dir_all(&sessions_dir).unwrap();
-
-    write_session(
-        &sessions_dir,
-        "s_legacy",
-        concat!(
-            "{\"id\":1,\"ts\":\"2026-05-01T00:00:00Z\",\"type\":\"session.meta\",\"schema_version\":1,\"session_id\":\"s_legacy\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
-            "{\"id\":2,\"ts\":\"2026-05-01T00:00:01Z\",\"type\":\"user.input\",\"turn\":1,\"text\":\"legacy prompt\"}\n",
-            "{\"id\":3,\"ts\":\"2026-05-01T00:00:02Z\",\"type\":\"turn.start\",\"turn\":1}\n",
-            "{\"id\":4,\"ts\":\"2026-05-01T00:00:03Z\",\"type\":\"turn.end\",\"turn\":1}\n",
-        ),
-    );
-
-    let sessions = list_sessions(home, Some(&workspace)).unwrap();
-
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].title, "legacy prompt");
-    assert_eq!(sessions[0].created_at, "2026-05-01T00:00:00Z");
-    assert_eq!(sessions[0].turn_count, 1);
-    assert_eq!(sessions[0].status, SessionStatus::Done);
-}
-
-#[test]
 fn global_lists_all_workspaces() {
     let dir = tempdir().unwrap();
     let home = dir.path();

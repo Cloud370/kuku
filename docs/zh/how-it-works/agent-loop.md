@@ -5,8 +5,8 @@
 ## Turn flow
 
 ```text
-turn.start
-  -> user.input
+turn.started
+  -> message.user
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
@@ -15,7 +15,7 @@ turn.start
 
 ## Per turn
 
-1. kuku 追加写入 `turn.start` 和 `user.input`。
+1. kuku 追加写入 `turn.started` 和 `message.user`。
 2. 它基于文件和已持久化事件重建模型上下文。
 3. 它将模型响应流式传给 Host，并在完成后追加写入 `model.response`。
 4. 如果响应结束这一轮，kuku 会为当前 conversation 追加写入 `turn.completed`。

@@ -5,8 +5,8 @@ Nothing counts as a session fact until it is written to `events.jsonl`.
 ## Turn flow
 
 ```text
-turn.start
-  -> user.input
+turn.started
+  -> message.user
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
@@ -15,7 +15,7 @@ turn.start
 
 ## Per turn
 
-1. kuku appends `turn.start` and `user.input`.
+1. kuku appends `turn.started` and `message.user`.
 2. It rebuilds the model context from files and persisted events.
 3. It streams the model response to the host and appends `model.response` when complete.
 4. If the response ends the turn, kuku appends `turn.completed` for the active conversation.

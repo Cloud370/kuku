@@ -241,9 +241,10 @@ fn concurrent_handles_do_not_reuse_the_same_event_id() {
 
     let first = left.append(session_created()).unwrap();
     let second = right
-        .append(EventPayload::TurnStart {
+        .append(EventPayload::TurnStarted {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
         })
         .unwrap();
 
@@ -555,76 +556,33 @@ fn replay_recognizes_every_new_event_kind() {
 }
 
 #[test]
-fn replay_recognizes_legacy_top_level_type() {
+fn top_level_type_is_not_an_event_tag() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
     std::fs::write(
         &path,
-        concat!(
-            "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"session.meta\",\"schema_version\":1,\"session_id\":\"s_legacy\",\"created_at\":\"2026-06-09T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
-            "{\"id\":2,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"context.prelude\",\"messages\":[{\"role\":\"user\",\"content\":\"legacy prelude\"}]}\n",
-            "{\"id\":3,\"ts\":\"2026-06-09T00:00:01Z\",\"type\":\"user.input\",\"turn\":1,\"text\":\"legacy hello\"}\n",
-            "{\"id\":4,\"ts\":\"2026-06-09T00:00:02Z\",\"type\":\"turn.start\",\"turn\":1}\n",
-            "{\"id\":5,\"ts\":\"2026-06-09T00:00:03Z\",\"type\":\"turn.end\",\"turn\":1}\n",
-            "{\"id\":6,\"ts\":\"2026-06-09T00:00:04Z\",\"type\":\"context.skills\",\"turn\":1,\"registry\":{},\"bootstrap_loaded\":[]}\n",
-            "{\"id\":7,\"ts\":\"2026-06-09T00:00:05Z\",\"type\":\"model.error\",\"turn\":1,\"request_id\":\"req_1\",\"kind\":\"rate_limited\",\"message\":\"slow down\"}\n",
-        ),
+        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"user.input\",\"turn\":1,\"text\":\"ignored\"}\n",
     )
     .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
 
-    assert_eq!(7, replayed.len());
-    assert!(matches!(
-        &replayed[0].payload,
-        EventPayload::SessionMeta { session_id, .. } if session_id == "s_legacy"
-    ));
-    assert!(matches!(
-        &replayed[1].payload,
-        EventPayload::ContextPrelude { messages, .. } if messages[0].content == "legacy prelude"
-    ));
-    assert!(matches!(
-        &replayed[2].payload,
-        EventPayload::UserInput { text, .. } if text == "legacy hello"
-    ));
-    assert!(matches!(
-        &replayed[3].payload,
-        EventPayload::TurnStart { turn: 1, .. }
-    ));
-    assert!(matches!(
-        &replayed[4].payload,
-        EventPayload::TurnEnd { turn: 1, .. }
-    ));
-    assert!(matches!(
-        &replayed[5].payload,
-        EventPayload::ContextSkills { conversation, .. } if conversation == "main"
-    ));
-    assert!(matches!(
-        &replayed[6].payload,
-        EventPayload::ModelError { kind, message, .. }
-            if kind == "rate_limited" && message == "slow down"
-    ));
+    assert!(matches!(&replayed[0].payload, EventPayload::Unknown(_)));
 }
 
 #[test]
-fn replay_accepts_legacy_rollback_scope_values() {
+fn rollback_scope_alias_is_not_accepted() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
     std::fs::write(
         &path,
-        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"turn.rollback\",\"turn\":3,\"target_turn\":1,\"scope\":\"conversation_only\"}\n",
+        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"kind\":\"turn.rollback\",\"turn\":3,\"target_turn\":1,\"scope\":\"conversation_only\"}\n",
     )
     .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
 
-    assert!(matches!(
-        &replayed[0].payload,
-        EventPayload::TurnRollback {
-            scope: kuku::event::types::RollbackScope::ConversationOnly,
-            ..
-        }
-    ));
+    assert!(matches!(&replayed[0].payload, EventPayload::Unknown(_)));
 }
 
 #[test]
@@ -662,9 +620,10 @@ fn concurrent_async_appends_keep_contiguous_ids_and_valid_jsonl() {
                 tokio::task::spawn_blocking(move || {
                     let mut store = EventStore::open(&*path).unwrap();
                     store
-                        .append(EventPayload::TurnStart {
+                        .append(EventPayload::TurnStarted {
                             turn: index + 1,
                             ts: format!("2026-06-09T00:00:{index:02}Z"),
+                            conversation: "main".to_string(),
                         })
                         .unwrap()
                         .id

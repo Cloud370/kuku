@@ -419,7 +419,7 @@ pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) ->
     }
 
     match events.first().map(|event| &event.payload) {
-        Some(EventPayload::SessionMeta { .. } | EventPayload::SessionCreated { .. }) => Ok(()),
+        Some(EventPayload::SessionCreated { .. }) => Ok(()),
         _ => Err(crate::error::Error::InvalidEventStream(
             "first event must be session.created".to_string(),
         )),
@@ -430,9 +430,7 @@ pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
     events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::TurnStart { turn, .. } | EventPayload::TurnStarted { turn, .. } => {
-                Some(*turn)
-            }
+            EventPayload::TurnStarted { turn, .. } => Some(*turn),
             _ => None,
         })
         .max()
@@ -660,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_only_pattern() {
+    fn display_summary_find_files_with_only_pattern() {
         let args = serde_json::json!({"pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
         assert_eq!(

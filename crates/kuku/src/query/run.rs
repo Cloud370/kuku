@@ -1876,9 +1876,10 @@ mod tests {
         let events_path = dir.path().join("events.jsonl");
         let mut store = EventStore::open(&events_path).unwrap();
         store
-            .append(EventPayload::TurnStart {
+            .append(EventPayload::TurnStarted {
                 turn: 1,
                 ts: "2026-05-20T00:00:00Z".to_string(),
+                conversation: "main".to_string(),
             })
             .unwrap();
         store

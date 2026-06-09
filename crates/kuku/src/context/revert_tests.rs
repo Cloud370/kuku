@@ -4,9 +4,10 @@ use serde_json::json;
 fn ts(id: u64, turn: u64) -> StoredEvent {
     StoredEvent {
         id,
-        payload: EventPayload::TurnStart {
+        payload: EventPayload::TurnStarted {
             turn,
             ts: "t".into(),
+            conversation: "main".into(),
         },
     }
 }
@@ -14,9 +15,10 @@ fn ts(id: u64, turn: u64) -> StoredEvent {
 fn te(id: u64, turn: u64) -> StoredEvent {
     StoredEvent {
         id,
-        payload: EventPayload::TurnEnd {
+        payload: EventPayload::TurnCompleted {
             turn,
             ts: "t".into(),
+            conversation: "main".into(),
         },
     }
 }
@@ -24,10 +26,13 @@ fn te(id: u64, turn: u64) -> StoredEvent {
 fn ui(id: u64, turn: u64, text: &str) -> StoredEvent {
     StoredEvent {
         id,
-        payload: EventPayload::UserInput {
+        payload: EventPayload::MessageUser {
             turn,
             ts: "t".into(),
+            conversation: "main".into(),
             text: text.into(),
+            from: None,
+            via_tool_call_id: None,
         },
     }
 }
@@ -82,24 +87,25 @@ fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> St
     }
 }
 
-fn rb(id: u64, turn: u64, target: u64, scope: RollbackScope) -> StoredEvent {
+fn rb(id: u64, _turn: u64, target: u64, scope: RollbackScope) -> StoredEvent {
     StoredEvent {
         id,
-        payload: EventPayload::TurnRollback {
-            turn,
+        payload: EventPayload::ConversationRollback {
             ts: "t".into(),
-            target_turn: target,
+            conversation: "main".into(),
+            to_turn: target,
+            to_event_id: id.saturating_sub(1),
             scope,
         },
     }
 }
 
-fn rb_undo(id: u64, turn: u64, rb_id: u64) -> StoredEvent {
+fn rb_undo(id: u64, _turn: u64, rb_id: u64) -> StoredEvent {
     StoredEvent {
         id,
-        payload: EventPayload::TurnRollbackUndo {
-            turn,
+        payload: EventPayload::ConversationRollbackUndone {
             ts: "t".into(),
+            conversation: "main".into(),
             rollback_event_id: rb_id,
         },
     }
@@ -157,7 +163,7 @@ fn extract_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
     events
         .iter()
         .filter_map(|e| match &e.payload {
-            EventPayload::UserInput { text, .. } => Some(text.as_str()),
+            EventPayload::MessageUser { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -200,7 +206,7 @@ fn filter_both_scope_skips_target_and_later_turns() {
 }
 
 #[test]
-fn filter_conversation_only_skips_turns() {
+fn filter_messages_scope_skips_turns() {
     let events = vec![
         ts(1, 1),
         ui(2, 1, "a"),
@@ -215,7 +221,7 @@ fn filter_conversation_only_skips_turns() {
 }
 
 #[test]
-fn filter_files_only_keeps_conversation() {
+fn filter_file_changes_scope_keeps_conversation() {
     let events = vec![
         ts(1, 1),
         ui(2, 1, "a"),
@@ -242,7 +248,7 @@ fn filter_undo_restores_events() {
         rb_undo(8, 4, 7),
     ];
     let f = filter_rolled_back_events(&events);
-    assert_eq!(extract_user_texts(&f), vec!["a"]);
+    assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
 }
 
 #[test]
@@ -264,7 +270,7 @@ fn filter_undo_latest_rollback_reactivates_previous_rollback() {
 
     let f = filter_rolled_back_events(&events);
 
-    assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+    assert_eq!(extract_user_texts(&f), vec!["a"]);
 }
 
 #[test]

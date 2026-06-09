@@ -817,12 +817,10 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         events[6].payload,
         EventPayload::TurnStarted { turn: 2, .. }
     ));
-    match &events[6].payload {
-        EventPayload::MessageUser { .. } => {
-            panic!("expected turn.start, got second user.input position")
-        }
-        _ => {}
-    }
+    assert!(
+        !matches!(events[6].payload, EventPayload::MessageUser { .. }),
+        "expected turn.started, got second message.user position"
+    );
     assert!(matches!(
         events[7].payload,
         EventPayload::MessageUser { turn: 2, .. }
@@ -1936,25 +1934,29 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     let session_id = "s_interrupted_open_tool_blocks";
     let mut store = EventStore::open(env.events_path(session_id)).unwrap();
     store
-        .append(EventPayload::SessionMeta {
+        .append(EventPayload::SessionCreated {
             ts: "2026-06-06T00:00:00Z".to_string(),
-            schema_version: 1,
+            schema_version: 2,
             session_id: session_id.to_string(),
             created_at: "2026-06-06T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
         })
         .unwrap();
     store
-        .append(EventPayload::TurnStart {
+        .append(EventPayload::TurnStarted {
             turn: 1,
             ts: "2026-06-06T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
         })
         .unwrap();
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-06-06T00:00:02Z".to_string(),
+            conversation: "main".to_string(),
             text: "run interrupted command".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -2131,7 +2133,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
     assert_eq!(after_events.len(), before_events.len());
     assert!(!after_events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+        EventPayload::ModelError { .. } | EventPayload::TurnCompleted { .. }
     )));
 }
 
@@ -2581,7 +2583,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     assert_eq!(events.len(), before_events.len() + 2);
     assert!(!events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+        EventPayload::ModelError { .. } | EventPayload::TurnCompleted { .. }
     )));
     let requested_second = events
         .iter()

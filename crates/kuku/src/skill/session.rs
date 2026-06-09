@@ -279,9 +279,10 @@ mod tests {
             ),
             event(
                 2,
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 2,
                     ts: "t2".to_string(),
+                    conversation: "main".to_string(),
                 },
             ),
             event(
@@ -296,10 +297,11 @@ mod tests {
             ),
             event(
                 4,
-                EventPayload::TurnRollback {
-                    turn: 3,
+                EventPayload::ConversationRollback {
                     ts: "t4".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 3,
                     scope: RollbackScope::ConversationOnly,
                 },
             ),
@@ -673,18 +675,19 @@ mod tests {
             ),
             event(
                 4,
-                EventPayload::TurnRollback {
-                    turn: 9,
+                EventPayload::ConversationRollback {
                     ts: "t4".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 3,
                     scope: RollbackScope::ConversationOnly,
                 },
             ),
             event(
                 5,
-                EventPayload::TurnRollbackUndo {
-                    turn: 10,
+                EventPayload::ConversationRollbackUndone {
                     ts: "t5".to_string(),
+                    conversation: "main".to_string(),
                     rollback_event_id: 4,
                 },
             ),

@@ -72,7 +72,6 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
 
     let type_filter = args
         .get("kind")
-        .or_else(|| args.get("type"))
         .and_then(Value::as_str)
         .map(normalize_type_filter);
     let conversation_filter = args.get("conversation").and_then(Value::as_str);
@@ -180,9 +179,7 @@ fn queryable_filtered_events(
                 return true;
             };
             match &event.payload {
-                EventPayload::TurnStart { turn, .. }
-                | EventPayload::TurnStarted { turn, .. }
-                | EventPayload::UserInput { turn, .. }
+                EventPayload::TurnStarted { turn, .. }
                 | EventPayload::MessageUser { turn, .. }
                 | EventPayload::ModelResponse { turn, .. }
                 | EventPayload::ModelError { turn, .. }
@@ -200,9 +197,7 @@ fn queryable_filtered_events(
                 | EventPayload::PermissionRequested { turn, .. }
                 | EventPayload::PermissionDeny { turn, .. }
                 | EventPayload::ContextSources { turn, .. }
-                | EventPayload::ContextSkills { turn, .. }
                 | EventPayload::Handoff { turn, .. }
-                | EventPayload::TurnEnd { turn, .. }
                 | EventPayload::TurnCompleted { turn, .. }
                 | EventPayload::TurnCancelled { turn, .. }
                 | EventPayload::TurnInterrupted { turn, .. } => *turn < target_turn,
@@ -216,9 +211,11 @@ fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) ->
     let undone = all_events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::TurnRollbackUndo {
-                rollback_event_id, ..
-            } => Some(*rollback_event_id),
+            EventPayload::ConversationRollbackUndone {
+                conversation,
+                rollback_event_id,
+                ..
+            } if conversation == "main" => Some(*rollback_event_id),
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -227,9 +224,17 @@ fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) ->
         .iter()
         .rev()
         .find_map(|event| match &event.payload {
-            EventPayload::TurnRollback {
-                target_turn, scope, ..
-            } if scope.affects_conversation() && !undone.contains(&event.id) => Some(*target_turn),
+            EventPayload::ConversationRollback {
+                conversation,
+                to_turn,
+                scope,
+                ..
+            } if conversation == "main"
+                && scope.affects_conversation()
+                && !undone.contains(&event.id) =>
+            {
+                Some(*to_turn)
+            }
             _ => None,
         })
 }
@@ -245,8 +250,7 @@ fn build_turn_map_from_events(
         map.insert(event.id, current_turn);
         if matches!(
             event.payload,
-            EventPayload::TurnEnd { .. }
-                | EventPayload::TurnCompleted { .. }
+            EventPayload::TurnCompleted { .. }
                 | EventPayload::TurnCancelled { .. }
                 | EventPayload::TurnInterrupted { .. }
         ) {
@@ -270,8 +274,7 @@ fn build_turn_map_from_filtered(
         map.insert(event.id, current_turn);
         if matches!(
             event.payload,
-            EventPayload::TurnEnd { .. }
-                | EventPayload::TurnCompleted { .. }
+            EventPayload::TurnCompleted { .. }
                 | EventPayload::TurnCancelled { .. }
                 | EventPayload::TurnInterrupted { .. }
         ) {
@@ -287,7 +290,7 @@ fn build_turn_map_from_filtered(
 
 fn normalize_type_filter(raw: &str) -> String {
     match raw {
-        "UserInput" => "user.input".to_string(),
+        "MessageUser" => "message.user".to_string(),
         "ModelResponse" => "model.response".to_string(),
         "ToolCall" => "tool.call".to_string(),
         "ToolResult" => "tool.result".to_string(),
@@ -296,8 +299,8 @@ fn normalize_type_filter(raw: &str) -> String {
         "PermissionDeny" => "permission.deny".to_string(),
         "ContextSkills" => "context.skills".to_string(),
         "Handoff" => "handoff".to_string(),
-        "TurnRollback" => "turn.rollback".to_string(),
-        "TurnRollbackUndo" => "turn.rollback.undo".to_string(),
+        "ConversationRollback" => "conversation.rollback".to_string(),
+        "ConversationRollbackUndone" => "conversation.rollback.undone".to_string(),
         other => other.to_lowercase(),
     }
 }
@@ -399,17 +402,34 @@ mod tests {
         s.to_string()
     }
 
+    fn message_user(turn: u64, text: &str) -> EventPayload {
+        EventPayload::MessageUser {
+            turn,
+            ts: ts("t"),
+            conversation: "main".into(),
+            text: text.into(),
+            from: None,
+            via_tool_call_id: None,
+        }
+    }
+
+    fn conversation_rollback(to_turn: u64, to_event_id: u64) -> EventPayload {
+        EventPayload::ConversationRollback {
+            ts: ts("t"),
+            conversation: "main".into(),
+            to_turn,
+            to_event_id,
+            scope: crate::event::RollbackScope::ConversationOnly,
+        }
+    }
+
     #[test]
     fn query_session_filters_by_type() {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "hello".into(),
-                },
+                message_user(1, "hello"),
                 EventPayload::ModelResponse {
                     turn: 1,
                     ts: ts("t"),
@@ -418,13 +438,14 @@ mod tests {
                     thinking: None,
                     input_tokens_total: None,
                 },
-                EventPayload::TurnEnd {
+                EventPayload::TurnCompleted {
                     turn: 1,
                     ts: ts("t"),
+                    conversation: "main".into(),
                 },
             ],
         );
-        let result = query_session(&json!({"kind": "UserInput"}), &path);
+        let result = query_session(&json!({"kind": "MessageUser"}), &path);
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("hello"));
         assert!(!result.model_content.contains("\"hi\""));
@@ -446,11 +467,7 @@ mod tests {
                     .unwrap(),
                     bootstrap_loaded: vec!["bootstrap-alpha".into()],
                 },
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "hello".into(),
-                },
+                message_user(1, "hello"),
             ],
         );
 
@@ -471,18 +488,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
-            &[
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "build auth".into(),
-                },
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "fix bug".into(),
-                },
-            ],
+            &[message_user(1, "build auth"), message_user(1, "fix bug")],
         );
         let result = query_session(&json!({"search": "auth"}), &path);
         assert_eq!(result.status, "ok");
@@ -495,11 +501,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut payloads = Vec::new();
         for i in 0..30 {
-            payloads.push(EventPayload::UserInput {
-                turn: 1,
-                ts: ts("t"),
-                text: format!("msg {i}"),
-            });
+            payloads.push(message_user(1, &format!("msg {i}")));
         }
         let path = write_events(dir.path(), &payloads);
         let result = query_session(&json!({"limit": 5}), &path);
@@ -561,14 +563,7 @@ mod tests {
     fn query_session_truncates_long_content() {
         let dir = tempdir().unwrap();
         let long_text = "x".repeat(1000);
-        let path = write_events(
-            dir.path(),
-            &[EventPayload::UserInput {
-                turn: 1,
-                ts: ts("t"),
-                text: long_text,
-            }],
-        );
+        let path = write_events(dir.path(), &[message_user(1, &long_text)]);
         let result = query_session(&json!({}), &path);
         assert_eq!(result.status, "ok");
         // Content should be truncated: 1000 chars → 500 + "...(truncated)"
@@ -584,11 +579,7 @@ mod tests {
         let big_text = "y".repeat(3000);
         let mut payloads = Vec::new();
         for i in 0..5 {
-            payloads.push(EventPayload::UserInput {
-                turn: 1,
-                ts: ts("t"),
-                text: format!("msg_{i}_{big_text}"),
-            });
+            payloads.push(message_user(1, &format!("msg_{i}_{big_text}")));
         }
         let path = write_events(dir.path(), &payloads);
         let result = query_session(&json!({}), &path);
@@ -642,12 +633,7 @@ mod tests {
                     ts: ts("t"),
                     conversation: "main".into(),
                 },
-                EventPayload::TurnRollback {
-                    turn: 3,
-                    ts: ts("t"),
-                    target_turn: 2,
-                    scope: crate::event::RollbackScope::ConversationOnly,
-                },
+                conversation_rollback(2, 6),
             ],
         );
         let result = query_session(&json!({"skip_rolled_back": true}), &path);
@@ -698,12 +684,7 @@ mod tests {
                     ts: ts("t"),
                     conversation: "main".into(),
                 },
-                EventPayload::TurnRollback {
-                    turn: 3,
-                    ts: ts("t"),
-                    target_turn: 2,
-                    scope: crate::event::RollbackScope::ConversationOnly,
-                },
+                conversation_rollback(2, 6),
             ],
         );
         let result = query_session(&json!({"skip_rolled_back": false}), &path);
@@ -713,30 +694,27 @@ mod tests {
     }
 
     #[test]
-    fn query_session_type_filter_turn_rollback() {
+    fn query_session_type_filter_conversation_rollback() {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::UserInput {
-                    turn: 1,
+                message_user(1, "hello"),
+                EventPayload::ConversationRollback {
                     ts: ts("t"),
-                    text: "hello".into(),
-                },
-                EventPayload::TurnRollback {
-                    turn: 2,
-                    ts: ts("t"),
-                    target_turn: 1,
+                    conversation: "main".into(),
+                    to_turn: 1,
+                    to_event_id: 1,
                     scope: crate::event::RollbackScope::Both,
                 },
             ],
         );
         let result = query_session(
-            &json!({"kind": "TurnRollback", "skip_rolled_back": false}),
+            &json!({"kind": "ConversationRollback", "skip_rolled_back": false}),
             &path,
         );
         assert_eq!(result.status, "ok");
-        assert!(result.model_content.contains("turn.rollback"));
+        assert!(result.model_content.contains("conversation.rollback"));
         assert!(!result.model_content.contains("hello"));
     }
 
@@ -746,11 +724,7 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "hello".into(),
-                },
+                message_user(1, "hello"),
                 EventPayload::PermissionRequested {
                     turn: 1,
                     ts: ts("t"),
@@ -778,11 +752,7 @@ mod tests {
         let path = write_events(
             dir.path(),
             &[
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "hello".into(),
-                },
+                message_user(1, "hello"),
                 EventPayload::PermissionAllow {
                     turn: 1,
                     ts: ts("t"),
@@ -878,12 +848,7 @@ mod tests {
                     ts: ts("t"),
                     conversation: "main".into(),
                 },
-                EventPayload::TurnRollback {
-                    turn: 4,
-                    ts: ts("t"),
-                    target_turn: 3,
-                    scope: crate::event::RollbackScope::ConversationOnly,
-                },
+                conversation_rollback(3, 9),
             ],
         );
 
@@ -944,18 +909,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
-            &[
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "first".into(),
-                },
-                EventPayload::UserInput {
-                    turn: 1,
-                    ts: ts("t"),
-                    text: "second".into(),
-                },
-            ],
+            &[message_user(1, "first"), message_user(1, "second")],
         );
 
         let result = query_session(&json!({"after": 1}), &path);

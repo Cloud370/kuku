@@ -1,7 +1,7 @@
 import type { Turn, AgentMessage, ToolRender } from "@/types/turn";
 
 export interface EventPayload {
-  type: string;
+  kind: string;
   [key: string]: unknown;
 }
 
@@ -30,8 +30,8 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
   const toolCallMap = new Map<string, { name: string }>();
 
   for (const e of events) {
-    switch (e.type) {
-      case "user.input":
+    switch (e.kind) {
+      case "message.user":
         userText = e.text as string;
         break;
       case "model.request":
@@ -87,7 +87,7 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
     turnNumber,
     userText,
     agent,
-    status: events.some((e) => e.type === "turn.end") ? "complete" : "error",
+    status: events.some((e) => e.kind === "turn.completed") ? "complete" : "error",
   };
 }
 

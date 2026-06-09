@@ -108,8 +108,7 @@ pub(crate) fn prepare_dispatch(
         session_id: existing_events
             .iter()
             .find_map(|event| match &event.payload {
-                crate::event::EventPayload::SessionCreated { session_id, .. }
-                | crate::event::EventPayload::SessionMeta { session_id, .. } => {
+                crate::event::EventPayload::SessionCreated { session_id, .. } => {
                     Some(session_id.clone())
                 }
                 _ => None,

@@ -171,7 +171,8 @@ fn derive_final_output_defaults_to_main_conversation() {
         },
         kuku::event::StoredEvent {
             id: 4,
-            payload: kuku::event::EventPayload::TurnEnd {
+            payload: kuku::event::EventPayload::TurnCompleted {
+                conversation: "main".into(),
                 turn: 1,
                 ts: "t3".into(),
             },

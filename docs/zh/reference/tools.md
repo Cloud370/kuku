@@ -9,7 +9,7 @@
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `fetch_web` | `url`, `prompt`, `model_tier` | none | `read` |
-| `query_session` | none | `search`, `kind`, `type`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
+| `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | none | `edit` |
 | `run_command` | `command`, `timeout`, `brief` | none | `command` |
@@ -56,7 +56,7 @@
 重要过滤项：
 
 - `conversation`：限制到某个 conversation address
-- `kind` 或 `type`：限制到某个事件类型
+- `kind`：限制到某个事件类型
 - `after`：只返回 id 大于该值的事件
 - `from_turn` 和 `to_turn`：相对 turn 窗口
 - `skip_rolled_back`：默认是 `true`

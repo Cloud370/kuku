@@ -132,28 +132,21 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                     lifecycle.has_result = true;
                 }
             }
-            EventPayload::SessionMeta { .. }
-            | EventPayload::SessionCreated { .. }
-            | EventPayload::ContextPrelude { .. }
+            EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
             | EventPayload::ConversationOpened { .. }
             | EventPayload::ConversationBound { .. }
             | EventPayload::PromptSnapshot { .. }
-            | EventPayload::TurnStart { .. }
             | EventPayload::TurnStarted { .. }
-            | EventPayload::UserInput { .. }
             | EventPayload::MessageUser { .. }
             | EventPayload::MessageAssistant { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::Handoff { .. }
-            | EventPayload::TurnEnd { .. }
             | EventPayload::TurnCompleted { .. }
             | EventPayload::TurnCancelled { .. }
             | EventPayload::TurnInterrupted { .. }
-            | EventPayload::TurnRollback { .. }
-            | EventPayload::TurnRollbackUndo { .. }
             | EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. }
             | EventPayload::Unknown(_) => {}
@@ -272,9 +265,10 @@ mod tests {
     fn turn_start(id: u64, turn: u64) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnStart {
+            EventPayload::TurnStarted {
                 turn,
                 ts: "ts".to_string(),
+                conversation: "main".to_string(),
             },
         )
     }
