@@ -76,7 +76,8 @@ impl RunManager {
         let recent_clone = recent_events.clone();
         let cancel_for_perm = cancel_token.clone();
         let run_id_for_loop = run_id.clone();
-        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let runs = self.runs.clone();
+        let rid_for_cleanup = run_id.clone();
         let join_handle = tokio::spawn(async move {
             Self::run_loop(
                 run,
@@ -88,7 +89,7 @@ impl RunManager {
                 cancel_for_perm,
             )
             .await;
-            let _ = done_tx.send(());
+            runs.lock().unwrap().remove(&rid_for_cleanup);
         });
 
         let handle = RunHandle {
@@ -98,14 +99,6 @@ impl RunManager {
             recent_events,
         };
         self.runs.lock().unwrap().insert(run_id.clone(), handle);
-
-        let runs = self.runs.clone();
-        let rid = run_id.clone();
-        tokio::spawn(async move {
-            let _ = done_rx.await;
-            runs.lock().unwrap().remove(&rid);
-        });
-
         Ok((run_id, event_rx))
     }
 
