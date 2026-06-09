@@ -8,9 +8,9 @@ use crate::provider::types::ProviderToolCall;
 use crate::tool::ToolDefinition;
 
 use super::helpers::{
-    append_model_error, append_permission_decision, append_permission_request, append_turn_end,
-    display_summary, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
-    resolved_tool_available,
+    append_model_error, append_permission_decision, append_permission_request,
+    append_turn_cancelled, append_turn_interrupted, display_summary, is_inline_skill_tool,
+    now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
 };
 use super::slots::requires_ordered_simple_execution;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
@@ -187,11 +187,12 @@ impl Run {
                     return Ok(Some(UiEvent::PermissionRequested { request }));
                 }
                 RunState::Cancelled { events_path, turn } => {
-                    let mut store = EventStore::open(&events_path)?;
-                    store.append(EventPayload::TurnEnd {
+                    append_turn_cancelled(
+                        &events_path,
+                        &crate::conversation::address::ConversationAddress::MAIN,
                         turn,
-                        ts: now_timestamp()?,
-                    })?;
+                        "user_cancelled",
+                    )?;
                     self.state = RunState::Done(None);
                     return Ok(Some(UiEvent::Cancelled { turn }));
                 }
@@ -480,9 +481,12 @@ impl Run {
                     pending.queued_tool_calls.pop_front().unwrap();
                 append_permission_request(
                     &pending.events_path,
+                    &pending.conversation,
                     pending.turn,
                     &PermissionRequest {
                         id: tool_call.id.clone(),
+                        conversation: pending.conversation.clone(),
+                        turn: pending.turn,
                         tool_call_id: tool_call.id.clone(),
                         tool: tool_call.name.clone(),
                         risk,
@@ -670,7 +674,7 @@ impl Run {
     }
 
     /// Apply a permission decision for a pending tool call.
-    /// `parent_tool_id`: `None` for top-level, `Some(id)` for subagent permission.
+    /// `parent_tool_id`: `None` for top-level, `Some(id)` for delegated permission.
     pub async fn decide(
         &mut self,
         request_id: &str,
@@ -682,7 +686,7 @@ impl Run {
                 .slots
                 .get_mut(tool_id)
                 .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
-            let mut map = slot.child_permissions.lock().unwrap();
+            let mut map = slot.nested_permissions.lock().unwrap();
             let tx = map
                 .remove(request_id)
                 .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
@@ -779,11 +783,16 @@ impl Run {
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
             ts: now_timestamp()?,
+            conversation: None,
             tool_call_id: tool_call.id.clone(),
             status: result.status.clone(),
             summary: result.summary.clone(),
             model_content: result.model_content.clone(),
             truncated: result.truncated,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: result.structured.clone(),
         })?;
         Ok(result)
@@ -940,11 +949,16 @@ fn persist_blocked_tool_result(
     store.append(EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
+        conversation: None,
         tool_call_id: tool_call_id.to_string(),
         status: "blocked".to_string(),
         summary: summary.to_string(),
         model_content: String::new(),
         truncated: false,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
         structured: Some(blocked),
     })?;
     Ok(())
@@ -961,7 +975,12 @@ fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error:
         provider_failure_event_kind(*kind),
         message,
     );
-    let _ = append_turn_end(&streaming.pending.events_path, streaming.pending.turn);
+    let _ = append_turn_interrupted(
+        &streaming.pending.events_path,
+        &streaming.conversation,
+        streaming.pending.turn,
+        provider_failure_event_kind(*kind),
+    );
 }
 
 fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {
@@ -1062,6 +1081,7 @@ mod tests {
         PendingRun {
             session_id: "test".to_string(),
             query: crate::query::types::Query::new("test"),
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
             events_path,
             kuku_home: dir.to_path_buf(),
             workspace: dir.to_path_buf(),
@@ -1074,11 +1094,12 @@ mod tests {
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: std::sync::Arc::new(test_config()),
             prompts_dir: None,
-            subagent_registry: None,
+            agent_registry: None,
             skill_registry: None,
             previous_skill_registry: None,
             bootstrap_skill: None,
             child_session_count: 0,
+            agent_binding_id: None,
             tool_registry_override: None,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
@@ -1129,6 +1150,8 @@ mod tests {
                 pending,
                 request: PermissionRequest {
                     id: request_id.to_string(),
+                    conversation: crate::conversation::address::ConversationAddress::MAIN,
+                    turn: 1,
                     tool_call_id: request_tool_call_id.to_string(),
                     tool: "run_command".to_string(),
                     risk: "command".to_string(),
@@ -1408,6 +1431,8 @@ mod tests {
                 PendingPermission {
                     request: PermissionRequest {
                         id: "tool_queued".to_string(),
+                        conversation: crate::conversation::address::ConversationAddress::MAIN,
+                        turn: 1,
                         tool_call_id: "tool_queued".to_string(),
                         tool: "run_command".to_string(),
                         risk: "command".to_string(),
@@ -1466,7 +1491,7 @@ mod tests {
         let last = events.last().unwrap();
         assert!(matches!(
             &last.payload,
-            EventPayload::TurnEnd { turn: 1, .. }
+            EventPayload::TurnCancelled { turn: 1, .. }
         ));
     }
 
@@ -1594,6 +1619,7 @@ mod tests {
 
         let state = StreamingChunkState {
             pending,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
             request_id: "req_1".to_string(),
             stream: Box::pin(tokio_stream::empty()),
             accumulated_text: "complete".to_string(),
@@ -1643,6 +1669,7 @@ mod tests {
 
         let mut streaming = StreamingChunkState {
             pending,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
             request_id: "req_1".to_string(),
             stream,
             accumulated_text: "partial".to_string(),
@@ -1717,6 +1744,7 @@ mod tests {
 
         let mut streaming = StreamingChunkState {
             pending,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
             request_id: "req_bad_args".to_string(),
             stream,
             accumulated_text: String::new(),
@@ -1853,6 +1881,7 @@ mod tests {
             .append(EventPayload::ToolCall {
                 turn: 1,
                 ts: "2026-05-20T00:00:01Z".to_string(),
+                conversation: None,
                 tool_call_id: "tool_cancelled".to_string(),
                 request_id: "req_1".to_string(),
                 index: 0,
@@ -1871,7 +1900,7 @@ mod tests {
                 ordered_with_simple_tools: false,
                 label: "print hi".to_string(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-                child_permissions: std::sync::Arc::new(std::sync::Mutex::new(
+                nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
             },
@@ -1967,19 +1996,14 @@ mod tests {
         }
 
         let events = EventStore::replay(&events_path).unwrap();
-        let (summary, history) = crate::context::rebuild_history(&events);
+        let (summary, history) = crate::context::rebuild_history(
+            &events,
+            &crate::conversation::address::ConversationAddress::MAIN,
+        );
         assert!(summary.is_none());
         assert_eq!(history.len(), 2);
         let messages: Vec<_> = history.iter().map(|m| format!("{:?}", m.role)).collect();
         assert!(messages.contains(&"User".to_string()));
         assert!(messages.contains(&"Assistant".to_string()));
-    }
-
-    #[test]
-    fn child_session_id_is_predictable() {
-        let parent_id = "abc123";
-        let counter = 0u64;
-        let expected = format!("child_{}_{}", parent_id, counter);
-        assert_eq!(expected, "child_abc123_0");
     }
 }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::context::revert::filter_rolled_back_events;
+use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, StoredEvent};
 use crate::provider::types::ProviderToolCall;
 
@@ -23,6 +24,7 @@ pub(super) struct PendingPermissionLifecycle {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenToolLifecycle {
+    pub(super) conversation: ConversationAddress,
     pub(super) tool_call: ProviderToolCall,
     pub(super) kind: OpenToolKind,
     pub(super) turn: u64,
@@ -37,6 +39,7 @@ pub(super) enum OpenToolKind {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ToolLifecycle {
+    conversation: Option<String>,
     tool_call: ProviderToolCall,
     turn: u64,
     permission_request: Option<PermissionRequest>,
@@ -45,34 +48,44 @@ struct ToolLifecycle {
     has_result: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ToolKey {
+    conversation: Option<String>,
+    tool_call_id: String,
+}
+
 pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
-    let mut tools = HashMap::<String, ToolLifecycle>::new();
+    let mut tools = HashMap::<ToolKey, ToolLifecycle>::new();
 
     for event in filter_rolled_back_events(events) {
         match &event.payload {
             EventPayload::ToolCall {
                 turn,
+                conversation,
                 tool_call_id,
                 index,
                 tool,
                 args,
                 ..
             } => {
-                tools
-                    .entry(tool_call_id.clone())
-                    .or_insert_with(|| ToolLifecycle {
-                        tool_call: ProviderToolCall {
-                            id: tool_call_id.clone(),
-                            name: tool.clone(),
-                            args: args.clone(),
-                            index: *index,
-                        },
-                        turn: *turn,
-                        permission_request: None,
-                        permission_allowed: false,
-                        permission_denied: false,
-                        has_result: false,
-                    });
+                let key = ToolKey {
+                    conversation: conversation.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                };
+                tools.entry(key).or_insert_with(|| ToolLifecycle {
+                    conversation: conversation.clone(),
+                    tool_call: ProviderToolCall {
+                        id: tool_call_id.clone(),
+                        name: tool.clone(),
+                        args: args.clone(),
+                        index: *index,
+                    },
+                    turn: *turn,
+                    permission_request: None,
+                    permission_allowed: false,
+                    permission_denied: false,
+                    has_result: false,
+                });
             }
             EventPayload::PermissionRequested {
                 turn,
@@ -84,9 +97,18 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 source,
                 ..
             } => {
-                if let Some(lifecycle) = tools.get_mut(tool_call_id) {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
+                    let conversation = lifecycle
+                        .conversation
+                        .as_deref()
+                        .map(|value| {
+                            ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
+                        })
+                        .unwrap_or(ConversationAddress::MAIN);
                     lifecycle.permission_request = Some(PermissionRequest {
                         id: tool_call_id.clone(),
+                        conversation,
+                        turn: *turn,
                         tool_call_id: tool_call_id.clone(),
                         tool: tool.clone(),
                         risk: risk.clone(),
@@ -98,43 +120,67 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 }
             }
             EventPayload::PermissionAllow { tool_call_id, .. } => {
-                if let Some(lifecycle) = tools.get_mut(tool_call_id) {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
                     lifecycle.permission_allowed = true;
                 }
             }
             EventPayload::PermissionDeny { tool_call_id, .. } => {
-                if let Some(lifecycle) = tools.get_mut(tool_call_id) {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
                     lifecycle.permission_denied = true;
                 }
             }
             EventPayload::ToolResult { tool_call_id, .. } => {
-                if let Some(lifecycle) = tools.get_mut(tool_call_id) {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
                     lifecycle.has_result = true;
                 }
             }
             EventPayload::SessionMeta { .. }
+            | EventPayload::SessionCreated { .. }
             | EventPayload::ContextPrelude { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
+            | EventPayload::ConversationOpened { .. }
+            | EventPayload::ConversationBound { .. }
+            | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStart { .. }
+            | EventPayload::TurnStarted { .. }
             | EventPayload::UserInput { .. }
+            | EventPayload::MessageUser { .. }
+            | EventPayload::MessageAssistant { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::Handoff { .. }
             | EventPayload::TurnEnd { .. }
+            | EventPayload::TurnCompleted { .. }
+            | EventPayload::TurnCancelled { .. }
+            | EventPayload::TurnInterrupted { .. }
             | EventPayload::TurnRollback { .. }
-            | EventPayload::TurnRollbackUndo { .. } => {}
+            | EventPayload::TurnRollbackUndo { .. }
+            | EventPayload::ConversationRollback { .. }
+            | EventPayload::ConversationRollbackUndone { .. } => {}
             EventPayload::Unknown(raw) => apply_legacy_permission_event(raw, &mut tools),
         }
     }
 
     let mut lifecycles = tools.into_values().collect::<Vec<_>>();
     lifecycles.sort_by(|left, right| {
-        (left.turn, left.tool_call.index, left.tool_call.id.as_str()).cmp(&(
-            right.turn,
-            right.tool_call.index,
-            right.tool_call.id.as_str(),
-        ))
+        (
+            left.turn,
+            left.conversation
+                .as_deref()
+                .unwrap_or(ConversationAddress::MAIN.as_str()),
+            left.tool_call.index,
+            left.tool_call.id.as_str(),
+        )
+            .cmp(&(
+                right.turn,
+                right
+                    .conversation
+                    .as_deref()
+                    .unwrap_or(ConversationAddress::MAIN.as_str()),
+                right.tool_call.index,
+                right.tool_call.id.as_str(),
+            ))
     });
 
     let mut open_tools = Vec::new();
@@ -147,12 +193,26 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
 
         if lifecycle.permission_denied {
             open_tools.push(OpenToolLifecycle {
+                conversation: lifecycle
+                    .conversation
+                    .as_deref()
+                    .map(|value| {
+                        ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
+                    })
+                    .unwrap_or(ConversationAddress::MAIN),
                 tool_call: lifecycle.tool_call,
                 kind: OpenToolKind::DeniedWithoutResult,
                 turn: lifecycle.turn,
             });
         } else if lifecycle.permission_allowed {
             open_tools.push(OpenToolLifecycle {
+                conversation: lifecycle
+                    .conversation
+                    .as_deref()
+                    .map(|value| {
+                        ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
+                    })
+                    .unwrap_or(ConversationAddress::MAIN),
                 tool_call: lifecycle.tool_call,
                 kind: OpenToolKind::AllowedWithoutResult,
                 turn: lifecycle.turn,
@@ -165,6 +225,13 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             });
         } else {
             open_tools.push(OpenToolLifecycle {
+                conversation: lifecycle
+                    .conversation
+                    .as_deref()
+                    .map(|value| {
+                        ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
+                    })
+                    .unwrap_or(ConversationAddress::MAIN),
                 tool_call: lifecycle.tool_call,
                 kind: OpenToolKind::Interrupted,
                 turn: lifecycle.turn,
@@ -178,7 +245,22 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
     }
 }
 
-fn apply_legacy_permission_event(raw: &Value, tools: &mut HashMap<String, ToolLifecycle>) {
+fn matching_tool_mut<'a>(
+    tools: &'a mut HashMap<ToolKey, ToolLifecycle>,
+    tool_call_id: &str,
+    turn: Option<u64>,
+) -> Option<&'a mut ToolLifecycle> {
+    let key = tools
+        .iter()
+        .filter(|(key, lifecycle)| {
+            key.tool_call_id == tool_call_id && turn.is_none_or(|turn| lifecycle.turn == turn)
+        })
+        .map(|(key, _)| key.clone())
+        .last()?;
+    tools.get_mut(&key)
+}
+
+fn apply_legacy_permission_event(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
     match raw.get("type").and_then(Value::as_str) {
         Some("permission.request") => apply_legacy_permission_request(raw, tools),
         Some("permission.decision") => apply_legacy_permission_decision(raw, tools),
@@ -186,16 +268,27 @@ fn apply_legacy_permission_event(raw: &Value, tools: &mut HashMap<String, ToolLi
     }
 }
 
-fn apply_legacy_permission_request(raw: &Value, tools: &mut HashMap<String, ToolLifecycle>) {
+fn apply_legacy_permission_request(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
     let Some(tool_call_id) = raw.get("tool_call_id").and_then(Value::as_str) else {
         return;
     };
-    let Some(lifecycle) = tools.get_mut(tool_call_id) else {
+    let Some(lifecycle) =
+        matching_tool_mut(tools, tool_call_id, raw.get("turn").and_then(Value::as_u64))
+    else {
         return;
     };
 
     lifecycle.permission_request = Some(PermissionRequest {
         id: tool_call_id.to_string(),
+        conversation: lifecycle
+            .conversation
+            .as_deref()
+            .map(|value| ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN))
+            .unwrap_or(ConversationAddress::MAIN),
+        turn: raw
+            .get("turn")
+            .and_then(Value::as_u64)
+            .unwrap_or(lifecycle.turn),
         tool_call_id: tool_call_id.to_string(),
         tool: raw
             .get("tool")
@@ -224,11 +317,13 @@ fn apply_legacy_permission_request(raw: &Value, tools: &mut HashMap<String, Tool
     }
 }
 
-fn apply_legacy_permission_decision(raw: &Value, tools: &mut HashMap<String, ToolLifecycle>) {
+fn apply_legacy_permission_decision(raw: &Value, tools: &mut HashMap<ToolKey, ToolLifecycle>) {
     let Some(tool_call_id) = raw.get("tool_call_id").and_then(Value::as_str) else {
         return;
     };
-    let Some(lifecycle) = tools.get_mut(tool_call_id) else {
+    let Some(lifecycle) =
+        matching_tool_mut(tools, tool_call_id, raw.get("turn").and_then(Value::as_u64))
+    else {
         return;
     };
 
@@ -288,8 +383,31 @@ mod tests {
             EventPayload::ToolCall {
                 turn,
                 ts: "ts".to_string(),
+                conversation: None,
                 tool_call_id: tool_call_id.to_string(),
                 request_id: format!("req_{turn}"),
+                index,
+                tool: "write".to_string(),
+                args: json!({ "path": tool_call_id }),
+            },
+        )
+    }
+
+    fn conversation_tool_call(
+        id: u64,
+        conversation: &str,
+        turn: u64,
+        tool_call_id: &str,
+        index: u64,
+    ) -> StoredEvent {
+        event(
+            id,
+            EventPayload::ToolCall {
+                turn,
+                ts: "ts".to_string(),
+                conversation: Some(conversation.to_string()),
+                tool_call_id: tool_call_id.to_string(),
+                request_id: format!("req_{conversation}_{turn}"),
                 index,
                 tool: "write".to_string(),
                 args: json!({ "path": tool_call_id }),
@@ -348,11 +466,16 @@ mod tests {
             EventPayload::ToolResult {
                 turn,
                 ts: "ts".to_string(),
+                conversation: None,
                 tool_call_id: tool_call_id.to_string(),
                 status: "ok".to_string(),
                 summary: "done".to_string(),
                 model_content: "done".to_string(),
                 truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
                 structured: None,
             },
         )
@@ -361,10 +484,13 @@ mod tests {
     fn rollback(id: u64, turn: u64, target_turn: u64) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnRollback {
-                turn,
+            EventPayload::ConversationRollback {
                 ts: "ts".to_string(),
-                target_turn,
+                conversation: crate::conversation::address::ConversationAddress::MAIN
+                    .as_str()
+                    .to_string(),
+                to_turn: target_turn,
+                to_event_id: turn,
                 scope: RollbackScope::ConversationOnly,
             },
         )
@@ -588,5 +714,25 @@ mod tests {
             .map(|pending| pending.tool_call.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(pending_ids, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn overlapping_conversations_keep_distinct_tool_state() {
+        let state = reduce_lifecycle(&[
+            conversation_tool_call(1, "review", 1, "shared", 0),
+            permission_requested(2, 1, "shared"),
+            conversation_tool_call(3, "explore", 1, "explore-only", 0),
+            permission_requested(4, 1, "explore-only"),
+            tool_result(5, 1, "shared"),
+        ]);
+
+        assert!(state
+            .pending_permissions
+            .iter()
+            .any(|pending| pending.tool_call.id == "explore-only"));
+        assert!(!state
+            .pending_permissions
+            .iter()
+            .any(|pending| pending.tool_call.id == "shared"));
     }
 }

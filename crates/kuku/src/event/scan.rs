@@ -16,7 +16,11 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_user_input = value.get("type").and_then(|t| t.as_str()) == Some("user.input");
+            let kind = value
+                .get("kind")
+                .or_else(|| value.get("type"))
+                .and_then(|t| t.as_str());
+            let is_user_input = matches!(kind, Some("user.input") | Some("message.user"));
             if is_user_input {
                 return value
                     .get("text")
@@ -38,8 +42,11 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_session_meta =
-                value.get("type").and_then(|t| t.as_str()) == Some("session.meta");
+            let kind = value
+                .get("kind")
+                .or_else(|| value.get("type"))
+                .and_then(|t| t.as_str());
+            let is_session_meta = matches!(kind, Some("session.meta") | Some("session.created"));
             if is_session_meta {
                 return value
                     .get("created_at")
@@ -52,9 +59,9 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
     None
 }
 
-/// Count occurrences of `"type":"turn.start"` by string scan (no JSON parse).
+/// Count occurrences of turn start events by string scan (no JSON parse).
 /// Safe because serde serializes the same struct definition deterministically,
-/// so the byte pattern `"type":"turn.start"` is stable across runs.
+/// so the byte patterns for legacy and current events are stable across runs.
 pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -64,13 +71,8 @@ pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     if file.read_to_end(&mut buf).is_err() {
         return 0;
     }
-    let needle = b"\"type\":\"turn.start\"";
-    let mut count = 0;
-    let mut pos = 0;
-    while let Some(idx) = buf[pos..].windows(needle.len()).position(|w| w == needle) {
-        count += 1;
-        pos += idx + needle.len();
-    }
+    let mut count = count_occurrences(&buf, b"\"type\":\"turn.start\"");
+    count += count_occurrences(&buf, b"\"kind\":\"turn.started\"");
     count
 }
 
@@ -109,9 +111,15 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
             .find(|line| !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()))
         {
             let value: Value = serde_json::from_slice(last_line).ok()?;
-            return match value.get("type").and_then(|t| t.as_str()) {
+            let kind = value
+                .get("kind")
+                .or_else(|| value.get("type"))
+                .and_then(|t| t.as_str());
+            return match kind {
                 Some("turn.end") => Some("turn.end"),
+                Some("turn.completed") => Some("turn.completed"),
                 Some("turn.start") => Some("turn.start"),
+                Some("turn.started") => Some("turn.started"),
                 Some("model.response") => Some("model.response"),
                 Some("tool.result") => Some("tool.result"),
                 _ => None,
@@ -122,6 +130,19 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     }
 
     None
+}
+
+fn count_occurrences(haystack: &[u8], needle: &[u8]) -> u64 {
+    let mut count = 0;
+    let mut pos = 0;
+    while let Some(idx) = haystack[pos..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+    {
+        count += 1;
+        pos += idx + needle.len();
+    }
+    count
 }
 
 #[cfg(test)]

@@ -1,16 +1,16 @@
-use kuku::subagent::registry::SubagentRegistry;
+use kuku::agent::registry::AgentRegistry;
 
 use crate::cli_args::{AgentsArgs, AgentsSubcommand};
 use crate::display::util::truncate;
 
-fn build_registry() -> Result<SubagentRegistry, Box<dyn std::error::Error>> {
+fn build_registry() -> Result<AgentRegistry, Box<dyn std::error::Error>> {
     let workspace = kuku::session::current_workspace()?;
     let config_path = kuku::session::kuku_home()?.join("config.toml");
     let discovery_config = kuku::config::load_config(&config_path)
         .ok()
         .and_then(|f| f.discovery)
         .unwrap_or_default();
-    let registry = SubagentRegistry::builder()
+    let registry = AgentRegistry::builder()
         .builtins()
         .build_with_discovery(&workspace, &discovery_config)?
         .build();
@@ -39,8 +39,9 @@ pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(AgentsSubcommand::Show { name }) => {
             let def = registry.get(&name).ok_or_else(|| {
-                format!("agent '{name}' not found. Use `kuku agents list` to see available agents.")
+                format!("agent '{name}' not found. Use `kuku agents list` to see available contact cards.")
             })?;
+            println!("contact card:");
             println!("name:            {}", def.name);
             println!("description:     {}", def.description);
             println!("source:          {}", def.source.as_str());
@@ -52,7 +53,7 @@ pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
                 println!("source_path:     {path}");
             }
             println!();
-            println!("instructions:");
+            println!("full instructions:");
             println!("{}", def.instructions);
         }
     }

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
-use kuku::subagent::registry::SubagentRegistry;
+use kuku::agent::registry::AgentRegistry;
 use kuku::{query, PermissionChoice, UiEvent};
 
 use crate::cli_args::RunArgs;
@@ -179,11 +179,11 @@ fn build_query(
     } else {
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
-        let registry = SubagentRegistry::builder()
+        let registry = AgentRegistry::builder()
             .builtins()
             .build_with_discovery(&workspace, &discovery_config)?
             .build();
-        q = q.subagents(registry);
+        q = q.agents(registry);
     }
     if let Some(ref dir) = args.prompts_dir {
         q = q.prompts_dir(std::path::PathBuf::from(dir));

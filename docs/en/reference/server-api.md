@@ -30,7 +30,8 @@ Non-loopback listeners require `--password`.
 | `POST` | `/runs/{id}/responses` | Reply to an interaction request |
 | `GET` | `/sessions` | List sessions |
 | `DELETE` | `/sessions/{id}` | Delete one session |
-| `GET` | `/sessions/{id}/events` | Read persisted events and optional active stream |
+| `GET` | `/sessions/{id}/events` | Inspect the persisted ledger and optional live stream |
+| `GET` | `/sessions/{id}/conversations` | List conversation threads inside one session |
 
 Request bodies are limited to 10 MB.
 
@@ -55,6 +56,7 @@ Request body:
   "prompt": "check this project",
   "workspace": "/code/my-project",
   "session_id": "optional-existing-session",
+  "conversation": "optional-address",
   "tier": "optional-tier-name"
 }
 ```
@@ -63,13 +65,16 @@ Rules:
 
 - `workspace` is required and must exist
 - `session_id` is optional
+- `conversation` is optional and defaults to `main`
 - `tier` is optional
+
+Using the same `session_id` and `conversation` continues that thread.
 
 Success response: NDJSON stream with content type `application/x-ndjson`.
 
 ## NDJSON Wire Events
 
-Top-level event types currently emitted by the server:
+Top-level stream event types:
 
 - `run_start`
 - `turn_start`
@@ -93,19 +98,25 @@ Examples:
 {"type":"done","session_id":"...","text":"done","turn":1,"usage":null,"model_request_count":1,"thinking_duration_ms":0,"tool_summary":{"total_calls":0,"names":[],"denied":0,"errors":0,"rounds":0}}
 ```
 
-The `done` event includes run metrics:
+`tool_start` includes `kind` metadata.
+
+- simple tool: `"kind":"simple"`
+- command tool: `"kind":{"command":{"pid":42}}`
+- agent tool: `"kind":{"agent":{"conversation":"review","binding_id":"sha256:..."}}`
+
+`done` includes run metrics:
 
 | Field | Type | Description |
 |---|---|---|
 | `model_request_count` | `u64` | Number of model API calls in this session |
 | `thinking_duration_ms` | `u64` | Cumulative time spent in thinking blocks |
-| `tool_summary.total_calls` | `u64` | Total tool invocations (including blocked) |
+| `tool_summary.total_calls` | `u64` | Total tool invocations, including blocked |
 | `tool_summary.names` | `string[]` | Unique tool names in first-appearance order |
 | `tool_summary.denied` | `u64` | Permission denials |
 | `tool_summary.errors` | `u64` | Tool executions with error status |
-| `tool_summary.rounds` | `u64` | Model→tools→result cycles |
+| `tool_summary.rounds` | `u64` | Model to tools to result cycles |
 
-Runs finish with `done`, `cancelled`, or `error`. `done` carries final text, usage, and `tool_summary`; cancellation and errors report termination without the final run metrics.
+Runs finish with `done`, `cancelled`, or `error`.
 
 `log` records are host-visible observability in active streams. They are not persisted session facts.
 
@@ -158,6 +169,34 @@ Success response:
 
 Each session item includes `session_id`, `workspace`, `title`, `created_at`, `turn_count`, `status`, `mtime`, and `size`.
 
+## `GET /sessions/{id}/conversations`
+
+Query:
+
+- optional `workspace`
+
+Success response:
+
+```json
+{
+  "ok": true,
+  "session_id": "sess_123",
+  "conversations": [
+    {
+      "conversation": "main",
+      "binding_id": null,
+      "status": "completed:3"
+    }
+  ]
+}
+```
+
+Each conversation item reports:
+
+- `conversation`
+- `binding_id`
+- `status` as `opened`, `active:<turn>`, `completed:<turn>`, `cancelled:<turn>`, or `interrupted:<turn>`
+
 ## `DELETE /sessions/{id}`
 
 Query:
@@ -175,6 +214,7 @@ Common error codes:
 Query:
 
 - optional `after` integer event id
+- optional `conversation` address
 - optional `workspace`
 
 Response shapes:
@@ -182,4 +222,10 @@ Response shapes:
 - historical events only: JSON array
 - historical events plus live buffered lines: object with `events` and `active_stream`
 
-Persisted `/events` data is the session fact log from `events.jsonl`. When an active stream is present, it may also include host-visible runtime records, including log records where applicable; the persisted session semantics remain fact-focused.
+Persisted `/events` data is the session ledger from `events.jsonl`.
+
+- omit `conversation` for full ledger inspection
+- pass `conversation=review` to filter one thread
+- pass `after=<id>` for incremental reads
+
+When an active stream is present, `active_stream` may also include host-visible runtime records, including `log` records. Persisted session semantics remain fact-focused.

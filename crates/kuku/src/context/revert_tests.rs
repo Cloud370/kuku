@@ -38,11 +38,16 @@ fn tool_result_read(id: u64, turn: u64, path: &str, content: &str, full: bool) -
         payload: EventPayload::ToolResult {
             turn,
             ts: "t".into(),
+            conversation: None,
             tool_call_id: "tc1".into(),
             status: "ok".into(),
             summary: String::new(),
             model_content: String::new(),
             truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: Some(json!({
                 "kind": "file_content",
                 "canonical_path": path,
@@ -60,11 +65,16 @@ fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> St
         payload: EventPayload::ToolResult {
             turn,
             ts: "t".into(),
+            conversation: None,
             tool_call_id: tc.into(),
             status: "ok".into(),
             summary: String::new(),
             model_content: String::new(),
             truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: Some(
                 json!({"kind": kind, "canonical_path": path, "raw_text_after": content}),
             ),
@@ -95,11 +105,69 @@ fn rb_undo(id: u64, turn: u64, rb_id: u64) -> StoredEvent {
     }
 }
 
+fn conversation_opened(id: u64, conversation: &str) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::ConversationOpened {
+            ts: "t".into(),
+            conversation: conversation.into(),
+        },
+    }
+}
+
+fn message_user(id: u64, conversation: &str, turn: u64, text: &str) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::MessageUser {
+            ts: "t".into(),
+            conversation: conversation.into(),
+            turn,
+            text: text.into(),
+            from: None,
+            via_tool_call_id: None,
+        },
+    }
+}
+
+fn conversation_rb(id: u64, conversation: &str, target: u64, scope: RollbackScope) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::ConversationRollback {
+            ts: "t".into(),
+            conversation: conversation.into(),
+            to_turn: target,
+            to_event_id: id.saturating_sub(1),
+            scope,
+        },
+    }
+}
+
+fn conversation_rb_undo(id: u64, conversation: &str, rb_id: u64) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::ConversationRollbackUndone {
+            ts: "t".into(),
+            conversation: conversation.into(),
+            rollback_event_id: rb_id,
+        },
+    }
+}
+
 fn extract_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
     events
         .iter()
         .filter_map(|e| match &e.payload {
             EventPayload::UserInput { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn extract_message_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
+    events
+        .iter()
+        .filter_map(|e| match &e.payload {
+            EventPayload::MessageUser { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -174,7 +242,7 @@ fn filter_undo_restores_events() {
         rb_undo(8, 4, 7),
     ];
     let f = filter_rolled_back_events(&events);
-    assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+    assert_eq!(extract_user_texts(&f), vec!["a"]);
 }
 
 #[test]
@@ -196,7 +264,28 @@ fn filter_undo_latest_rollback_reactivates_previous_rollback() {
 
     let f = filter_rolled_back_events(&events);
 
-    assert_eq!(extract_user_texts(&f), vec!["a"]);
+    assert_eq!(extract_user_texts(&f), vec!["a", "b"]);
+}
+
+#[test]
+fn conversation_rollback_only_hides_target_conversation_messages() {
+    let events = vec![
+        conversation_opened(1, "main"),
+        conversation_opened(2, "review/api"),
+        conversation_opened(3, "explore"),
+        message_user(4, "main", 1, "main-1"),
+        message_user(5, "review/api", 1, "review-1"),
+        message_user(6, "explore", 1, "explore-1"),
+        message_user(7, "review/api", 2, "review-2"),
+        conversation_rb(8, "review/api", 2, RollbackScope::ConversationOnly),
+    ];
+
+    let filtered = filter_rolled_back_events(&events);
+
+    assert_eq!(
+        extract_message_user_texts(&filtered),
+        vec!["main-1", "review-1", "explore-1"]
+    );
 }
 
 // compute_file_revert_plan tests
@@ -434,30 +523,33 @@ fn apply_file_revert_rejects_workspace_symlink_escape() {
 
 #[test]
 fn active_rollback_found() {
-    let events = vec![rb(10, 5, 3, RollbackScope::Both)];
+    let events = vec![conversation_rb(10, "main", 3, RollbackScope::Both)];
     let active = find_active_rollback(&events).unwrap();
     assert_eq!(active.rollback_event_id, 10);
-    assert_eq!(active.target_turn, 3);
+    assert_eq!(active.to_turn, 3);
 }
 
 #[test]
 fn active_rollback_undone_returns_none() {
-    let events = vec![rb(10, 5, 3, RollbackScope::Both), rb_undo(11, 6, 10)];
+    let events = vec![
+        conversation_rb(10, "main", 3, RollbackScope::Both),
+        conversation_rb_undo(11, "main", 10),
+    ];
     assert!(find_active_rollback(&events).is_none());
 }
 
 #[test]
 fn undo_latest_rollback_reactivates_previous_rollback() {
     let events = vec![
-        rb(10, 5, 2, RollbackScope::Both),
-        rb(11, 6, 3, RollbackScope::ConversationOnly),
-        rb_undo(12, 7, 11),
+        conversation_rb(10, "main", 2, RollbackScope::Both),
+        conversation_rb(11, "main", 3, RollbackScope::ConversationOnly),
+        conversation_rb_undo(12, "main", 11),
     ];
 
     let active = find_active_rollback(&events).unwrap();
 
     assert_eq!(active.rollback_event_id, 10);
-    assert_eq!(active.target_turn, 2);
+    assert_eq!(active.to_turn, 2);
     assert_eq!(active.scope, RollbackScope::Both);
 }
 

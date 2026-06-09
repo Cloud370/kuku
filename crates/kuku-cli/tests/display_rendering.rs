@@ -110,10 +110,12 @@ fn json_tool_call_serializes() {
         "tc_01".into(),
         "src/main.rs".into(),
         serde_json::json!({"path": "src/main.rs"}),
-    );
+    )
+    .with_conversation(Some("review".into()));
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"tool_call\""));
     assert!(json.contains("\"tool_call_id\":\"tc_01\""));
+    assert!(json.contains("\"conversation\":\"review\""));
 }
 
 #[test]
@@ -123,7 +125,8 @@ fn json_permission_ask_serializes_existing_schema() {
         "run_command".into(),
         "execute".into(),
         "cargo test".into(),
-    );
+    )
+    .with_conversation(Some("review/api".into()));
     let json: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
 
     assert_eq!(json["type"], "permission_ask");
@@ -131,6 +134,54 @@ fn json_permission_ask_serializes_existing_schema() {
     assert_eq!(json["tool"], "run_command");
     assert_eq!(json["risk"], "execute");
     assert_eq!(json["summary"], "cargo test");
+    assert_eq!(json["conversation"], "review/api");
+}
+
+#[test]
+fn derive_final_output_defaults_to_main_conversation() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: kuku::event::EventPayload::MessageAssistant {
+                ts: "t0".into(),
+                conversation: "review".into(),
+                turn: 1,
+                message_id: "m_review".into(),
+                text: "review answer".into(),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: kuku::event::EventPayload::ModelResponse {
+                turn: 1,
+                ts: "t1".into(),
+                request_id: "req_main".into(),
+                text: "main answer".into(),
+                thinking: None,
+                input_tokens_total: None,
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: kuku::event::EventPayload::TurnCompleted {
+                ts: "t2".into(),
+                conversation: "review".into(),
+                turn: 1,
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 4,
+            payload: kuku::event::EventPayload::TurnEnd {
+                turn: 1,
+                ts: "t3".into(),
+            },
+        },
+    ];
+
+    assert_eq!(
+        kuku_cli::display::derive_final_output(&events),
+        Some("main answer".into())
+    );
 }
 
 #[test]
@@ -216,4 +267,58 @@ fn event_brief_renders_permission_requested() {
     assert!(line.contains("permission.requested"));
     assert!(line.contains("request  run_command  execute  cargo test"));
     assert!(line.contains("source=default_ask"));
+}
+
+#[test]
+fn event_brief_renders_conversation_address_for_conversation_opened() {
+    let event = kuku::event::StoredEvent {
+        id: 2,
+        payload: kuku::event::EventPayload::Unknown(serde_json::json!({
+            "id": 2,
+            "ts": "2026-06-09T00:00:01Z",
+            "kind": "conversation.opened",
+            "conversation": "session://s_001/conversations/c_main"
+        })),
+    };
+
+    let line = render_event_brief(&event, 1);
+
+    assert!(line.contains("conversation.opened"));
+    assert!(line.contains("session://s_001/conversations/c_main"));
+}
+
+#[test]
+fn event_brief_renders_terminal_turn_states() {
+    let cancelled = kuku::event::StoredEvent {
+        id: 11,
+        payload: kuku::event::EventPayload::Unknown(serde_json::json!({
+            "id": 11,
+            "ts": "2026-06-09T00:00:10Z",
+            "kind": "turn.cancelled",
+            "conversation": "session://s_001/conversations/c_main",
+            "turn": 2,
+            "reason": "user_cancelled"
+        })),
+    };
+    let interrupted = kuku::event::StoredEvent {
+        id: 12,
+        payload: kuku::event::EventPayload::Unknown(serde_json::json!({
+            "id": 12,
+            "ts": "2026-06-09T00:00:11Z",
+            "kind": "turn.interrupted",
+            "conversation": "session://s_001/conversations/c_main",
+            "turn": 3,
+            "reason": "approval_required"
+        })),
+    };
+
+    let cancelled_line = render_event_brief(&cancelled, 1);
+    let interrupted_line = render_event_brief(&interrupted, 1);
+
+    assert!(cancelled_line.contains("turn.cancelled"));
+    assert!(cancelled_line.contains("turn=2"));
+    assert!(cancelled_line.contains("user_cancelled"));
+    assert!(interrupted_line.contains("turn.interrupted"));
+    assert!(interrupted_line.contains("turn=3"));
+    assert!(interrupted_line.contains("approval_required"));
 }

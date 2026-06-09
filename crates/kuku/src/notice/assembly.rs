@@ -3,16 +3,24 @@ use std::path::{Path, PathBuf};
 
 use sha2::Digest;
 
+use crate::agent::catalog::render_agent_directory;
+use crate::agent::registry::AgentRegistry;
+use crate::conversation::address::ConversationAddress;
+use crate::conversation::reducer::{conversation_events, reduce_conversations, TurnTerminal};
 use crate::event::{EventPayload, StoredEvent};
+use crate::skill::session::loaded_skill_names;
 
 use super::types::{
-    ContextBudgetTier, ContextDriftEntry, ContextDriftStatus, Notice, NoticeKind, NoticeSeverity,
+    ContextBudgetTier, ContextDriftEntry, ContextDriftStatus, ConversationInboxMessage, Notice,
+    NoticeKind, NoticeSeverity, OpenConversationEntry,
 };
 
 pub(crate) struct NoticeAssemblyInput<'a> {
     pub(crate) workspace: &'a Path,
     pub(crate) events: &'a [StoredEvent],
     pub(crate) context_budget_tier: ContextBudgetTier,
+    pub(crate) conversation: &'a ConversationAddress,
+    pub(crate) agent_registry: Option<&'a AgentRegistry>,
 }
 
 struct TrackedFileSnapshot {
@@ -23,6 +31,31 @@ struct TrackedFileSnapshot {
 pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notice> {
     let mut notices = Vec::new();
 
+    if input.conversation.is_main() {
+        if let Some(notice) = build_agent_directory_notice(input.agent_registry, input.events) {
+            notices.push(notice);
+        }
+        if let Some(notice) = build_open_conversations_notice(input.events, input.conversation) {
+            notices.push(notice);
+        }
+    }
+
+    if let Some(notice) = build_inbox_notice(input.events, input.conversation) {
+        notices.push(notice);
+    }
+
+    if let Some(notice) = build_loaded_skills_notice(input.events, input.conversation) {
+        notices.push(notice);
+    }
+
+    if let Some(notice) = build_pending_permission_notice(input.events, input.conversation) {
+        notices.push(notice);
+    }
+
+    if let Some(notice) = build_interrupted_turn_notice(input.events, input.conversation) {
+        notices.push(notice);
+    }
+
     if let Some(notice) =
         build_context_drift_notice(input.workspace, input.events, input.context_budget_tier)
     {
@@ -30,6 +63,194 @@ pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notic
     }
 
     notices
+}
+
+fn build_agent_directory_notice(
+    registry: Option<&AgentRegistry>,
+    events: &[StoredEvent],
+) -> Option<Notice> {
+    let registry = registry?;
+    let open_conversations = reduce_conversations(events)
+        .into_iter()
+        .filter(|state| !state.address.is_main())
+        .count();
+    let directory = render_agent_directory(registry, open_conversations)?;
+    Some(Notice {
+        kind: NoticeKind::AgentDirectory { directory },
+        severity: NoticeSeverity::Info,
+    })
+}
+
+fn build_open_conversations_notice(
+    events: &[StoredEvent],
+    target: &ConversationAddress,
+) -> Option<Notice> {
+    let entries = reduce_conversations(events)
+        .into_iter()
+        .filter(|state| !state.address.is_main() && &state.address != target)
+        .map(|state| OpenConversationEntry {
+            conversation: state.address,
+            summary: match state.last_terminal {
+                Some((turn, TurnTerminal::Completed)) => format!("turn {turn} completed"),
+                Some((turn, TurnTerminal::Cancelled)) => format!("turn {turn} cancelled"),
+                Some((turn, TurnTerminal::Interrupted)) => format!("turn {turn} interrupted"),
+                None if state.active_turn.is_some() => "turn in progress".to_string(),
+                None => "opened".to_string(),
+            },
+        })
+        .collect::<Vec<_>>();
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(Notice {
+            kind: NoticeKind::OpenConversations { entries },
+            severity: NoticeSeverity::Info,
+        })
+    }
+}
+
+fn build_inbox_notice(events: &[StoredEvent], target: &ConversationAddress) -> Option<Notice> {
+    let messages = conversation_events(events, target)
+        .into_iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::MessageUser {
+                conversation,
+                text,
+                from,
+                ..
+            } if conversation == target.as_str() => Some(ConversationInboxMessage {
+                from: from
+                    .as_deref()
+                    .and_then(|value| ConversationAddress::parse(value).ok()),
+                text: text.clone(),
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(Notice {
+            kind: NoticeKind::ConversationInbox { messages },
+            severity: NoticeSeverity::Info,
+        })
+    }
+}
+
+fn build_loaded_skills_notice(
+    events: &[StoredEvent],
+    target: &ConversationAddress,
+) -> Option<Notice> {
+    let skills = loaded_skill_names(events, target.as_str());
+    if skills.is_empty() {
+        None
+    } else {
+        Some(Notice {
+            kind: NoticeKind::LoadedSkills { skills },
+            severity: NoticeSeverity::Info,
+        })
+    }
+}
+
+fn build_pending_permission_notice(
+    events: &[StoredEvent],
+    target: &ConversationAddress,
+) -> Option<Notice> {
+    let request = pending_permission_for_conversation(events, target)?;
+    Some(Notice {
+        kind: NoticeKind::PendingPermission { request },
+        severity: NoticeSeverity::Info,
+    })
+}
+
+fn build_interrupted_turn_notice(
+    events: &[StoredEvent],
+    target: &ConversationAddress,
+) -> Option<Notice> {
+    conversation_events(events, target)
+        .into_iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::TurnInterrupted {
+                conversation,
+                turn,
+                reason,
+                ..
+            } if conversation == target.as_str() => Some(Notice {
+                kind: NoticeKind::InterruptedTurn {
+                    conversation: target.clone(),
+                    turn: *turn,
+                    reason: reason.clone(),
+                },
+                severity: NoticeSeverity::Info,
+            }),
+            _ => None,
+        })
+}
+
+fn pending_permission_for_conversation(
+    events: &[StoredEvent],
+    target: &ConversationAddress,
+) -> Option<crate::query::PermissionRequest> {
+    let mut tool_conversations = BTreeMap::<String, ConversationAddress>::new();
+    let mut decisions = std::collections::BTreeSet::<String>::new();
+    let mut results = std::collections::BTreeSet::<String>::new();
+    let mut pending = Vec::<crate::query::PermissionRequest>::new();
+
+    for event in crate::context::revert::filter_rolled_back_events(events) {
+        match &event.payload {
+            EventPayload::ToolCall {
+                conversation: Some(conversation),
+                tool_call_id,
+                ..
+            } => {
+                if let Ok(address) = ConversationAddress::parse(conversation) {
+                    tool_conversations.insert(tool_call_id.clone(), address);
+                }
+            }
+            EventPayload::PermissionRequested {
+                turn,
+                tool_call_id,
+                tool,
+                risk,
+                summary,
+                candidate,
+                source,
+                ..
+            } => {
+                pending.push(crate::query::PermissionRequest {
+                    id: tool_call_id.clone(),
+                    conversation: tool_conversations
+                        .get(tool_call_id)
+                        .cloned()
+                        .unwrap_or(ConversationAddress::MAIN),
+                    turn: *turn,
+                    tool_call_id: tool_call_id.clone(),
+                    tool: tool.clone(),
+                    risk: risk.clone(),
+                    summary: summary.clone(),
+                    candidate: candidate.clone(),
+                    source: source.clone(),
+                });
+            }
+            EventPayload::PermissionAllow { tool_call_id, .. }
+            | EventPayload::PermissionDeny { tool_call_id, .. } => {
+                decisions.insert(tool_call_id.clone());
+            }
+            EventPayload::ToolResult { tool_call_id, .. } => {
+                results.insert(tool_call_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    pending.into_iter().rev().find(|request| {
+        request.conversation == *target
+            && !decisions.contains(&request.tool_call_id)
+            && !results.contains(&request.tool_call_id)
+    })
 }
 
 fn build_context_drift_notice(
@@ -340,6 +561,8 @@ mod tests {
             workspace: temp.path(),
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &ConversationAddress::MAIN,
+            agent_registry: None,
         });
         let rendered = render_notice_body(&notices[0]).unwrap();
 
@@ -360,11 +583,16 @@ mod tests {
                 payload: EventPayload::ToolResult {
                     turn: 1,
                     ts: "t1".to_string(),
+                    conversation: None,
                     tool_call_id: "tool_1".to_string(),
                     status: "ok".to_string(),
                     summary: "write".to_string(),
                     model_content: String::new(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: Some(serde_json::json!({
                         "kind": "file_write",
                         "canonical_path": tracked.display().to_string(),
@@ -391,6 +619,8 @@ mod tests {
             workspace: temp.path(),
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &ConversationAddress::MAIN,
+            agent_registry: None,
         });
 
         assert!(
@@ -426,11 +656,16 @@ mod tests {
                 payload: EventPayload::ToolResult {
                     turn: 1,
                     ts: "t2".to_string(),
+                    conversation: None,
                     tool_call_id: "tool_1".to_string(),
                     status: "ok".to_string(),
                     summary: "read".to_string(),
                     model_content: String::new(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: Some(serde_json::json!({
                         "kind": "file_content",
                         "canonical_path": read_file.display().to_string(),
@@ -458,6 +693,8 @@ mod tests {
             workspace: temp.path(),
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &ConversationAddress::MAIN,
+            agent_registry: None,
         });
         let rendered = render_notice_body(&notices[0]).unwrap();
 
@@ -490,11 +727,16 @@ mod tests {
                 payload: EventPayload::ToolResult {
                     turn: 1,
                     ts: "t2".to_string(),
+                    conversation: None,
                     tool_call_id: "tool_2".to_string(),
                     status: "ok".to_string(),
                     summary: "forget".to_string(),
                     model_content: String::new(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: Some(serde_json::json!({
                         "kind": "forget_memory",
                         "canonical_path": tracked.display().to_string(),
@@ -508,6 +750,8 @@ mod tests {
             workspace: temp.path(),
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &ConversationAddress::MAIN,
+            agent_registry: None,
         });
 
         assert!(

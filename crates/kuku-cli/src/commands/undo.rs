@@ -4,6 +4,7 @@ use std::path::Path;
 use kuku::context::{
     compute_file_revert_plan, count_file_turns_after, find_active_rollback, list_user_turns,
 };
+use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventStore, RollbackScope};
 
 pub fn run_undo(workspace: &Path, home: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,8 +97,14 @@ fn handle_new_rollback(
         return Ok(());
     }
 
-    let result =
-        kuku::context::rollback_turn(events_path, workspace, session_dir, target_turn, scope)?;
+    let result = kuku::context::rollback_turn(
+        events_path,
+        workspace,
+        session_dir,
+        &ConversationAddress::MAIN,
+        target_turn,
+        scope,
+    )?;
     for w in &result.warnings {
         eprintln!("warning: {w}");
     }
@@ -118,10 +125,10 @@ fn handle_undo_rollback(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "\nActive rollback detected (target: turn {}, scope: {:?})",
-        active.target_turn, active.scope
+        active.to_turn, active.scope
     );
 
-    let file_turn_count = count_file_turns_after(events, active.target_turn);
+    let file_turn_count = count_file_turns_after(events, active.to_turn);
 
     let can_restore_files = match active.scope {
         RollbackScope::ConversationOnly => true,

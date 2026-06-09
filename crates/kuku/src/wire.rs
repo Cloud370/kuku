@@ -110,8 +110,11 @@ fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
     use crate::query::ToolKind;
     match kind {
         ToolKind::Simple => json!("simple"),
-        ToolKind::Agent { child_session_id } => {
-            json!({"agent": {"child_session_id": child_session_id}})
+        ToolKind::Agent {
+            conversation,
+            binding_id,
+        } => {
+            json!({"agent": {"conversation": conversation.as_str(), "binding_id": binding_id}})
         }
         ToolKind::Command { pid } => json!({"command": {"pid": pid}}),
     }
@@ -200,11 +203,14 @@ mod tests {
             tool: "agent".into(),
             summary: "code-review".into(),
             kind: ToolKind::Agent {
-                child_session_id: "cs".into(),
+                conversation: crate::conversation::address::ConversationAddress::parse("review")
+                    .unwrap(),
+                binding_id: "sha256:abc".into(),
             },
         })
         .unwrap();
-        assert_eq!(agent["kind"]["agent"]["child_session_id"], "cs");
+        assert_eq!(agent["kind"]["agent"]["conversation"], "review");
+        assert_eq!(agent["kind"]["agent"]["binding_id"], "sha256:abc");
     }
 
     #[test]
@@ -248,6 +254,8 @@ mod tests {
         let event = UiEvent::PermissionRequested {
             request: PermissionRequest {
                 id: "req_1".to_string(),
+                conversation: crate::conversation::address::ConversationAddress::MAIN,
+                turn: 1,
                 tool_call_id: "tc_1".to_string(),
                 tool: "run_command".to_string(),
                 risk: "command".to_string(),
@@ -272,6 +280,8 @@ mod tests {
         let wire = tool_event_to_wire(&ToolEvent::PermissionRequested {
             request: PermissionRequest {
                 id: "req_2".to_string(),
+                conversation: crate::conversation::address::ConversationAddress::MAIN,
+                turn: 1,
                 tool_call_id: "tc_2".to_string(),
                 tool: "write_file".to_string(),
                 risk: "filesystem".to_string(),

@@ -10,7 +10,38 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct EventsQuery {
     pub after: Option<u64>,
+    pub conversation: Option<String>,
     pub workspace: Option<String>,
+}
+
+fn event_conversation(payload: &kuku::event::EventPayload) -> Option<&str> {
+    match payload {
+        kuku::event::EventPayload::ToolCall { conversation, .. }
+        | kuku::event::EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
+        kuku::event::EventPayload::ConversationOpened { conversation, .. }
+        | kuku::event::EventPayload::ConversationBound { conversation, .. }
+        | kuku::event::EventPayload::PromptSnapshot { conversation, .. }
+        | kuku::event::EventPayload::MessageUser { conversation, .. }
+        | kuku::event::EventPayload::MessageAssistant { conversation, .. }
+        | kuku::event::EventPayload::TurnStarted { conversation, .. }
+        | kuku::event::EventPayload::TurnCompleted { conversation, .. }
+        | kuku::event::EventPayload::TurnCancelled { conversation, .. }
+        | kuku::event::EventPayload::TurnInterrupted { conversation, .. }
+        | kuku::event::EventPayload::ConversationRollback { conversation, .. }
+        | kuku::event::EventPayload::ConversationRollbackUndone { conversation, .. }
+        | kuku::event::EventPayload::ContextSkills { conversation, .. } => Some(conversation),
+        kuku::event::EventPayload::Unknown(value) => {
+            value.get("conversation").and_then(|item| item.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn stream_event_matches_conversation(value: &serde_json::Value, conversation: &str) -> bool {
+    value
+        .get("conversation")
+        .and_then(|item| item.as_str())
+        .is_none_or(|value| value == conversation)
 }
 
 pub async fn events(
@@ -53,9 +84,15 @@ pub async fn events(
     };
 
     let after = params.after.unwrap_or(0);
+    let conversation = params.conversation.as_deref();
     let filtered: Vec<_> = events
         .iter()
         .filter(|e| e.id > after)
+        .filter(|event| {
+            conversation.is_none_or(|conversation| {
+                event_conversation(&event.payload).is_none_or(|value| value == conversation)
+            })
+        })
         .map(|e| {
             json!({
                 "id": e.id,
@@ -69,6 +106,11 @@ pub async fn events(
         mgr.recent_events(&session_id)
             .into_iter()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+            .filter(|value| {
+                conversation.is_none_or(|conversation| {
+                    stream_event_matches_conversation(value, conversation)
+                })
+            })
             .collect()
     };
 

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
@@ -28,9 +29,12 @@ pub struct FileRestore {
 }
 
 /// The currently active (non-undone) rollback in a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRollback {
+    pub conversation: String,
     pub rollback_event_id: u64,
-    pub target_turn: u64,
+    pub to_turn: u64,
+    pub to_event_id: u64,
     pub scope: RollbackScope,
 }
 
@@ -50,49 +54,236 @@ enum FileStateAt {
 
 /// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
-    let active_rollback = active_rollback_tuple(events);
-
-    let skipped_turns: HashSet<u64> = match &active_rollback {
-        Some((target_turn, _, scope)) if scope.affects_conversation() => events
-            .iter()
-            .filter_map(|e| {
-                if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                    if *turn >= *target_turn {
-                        Some(*turn)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => HashSet::new(),
-    };
+    let conversation_rollbacks = active_conversation_rollbacks(events);
 
     events
         .iter()
-        .filter(|event| match &event.payload {
-            EventPayload::TurnStart { turn, .. } => !skipped_turns.contains(turn),
-            EventPayload::TurnEnd { turn, .. }
-            | EventPayload::UserInput { turn, .. }
-            | EventPayload::ModelResponse { turn, .. }
-            | EventPayload::ToolCall { turn, .. }
-            | EventPayload::ToolResult { turn, .. }
-            | EventPayload::ModelError { turn, .. }
-            | EventPayload::PermissionRequested { turn, .. }
-            | EventPayload::PermissionAllow { turn, .. }
-            | EventPayload::PermissionDeny { turn, .. }
-            | EventPayload::ContextSources { turn, .. }
-            | EventPayload::ContextSkills { turn, .. }
-            | EventPayload::Handoff { turn, .. } => !skipped_turns.contains(turn),
-            EventPayload::ContextPrelude { .. } => true,
-            EventPayload::SessionMeta { .. }
-            | EventPayload::TurnRollback { .. }
-            | EventPayload::TurnRollbackUndo { .. }
-            | EventPayload::Unknown(_) => true,
+        .filter(|event| {
+            if let Some(conversation) = event_conversation_key(&event.payload) {
+                if conversation_rollbacks
+                    .get(conversation)
+                    .is_some_and(|rollback| {
+                        event_hidden_by_rollback(&event.payload, event.id, rollback)
+                    })
+                {
+                    return false;
+                }
+            }
+
+            match &event.payload {
+                EventPayload::ContextPrelude { .. }
+                | EventPayload::SessionCreated { .. }
+                | EventPayload::ConversationOpened { .. }
+                | EventPayload::ConversationBound { .. }
+                | EventPayload::PromptSnapshot { .. }
+                | EventPayload::MessageUser { .. }
+                | EventPayload::MessageAssistant { .. }
+                | EventPayload::TurnStarted { .. }
+                | EventPayload::TurnCompleted { .. }
+                | EventPayload::TurnCancelled { .. }
+                | EventPayload::TurnInterrupted { .. }
+                | EventPayload::ConversationRollback { .. }
+                | EventPayload::ConversationRollbackUndone { .. } => true,
+                EventPayload::SessionMeta { .. }
+                | EventPayload::TurnStart { .. }
+                | EventPayload::TurnEnd { .. }
+                | EventPayload::UserInput { .. }
+                | EventPayload::ModelResponse { .. }
+                | EventPayload::ToolCall { .. }
+                | EventPayload::ToolResult { .. }
+                | EventPayload::ModelError { .. }
+                | EventPayload::PermissionRequested { .. }
+                | EventPayload::PermissionAllow { .. }
+                | EventPayload::PermissionDeny { .. }
+                | EventPayload::ContextSources { .. }
+                | EventPayload::ContextSkills { .. }
+                | EventPayload::Handoff { .. }
+                | EventPayload::TurnRollback { .. }
+                | EventPayload::TurnRollbackUndo { .. }
+                | EventPayload::Unknown(_) => true,
+            }
         })
         .collect()
+}
+
+fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, ActiveRollback> {
+    let mut undone_ids = HashSet::new();
+    for event in events {
+        if let EventPayload::ConversationRollbackUndone {
+            rollback_event_id, ..
+        } = &event.payload
+        {
+            undone_ids.insert(*rollback_event_id);
+        }
+    }
+
+    let mut active = HashMap::new();
+    for event in events.iter().rev() {
+        match &event.payload {
+            EventPayload::ConversationRollback {
+                conversation,
+                to_turn,
+                to_event_id,
+                scope,
+                ..
+            } => {
+                if !scope.affects_conversation() || undone_ids.contains(&event.id) {
+                    continue;
+                }
+                active
+                    .entry(conversation.clone())
+                    .or_insert(ActiveRollback {
+                        conversation: conversation.clone(),
+                        rollback_event_id: event.id,
+                        to_turn: *to_turn,
+                        to_event_id: *to_event_id,
+                        scope: scope.clone(),
+                    });
+            }
+            EventPayload::TurnRollback {
+                target_turn, scope, ..
+            } => {
+                if !scope.affects_conversation() || undone_ids.contains(&event.id) {
+                    continue;
+                }
+                active
+                    .entry(ConversationAddress::MAIN.as_str().to_string())
+                    .or_insert(ActiveRollback {
+                        conversation: ConversationAddress::MAIN.as_str().to_string(),
+                        rollback_event_id: event.id,
+                        to_turn: *target_turn,
+                        to_event_id: find_turn_boundary_event_id(
+                            events,
+                            ConversationAddress::MAIN.as_str(),
+                            *target_turn,
+                        )
+                        .unwrap_or(event.id),
+                        scope: scope.clone(),
+                    });
+            }
+            _ => {}
+        }
+    }
+    active
+}
+
+fn event_hidden_by_rollback(
+    payload: &EventPayload,
+    event_id: u64,
+    rollback: &ActiveRollback,
+) -> bool {
+    if !rollback.scope.affects_conversation() {
+        return false;
+    }
+    if let Some(turn) = conversation_event_turn(payload) {
+        if rollback.conversation == ConversationAddress::MAIN.as_str()
+            && conversation_event_conversation(payload).is_none()
+        {
+            return turn >= rollback.to_turn;
+        }
+        return turn >= rollback.to_turn;
+    }
+    event_id > rollback.to_event_id
+}
+
+fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
+    match payload {
+        EventPayload::PromptSnapshot { turn, .. }
+        | EventPayload::MessageUser { turn, .. }
+        | EventPayload::MessageAssistant { turn, .. }
+        | EventPayload::TurnStarted { turn, .. }
+        | EventPayload::TurnCompleted { turn, .. }
+        | EventPayload::TurnCancelled { turn, .. }
+        | EventPayload::TurnInterrupted { turn, .. }
+        | EventPayload::TurnStart { turn, .. }
+        | EventPayload::UserInput { turn, .. }
+        | EventPayload::ModelResponse { turn, .. }
+        | EventPayload::ModelError { turn, .. }
+        | EventPayload::ToolCall { turn, .. }
+        | EventPayload::PermissionAllow { turn, .. }
+        | EventPayload::PermissionRequested { turn, .. }
+        | EventPayload::PermissionDeny { turn, .. }
+        | EventPayload::ToolResult { turn, .. }
+        | EventPayload::Handoff { turn, .. }
+        | EventPayload::TurnEnd { turn, .. }
+        | EventPayload::ContextSources { turn, .. }
+        | EventPayload::ContextSkills { turn, .. }
+        | EventPayload::TurnRollback { turn, .. }
+        | EventPayload::TurnRollbackUndo { turn, .. } => Some(*turn),
+        EventPayload::ConversationOpened { .. }
+        | EventPayload::ConversationBound { .. }
+        | EventPayload::ConversationRollback { .. }
+        | EventPayload::ConversationRollbackUndone { .. }
+        | EventPayload::SessionMeta { .. }
+        | EventPayload::ContextPrelude { .. }
+        | EventPayload::SessionCreated { .. }
+        | EventPayload::Unknown(_) => None,
+    }
+}
+
+fn conversation_event_conversation(payload: &EventPayload) -> Option<&str> {
+    match payload {
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::MessageAssistant { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+        | EventPayload::ConversationRollback { conversation, .. }
+        | EventPayload::ConversationRollbackUndone { conversation, .. } => {
+            Some(conversation.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn event_conversation_key(payload: &EventPayload) -> Option<&str> {
+    conversation_event_conversation(payload).or_else(|| {
+        if matches!(
+            payload,
+            EventPayload::TurnStart { .. }
+                | EventPayload::UserInput { .. }
+                | EventPayload::ModelResponse { .. }
+                | EventPayload::ModelError { .. }
+                | EventPayload::ToolCall {
+                    conversation: None,
+                    ..
+                }
+                | EventPayload::ToolResult {
+                    conversation: None,
+                    ..
+                }
+                | EventPayload::PermissionRequested { .. }
+                | EventPayload::PermissionAllow { .. }
+                | EventPayload::PermissionDeny { .. }
+                | EventPayload::ContextSources { .. }
+                | EventPayload::ContextSkills { .. }
+                | EventPayload::Handoff { .. }
+                | EventPayload::TurnEnd { .. }
+        ) {
+            Some(ConversationAddress::MAIN.as_str())
+        } else {
+            None
+        }
+    })
+}
+
+fn find_turn_boundary_event_id(
+    events: &[StoredEvent],
+    conversation: &str,
+    turn: u64,
+) -> Option<u64> {
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            conversation_event_turn(&event.payload) == Some(turn)
+                && event_conversation_key(&event.payload) == Some(conversation)
+        })
+        .map(|event| event.id)
 }
 
 /// Compute which files need to be reverted to restore state before a target turn.
@@ -308,44 +499,18 @@ fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usiz
 
 /// Find the most recent non-undone rollback in the event stream.
 pub fn find_active_rollback(events: &[StoredEvent]) -> Option<ActiveRollback> {
-    let mut undone_ids: HashSet<u64> = HashSet::new();
-    for event in events {
-        if let EventPayload::TurnRollbackUndo {
-            rollback_event_id, ..
-        } = &event.payload
-        {
-            undone_ids.insert(*rollback_event_id);
-        }
-    }
-
     events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::TurnRollback {
-            target_turn, scope, ..
-        } if !undone_ids.contains(&event.id) => Some(ActiveRollback {
-            rollback_event_id: event.id,
-            target_turn: *target_turn,
-            scope: scope.clone(),
-        }),
-        _ => None,
-    })
-}
-
-fn active_rollback_tuple(events: &[StoredEvent]) -> Option<(u64, u64, RollbackScope)> {
-    let mut undone_ids: HashSet<u64> = HashSet::new();
-    for event in events {
-        if let EventPayload::TurnRollbackUndo {
+        EventPayload::ConversationRollbackUndone {
             rollback_event_id, ..
-        } = &event.payload
-        {
-            undone_ids.insert(*rollback_event_id);
-        }
-    }
-
-    events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::TurnRollback {
-            target_turn, scope, ..
-        } if !undone_ids.contains(&event.id) => Some((*target_turn, event.id, scope.clone())),
+        } => Some(*rollback_event_id),
         _ => None,
+    });
+    let active = active_conversation_rollbacks(events);
+    events.iter().rev().find_map(|event| {
+        active
+            .values()
+            .find(|rollback| rollback.rollback_event_id == event.id)
+            .cloned()
     })
 }
 
@@ -401,21 +566,6 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
 /// Count turns with file modifications after a given turn.
 pub fn count_file_turns_after(events: &[StoredEvent], after_turn: u64) -> usize {
     collect_file_turns(events, Some(after_turn)).len()
-}
-
-fn next_turn_number(events: &[StoredEvent]) -> u64 {
-    events
-        .iter()
-        .filter_map(|e| {
-            if let EventPayload::TurnStart { turn, .. } = &e.payload {
-                Some(*turn)
-            } else {
-                None
-            }
-        })
-        .max()
-        .unwrap_or(0)
-        + 1
 }
 
 /// Execute a file revert plan: backup, restore, and delete files.
@@ -492,7 +642,7 @@ fn ensure_path_within_workspace(workspace: &Path, path: &Path) -> Result<(), std
 
 /// Result of a rollback operation.
 pub struct RollbackResult {
-    /// ID of the appended TurnRollback event.
+    /// ID of the appended rollback event.
     pub rollback_event_id: u64,
     /// Number of files restored to their previous content.
     pub files_restored: usize,
@@ -514,25 +664,30 @@ pub struct UndoRollbackResult {
     pub warnings: Vec<String>,
 }
 
-/// Roll back a conversation turn: append a TurnRollback event and optionally revert files.
+/// Roll back a conversation turn and optionally revert files.
 pub fn rollback_turn(
     events_path: &Path,
     workspace: &Path,
     session_dir: &Path,
+    conversation: &ConversationAddress,
     target_turn: u64,
     scope: RollbackScope,
 ) -> crate::Result<RollbackResult> {
     let events = EventStore::replay(events_path)?;
+    let to_event_id = find_turn_boundary_event_id(&events, conversation.as_str(), target_turn)
+        .ok_or_else(|| {
+            crate::error::Error::InvalidArgument(format!("turn {target_turn} not found"))
+        })?;
 
-    let next_turn = next_turn_number(&events);
     let affects_files = scope.affects_files();
     let mut store = EventStore::open(events_path)?;
-    let rb_event = store.append(EventPayload::TurnRollback {
-        turn: next_turn,
+    let rb_event = store.append(EventPayload::ConversationRollback {
         ts: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_default(),
-        target_turn,
+        conversation: conversation.as_str().to_string(),
+        to_turn: target_turn,
+        to_event_id,
         scope,
     })?;
 
@@ -555,7 +710,7 @@ pub fn rollback_turn(
     })
 }
 
-/// Undo an active rollback: restore files from backup and append a TurnRollbackUndo event.
+/// Undo an active rollback: restore files from backup and append a rollback undo event.
 pub fn undo_rollback(
     events_path: &Path,
     workspace: &Path,
@@ -566,7 +721,7 @@ pub fn undo_rollback(
         crate::error::Error::InvalidArgument("no active rollback found".into()),
     )?;
 
-    let file_turn_count = count_file_turns_after(&check_events, active.target_turn);
+    let file_turn_count = count_file_turns_after(&check_events, active.to_turn);
 
     let restore_files = match &active.scope {
         RollbackScope::ConversationOnly => true,
@@ -599,14 +754,12 @@ pub fn undo_rollback(
             "{file_turn_count} turn(s) with file changes since rollback; files kept as-is"
         ));
     }
-    let next_turn = next_turn_number(&check_events);
-
     let mut store = EventStore::open(events_path)?;
-    store.append(EventPayload::TurnRollbackUndo {
-        turn: next_turn,
+    store.append(EventPayload::ConversationRollbackUndone {
         ts: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_default(),
+        conversation: active.conversation.clone(),
         rollback_event_id: active.rollback_event_id,
     })?;
 

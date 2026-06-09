@@ -27,20 +27,24 @@ pub(crate) use write_file::write_file;
 pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "agent".to_string(),
-        description: "Delegate a task to a named subagent (child session). Use this for work that benefits from isolated context: explore search, code review, plan exploration.".to_string(),
+        description: "Delegate a task to a named agent contact in a separate conversation. Use this for work that benefits from isolated context: explore search, code review, plan exploration.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "name": {
+                "to": {
                     "type": "string",
-                    "description": "Name of the subagent to dispatch (from the available catalog below)"
+                    "description": "Conversation address to send to, such as review or review/api"
                 },
-                "prompt": {
+                "message": {
                     "type": "string",
-                    "description": "The task to delegate, with enough context for the subagent to work independently"
+                    "description": "The task to delegate, with enough context for the agent to work independently"
+                },
+                "tier": {
+                    "type": "string",
+                    "description": "Optional model tier to use when first binding this conversation"
                 }
             },
-            "required": ["name", "prompt"]
+            "required": ["to", "message"]
         }),
         read_only: false,
         max_result_chars: 20_000,

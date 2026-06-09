@@ -26,7 +26,8 @@ crates/kuku/src/
 |- skill/
 |- plugin/
 |- config/
-|- subagent/
+|- conversation/
+|- agent/
 |- notice/
 |- util/
 |- wire.rs

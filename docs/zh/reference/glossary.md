@@ -24,7 +24,7 @@
 
 | Term | Meaning |
 |---|---|
-| `Agent` | 在子 Session 中运行的命名 subagent |
+| `Agent` | 拥有委派 conversation 线程的联系人卡片 |
 | `Skill` | 加载到当前 Session 中的一组打包指令 |
 | `package` | hooks、skills 和相关资源的打包集合 |
 | `hook` | 由运行时生命周期事件触发的外部进程 |

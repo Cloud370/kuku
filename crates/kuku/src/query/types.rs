@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use futures_core::Stream;
 
 use crate::config::Config;
+use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
 use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
@@ -17,6 +18,7 @@ use crate::tool::ToolDefinition;
 pub struct Query {
     pub(super) prompt: String,
     pub(super) session_id: Option<String>,
+    pub(super) conversation: ConversationAddress,
     pub(super) provider: Option<crate::provider::Provider>,
     pub(super) model: Option<String>,
     pub(super) tier: Option<String>,
@@ -32,7 +34,10 @@ pub struct Query {
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
-    pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
+    pub(super) agent_registry: Option<crate::agent::registry::AgentRegistry>,
+    pub(super) agent_binding_id: Option<String>,
+    pub(super) message_from: Option<ConversationAddress>,
+    pub(super) via_tool_call_id: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
 
@@ -46,6 +51,7 @@ pub(crate) struct BootstrapSkill {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
     pub session_id: String,
+    pub conversation: ConversationAddress,
     pub text: String,
     pub usage: Option<crate::provider::types::ProviderUsage>,
     pub turn: u64,
@@ -61,6 +67,8 @@ pub struct RunOutput {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PermissionRequest {
     pub id: String,
+    pub conversation: ConversationAddress,
+    pub turn: u64,
     pub tool_call_id: String,
     pub tool: String,
     pub risk: String,
@@ -84,8 +92,13 @@ pub enum PermissionChoice {
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
     Simple,
-    Agent { child_session_id: String },
-    Command { pid: Option<u32> },
+    Agent {
+        conversation: ConversationAddress,
+        binding_id: String,
+    },
+    Command {
+        pid: Option<u32>,
+    },
 }
 
 /// Events produced during a tool execution phase.
@@ -129,8 +142,9 @@ pub enum ToolEvent {
     },
 }
 
-/// Permission mode for child sessions.
+/// Permission mode for delegated conversations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PermissionMode {
     AutoAllow,
     Interactive,
@@ -211,7 +225,7 @@ pub(crate) struct ExecSlot {
     pub(crate) ordered_with_simple_tools: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
-    pub(crate) child_permissions:
+    pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
 
@@ -276,6 +290,7 @@ pub struct ToolSummary {
 #[derive(Debug)]
 pub(super) struct PendingRun {
     pub(super) session_id: String,
+    pub(super) conversation: ConversationAddress,
     pub(super) query: Query,
     pub(super) events_path: PathBuf,
     pub(super) kuku_home: PathBuf,
@@ -289,11 +304,12 @@ pub(super) struct PendingRun {
     pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
-    pub(super) subagent_registry: Option<crate::subagent::registry::SubagentRegistry>,
+    pub(super) agent_registry: Option<crate::agent::registry::AgentRegistry>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) child_session_count: u32,
+    pub(super) agent_binding_id: Option<String>,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
@@ -386,6 +402,7 @@ pub(super) enum PendingStep {
 
 pub(super) struct StreamingChunkState {
     pub(super) pending: PendingRun,
+    pub(super) conversation: ConversationAddress,
     pub(super) request_id: String,
     pub(super) stream:
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
@@ -414,6 +431,7 @@ impl RunOutput {
     ) -> Self {
         Self {
             session_id,
+            conversation: ConversationAddress::MAIN,
             text,
             usage,
             turn,
@@ -446,6 +464,7 @@ impl Query {
         Self {
             prompt: prompt.into(),
             session_id: None,
+            conversation: ConversationAddress::MAIN,
             provider: None,
             model: None,
             tier: None,
@@ -461,18 +480,21 @@ impl Query {
             disable_agents: false,
             disable_skills: false,
             bootstrap_skill: None,
-            subagent_registry: None,
+            agent_registry: None,
+            agent_binding_id: None,
+            message_from: None,
+            via_tool_call_id: None,
             tool_registry_override: None,
         }
     }
 
-    /// Register a subagent registry for agent tool dispatch.
-    pub fn subagents(mut self, registry: crate::subagent::registry::SubagentRegistry) -> Self {
-        self.subagent_registry = Some(registry);
+    /// Register an agent registry for agent tool dispatch.
+    pub fn agents(mut self, registry: crate::agent::registry::AgentRegistry) -> Self {
+        self.agent_registry = Some(registry);
         self
     }
 
-    /// Disable the agent tool (subagent delegation).
+    /// Disable the agent tool (agent delegation).
     pub fn no_agents(mut self) -> Self {
         self.disable_agents = true;
         self
@@ -502,6 +524,28 @@ impl Query {
     /// Set or resume a session by ID.
     pub fn session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Select the target conversation within the session.
+    pub fn conversation(mut self, conversation: impl AsRef<str>) -> Self {
+        self.conversation = ConversationAddress::parse(conversation.as_ref())
+            .expect("conversation address must be valid");
+        self
+    }
+
+    pub(crate) fn with_agent_binding_id(mut self, binding_id: impl Into<String>) -> Self {
+        self.agent_binding_id = Some(binding_id.into());
+        self
+    }
+
+    pub(crate) fn sender(
+        mut self,
+        from: ConversationAddress,
+        via_tool_call_id: impl Into<String>,
+    ) -> Self {
+        self.message_from = Some(from);
+        self.via_tool_call_id = Some(via_tool_call_id.into());
         self
     }
 
@@ -613,7 +657,8 @@ mod tests {
             r#"{"command":{"pid":null}}"#
         );
         let agent = ToolKind::Agent {
-            child_session_id: "child_abc_0".into(),
+            conversation: ConversationAddress::parse("review/api").unwrap(),
+            binding_id: "sha256:abc".into(),
         };
         let agent_json = serde_json::to_string(&agent).unwrap();
         let back: ToolKind = serde_json::from_str(&agent_json).unwrap();

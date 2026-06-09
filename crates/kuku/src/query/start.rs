@@ -15,7 +15,10 @@ use crate::skill::session::{
     TurnSkillSnapshot,
 };
 
-use super::helpers::{next_turn, now_timestamp, validate_existing_session};
+use super::helpers::{
+    append_interrupted_active_turn, append_message_user_with_sender, append_turn_started,
+    next_turn, now_timestamp, validate_existing_session,
+};
 use super::types::{
     PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState, UiEvent,
 };
@@ -70,10 +73,14 @@ fn synthetic_builder_config() -> crate::config::Config {
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
-        self.start_session().await
+        self.start_session_with_lock(true).await
     }
 
-    async fn start_session(mut self) -> Result<Run> {
+    pub(crate) async fn start_nested(self) -> Result<Run> {
+        self.start_session_with_lock(false).await
+    }
+
+    async fn start_session_with_lock(mut self, acquire_lock: bool) -> Result<Run> {
         self.validate()?;
 
         let kuku_home = match self.captured_kuku_home.take() {
@@ -114,7 +121,11 @@ impl Query {
         validate_session_id(&session_id)?;
 
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        let lock_guard = StartupLockGuard::acquire(lock_path)?;
+        let run_lock_path = if acquire_lock {
+            StartupLockGuard::acquire(lock_path.clone())?.into_path()
+        } else {
+            lock_path.with_extension("nested")
+        };
         let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = EventStore::replay(&events_path)?;
@@ -125,7 +136,8 @@ impl Query {
         } else {
             Some(super::lifecycle::reduce_lifecycle(&existing_events))
         };
-        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id)?;
+        let conversation = self.conversation.clone();
+        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id, &conversation)?;
         let resumed_permission = lifecycle
             .as_ref()
             .and_then(|state| state.pending_permissions.first());
@@ -137,21 +149,40 @@ impl Query {
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| next_turn(&existing_events));
-
         let mut store = EventStore::open(&events_path)?;
         if is_new_session {
             let created_at = now_timestamp()?;
-            store.append(EventPayload::SessionMeta {
+            store.append(EventPayload::SessionCreated {
                 ts: created_at.clone(),
-                schema_version: 1,
+                schema_version: 2,
                 session_id: session_id.clone(),
                 created_at,
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })?;
         }
+        let has_conversation = existing_events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ConversationOpened { conversation, .. }
+                    if conversation == self.conversation.as_str()
+            )
+        });
+        if !has_conversation {
+            store.append(EventPayload::ConversationOpened {
+                ts: now_timestamp()?,
+                conversation: self.conversation.as_str().to_string(),
+            })?;
+            if let Some(binding_id) = self.agent_binding_id.as_ref() {
+                store.append(EventPayload::ConversationBound {
+                    ts: now_timestamp()?,
+                    conversation: self.conversation.as_str().to_string(),
+                    binding_id: binding_id.clone(),
+                })?;
+            }
+        }
 
         let prompts_dir = self.prompts_dir.take();
-        let subagent_registry = self.subagent_registry.clone();
+        let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
         let plugin_registry_opt = if config.plugin.enabled {
@@ -165,15 +196,21 @@ impl Query {
         };
 
         if resumed_permission.is_none() {
-            store.append(EventPayload::TurnStart {
+            append_interrupted_active_turn(
+                &events_path,
+                &existing_events,
+                &conversation,
+                "resume_before_new_turn",
+            )?;
+            append_turn_started(&events_path, &conversation, turn)?;
+            append_message_user_with_sender(
+                &events_path,
+                &conversation,
                 turn,
-                ts: now_timestamp()?,
-            })?;
-            store.append(EventPayload::UserInput {
-                turn,
-                ts: now_timestamp()?,
-                text: self.prompt.clone(),
-            })?;
+                &self.prompt,
+                self.message_from.as_ref(),
+                self.via_tool_call_id.as_deref(),
+            )?;
 
             if let (Ok(session_log_path), Ok(ts)) =
                 (session_log_path(&kuku_home, &session_id), now_timestamp())
@@ -191,14 +228,19 @@ impl Query {
             }
         }
 
+        let previous_skill_snapshot =
+            previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
         let (skill_registry, previous_skill_registry) = if self.disable_skills {
             (None, None)
-        } else if let Some(snapshot) = restore_turn_snapshot(&existing_events, turn) {
+        } else if let Some(snapshot) =
+            restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
+        {
             bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
             (
                 Some(snapshot.registry),
-                previous_snapshot_before_turn(&existing_events, turn)
-                    .map(|snapshot| snapshot.registry),
+                previous_skill_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.registry.clone()),
             )
         } else {
             match build_registry_snapshot(
@@ -207,16 +249,23 @@ impl Query {
                 plugin_registry_opt.as_ref(),
             ) {
                 Ok(registry) => {
+                    let (registry, bootstrap_loaded) =
+                        if let Some(snapshot) = previous_skill_snapshot.as_ref() {
+                            bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
+                            (snapshot.registry.clone(), snapshot.bootstrap_loaded.clone())
+                        } else {
+                            (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
+                        };
                     store.append(EventPayload::ContextSkills {
+                        conversation: conversation.as_str().to_string(),
                         turn,
                         ts: now_timestamp()?,
                         registry: serde_json::to_value(&registry)?,
-                        bootstrap_loaded: bootstrap_loaded_names(bootstrap_skill.as_ref()),
+                        bootstrap_loaded,
                     })?;
                     (
                         Some(registry),
-                        previous_snapshot_before_turn(&existing_events, turn)
-                            .map(|snapshot| snapshot.registry),
+                        previous_skill_snapshot.map(|snapshot| snapshot.registry),
                     )
                 }
                 Err(_) => (None, None),
@@ -286,9 +335,11 @@ impl Query {
         );
 
         let resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        let agent_binding_id = self.agent_binding_id.clone();
 
         let pending = PendingRun {
             session_id: session_id.clone(),
+            conversation: conversation.clone(),
             query: self,
             events_path,
             kuku_home,
@@ -304,11 +355,12 @@ impl Query {
             pending_error: None,
             config,
             prompts_dir,
-            subagent_registry,
+            agent_registry,
             bootstrap_skill,
             skill_registry,
             previous_skill_registry,
             child_session_count: 0,
+            agent_binding_id,
             tool_registry_override,
             catalog,
             cancel_token: cancel_token.clone(),
@@ -340,13 +392,13 @@ impl Query {
             slot_event_tx,
             slot_event_rx,
             cancel_token,
-            lock_path: lock_guard.into_path(),
+            lock_path: run_lock_path,
             deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start_session().await?;
+        let mut run = self.start_session_with_lock(true).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { .. }) => {
@@ -367,7 +419,7 @@ impl Query {
         self,
         choice: super::types::PermissionChoice,
     ) -> Result<RunOutput> {
-        let mut run = self.start_session().await?;
+        let mut run = self.start_session_with_lock(true).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {
@@ -467,11 +519,16 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
 fn reject_interrupted_open_tools(
     lifecycle: Option<&super::lifecycle::LifecycleState>,
     session_id: &str,
+    conversation: &crate::conversation::address::ConversationAddress,
 ) -> Result<()> {
     let Some(lifecycle) = lifecycle else {
         return Ok(());
     };
-    let Some(open_tool) = lifecycle.open_tools.first() else {
+    let Some(open_tool) = lifecycle
+        .open_tools
+        .iter()
+        .find(|open_tool| &open_tool.conversation == conversation)
+    else {
         return Ok(());
     };
 
@@ -664,6 +721,7 @@ mod startup_prune_tests {
             .unwrap();
         store
             .append(EventPayload::ContextSkills {
+                conversation: "main".to_string(),
                 turn: 1,
                 ts: "2026-06-07T00:00:03Z".to_string(),
                 registry: serde_json::to_value(&persisted_registry).unwrap(),
@@ -674,6 +732,7 @@ mod startup_prune_tests {
             .append(EventPayload::ToolCall {
                 turn: 1,
                 ts: "2026-06-07T00:00:04Z".to_string(),
+                conversation: None,
                 tool_call_id: "tool_1".to_string(),
                 request_id: "req_1".to_string(),
                 index: 0,
@@ -781,6 +840,7 @@ mod startup_prune_tests {
             .unwrap();
         store
             .append(EventPayload::ContextSkills {
+                conversation: "main".to_string(),
                 turn: 1,
                 ts: "2026-06-07T00:00:02Z".to_string(),
                 registry: serde_json::to_value(&persisted_registry).unwrap(),
@@ -791,6 +851,7 @@ mod startup_prune_tests {
             .append(EventPayload::ToolCall {
                 turn: 1,
                 ts: "2026-06-07T00:00:03Z".to_string(),
+                conversation: None,
                 tool_call_id: "tool_1".to_string(),
                 request_id: "req_1".to_string(),
                 index: 0,
@@ -885,6 +946,7 @@ mod startup_prune_tests {
             .unwrap();
         store
             .append(EventPayload::ContextSkills {
+                conversation: "main".to_string(),
                 turn: 1,
                 ts: "2026-06-07T00:00:03Z".to_string(),
                 registry: serde_json::to_value(&persisted_registry).unwrap(),
@@ -895,6 +957,7 @@ mod startup_prune_tests {
             .append(EventPayload::ToolCall {
                 turn: 1,
                 ts: "2026-06-07T00:00:04Z".to_string(),
+                conversation: None,
                 tool_call_id: "tool_1".to_string(),
                 request_id: "req_1".to_string(),
                 index: 0,
@@ -977,7 +1040,7 @@ mod startup_prune_tests {
 
         assert_eq!(context_skills, vec!["bootstrap-skill".to_string()]);
         assert_eq!(
-            crate::skill::session::loaded_skill_names(&events),
+            crate::skill::session::loaded_skill_names(&events, "main"),
             vec!["bootstrap-skill".to_string()]
         );
     }

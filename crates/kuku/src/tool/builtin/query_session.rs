@@ -17,7 +17,9 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
-                "type": { "type": "string", "enum": ["UserInput", "ModelResponse", "ToolCall", "ToolResult", "PermissionRequested", "PermissionAllow", "PermissionDeny", "ContextSkills", "Handoff", "TurnRollback", "TurnRollbackUndo"], "description": "Filter by event type" },
+                "kind": { "type": "string", "description": "Filter by event kind" },
+                "conversation": { "type": "string", "description": "Filter by conversation address" },
+                "after": { "type": "integer", "description": "Return events with id greater than this value" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },
                 "limit": { "type": "integer", "description": "Max events to return (default 20)" },
@@ -62,16 +64,19 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
 
     let filtered_refs;
     let events: &[&crate::event::StoredEvent] = if skip_rolled_back {
-        filtered_refs = crate::context::revert::filter_rolled_back_events(&all_events);
+        filtered_refs = queryable_filtered_events(&all_events);
         &filtered_refs
     } else {
         &[]
     };
 
     let type_filter = args
-        .get("type")
+        .get("kind")
+        .or_else(|| args.get("type"))
         .and_then(Value::as_str)
         .map(normalize_type_filter);
+    let conversation_filter = args.get("conversation").and_then(Value::as_str);
+    let after = args.get("after").and_then(Value::as_u64).unwrap_or(0);
     let search = args.get("search").and_then(Value::as_str);
     let from_turn = args.get("from_turn").and_then(Value::as_u64).unwrap_or(0) as usize;
     let to_turn = args
@@ -101,6 +106,10 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
             break;
         }
 
+        if event.id <= after {
+            continue;
+        }
+
         if type_filter.is_none() && !include_in_default_results(&event.payload) {
             continue;
         }
@@ -119,6 +128,12 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
 
         if let Some(ref filter) = type_filter {
             if !event_type_matches(&event.payload, filter) {
+                continue;
+            }
+        }
+
+        if let Some(conversation) = conversation_filter {
+            if event_conversation(&event.payload) != Some(conversation) {
                 continue;
             }
         }
@@ -152,6 +167,66 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
     }
     output.push_str("\n]");
     Ok((output, matched.len()))
+}
+
+fn queryable_filtered_events(
+    all_events: &[crate::event::StoredEvent],
+) -> Vec<&crate::event::StoredEvent> {
+    let target_turn = active_main_turn_rollback_target(all_events);
+    crate::context::revert::filter_rolled_back_events(all_events)
+        .into_iter()
+        .filter(|event| {
+            let Some(target_turn) = target_turn else {
+                return true;
+            };
+            match &event.payload {
+                EventPayload::TurnStart { turn, .. }
+                | EventPayload::UserInput { turn, .. }
+                | EventPayload::ModelResponse { turn, .. }
+                | EventPayload::ModelError { turn, .. }
+                | EventPayload::ToolCall {
+                    turn,
+                    conversation: None,
+                    ..
+                }
+                | EventPayload::ToolResult {
+                    turn,
+                    conversation: None,
+                    ..
+                }
+                | EventPayload::PermissionAllow { turn, .. }
+                | EventPayload::PermissionRequested { turn, .. }
+                | EventPayload::PermissionDeny { turn, .. }
+                | EventPayload::ContextSources { turn, .. }
+                | EventPayload::ContextSkills { turn, .. }
+                | EventPayload::Handoff { turn, .. }
+                | EventPayload::TurnEnd { turn, .. } => *turn < target_turn,
+                _ => true,
+            }
+        })
+        .collect()
+}
+
+fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) -> Option<u64> {
+    let undone = all_events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::TurnRollbackUndo {
+                rollback_event_id, ..
+            } => Some(*rollback_event_id),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    all_events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::TurnRollback {
+                target_turn, scope, ..
+            } if scope.affects_conversation() && !undone.contains(&event.id) => Some(*target_turn),
+            _ => None,
+        })
 }
 
 fn build_turn_map_from_events(
@@ -211,27 +286,7 @@ fn normalize_type_filter(raw: &str) -> String {
 }
 
 fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
-    let type_tag = match payload {
-        EventPayload::UserInput { .. } => "user.input",
-        EventPayload::ModelResponse { .. } => "model.response",
-        EventPayload::ToolCall { .. } => "tool.call",
-        EventPayload::ToolResult { .. } => "tool.result",
-        EventPayload::PermissionRequested { .. } => "permission.requested",
-        EventPayload::PermissionAllow { .. } => "permission.allow",
-        EventPayload::PermissionDeny { .. } => "permission.deny",
-        EventPayload::ContextSkills { .. } => "context.skills",
-        EventPayload::Handoff { .. } => "handoff",
-        EventPayload::TurnRollback { .. } => "turn.rollback",
-        EventPayload::TurnRollbackUndo { .. } => "turn.rollback.undo",
-        EventPayload::SessionMeta { .. }
-        | EventPayload::ContextPrelude { .. }
-        | EventPayload::ContextSources { .. }
-        | EventPayload::TurnStart { .. }
-        | EventPayload::TurnEnd { .. }
-        | EventPayload::ModelError { .. }
-        | EventPayload::Unknown(_) => return false,
-    };
-    type_tag == filter
+    payload.kind_name() == filter
 }
 
 fn include_in_default_results(payload: &EventPayload) -> bool {
@@ -241,6 +296,7 @@ fn include_in_default_results(payload: &EventPayload) -> bool {
 fn format_event(event: &crate::event::StoredEvent) -> String {
     let mut json = serde_json::json!({
         "id": event.id,
+        "kind": event.payload.kind_name(),
     });
     if let Ok(payload_json) = serde_json::to_value(&event.payload) {
         if let Some(obj) = payload_json.as_object() {
@@ -251,6 +307,26 @@ fn format_event(event: &crate::event::StoredEvent) -> String {
         }
     }
     truncate_json_string(&serde_json::to_string(&json).unwrap_or_default())
+}
+
+fn event_conversation(payload: &EventPayload) -> Option<&str> {
+    match payload {
+        EventPayload::ToolCall { conversation, .. }
+        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::MessageAssistant { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+        | EventPayload::ConversationRollback { conversation, .. }
+        | EventPayload::ConversationRollbackUndone { conversation, .. }
+        | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
+        _ => None,
+    }
 }
 
 fn truncate_value(key: &str, value: &Value) -> Value {
@@ -331,7 +407,7 @@ mod tests {
                 },
             ],
         );
-        let result = query_session(&json!({"type": "UserInput"}), &path);
+        let result = query_session(&json!({"kind": "UserInput"}), &path);
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("hello"));
         assert!(!result.model_content.contains("\"hi\""));
@@ -344,6 +420,7 @@ mod tests {
             dir.path(),
             &[
                 EventPayload::ContextSkills {
+                    conversation: "main".into(),
                     turn: 1,
                     ts: ts("t"),
                     registry: serde_json::to_value(
@@ -366,7 +443,7 @@ mod tests {
         assert!(!default_result.model_content.contains("context.skills"));
         assert!(!default_result.model_content.contains("bootstrap-alpha"));
 
-        let explicit_result = query_session(&json!({"type": "ContextSkills"}), &path);
+        let explicit_result = query_session(&json!({"kind": "ContextSkills"}), &path);
         assert_eq!(explicit_result.status, "ok");
         assert!(explicit_result.model_content.contains("context.skills"));
         assert!(explicit_result.model_content.contains("bootstrap-alpha"));
@@ -610,7 +687,7 @@ mod tests {
             ],
         );
         let result = query_session(
-            &json!({"type": "TurnRollback", "skip_rolled_back": false}),
+            &json!({"kind": "TurnRollback", "skip_rolled_back": false}),
             &path,
         );
         assert_eq!(result.status, "ok");
@@ -642,7 +719,7 @@ mod tests {
             ],
         );
 
-        let result = query_session(&json!({"type": "PermissionRequested"}), &path);
+        let result = query_session(&json!({"kind": "PermissionRequested"}), &path);
 
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("permission.requested"));
@@ -681,8 +758,8 @@ mod tests {
             ],
         );
 
-        let allow = query_session(&json!({"type": "permission.allow"}), &path);
-        let deny = query_session(&json!({"type": "permission.deny"}), &path);
+        let allow = query_session(&json!({"kind": "permission.allow"}), &path);
+        let deny = query_session(&json!({"kind": "permission.deny"}), &path);
 
         assert_eq!(allow.status, "ok");
         assert!(allow.model_content.contains("permission.allow"));
@@ -759,5 +836,71 @@ mod tests {
         assert!(result.model_content.contains("first"));
         assert!(!result.model_content.contains("second active"));
         assert!(!result.model_content.contains("third rolled back"));
+    }
+
+    #[test]
+    fn query_session_filters_single_conversation() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::ConversationOpened {
+                    ts: ts("t"),
+                    conversation: "review".into(),
+                },
+                EventPayload::MessageUser {
+                    ts: ts("t"),
+                    conversation: "review".into(),
+                    turn: 1,
+                    text: "review text".into(),
+                    from: Some("main".into()),
+                    via_tool_call_id: None,
+                },
+                EventPayload::ConversationOpened {
+                    ts: ts("t"),
+                    conversation: "explore".into(),
+                },
+                EventPayload::MessageUser {
+                    ts: ts("t"),
+                    conversation: "explore".into(),
+                    turn: 1,
+                    text: "explore text".into(),
+                    from: Some("main".into()),
+                    via_tool_call_id: None,
+                },
+            ],
+        );
+
+        let result = query_session(&json!({"conversation": "review"}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("message.user"));
+        assert!(result.model_content.contains("review"));
+        assert!(result.model_content.contains("review text"));
+        assert!(!result.model_content.contains("explore text"));
+    }
+
+    #[test]
+    fn query_session_filters_after_event_id() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "first".into(),
+                },
+                EventPayload::UserInput {
+                    turn: 1,
+                    ts: ts("t"),
+                    text: "second".into(),
+                },
+            ],
+        );
+
+        let result = query_session(&json!({"after": 1}), &path);
+        assert_eq!(result.status, "ok");
+        assert!(!result.model_content.contains("first"));
+        assert!(result.model_content.contains("second"));
     }
 }

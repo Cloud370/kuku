@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
 use crate::prompt::PromptCatalog;
 
@@ -80,12 +81,18 @@ pub(crate) struct ResolvedProvider {
 pub(crate) struct ProviderRequest<'a> {
     pub(crate) assembly: ContextAssembly,
     pub(crate) catalog: &'a PromptCatalog,
+    pub(crate) current_input: CanonicalPromptInput,
     pub(crate) model: String,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: bool,
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CanonicalPromptInput {
+    pub(crate) parts: Vec<CanonicalMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

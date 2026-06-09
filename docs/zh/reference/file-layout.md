@@ -8,13 +8,13 @@
 ~/.kuku/
 ```
 
-或者，如果已设置：
+或者，如果设置了：
 
 ```text
 $KUKU_HOME/
 ```
 
-## 顶层布局
+## Top-Level Layout
 
 ```text
 $KUKU_HOME/
@@ -27,11 +27,11 @@ $KUKU_HOME/
 └── p/
 ```
 
-`logs/` 存放可观测性日志。Session 事实仍保存在每个 Session 的 `events.jsonl` 中。
+`logs/` 存放可观测性日志。Session 事实仍保存在各个 Session 的 `events.jsonl` 中。
 
-## 项目作用域布局
+## Project-Scoped Layout
 
-对于 workspace `/code/my-app`，项目 home 是：
+对于工作区 `/code/my-app`，项目 home 是：
 
 ```text
 $KUKU_HOME/p/code/my-app/
@@ -46,35 +46,37 @@ $KUKU_HOME/p/<workspace>/
 └── sessions/
 ```
 
-## Session 布局
+## Session Layout
 
 ```text
 $KUKU_HOME/p/<workspace>/sessions/<session-id>/
 ├── lock
 ├── events.jsonl
-├── pre-revert-<event-id>/
-└── subs/
+└── pre-revert-<event-id>/
 ```
 
 说明：
 
 - `lock` 记录当前活跃写入者。
-- `events.jsonl` 是 Session 事实日志。
+- `events.jsonl` 是 Session 账本。
 - `pre-revert-<event-id>/` 会在文件回滚创建备份时出现。
-- `subs/` 用于存在子 Session 的情况。
 
-## 用户级和项目级扩展
+`subs/` 已不再是 agent 工作的规范主模型。规范的 agent conversation 存在于同一个 Session 账本中，并通过 `events.jsonl` 里的 conversation address 来区分。
 
-约定的用户级定义：
+更老的 Session 里仍可能保留早期委派布局留下的兼容产物。应把这些视为历史遗留。
+
+## User and Project Extensions
+
+约定的用户级定义位置：
 
 - `~/.kuku/agents/`
 - `~/.kuku/skills/`
 - `~/.kuku/packages/`
 
-workspace 内约定的项目级定义：
+工作区内约定的项目级定义位置：
 
 - `<workspace>/.kuku/agents/`
 - `<workspace>/.kuku/skills/`
 - `<workspace>/.kuku/packages/`
 
-当 `auto_discover = true` 时，kuku 也会扫描其他用户级和项目级 dot-directory 中的 `skills/`、`agents/` 和 `agent/` 子目录。像 `.claude/skills`、`.claude/agents`、`.opencode/agent` 这样的兼容布局会被自动发现。
+当 `auto_discover = true` 时，kuku 也会扫描其他用户和项目 dot-directory 下的 `skills/`、`agents/` 和 `agent/` 子目录。像 `.claude/skills`、`.claude/agents`、`.opencode/agent` 这样的兼容布局也会被自动发现。

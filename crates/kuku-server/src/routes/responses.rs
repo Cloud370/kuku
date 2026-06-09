@@ -11,6 +11,8 @@ use crate::AppState;
 pub struct ResponseRequest {
     pub interaction_id: String,
     pub choice: String,
+    #[serde(default)]
+    pub conversation: Option<String>,
 }
 
 pub async fn respond(

@@ -380,7 +380,7 @@ impl AnthropicSseParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ContextAssembly;
+    use crate::context::{CanonicalMessage, ContextAssembly};
     use crate::prompt::PromptCatalog;
     use crate::provider::types::ProviderRequest;
 
@@ -401,6 +401,9 @@ mod tests {
                 handoff_summary: None,
             },
             catalog,
+            current_input: crate::provider::types::CanonicalPromptInput {
+                parts: vec![CanonicalMessage::user_text("input")],
+            },
             model: "test-model".into(),
             max_output_tokens: Some(1024),
             temperature: None,

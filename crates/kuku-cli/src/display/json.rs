@@ -30,6 +30,8 @@ pub enum OutputLine {
         tool_call_id: String,
         summary: String,
         args: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
@@ -39,6 +41,8 @@ pub enum OutputLine {
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         truncated: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     #[serde(rename = "permission_ask")]
     PermissionAsk {
@@ -46,6 +50,8 @@ pub enum OutputLine {
         tool: String,
         risk: String,
         summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     #[serde(rename = "permission_decision")]
     PermissionDecision {
@@ -53,6 +59,8 @@ pub enum OutputLine {
         tool: String,
         decision: String,
         rule: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     #[serde(rename = "error")]
     Error {
@@ -145,6 +153,7 @@ impl OutputLine {
             tool_call_id,
             summary,
             args,
+            conversation: None,
         }
     }
 
@@ -161,6 +170,7 @@ impl OutputLine {
             summary,
             output,
             truncated,
+            conversation: None,
         }
     }
 
@@ -170,6 +180,7 @@ impl OutputLine {
             tool,
             risk,
             summary,
+            conversation: None,
         }
     }
 
@@ -184,6 +195,67 @@ impl OutputLine {
             tool,
             decision,
             rule,
+            conversation: None,
+        }
+    }
+
+    pub fn with_conversation(self, conversation: Option<String>) -> Self {
+        match self {
+            OutputLine::ToolCall {
+                tool,
+                tool_call_id,
+                summary,
+                args,
+                ..
+            } => OutputLine::ToolCall {
+                tool,
+                tool_call_id,
+                summary,
+                args,
+                conversation,
+            },
+            OutputLine::ToolResult {
+                tool_call_id,
+                status,
+                summary,
+                output,
+                truncated,
+                ..
+            } => OutputLine::ToolResult {
+                tool_call_id,
+                status,
+                summary,
+                output,
+                truncated,
+                conversation,
+            },
+            OutputLine::PermissionAsk {
+                request_id,
+                tool,
+                risk,
+                summary,
+                ..
+            } => OutputLine::PermissionAsk {
+                request_id,
+                tool,
+                risk,
+                summary,
+                conversation,
+            },
+            OutputLine::PermissionDecision {
+                request_id,
+                tool,
+                decision,
+                rule,
+                ..
+            } => OutputLine::PermissionDecision {
+                request_id,
+                tool,
+                decision,
+                rule,
+                conversation,
+            },
+            other => other,
         }
     }
 

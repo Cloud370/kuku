@@ -5,13 +5,14 @@ pub mod replay;
 pub mod revert;
 
 pub use assembly::{
-    assemble_context, restore_frozen_prelude, ContextAssembly, ContextInput, EnvironmentSource,
+    assemble_context, restore_prompt_snapshot, ContextAssembly, ContextInput, EnvironmentSource,
     InstructionSource, MemorySource, ToolSchema,
 };
 pub use message::{CanonicalMessage, MessageBlock, Role, ToolResult, ToolUse};
 pub use provenance::{
-    FileSource, HistoryRange, PluginRegistryProvenance, RequestProvenance,
-    SubagentRegistryProvenance, ToolRegistryProvenance,
+    AgentRegistryProvenance, FileSource, HistoryRange, PluginRegistryProvenance,
+    PromptCapabilityMetadata, PromptRendererIdentity, RequestProvenance, SkillRegistryProvenance,
+    ToolRegistryProvenance,
 };
 pub use replay::rebuild_history;
 pub use revert::{

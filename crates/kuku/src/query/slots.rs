@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::event::StoredEvent;
 
-use super::types::{ExecSlot, PermissionChoice, PermissionMode, SlotEvent, ToolEvent, ToolKind};
+use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
 
 pub(crate) fn requires_ordered_simple_execution(tool_name: &str) -> bool {
@@ -69,47 +69,41 @@ pub(crate) fn spawn_simple_slot(
         ordered_with_simple_tools,
         label: summary,
         cancel,
-        child_permissions: Arc::new(Mutex::new(HashMap::new())),
+        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_agent_slot(
     tool_call_id: String,
-    agent_name: String,
-    prompt: String,
+    dispatch: crate::agent::runtime::PreparedDispatch,
     summary: String,
-    definition: crate::subagent::definition::SubagentDefinition,
-    parent_session_dir: std::path::PathBuf,
     workspace: std::path::PathBuf,
     kuku_home: std::path::PathBuf,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<std::path::PathBuf>,
-    child_session_id: String,
-    child_session_count: u32,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
-    let child_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
+    let nested_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     let cancel_clone = cancel.clone();
-    let cp = child_permissions.clone();
+    let cp = nested_permissions.clone();
     let tc_id = tool_call_id.clone();
-    let child_session_id_for_slot = child_session_id.clone();
+    let tool_kind = ToolKind::Agent {
+        conversation: dispatch.conversation.clone(),
+        binding_id: dispatch.binding.binding_id.clone(),
+    };
+    let dispatch_for_slot = dispatch.clone();
 
     tokio::spawn(async move {
-        let mut child_run = match crate::subagent::session::start_child_session(
-            &parent_session_dir,
-            &child_session_id_for_slot,
-            &definition,
-            &prompt,
+        let mut child_run = match crate::agent::runtime::start_run(
+            dispatch_for_slot,
             &workspace,
             &kuku_home,
             config,
             prompts_dir.as_deref(),
-            PermissionMode::AutoAllow,
-            child_session_count,
         )
         .await
         {
@@ -120,7 +114,7 @@ pub(crate) fn spawn_agent_slot(
                         tc_id.clone(),
                         SlotEvent::Done {
                             status: "error".into(),
-                            summary: format!("{agent_name}: failed to start child session"),
+                            summary: "agent: failed to start conversation".into(),
                             model_content: String::new(),
                             result: None,
                         },
@@ -137,7 +131,7 @@ pub(crate) fn spawn_agent_slot(
                     child_run.cancel();
                     let _ = event_tx.send((tc_id.clone(), SlotEvent::Done {
                         status: "cancelled".into(),
-                        summary: format!("{agent_name} cancelled"),
+                        summary: format!("{} cancelled", dispatch.conversation.as_str()),
                         model_content: String::new(),
                         result: None,
                     })).await;
@@ -152,11 +146,16 @@ pub(crate) fn spawn_agent_slot(
                             tc_id.clone(),
                             SlotEvent::Done {
                                 status: "ok".into(),
-                                summary: format!("{agent_name} completed in {} turns", output.turn),
+                                summary: format!(
+                                    "{} completed in {} turns",
+                                    dispatch.conversation.as_str(),
+                                    output.turn
+                                ),
                                 model_content: String::new(),
                                 result: Some(serde_json::json!({
-                                    "kind": "subagent_result",
-                                    "child_session_id": child_session_id_for_slot,
+                                    "kind": "agent_result",
+                                    "conversation": dispatch.conversation.as_str(),
+                                    "binding_id": dispatch.binding.binding_id,
                                     "turns_completed": output.turn,
                                 })),
                             },
@@ -194,7 +193,10 @@ pub(crate) fn spawn_agent_slot(
                             tc_id.clone(),
                             SlotEvent::Done {
                                 status: "error".into(),
-                                summary: format!("{agent_name}: stream ended unexpectedly"),
+                                summary: format!(
+                                    "{}: stream ended unexpectedly",
+                                    dispatch.conversation.as_str()
+                                ),
                                 model_content: String::new(),
                                 result: None,
                             },
@@ -208,11 +210,11 @@ pub(crate) fn spawn_agent_slot(
 
     ExecSlot {
         tool_call_id,
-        kind: ToolKind::Agent { child_session_id },
+        kind: tool_kind,
         ordered_with_simple_tools: false,
         label: summary,
         cancel,
-        child_permissions,
+        nested_permissions,
     }
 }
 
@@ -267,7 +269,7 @@ pub(crate) fn spawn_command_slot(
         ordered_with_simple_tools: false,
         label: summary,
         cancel,
-        child_permissions: Arc::new(Mutex::new(HashMap::new())),
+        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 

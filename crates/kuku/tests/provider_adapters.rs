@@ -98,7 +98,7 @@ use provider::openai_compat::{chat_completions_url, render_body as render_openai
 use provider::openai_responses::{
     parse_responses_sse, render_body as render_responses_body, responses_url,
 };
-use provider::types::ProviderRequest;
+use provider::types::{CanonicalPromptInput, ProviderRequest};
 use serde_json::json;
 
 fn test_catalog() -> PromptCatalog {
@@ -156,6 +156,12 @@ fn sample_assembly() -> ContextAssembly {
         }],
         runtime_context: None,
         handoff_summary: None,
+    }
+}
+
+fn current_input() -> CanonicalPromptInput {
+    CanonicalPromptInput {
+        parts: vec![CanonicalMessage::user_text("input")],
     }
 }
 
@@ -262,6 +268,7 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
         stream: false,
         assembly: assembly_with_drift_notice(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -293,6 +300,7 @@ fn anthropic_render_body_preserves_layer_order() {
         stream: false,
         assembly: sample_assembly(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -327,6 +335,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         stream: false,
         assembly: assembly_with_tool_schema(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -341,6 +350,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -393,6 +403,7 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
         stream: false,
         assembly: assembly_with_drift_notice(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -425,6 +436,7 @@ fn openai_render_body_preserves_layer_order() {
         stream: false,
         assembly: sample_assembly(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -452,6 +464,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         stream: false,
         assembly: assembly_with_tool_schema(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -470,6 +483,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -645,6 +659,7 @@ fn render_responses_body_includes_prior_assistant_function_call() {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -674,6 +689,7 @@ fn render_responses_body_basic_text() {
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: Some(100),
         temperature: None,
@@ -702,6 +718,7 @@ fn render_responses_body_with_tools() {
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -727,6 +744,7 @@ fn render_responses_body_with_reasoning() {
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,

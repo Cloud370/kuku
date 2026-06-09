@@ -9,11 +9,12 @@ use super::session::loaded_skill_names;
 pub(crate) fn list_skills_result(
     registry: &SkillRegistry,
     events: &[StoredEvent],
+    conversation: &str,
     args: &Value,
 ) -> Value {
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 20, 50);
-    let loaded = loaded_skill_names(events)
+    let loaded = loaded_skill_names(events, conversation)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     let definitions = registry.definitions();
@@ -36,6 +37,7 @@ pub(crate) fn list_skills_result(
 pub(crate) fn search_skills_result(
     registry: &SkillRegistry,
     events: &[StoredEvent],
+    conversation: &str,
     args: &Value,
 ) -> Value {
     let query = args
@@ -45,7 +47,7 @@ pub(crate) fn search_skills_result(
         .trim();
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 10, 25);
-    let loaded = loaded_skill_names(events)
+    let loaded = loaded_skill_names(events, conversation)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
@@ -263,6 +265,7 @@ mod tests {
             StoredEvent {
                 id: 1,
                 payload: EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t1".to_string(),
                     registry: serde_json::to_value(registry()).unwrap(),
@@ -274,6 +277,7 @@ mod tests {
                 payload: EventPayload::ToolCall {
                     turn: 1,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     request_id: "req_1".to_string(),
                     index: 0,
@@ -286,11 +290,16 @@ mod tests {
                 payload: EventPayload::ToolResult {
                     turn: 1,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: beta-review".to_string(),
                     model_content: String::new(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             },
@@ -299,8 +308,12 @@ mod tests {
 
     #[test]
     fn list_skills_pages_snapshot_and_marks_loaded() {
-        let result =
-            super::list_skills_result(&registry(), &events(), &json!({ "offset": 1, "limit": 1 }));
+        let result = super::list_skills_result(
+            &registry(),
+            &events(),
+            "main",
+            &json!({ "offset": 1, "limit": 1 }),
+        );
 
         assert_eq!(result["offset"], 1);
         assert_eq!(result["limit"], 1);
@@ -316,6 +329,7 @@ mod tests {
         let result = super::search_skills_result(
             &registry(),
             &events(),
+            "main",
             &json!({ "query": "ranking", "limit": 3 }),
         );
         let items = result["skills"].as_array().unwrap();
@@ -331,6 +345,7 @@ mod tests {
         let result = super::search_skills_result(
             &registry(),
             &events(),
+            "main",
             &json!({ "query": "alpha title", "limit": 10 }),
         );
         let items = result["skills"].as_array().unwrap();
@@ -341,9 +356,9 @@ mod tests {
 
     #[test]
     fn list_skills_applies_default_and_max_limit() {
-        let default_result = super::list_skills_result(&registry(), &events(), &json!({}));
+        let default_result = super::list_skills_result(&registry(), &events(), "main", &json!({}));
         let capped_result =
-            super::list_skills_result(&registry(), &events(), &json!({ "limit": 999 }));
+            super::list_skills_result(&registry(), &events(), "main", &json!({ "limit": 999 }));
 
         assert_eq!(default_result["limit"], 20);
         assert_eq!(capped_result["limit"], 50);
@@ -351,11 +366,16 @@ mod tests {
 
     #[test]
     fn search_skills_applies_default_and_max_limit() {
-        let default_result =
-            super::search_skills_result(&registry(), &events(), &json!({ "query": "ranking" }));
+        let default_result = super::search_skills_result(
+            &registry(),
+            &events(),
+            "main",
+            &json!({ "query": "ranking" }),
+        );
         let capped_result = super::search_skills_result(
             &registry(),
             &events(),
+            "main",
             &json!({ "query": "ranking", "limit": 999 }),
         );
 

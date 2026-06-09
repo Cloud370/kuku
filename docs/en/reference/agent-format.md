@@ -1,5 +1,13 @@
 # Agent Format
 
+## Mental Model
+
+An agent file defines a contact card. The runtime binds that contact card to one or more conversation addresses.
+
+- the contact card comes from the agent file
+- the conversation address comes from `agent(to, message, tier?)`
+- reusing the same address means continue the same thread
+
 ## Locations
 
 - User scope: `~/.kuku/agents/<name>.md`
@@ -27,16 +35,35 @@ You are a thorough code reviewer.
 
 | Field | Required | Default | Meaning |
 |---|---|---|---|
-| `name` | no | filename stem | Agent identifier |
+| `name` | no | filename stem | Contact card identifier |
 | `description` | yes | none | When to use this agent |
-| `model` | no | `balanced` | Tier name |
+| `model` | no | `balanced` | Default tier for first bind |
 | `tools` | no | default built-in registry | Allowed tools |
-| `max_turns` | no | `10` | Maximum child-session turns |
+| `max_turns` | no | `10` | Maximum turns for one delegated conversation |
 
 Notes:
 
-- Omitting `tools` gives the child the default built-in tool registry without `agent`, `list_skills`, `search_skills`, or `use_skill`.
+- Omitting `tools` gives the agent the default built-in tool registry without `agent`, `list_skills`, `search_skills`, or `use_skill`.
 - `tools: []` means no tools.
+- The runtime hashes the effective identity into a `binding_id`.
+
+## How Binding Works
+
+When the model calls `agent(to, message, tier?)`:
+
+- `to` must be a valid conversation address
+- `main` is reserved and rejected
+- the root segment of `to` must match a discovered agent name
+- `tier` overrides the agent file's `model` only on first bind
+- once a conversation address exists, passing `tier` again is rejected
+- once a conversation address exists, the binding identity must still match
+
+Example:
+
+- `agent(to="review", message="check auth")` opens or continues `review`
+- `agent(to="review/api", message="focus on handlers")` opens or continues `review/api`
+
+Both addresses use the `review` contact card. They are different conversations.
 
 ## Accepted Tool Names
 

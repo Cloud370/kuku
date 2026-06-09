@@ -1,6 +1,9 @@
 use crate::context::{
-    assemble_context, rebuild_history, restore_frozen_prelude, ContextInput, EnvironmentSource,
+    assemble_context, rebuild_history, restore_prompt_snapshot, AgentRegistryProvenance,
+    ContextInput, EnvironmentSource, PluginRegistryProvenance, PromptCapabilityMetadata,
+    PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
 };
+use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
@@ -12,7 +15,7 @@ use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
 use super::helpers::{
-    append_model_error, append_turn_end, current_date_string, last_input_tokens,
+    append_model_error, append_turn_interrupted, current_date_string, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, platform_label,
 };
 use super::tool_exec::record_plugin_hooks;
@@ -29,7 +32,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     let existing_events = EventStore::replay(&pending.events_path)?;
-    let (handoff_summary, history) = rebuild_history(&existing_events);
+    let (handoff_summary, history) = rebuild_history(&existing_events, &pending.conversation);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
@@ -50,8 +53,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     let (runtime_blocks, _notice_snapshots) = build_runtime_blocks(
         &pending.workspace,
+        pending.conversation.as_str(),
         pending.turn,
-        pending.subagent_registry.as_ref(),
+        pending.agent_registry.as_ref(),
         pending.skill_registry.as_ref(),
         pending.previous_skill_registry.as_ref(),
         &resolved_config,
@@ -108,15 +112,28 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 "prompt_render",
                 &error.to_string(),
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "prompt_render_error",
+            )?;
             return Err(error);
         }
     };
 
-    let frozen = restore_frozen_prelude(&existing_events);
+    let frozen = restore_prompt_snapshot(&existing_events, pending.conversation.as_str());
     let is_first_request = frozen.is_none();
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
+    }
+
+    if let Some(skill) = pending.bootstrap_skill.as_ref() {
+        assembly
+            .prelude_messages
+            .push(crate::context::CanonicalMessage::user_text(
+                skill.body.clone(),
+            ));
     }
 
     assembly.handoff_summary = handoff_summary;
@@ -158,15 +175,17 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     let prelude_snapshot = assembly.snapshot_prelude();
-
-    inject_runtime_context(
-        &mut assembly.history,
-        assembly.runtime_context.as_deref(),
-        pending
-            .bootstrap_skill
-            .as_ref()
-            .map(|skill| skill.body.as_str()),
+    let current_input = build_current_input_frame(
+        assembly_runtime_prefix(
+            assembly.runtime_context.as_deref(),
+            pending
+                .bootstrap_skill
+                .as_ref()
+                .map(|skill| skill.body.as_str()),
+        ),
+        &pending.query.prompt,
     );
+    assembly.history.push(current_input.clone());
 
     if !pending.hook_context.is_empty() {
         let hook_text = pending.hook_context.join("\n");
@@ -231,9 +250,104 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     {
         let mut store = EventStore::open(&pending.events_path)?;
         if is_first_request {
-            store.append(EventPayload::ContextPrelude {
+            let tool_registry = ToolRegistryProvenance {
+                hash: format!("count:{}", assembly.tools.len()),
+                names: assembly
+                    .tools
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
+                tool_count: assembly.tools.len(),
+            };
+            let agent_registry =
+                pending
+                    .agent_registry
+                    .as_ref()
+                    .map(|registry| AgentRegistryProvenance {
+                        hash: registry.hash().to_string(),
+                        names: registry.names().to_vec(),
+                    });
+            let skill_registry =
+                pending
+                    .skill_registry
+                    .as_ref()
+                    .map(|registry| SkillRegistryProvenance {
+                        hash: registry.hash().to_string(),
+                        names: registry.names().to_vec(),
+                    });
+            let plugin_registry =
+                pending
+                    .plugin_registry
+                    .as_ref()
+                    .map(|registry| PluginRegistryProvenance {
+                        hash: format!("count:{}", registry.names().len()),
+                        names: registry.names().to_vec(),
+                        count: registry.names().len(),
+                    });
+            store.append(EventPayload::PromptSnapshot {
                 ts: now_timestamp()?,
+                conversation: pending.conversation.as_str().to_string(),
+                binding_id: pending
+                    .agent_binding_id
+                    .clone()
+                    .unwrap_or_else(|| pending.conversation.as_str().to_string()),
+                snapshot_id: format!(
+                    "{}:{}:{}",
+                    pending.conversation.as_str(),
+                    pending.turn,
+                    pending.request_num
+                ),
+                turn: pending.turn,
                 messages: prelude_snapshot,
+                project_instruction_sources: assembly
+                    .project_instruction_sources
+                    .iter()
+                    .map(|source| crate::context::FileSource {
+                        path: source.path.clone(),
+                        hash: source.hash.clone(),
+                    })
+                    .collect(),
+                memory_sources: assembly
+                    .memory_sources
+                    .iter()
+                    .map(|source| crate::context::FileSource {
+                        path: source.path.clone(),
+                        hash: source.hash.clone(),
+                    })
+                    .collect(),
+                prompt_asset_sources: assembly.prompt_asset_sources.clone(),
+                skills: pending
+                    .skill_registry
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or_else(|| serde_json::json!({})),
+                bootstrap_loaded: pending
+                    .bootstrap_skill
+                    .as_ref()
+                    .and_then(|skill| skill.name.clone())
+                    .into_iter()
+                    .collect(),
+                provider: resolved_config.kind.as_str().to_string(),
+                model: resolved_config.model.clone(),
+                renderer: PromptRendererIdentity {
+                    provider: resolved_config.kind.as_str().to_string(),
+                    renderer: resolved_config.kind.as_str().to_string(),
+                },
+                tool_registry: Box::new(tool_registry),
+                agent_registry,
+                skill_registry: Box::new(skill_registry),
+                plugin_registry: Box::new(plugin_registry),
+                capabilities: PromptCapabilityMetadata {
+                    context_budget_tier: match headroom.tier {
+                        crate::notice::types::ContextBudgetTier::Tight => "tight",
+                        crate::notice::types::ContextBudgetTier::Normal => "normal",
+                        crate::notice::types::ContextBudgetTier::Roomy => "roomy",
+                    }
+                    .to_string(),
+                    max_context_tokens: Some(headroom.max_context_tokens),
+                    remaining_input_tokens: headroom.remaining_input_tokens,
+                },
             })?;
         }
         store.append(EventPayload::ContextSources {
@@ -262,6 +376,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let request = crate::provider::types::ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: crate::provider::types::CanonicalPromptInput {
+            parts: vec![current_input],
+        },
         model: resolved_config.model.clone(),
         max_output_tokens: Some(max_output),
         temperature: pending.query.temperature,
@@ -295,26 +412,30 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     let handoff_active = pending.handoff_triggered;
     match crate::provider::stream_provider(&resolved_config, &request).await {
-        Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
-            pending,
-            request_id,
-            stream,
-            accumulated_text: String::new(),
-            accumulated_thinking: String::new(),
-            stop_reason: None,
-            tool_calls: Vec::new(),
-            tool_arg_buffers: Vec::new(),
-            provider_request_id: None,
-            usage: None,
-            lead_events,
-            handoff_detector: if handoff_active {
-                Some(super::handoff::HandoffDetector::new())
-            } else {
-                None
-            },
-            thinking_start: None,
-            thinking_duration_ms: 0,
-        }))),
+        Ok(stream) => {
+            let conversation = pending.conversation.clone();
+            Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
+                pending,
+                conversation,
+                request_id,
+                stream,
+                accumulated_text: String::new(),
+                accumulated_thinking: String::new(),
+                stop_reason: None,
+                tool_calls: Vec::new(),
+                tool_arg_buffers: Vec::new(),
+                provider_request_id: None,
+                usage: None,
+                lead_events,
+                handoff_detector: if handoff_active {
+                    Some(super::handoff::HandoffDetector::new())
+                } else {
+                    None
+                },
+                thinking_start: None,
+                thinking_duration_ms: 0,
+            })))
+        }
         Err(failure)
             if matches!(
                 failure.kind,
@@ -344,10 +465,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 kind: "context_too_large".to_string(),
                 message: failure.message.clone(),
             })?;
-            store.append(EventPayload::TurnEnd {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
+            drop(store);
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "context_too_large",
+            )?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,
@@ -367,7 +491,12 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 failure.kind.as_event_kind(),
                 &failure.message,
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                failure.kind.as_event_kind(),
+            )?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,
@@ -454,7 +583,12 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             "loop_limit",
             "tool loop exceeded maximum provider requests",
         )?;
-        append_turn_end(&pending.events_path, pending.turn)?;
+        append_turn_interrupted(
+            &pending.events_path,
+            &pending.conversation,
+            pending.turn,
+            "loop_limit",
+        )?;
         return Err(crate::error::Error::Provider {
             kind: crate::provider::types::ProviderFailureKind::Unknown,
             message: "tool loop exceeded maximum provider requests".to_string(),
@@ -468,8 +602,9 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
+    conversation: &str,
     turn: u64,
-    subagent_registry: Option<&crate::subagent::registry::SubagentRegistry>,
+    agent_registry: Option<&crate::agent::registry::AgentRegistry>,
     skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     previous_skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     resolved_config: &crate::provider::types::ResolvedProvider,
@@ -489,16 +624,15 @@ fn build_runtime_blocks(
     let mut notice_bodies: Vec<String> = Vec::new();
     let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
 
-    if let Some(subagent_registry) = subagent_registry {
-        if let Some(catalog_text) =
-            crate::subagent::catalog::render_agent_catalog(subagent_registry)
-        {
+    if let Some(agent_registry) = agent_registry {
+        if let Some(catalog_text) = crate::agent::catalog::render_agent_catalog(agent_registry) {
             parts.push(catalog_text);
         }
     }
 
     if let Some(skill_reg) = skill_registry {
-        let loaded_skill_names = crate::skill::session::loaded_skill_names(existing_events);
+        let loaded_skill_names =
+            crate::skill::session::loaded_skill_names(existing_events, conversation);
         let skill_changes = if turn > 1 {
             previous_skill_registry.and_then(|previous_skill_registry| {
                 crate::skill::registry::detect_skill_changes(previous_skill_registry, skill_reg)
@@ -517,10 +651,14 @@ fn build_runtime_blocks(
     }
 
     if turn > 1 {
+        let conversation =
+            ConversationAddress::parse(conversation).unwrap_or(ConversationAddress::MAIN);
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace,
             events: existing_events,
             context_budget_tier: context_headroom.tier,
+            conversation: &conversation,
+            agent_registry,
         });
         for notice in &notices {
             if let Some(body) = render_notice_body(notice) {
@@ -554,30 +692,45 @@ fn build_runtime_blocks(
     Ok((runtime_blocks, notice_snapshots))
 }
 
-fn inject_runtime_context(
-    history: &mut [crate::context::CanonicalMessage],
+fn assembly_runtime_prefix(
     runtime_context: Option<&str>,
     skill_body: Option<&str>,
-) {
-    let Some(ctx) = runtime_context else { return };
-    let Some(user_msg) = history.iter_mut().rev().find(|msg| {
-        msg.role == crate::context::Role::User
-            && msg
-                .blocks
-                .iter()
-                .any(|b| matches!(b, crate::context::MessageBlock::Text(_)))
-    }) else {
-        return;
-    };
-    let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
-    new_blocks.push(crate::context::MessageBlock::Text(ctx.to_string()));
-    if let Some(sb) = skill_body {
-        new_blocks.push(crate::context::MessageBlock::Text(sb.to_string()));
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
+        parts.push(format!(
+            "<runtime.notices>{runtime_context}</runtime.notices>"
+        ));
     }
-    for block in &user_msg.blocks {
-        new_blocks.push(block.clone());
+    if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
+        parts.push(format!(
+            "<conversation.inbox>{skill_body}</conversation.inbox>"
+        ));
     }
-    user_msg.blocks = new_blocks;
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn build_current_input_frame(
+    prefix: Option<String>,
+    prompt: &str,
+) -> crate::context::CanonicalMessage {
+    let mut text = String::from("<kuku_turn_frame>\n");
+    if let Some(prefix) = prefix {
+        text.push_str(&prefix);
+        text.push('\n');
+    } else {
+        text.push_str(
+            "<runtime.notices></runtime.notices>\n<conversation.inbox></conversation.inbox>\n",
+        );
+    }
+    text.push_str(&format!(
+        "<input.message>{prompt}</input.message>\n<attachments></attachments>\n</kuku_turn_frame>"
+    ));
+    crate::context::CanonicalMessage::user_text(text)
 }
 
 pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
@@ -607,7 +760,12 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
                 "missing_config",
                 &error.to_string(),
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "missing_config",
+            )?;
             return Err(error);
         }
     };

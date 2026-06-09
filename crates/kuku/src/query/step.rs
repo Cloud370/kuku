@@ -5,8 +5,9 @@ use crate::permission::{
 };
 
 use super::helpers::{
-    append_permission_decision, append_permission_request, display_summary, gate_choice,
-    gate_source_name, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    append_permission_decision, append_permission_request, append_turn_cancelled,
+    append_turn_completed, display_summary, gate_choice, gate_source_name,
+    is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
@@ -34,11 +35,16 @@ fn return_blocked_tool(
     store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
+        conversation: None,
         tool_call_id: id.to_string(),
         status: "blocked".to_string(),
         summary: reason.to_string(),
         model_content: String::new(),
         truncated: false,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
         structured: Some(blocked.clone()),
     })?;
     pending.record_tool_call(tool_name);
@@ -48,6 +54,55 @@ fn return_blocked_tool(
         summary: reason.to_string(),
         model_content: None,
         result: Some(blocked),
+    });
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(UiEvent::ToolStart {
+            id: id.to_string(),
+            tool: tool_name.to_string(),
+            summary: display_summary.to_string(),
+            kind,
+        }),
+    })
+}
+
+fn return_tool_result(
+    mut pending: PendingRun,
+    id: &str,
+    tool_name: &str,
+    display_summary: &str,
+    kind: super::types::ToolKind,
+    status: &str,
+    summary: &str,
+) -> Result<PendingStep> {
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        conversation: None,
+        tool_call_id: id.to_string(),
+        status: status.to_string(),
+        summary: summary.to_string(),
+        model_content: String::new(),
+        truncated: false,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
+        structured: None,
+    })?;
+    if status == "error" {
+        pending.record_tool_error(tool_name);
+    } else {
+        pending.record_tool_call(tool_name);
+    }
+    pending.pending_events.push_back(UiEvent::ToolEnd {
+        id: id.to_string(),
+        status: status.to_string(),
+        summary: summary.to_string(),
+        model_content: None,
+        result: None,
     });
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
@@ -137,6 +192,7 @@ async fn execute_inline_tool(
 pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
     let StreamingChunkState {
         mut pending,
+        conversation,
         request_id,
         accumulated_text,
         accumulated_thinking,
@@ -267,10 +323,8 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         }
 
         if !has_tool_calls {
-            store.append(EventPayload::TurnEnd {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
+            drop(store);
+            append_turn_completed(&pending.events_path, &conversation, pending.turn)?;
             pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
                 input_tokens: Some(pending.cumulative.input_tokens),
@@ -281,6 +335,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
                     session_id: pending.session_id.clone(),
+                    conversation: conversation.clone(),
                     text: accumulated_text,
                     usage: total_usage.clone(),
                     turn: pending.turn,
@@ -306,6 +361,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             store.append(EventPayload::ToolCall {
                 turn: pending.turn,
                 ts: now_timestamp()?,
+                conversation: Some(pending.conversation.as_str().to_string()),
                 tool_call_id: tool_call.id.clone(),
                 request_id: request_id.clone(),
                 index: tool_call.index,
@@ -341,15 +397,17 @@ pub(super) async fn advance_pending(
         notified.enable()
     };
     if is_cancelled {
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::TurnEnd {
-            turn: pending.turn,
-            ts: now_timestamp()?,
-        })?;
+        append_turn_cancelled(
+            &pending.events_path,
+            &pending.conversation,
+            pending.turn,
+            "user_cancelled",
+        )?;
         pending.flush_runtime_logs();
         return Ok(PendingStep::Done(
             super::types::RunOutput {
                 session_id: pending.session_id.clone(),
+                conversation: pending.conversation.clone(),
                 text: String::new(),
                 usage: None,
                 turn: pending.turn,
@@ -391,27 +449,46 @@ pub(super) async fn advance_pending(
 
         if queued.tool_call.name == "agent" {
             // --- Agent call ---
-            let name = queued
+            let target = queued
                 .tool_call
                 .args
-                .get("name")
+                .get("to")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+                .unwrap_or("");
             let prompt = queued
                 .tool_call
                 .args
-                .get("prompt")
+                .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let tier = queued
+                .tool_call
+                .args
+                .get("tier")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
 
-            let definition = pending
-                .subagent_registry
-                .as_ref()
-                .and_then(|reg| reg.get(name))
-                .cloned();
-
-            let Some(definition) = definition else {
-                return execute_inline_tool(pending, &queued, super::types::ToolKind::Simple).await;
+            let dispatch = match crate::agent::runtime::prepare_dispatch(
+                pending.agent_registry.as_ref(),
+                &EventStore::replay(&pending.events_path)?,
+                &pending.conversation,
+                target,
+                prompt,
+                tier,
+                &id,
+            ) {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    return return_tool_result(
+                        pending,
+                        &id,
+                        "agent",
+                        &summary,
+                        super::types::ToolKind::Simple,
+                        "error",
+                        &error,
+                    );
+                }
             };
 
             if pending.child_session_count >= 2 {
@@ -421,7 +498,7 @@ pub(super) async fn advance_pending(
                     "agent",
                     &summary,
                     super::types::ToolKind::Simple,
-                    "blocked: maximum subagent depth (2) reached",
+                    "blocked: maximum agent delegation depth (2) reached",
                 );
             }
 
@@ -449,29 +526,24 @@ pub(super) async fn advance_pending(
                 );
             }
 
-            let child_session_id = format!(
-                "child_{}_{}",
-                pending.session_id, pending.child_session_count
-            );
             pending.child_session_count += 1;
-            let label = format!("{} · {}", name, truncate_summary(prompt, 60));
-
-            let parent_dir = pending.events_path.parent().unwrap().to_path_buf();
+            let label = format!(
+                "{} · {}",
+                dispatch.conversation.as_str(),
+                truncate_summary(prompt, 60)
+            );
             let slot = spawn_agent_slot(
                 id.clone(),
-                name.to_string(),
-                prompt.to_string(),
+                dispatch,
                 label,
-                definition,
-                parent_dir,
                 pending.workspace.clone(),
                 pending.kuku_home.clone(),
                 pending.config.clone(),
                 pending.prompts_dir.clone(),
-                child_session_id.clone(),
-                pending.child_session_count,
                 slot_event_tx,
             );
+
+            let kind = slot.kind.clone();
 
             pending.record_tool_call("agent");
             return Ok(PendingStep::Pending {
@@ -481,7 +553,7 @@ pub(super) async fn advance_pending(
                     id: id.clone(),
                     tool: "agent".to_string(),
                     summary: summary.clone(),
-                    kind: super::types::ToolKind::Agent { child_session_id },
+                    kind,
                 }),
             });
         } else if is_inline_skill_tool(&queued.tool_call.name)
@@ -547,6 +619,8 @@ pub(super) async fn advance_pending(
                     let tc_id = id.clone();
                     let request = PermissionRequest {
                         id: tc_id.clone(),
+                        conversation: pending.conversation.clone(),
+                        turn: pending.turn,
                         tool_call_id: tc_id,
                         tool: queued.tool_call.name.clone(),
                         risk: risk.clone(),
@@ -554,7 +628,12 @@ pub(super) async fn advance_pending(
                         candidate: candidate.clone(),
                         source: gate_source_name(decision.source).to_string(),
                     };
-                    append_permission_request(&pending.events_path, pending.turn, &request)?;
+                    append_permission_request(
+                        &pending.events_path,
+                        &pending.conversation,
+                        pending.turn,
+                        &request,
+                    )?;
                     pending.queued_tool_calls.push_front(queued);
                     return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
                         pending,
@@ -637,9 +716,12 @@ pub(super) async fn advance_pending(
                 GateDecisionKind::Deny => {
                     append_permission_request(
                         &pending.events_path,
+                        &pending.conversation,
                         pending.turn,
                         &PermissionRequest {
                             id: id.clone(),
+                            conversation: pending.conversation.clone(),
+                            turn: pending.turn,
                             tool_call_id: id.clone(),
                             tool: queued.tool_call.name.clone(),
                             risk: risk.clone(),

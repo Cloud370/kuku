@@ -18,6 +18,8 @@ pub struct RunRequest {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
+    pub conversation: Option<String>,
+    #[serde(default)]
     pub tier: Option<String>,
 }
 
@@ -41,6 +43,9 @@ pub async fn create_run(
 
     if let Some(sid) = body.session_id {
         query = query.session(sid);
+    }
+    if let Some(conversation) = body.conversation {
+        query = query.conversation(conversation);
     }
     if let Some(tier) = body.tier {
         query = query.tier(tier);

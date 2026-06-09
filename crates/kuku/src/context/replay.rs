@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+use std::collections::HashSet;
+
+use crate::conversation::address::ConversationAddress;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 use super::revert::filter_rolled_back_events;
@@ -23,8 +26,12 @@ struct ResponseGroup {
 /// Returns `(handoff_summary, messages)` where `handoff_summary` is the text
 /// from the most recent Handoff event (if any), and `messages` contains the
 /// most recent `keep_turns` turns before that handoff plus later events.
-pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<CanonicalMessage>) {
+pub fn rebuild_history(
+    events: &[StoredEvent],
+    conversation: &ConversationAddress,
+) -> (Option<String>, Vec<CanonicalMessage>) {
     let filtered = filter_rolled_back_events(events);
+    let suppressed_turns = suppressed_turns(&filtered, conversation);
 
     let handoff_pos = filtered
         .iter()
@@ -47,12 +54,41 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
         None => (None, filtered.as_slice()),
     };
 
-    let mut messages = Vec::new();
+    let mut messages = filtered
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::PromptSnapshot {
+                conversation: event_conversation,
+                messages,
+                ..
+            } if event_conversation == conversation.as_str() => Some(
+                messages
+                    .iter()
+                    .map(|message| CanonicalMessage::user_text(message.content.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
     let mut current_group = ResponseGroup::default();
 
     for event in effective {
+        if event_turn(&event.payload).is_some_and(|turn| suppressed_turns.contains(&turn))
+            && event_belongs_to_history_conversation(&event.payload, conversation)
+        {
+            continue;
+        }
         match &event.payload {
-            EventPayload::UserInput { text, .. } => {
+            EventPayload::UserInput { text, .. } if conversation.is_main() => {
+                flush_group(&mut messages, &mut current_group);
+                messages.push(CanonicalMessage::user_text(text.clone()));
+            }
+            EventPayload::MessageUser {
+                conversation: event_conversation,
+                text,
+                ..
+            } if event_conversation == conversation.as_str() => {
                 flush_group(&mut messages, &mut current_group);
                 messages.push(CanonicalMessage::user_text(text.clone()));
             }
@@ -61,7 +97,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                 text,
                 thinking,
                 ..
-            } => {
+            } if conversation.is_main() => {
                 if current_group
                     .request_id
                     .as_ref()
@@ -74,13 +110,36 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                 current_group.thinking = thinking.clone();
             }
             EventPayload::ToolCall {
+                conversation: None,
                 request_id,
                 tool_call_id,
                 index,
                 tool,
                 args,
                 ..
-            } => {
+            } if conversation.is_main() => {
+                if current_group.request_id.as_ref() != Some(request_id) {
+                    flush_group(&mut messages, &mut current_group);
+                    current_group.request_id = Some(request_id.clone());
+                }
+                current_group.tool_calls.insert(
+                    tool_call_id.clone(),
+                    PendingToolCall {
+                        index: *index,
+                        tool: tool.clone(),
+                        args: args.clone(),
+                    },
+                );
+            }
+            EventPayload::ToolCall {
+                conversation: Some(event_conversation),
+                request_id,
+                tool_call_id,
+                index,
+                tool,
+                args,
+                ..
+            } if event_conversation == conversation.as_str() => {
                 if current_group.request_id.as_ref() != Some(request_id) {
                     flush_group(&mut messages, &mut current_group);
                     current_group.request_id = Some(request_id.clone());
@@ -95,6 +154,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                 );
             }
             EventPayload::ToolResult {
+                conversation: None,
                 tool_call_id,
                 status,
                 summary,
@@ -102,7 +162,7 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                 structured,
                 truncated,
                 ..
-            } => {
+            } if conversation.is_main() => {
                 current_group.tool_results.insert(
                     tool_call_id.clone(),
                     ToolResult {
@@ -115,20 +175,65 @@ pub fn rebuild_history(events: &[StoredEvent]) -> (Option<String>, Vec<Canonical
                     },
                 );
             }
-            EventPayload::TurnEnd { .. } => flush_group(&mut messages, &mut current_group),
+            EventPayload::ToolResult {
+                conversation: Some(event_conversation),
+                tool_call_id,
+                status,
+                summary,
+                model_content,
+                structured,
+                truncated,
+                ..
+            } if event_conversation == conversation.as_str() => {
+                current_group.tool_results.insert(
+                    tool_call_id.clone(),
+                    ToolResult {
+                        tool_call_id: tool_call_id.clone(),
+                        status: status.clone(),
+                        summary: summary.clone(),
+                        model_content: model_content.clone(),
+                        structured: structured.clone(),
+                        truncated: *truncated,
+                    },
+                );
+            }
+            EventPayload::TurnEnd { .. } if conversation.is_main() => {
+                flush_group(&mut messages, &mut current_group)
+            }
+            EventPayload::MessageAssistant {
+                conversation: event_conversation,
+                text,
+                ..
+            } if event_conversation == conversation.as_str() => {
+                flush_group(&mut messages, &mut current_group);
+                messages.push(CanonicalMessage::assistant(vec![MessageBlock::Text(
+                    text.clone(),
+                )]));
+            }
             EventPayload::SessionMeta { .. }
+            | EventPayload::SessionCreated { .. }
             | EventPayload::ContextPrelude { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
+            | EventPayload::ConversationOpened { .. }
+            | EventPayload::ConversationBound { .. }
+            | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStart { .. }
+            | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
             | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
             | EventPayload::Handoff { .. }
+            | EventPayload::TurnCompleted { .. }
+            | EventPayload::TurnCancelled { .. }
+            | EventPayload::TurnInterrupted { .. }
             | EventPayload::TurnRollback { .. }
             | EventPayload::TurnRollbackUndo { .. }
+            | EventPayload::ConversationRollback { .. }
+            | EventPayload::ConversationRollbackUndone { .. }
             | EventPayload::Unknown(_) => {}
+            _ => {}
         }
     }
 
@@ -170,11 +275,16 @@ fn handoff_start_index(events: &[&StoredEvent], handoff_idx: usize, keep_turns: 
 fn event_turn(payload: &EventPayload) -> Option<u64> {
     match payload {
         EventPayload::UserInput { turn, .. }
+        | EventPayload::MessageUser { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ToolCall { turn, .. }
         | EventPayload::ToolResult { turn, .. }
         | EventPayload::TurnStart { turn, .. }
+        | EventPayload::TurnStarted { turn, .. }
         | EventPayload::TurnEnd { turn, .. }
+        | EventPayload::TurnCompleted { turn, .. }
+        | EventPayload::TurnCancelled { turn, .. }
+        | EventPayload::TurnInterrupted { turn, .. }
         | EventPayload::ContextSources { turn, .. }
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelError { turn, .. }
@@ -185,8 +295,73 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::TurnRollback { turn, .. }
         | EventPayload::TurnRollbackUndo { turn, .. } => Some(*turn),
         EventPayload::SessionMeta { .. }
+        | EventPayload::SessionCreated { .. }
         | EventPayload::ContextPrelude { .. }
+        | EventPayload::ConversationOpened { .. }
+        | EventPayload::ConversationBound { .. }
+        | EventPayload::PromptSnapshot { .. }
+        | EventPayload::MessageAssistant { .. }
+        | EventPayload::ConversationRollback { .. }
+        | EventPayload::ConversationRollbackUndone { .. }
         | EventPayload::Unknown(_) => None,
+    }
+}
+
+fn suppressed_turns(events: &[&StoredEvent], conversation: &ConversationAddress) -> HashSet<u64> {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::TurnCancelled {
+                conversation: event_conversation,
+                turn,
+                ..
+            }
+            | EventPayload::TurnInterrupted {
+                conversation: event_conversation,
+                turn,
+                ..
+            } if event_conversation == conversation.as_str() => Some(*turn),
+            _ => None,
+        })
+        .collect()
+}
+
+fn event_belongs_to_history_conversation(
+    payload: &EventPayload,
+    conversation: &ConversationAddress,
+) -> bool {
+    match payload {
+        EventPayload::UserInput { .. }
+        | EventPayload::ModelResponse { .. }
+        | EventPayload::ModelError { .. }
+        | EventPayload::TurnStart { .. }
+        | EventPayload::TurnEnd { .. }
+        | EventPayload::ContextSources { .. }
+        | EventPayload::ContextSkills { .. }
+        | EventPayload::Handoff { .. } => conversation.is_main(),
+        EventPayload::ToolCall {
+            conversation: None, ..
+        }
+        | EventPayload::ToolResult {
+            conversation: None, ..
+        } => conversation.is_main(),
+        EventPayload::ToolCall {
+            conversation: Some(event_conversation),
+            ..
+        }
+        | EventPayload::ToolResult {
+            conversation: Some(event_conversation),
+            ..
+        }
+        | EventPayload::MessageUser {
+            conversation: event_conversation,
+            ..
+        }
+        | EventPayload::MessageAssistant {
+            conversation: event_conversation,
+            ..
+        } => event_conversation == conversation.as_str(),
+        _ => false,
     }
 }
 
@@ -254,6 +429,7 @@ fn cancelled_tool_result(tool_call_id: &str) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use crate::context::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
+    use crate::conversation::address::ConversationAddress;
     use crate::event::{EventPayload, RollbackScope, StoredEvent};
     use serde_json::json;
 
@@ -302,6 +478,7 @@ mod tests {
             EventPayload::ToolCall {
                 turn,
                 ts: "2026-05-13T00:00:02Z".to_string(),
+                conversation: None,
                 tool_call_id: tool_call_id.to_string(),
                 request_id: request_id.to_string(),
                 index,
@@ -317,11 +494,16 @@ mod tests {
             EventPayload::ToolResult {
                 turn,
                 ts: "2026-05-13T00:00:03Z".to_string(),
+                conversation: None,
                 tool_call_id: tool_call_id.to_string(),
                 status: "ok".to_string(),
                 summary: format!("{tool_call_id} summary"),
                 model_content: model_content.to_string(),
                 truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
                 structured: None,
             },
         )
@@ -348,7 +530,7 @@ mod tests {
             turn_end(6, 2),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -372,7 +554,7 @@ mod tests {
             turn_end(6, 1),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -411,7 +593,7 @@ mod tests {
             turn_end(7, 1),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -463,7 +645,7 @@ mod tests {
             turn_end(6, 1),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -523,7 +705,7 @@ mod tests {
             turn_end(3, 1),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -568,7 +750,7 @@ mod tests {
             turn_end(6, 1),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(
             history,
@@ -624,7 +806,7 @@ mod tests {
             model_response(2, 1, "req_1", "hi"),
             turn_end(3, 1),
         ];
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert_eq!(history.len(), 2);
     }
@@ -640,7 +822,7 @@ mod tests {
             model_response(6, 2, "req_2", "new answer"),
             turn_end(7, 2),
         ];
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert_eq!(summary.as_deref(), Some("## Goal\nDo stuff"));
         assert_eq!(
             history,
@@ -668,7 +850,7 @@ mod tests {
             model_response(10, 3, "req_3", "answer3"),
             turn_end(11, 3),
         ];
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert_eq!(summary.as_deref(), Some("second summary"));
         assert_eq!(
             history,
@@ -701,7 +883,7 @@ mod tests {
             turn_end(13, 4),
         ];
 
-        let (summary, history) = rebuild_history(&events);
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
 
         assert_eq!(summary.as_deref(), Some("summary"));
         assert_eq!(
@@ -727,27 +909,32 @@ mod tests {
         )
     }
 
-    fn rb(id: u64, turn: u64, target_turn: u64, scope: RollbackScope) -> StoredEvent {
+    fn rb(id: u64, _turn: u64, target_turn: u64, scope: RollbackScope) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnRollback {
-                turn,
+            EventPayload::ConversationRollback {
                 ts: "t".to_string(),
-                target_turn,
+                conversation: ConversationAddress::MAIN.as_str().to_string(),
+                to_turn: target_turn,
+                to_event_id: turn_end_id_for(target_turn),
                 scope,
             },
         )
     }
 
-    fn rb_undo(id: u64, turn: u64, rb_id: u64) -> StoredEvent {
+    fn rb_undo(id: u64, _turn: u64, rb_id: u64) -> StoredEvent {
         event(
             id,
-            EventPayload::TurnRollbackUndo {
-                turn,
+            EventPayload::ConversationRollbackUndone {
                 ts: "t".to_string(),
+                conversation: ConversationAddress::MAIN.as_str().to_string(),
                 rollback_event_id: rb_id,
             },
         )
+    }
+
+    fn turn_end_id_for(turn: u64) -> u64 {
+        turn * 3
     }
 
     fn et<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
@@ -842,7 +1029,7 @@ mod tests {
             turn_end(7, 2),
             rb(8, 3, 1, RollbackScope::ConversationOnly),
         ];
-        let (summary, msgs) = rebuild_history(&events);
+        let (summary, msgs) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert!(summary.is_none());
         assert!(msgs.is_empty());
     }
@@ -862,7 +1049,7 @@ mod tests {
             turn_end(10, 3),
             rb(11, 4, 3, RollbackScope::ConversationOnly),
         ];
-        let (summary, msgs) = rebuild_history(&events);
+        let (summary, msgs) = rebuild_history(&events, &ConversationAddress::MAIN);
         assert_eq!(summary.as_deref(), Some("summary of turn 1"));
         let texts: Vec<_> = msgs
             .iter()

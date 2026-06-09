@@ -3,7 +3,7 @@ mod config {
 }
 
 mod context {
-    pub use kuku::context::ContextAssembly;
+    pub use kuku::context::{CanonicalMessage, ContextAssembly};
 }
 
 mod prompt {
