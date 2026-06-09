@@ -2,9 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::conversation::address::ConversationAddress;
-use crate::conversation::binding::{
-    BindingSource, ConversationBinding, ConversationBindingParts,
-};
+use crate::conversation::binding::{BindingSource, ConversationBinding, ConversationBindingParts};
 use crate::event::StoredEvent;
 
 #[derive(Debug, Clone)]

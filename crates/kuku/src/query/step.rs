@@ -6,9 +6,8 @@ use crate::permission::{
 
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
-    append_turn_completed, display_summary, gate_choice, gate_source_name,
-    is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
-    resolved_tool_available,
+    append_turn_completed, display_summary, gate_choice, gate_source_name, is_inline_skill_tool,
+    now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};

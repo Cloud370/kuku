@@ -7,8 +7,7 @@ pub fn serialize_event(event: &UiEvent) -> Option<String> {
             kind: kuku::query::ToolKind::Agent { conversation, .. },
             ..
         } => {
-            value["conversation"] =
-                serde_json::Value::String(conversation.as_str().to_string());
+            value["conversation"] = serde_json::Value::String(conversation.as_str().to_string());
         }
         UiEvent::PermissionRequested { request } => {
             value["conversation"] =
