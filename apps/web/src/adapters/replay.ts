@@ -68,7 +68,7 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
       }
       case "model.error":
         agent.error = {
-          code: e.kind as string,
+          code: e.error_kind as string,
           message: e.message as string,
         };
         break;
