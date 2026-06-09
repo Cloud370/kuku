@@ -130,7 +130,11 @@ fn corrupted_json_lines_are_skipped() {
     write_session(
         &sessions_dir,
         "s_corrupt",
-        &(session_events("s_corrupt", "2026-05-01T00:00:00Z", "hello").replacen('\n', "\nNOT JSON HERE\n", 1)),
+        &(session_events("s_corrupt", "2026-05-01T00:00:00Z", "hello").replacen(
+            '\n',
+            "\nNOT JSON HERE\n",
+            1,
+        )),
     );
 
     let sessions = list_sessions(home, Some(&workspace)).unwrap();
