@@ -1,14 +1,16 @@
 use crate::context::{
     assemble_context, rebuild_history, restore_prompt_snapshot, AgentRegistryProvenance,
-    ContextInput, EnvironmentSource, PluginRegistryProvenance, PromptCapabilityMetadata,
-    PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
+    CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
+    PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
+    ToolRegistryProvenance,
 };
 use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::{
-    build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
+    build_runtime_notices, compute_context_headroom, render_notice_body, types::ContextHeadroom,
+    NoticeAssemblyInput,
 };
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::provider::config::{resolve_config, ResolveConfigInput};
@@ -148,44 +150,50 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         estimated_input,
     );
 
-    {
+    let handoff_instruction = {
         let handoff_config = pending.config.handoff();
-        if handoff_config.enabled {
-            let budget = (headroom.max_context_tokens
-                - headroom.reserved_output_tokens
-                - headroom.reserved_margin_tokens) as f64;
-            if budget > 0.0 {
-                let remaining = headroom.remaining_input_tokens.unwrap_or(0) as f64;
-                let used_ratio = 1.0 - (remaining / budget);
-                if used_ratio >= handoff_config.threshold {
-                    pending.handoff_triggered = true;
-                    pending.handoff_keep_turns = handoff_config.keep_turns;
-                    let instruction = if let Some(dir) = &pending.prompts_dir {
-                        load_prompt_template(dir, "handoff-instruction")
-                            .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
-                    } else {
-                        builtin_handoff_instruction().to_string()
-                    };
-                    let rt = assembly.runtime_context.get_or_insert_with(String::new);
-                    rt.push_str("\n\n");
-                    rt.push_str(&instruction);
-                }
-            }
+        if !pending.handoff_triggered
+            && handoff_config.enabled
+            && should_trigger_handoff(&headroom, handoff_config.threshold)
+        {
+            pending.handoff_triggered = true;
+            pending.handoff_keep_turns = handoff_config.keep_turns;
+            Some(if let Some(dir) = &pending.prompts_dir {
+                load_prompt_template(dir, "handoff-instruction")
+                    .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
+            } else {
+                builtin_handoff_instruction().to_string()
+            })
+        } else {
+            None
         }
-    }
+    };
 
     let prelude_snapshot = assembly.snapshot_prelude();
-    let current_input = build_current_input_frame(
-        assembly_runtime_prefix(
-            assembly.runtime_context.as_deref(),
-            pending
-                .bootstrap_skill
-                .as_ref()
-                .map(|skill| skill.body.as_str()),
-        ),
-        &pending.query.prompt,
+    let dynamic_turn_prefix = assembly_runtime_prefix(
+        assembly.runtime_context.as_deref(),
+        pending
+            .bootstrap_skill
+            .as_ref()
+            .map(|skill| skill.body.as_str()),
     );
-    assembly.history.push(current_input.clone());
+    let mut current_turn_prefix = pending
+        .frozen_turn_prefix
+        .freeze_or_reuse(dynamic_turn_prefix);
+    if let Some(instruction) = handoff_instruction {
+        current_turn_prefix = append_handoff_instruction(current_turn_prefix, &instruction);
+        pending
+            .frozen_turn_prefix
+            .replace(current_turn_prefix.clone());
+    }
+    let current_input = build_current_user_message(current_turn_prefix, &pending.query.prompt);
+    if !replace_latest_user_message(
+        &mut assembly.history,
+        &pending.query.prompt,
+        current_input.clone(),
+    ) {
+        assembly.history.push(current_input.clone());
+    }
 
     if !pending.hook_context.is_empty() {
         let hook_text = pending.hook_context.join("\n");
@@ -196,11 +204,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .rev()
             .find(|m| m.role == crate::context::Role::User)
         {
-            last_user
-                .blocks
-                .push(crate::context::MessageBlock::Text(format!(
-                    "\n\n<hook_context>\n{hook_text}\n</hook_context>"
-                )));
+            insert_current_turn_metadata_block(
+                last_user,
+                format!("<kuku_hook_context>\n{hook_text}\n</kuku_hook_context>"),
+            );
         }
     }
 
@@ -387,6 +394,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         thinking: resolved_config.thinking.clone(),
     };
 
+    let provider_trace = Some(crate::provider::trace::ProviderTraceMetadata {
+        kuku_home: pending.kuku_home.clone(),
+        session_id: pending.session_id.clone(),
+        turn: pending.turn,
+        request_id: request_id.clone(),
+    });
+
     let mut lead_events = Vec::new();
     let provider_name = resolved_config.kind.as_str().to_string();
     let model_name = resolved_config.model.clone();
@@ -411,7 +425,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     let handoff_active = pending.handoff_triggered;
-    match crate::provider::stream_provider(&resolved_config, &request).await {
+    match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
         Ok(stream) => {
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
@@ -601,6 +615,22 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
     Ok(())
 }
 
+fn should_trigger_handoff(headroom: &ContextHeadroom, threshold: f64) -> bool {
+    let Some(remaining) = headroom.remaining_input_tokens else {
+        return false;
+    };
+    let budget = headroom
+        .max_context_tokens
+        .saturating_sub(headroom.reserved_output_tokens)
+        .saturating_sub(headroom.reserved_margin_tokens);
+    if budget == 0 {
+        return false;
+    }
+
+    let used_ratio = 1.0 - (f64::from(remaining) / f64::from(budget));
+    used_ratio >= threshold
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
@@ -701,12 +731,12 @@ fn assembly_runtime_prefix(
     let mut parts = Vec::new();
     if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
         parts.push(format!(
-            "<runtime.notices>{runtime_context}</runtime.notices>"
+            "<kuku_runtime_notices>{runtime_context}</kuku_runtime_notices>"
         ));
     }
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
         parts.push(format!(
-            "<conversation.inbox>{skill_body}</conversation.inbox>"
+            "<kuku_conversation_inbox>{skill_body}</kuku_conversation_inbox>"
         ));
     }
     if parts.is_empty() {
@@ -716,23 +746,58 @@ fn assembly_runtime_prefix(
     }
 }
 
-fn build_current_input_frame(
+fn append_handoff_instruction(prefix: Option<String>, instruction: &str) -> Option<String> {
+    let Some(prefix) = prefix else {
+        return Some(format!(
+            "<kuku_runtime_notices>{instruction}</kuku_runtime_notices>\n<kuku_conversation_inbox></kuku_conversation_inbox>"
+        ));
+    };
+
+    if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
+        let (before, after) = prefix.split_at(index);
+        Some(format!("{before}\n\n{instruction}{after}"))
+    } else {
+        Some(format!("{prefix}\n{instruction}"))
+    }
+}
+
+fn build_current_user_message(
     prefix: Option<String>,
     prompt: &str,
 ) -> crate::context::CanonicalMessage {
-    let mut text = String::from("<kuku_turn_frame>\n");
+    let mut blocks = Vec::new();
     if let Some(prefix) = prefix {
-        text.push_str(&prefix);
-        text.push('\n');
-    } else {
-        text.push_str(
-            "<runtime.notices></runtime.notices>\n<conversation.inbox></conversation.inbox>\n",
-        );
+        blocks.push(crate::context::MessageBlock::Text(prefix));
     }
-    text.push_str(&format!(
-        "<input.message>{prompt}</input.message>\n<attachments></attachments>\n</kuku_turn_frame>"
-    ));
-    crate::context::CanonicalMessage::user_text(text)
+    blocks.push(crate::context::MessageBlock::Text(prompt.to_string()));
+    crate::context::CanonicalMessage::user(blocks)
+}
+
+fn replace_latest_user_message(
+    history: &mut [CanonicalMessage],
+    prompt: &str,
+    replacement: CanonicalMessage,
+) -> bool {
+    for message in history.iter_mut().rev() {
+        if message.role != Role::User || message.blocks.len() != 1 {
+            continue;
+        }
+        let MessageBlock::Text(text) = &message.blocks[0] else {
+            continue;
+        };
+        if text == prompt {
+            *message = replacement;
+            return true;
+        }
+    }
+    false
+}
+
+fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {
+    let insert_at = message.blocks.len().saturating_sub(1);
+    message
+        .blocks
+        .insert(insert_at, crate::context::MessageBlock::Text(text));
 }
 
 pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
@@ -779,4 +844,23 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     };
     pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_trigger_requires_known_token_headroom() {
+        let headroom = compute_context_headroom(200_000, Some(64_000), None);
+
+        assert!(!should_trigger_handoff(&headroom, 0.7));
+    }
+
+    #[test]
+    fn handoff_trigger_uses_known_token_headroom() {
+        let headroom = compute_context_headroom(200_000, Some(64_000), Some(125_000));
+
+        assert!(should_trigger_handoff(&headroom, 0.7));
+    }
 }

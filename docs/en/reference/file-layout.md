@@ -29,6 +29,12 @@ $KUKU_HOME/
 
 `logs/` stores observability logs. Session facts remain in each session's `events.jsonl`.
 
+When provider tracing is enabled with `KUKU_PROVIDER_TRACE=1`, request and response diagnostics are written under:
+
+```text
+$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
+```
+
 ## Project-Scoped Layout
 
 For workspace `/code/my-app`, the project home is:

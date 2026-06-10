@@ -482,6 +482,7 @@ mod tests {
             skill_registry: Some(skill_registry()),
             previous_skill_registry: None,
             bootstrap_skill: None,
+            frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
             child_session_count: 0,
             agent_binding_id: None,
             tool_registry_override: override_registry,

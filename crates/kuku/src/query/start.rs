@@ -360,6 +360,7 @@ impl Query {
             skill_registry,
             previous_skill_registry,
             child_session_count: 0,
+            frozen_turn_prefix: super::types::TurnPrefixFreeze::default(),
             agent_binding_id,
             tool_registry_override,
             catalog,

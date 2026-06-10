@@ -309,6 +309,7 @@ pub(super) struct PendingRun {
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
+    pub(super) frozen_turn_prefix: TurnPrefixFreeze,
     pub(super) child_session_count: u32,
     pub(super) agent_binding_id: Option<String>,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
@@ -329,6 +330,30 @@ pub(super) struct PendingRun {
     pub(super) tool_errors: u64,
     pub(super) thinking_duration_ms: u64,
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) enum TurnPrefixFreeze {
+    #[default]
+    Unfrozen,
+    Frozen(Option<String>),
+}
+
+impl TurnPrefixFreeze {
+    pub(super) fn freeze_or_reuse(&mut self, dynamic: Option<String>) -> Option<String> {
+        match self {
+            Self::Unfrozen => {
+                *self = Self::Frozen(dynamic.clone());
+                dynamic
+            }
+            Self::Frozen(prefix) => prefix.clone(),
+        }
+    }
+
+    pub(super) fn replace(&mut self, dynamic: Option<String>) -> Option<String> {
+        *self = Self::Frozen(dynamic.clone());
+        dynamic
+    }
 }
 
 impl PendingRun {

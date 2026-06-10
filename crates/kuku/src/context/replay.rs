@@ -55,23 +55,7 @@ pub fn rebuild_history(
         None => (None, filtered.as_slice()),
     };
 
-    let mut messages = filtered
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::PromptSnapshot {
-                conversation: event_conversation,
-                messages,
-                ..
-            } if event_conversation == conversation.as_str() => Some(
-                messages
-                    .iter()
-                    .map(|message| CanonicalMessage::user_text(message.content.clone()))
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();
 
     for event in effective {
@@ -574,6 +558,65 @@ mod tests {
                 conversation: "main".to_string(),
             },
         )
+    }
+
+    #[test]
+    fn rebuild_history_does_not_replay_prompt_snapshot_as_conversation_history() {
+        let events = vec![
+            event(
+                1,
+                EventPayload::PromptSnapshot {
+                    ts: "2026-05-13T00:00:00Z".to_string(),
+                    conversation: "main".to_string(),
+                    binding_id: "main".to_string(),
+                    snapshot_id: "snapshot_1".to_string(),
+                    turn: 1,
+                    messages: vec![crate::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_tool_guidance>stable prelude</kuku_tool_guidance>"
+                            .to_string(),
+                    }],
+                    project_instruction_sources: Vec::new(),
+                    memory_sources: Vec::new(),
+                    prompt_asset_sources: Vec::new(),
+                    skills: json!(null),
+                    bootstrap_loaded: Vec::new(),
+                    provider: "anthropic".to_string(),
+                    model: "model".to_string(),
+                    renderer: crate::context::PromptRendererIdentity {
+                        provider: "anthropic".to_string(),
+                        renderer: "anthropic".to_string(),
+                    },
+                    tool_registry: Box::new(crate::context::ToolRegistryProvenance {
+                        hash: "count:0".to_string(),
+                        names: Vec::new(),
+                        tool_count: 0,
+                    }),
+                    agent_registry: None,
+                    skill_registry: Box::new(None),
+                    plugin_registry: Box::new(None),
+                    capabilities: crate::context::PromptCapabilityMetadata {
+                        max_context_tokens: Some(200000),
+                        remaining_input_tokens: None,
+                        context_budget_tier: "normal".to_string(),
+                    },
+                },
+            ),
+            user_input(2, 1, "hello"),
+            model_response(3, 1, "req_1", "hi"),
+            turn_end(4, 1),
+        ];
+
+        let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+
+        assert!(summary.is_none());
+        assert_eq!(
+            history,
+            vec![
+                CanonicalMessage::user_text("hello"),
+                CanonicalMessage::assistant(vec![MessageBlock::Text("hi".to_string())]),
+            ]
+        );
     }
 
     #[test]

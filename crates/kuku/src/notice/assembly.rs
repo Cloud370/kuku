@@ -119,12 +119,14 @@ fn build_inbox_notice(events: &[StoredEvent], target: &ConversationAddress) -> O
                 text,
                 from,
                 ..
-            } if conversation == target.as_str() => Some(ConversationInboxMessage {
-                from: from
-                    .as_deref()
-                    .and_then(|value| ConversationAddress::parse(value).ok()),
-                text: text.clone(),
-            }),
+            } if conversation == target.as_str() && from.is_some() => {
+                Some(ConversationInboxMessage {
+                    from: from
+                        .as_deref()
+                        .and_then(|value| ConversationAddress::parse(value).ok()),
+                    text: text.clone(),
+                })
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -481,6 +483,63 @@ mod tests {
             max_context_drift_entries(ContextBudgetTier::Roomy)
                 > max_context_drift_entries(ContextBudgetTier::Normal)
         );
+    }
+
+    #[test]
+    fn host_input_is_not_rendered_as_conversation_inbox_notice() {
+        let events = vec![StoredEvent {
+            id: 1,
+            payload: EventPayload::MessageUser {
+                ts: "t1".to_string(),
+                conversation: "main".to_string(),
+                turn: 1,
+                text: "current host input".to_string(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        }];
+
+        let notices = build_runtime_notices(NoticeAssemblyInput {
+            workspace: Path::new("."),
+            events: &events,
+            context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &ConversationAddress::MAIN,
+            agent_registry: None,
+        });
+
+        assert!(!notices
+            .iter()
+            .any(|notice| matches!(notice.kind, NoticeKind::ConversationInbox { .. })));
+    }
+
+    #[test]
+    fn forwarded_message_is_rendered_as_conversation_inbox_notice() {
+        let review = ConversationAddress::parse("review").unwrap();
+        let events = vec![StoredEvent {
+            id: 1,
+            payload: EventPayload::MessageUser {
+                ts: "t1".to_string(),
+                conversation: "review".to_string(),
+                turn: 1,
+                text: "delegated input".to_string(),
+                from: Some("main".to_string()),
+                via_tool_call_id: Some("toolu_agent_review".to_string()),
+            },
+        }];
+
+        let notices = build_runtime_notices(NoticeAssemblyInput {
+            workspace: Path::new("."),
+            events: &events,
+            context_budget_tier: ContextBudgetTier::Normal,
+            conversation: &review,
+            agent_registry: None,
+        });
+
+        let rendered = notices
+            .iter()
+            .find_map(render_notice_body)
+            .expect("inbox notice should render");
+        assert!(rendered.contains("from main: delegated input"));
     }
 
     #[test]

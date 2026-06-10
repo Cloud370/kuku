@@ -562,15 +562,16 @@ impl Run {
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                     }
-                    streaming.accumulated_text.push_str(&text);
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
                             if !user_text.is_empty() {
+                                streaming.accumulated_text.push_str(&user_text);
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
                         }
                         return Ok(None);
                     }
+                    streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
@@ -1101,6 +1102,7 @@ mod tests {
             skill_registry: None,
             previous_skill_registry: None,
             bootstrap_skill: None,
+            frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
             child_session_count: 0,
             agent_binding_id: None,
             tool_registry_override: None,
@@ -1642,6 +1644,133 @@ mod tests {
         let step = crate::query::step::finish_streaming(state).await;
 
         assert!(matches!(step, Ok(PendingStep::Done(output, _, 1)) if output.text == "complete"));
+    }
+
+    #[tokio::test]
+    async fn completion_persists_runtime_model_usage_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("runtime.jsonl");
+        let mut pending = make_test_pending(
+            events_path,
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.runtime_log_writer = crate::log::BufferedLogWriter::with_flush_every(&log_path, 1);
+
+        let state = StreamingChunkState {
+            pending,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
+            request_id: "req_7".to_string(),
+            stream: Box::pin(tokio_stream::empty()),
+            accumulated_text: "complete".to_string(),
+            accumulated_thinking: String::new(),
+            stop_reason: Some("end_turn".to_string()),
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: Some(crate::provider::types::ProviderUsage {
+                input_tokens: Some(120),
+                output_tokens: Some(30),
+                cache_read_input_tokens: Some(900),
+                cache_creation_input_tokens: Some(0),
+            }),
+            lead_events: Vec::new(),
+            handoff_detector: None,
+            thinking_start: None,
+            thinking_duration_ms: 0,
+        };
+
+        let step = crate::query::step::finish_streaming(state).await;
+
+        assert!(matches!(step, Ok(PendingStep::Done(output, _, 1)) if output.text == "complete"));
+        let log = std::fs::read_to_string(&log_path).expect("runtime log should be written");
+        assert!(log.contains("\"kind\":\"runtime.model_usage\""));
+        assert!(log.contains("\"request_id\":\"req_7\""));
+        assert!(log.contains("\"cache_read_input_tokens\":900"));
+        assert!(log.contains("\"cache_hit_rate\":"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_handoff_marker_does_not_leak_to_final_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let mut pending = make_test_pending(
+            events_path.clone(),
+            dir.path(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        pending.handoff_triggered = true;
+
+        let stream: std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = std::result::Result<
+                            crate::provider::chunk::ProviderChunk,
+                            crate::provider::types::ProviderFailure,
+                        >,
+                    > + Send,
+            >,
+        > = Box::pin(tokio_stream::iter(vec![
+            Ok(crate::provider::chunk::ProviderChunk::TextDelta {
+                text: "visible".to_string(),
+            }),
+            Ok(crate::provider::chunk::ProviderChunk::TextDelta {
+                text: "\n\n<kuku_handoff".to_string(),
+            }),
+            Ok(crate::provider::chunk::ProviderChunk::StopReason {
+                reason: "end_turn".to_string(),
+            }),
+            Ok(crate::provider::chunk::ProviderChunk::StreamEnd),
+        ]));
+
+        let mut streaming = StreamingChunkState {
+            pending,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
+            request_id: "req_1".to_string(),
+            stream,
+            accumulated_text: String::new(),
+            accumulated_thinking: String::new(),
+            stop_reason: None,
+            tool_calls: Vec::new(),
+            tool_arg_buffers: Vec::new(),
+            provider_request_id: None,
+            usage: None,
+            lead_events: Vec::new(),
+            handoff_detector: Some(crate::query::handoff::HandoffDetector::new()),
+            thinking_start: None,
+            thinking_duration_ms: 0,
+        };
+        let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        loop {
+            match Run::poll_stream_chunk(&cancel_token, &mut streaming)
+                .await
+                .unwrap()
+            {
+                Some(UiEvent::TextDelta { text }) => assert_eq!(text, "visible"),
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        let step = crate::query::step::finish_streaming(streaming)
+            .await
+            .unwrap();
+
+        let PendingStep::Done(output, _, _) = step else {
+            panic!("expected done step");
+        };
+        assert_eq!(output.text, "visible");
+
+        let events = EventStore::replay(&events_path).unwrap();
+        let response = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ModelResponse { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("model.response event");
+        assert_eq!(response, "visible");
     }
 
     #[tokio::test]

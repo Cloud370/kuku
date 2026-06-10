@@ -516,7 +516,7 @@ fn restores_frozen_prelude_from_fact_event() {
 }
 
 #[test]
-fn rebuild_history_uses_snapshot_for_target_conversation_only() {
+fn rebuild_history_does_not_replay_snapshot_for_target_conversation() {
     let review = ConversationAddress::parse("review").unwrap();
     let events = vec![
         kuku::event::StoredEvent {
@@ -594,27 +594,15 @@ fn rebuild_history_uses_snapshot_for_target_conversation_only() {
 
     assert_eq!(
         main_history,
-        vec![
-            CanonicalMessage::user_text(
-                "<kuku_project_instructions>main v1</kuku_project_instructions>",
-            ),
-            CanonicalMessage::user_text(
-                "<kuku_input_frame><input.message>main ask</input.message></kuku_input_frame>",
-            ),
-            CanonicalMessage::assistant(vec![MessageBlock::Text("main answer".to_string())]),
-        ]
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "main answer".to_string()
+        )])]
     );
     assert_eq!(
         review_history,
-        vec![
-            CanonicalMessage::user_text(
-                "<kuku_project_instructions>review v1</kuku_project_instructions>",
-            ),
-            CanonicalMessage::user_text(
-                "<kuku_input_frame><input.message>review ask</input.message></kuku_input_frame>",
-            ),
-            CanonicalMessage::assistant(vec![MessageBlock::Text("review answer".to_string())]),
-        ]
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "review answer".to_string()
+        )])]
     );
 }
 
@@ -829,13 +817,9 @@ fn prompt_snapshot_preserves_old_agents_content_after_file_changes() {
 
     assert_eq!(
         history,
-        vec![
-            CanonicalMessage::user_text(
-                "<kuku_project_instructions>AGENTS version one</kuku_project_instructions>",
-            ),
-            CanonicalMessage::user_text("<input.message>inspect</input.message>"),
-            CanonicalMessage::assistant(vec![MessageBlock::Text("done".to_string())]),
-        ]
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "done".to_string()
+        )])]
     );
 }
 
@@ -947,8 +931,5 @@ fn conversation_skill_binding_is_stable() {
     );
 
     let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
-    assert_eq!(
-        history[0],
-        CanonicalMessage::user_text("Review skill instructions v1.")
-    );
+    assert!(history.is_empty());
 }

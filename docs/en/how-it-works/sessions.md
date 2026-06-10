@@ -69,10 +69,11 @@ Conversation-scoped replay, notices, interruption recovery, and rollbacks all wo
 $KUKU_HOME/logs/
 |- session/<session-id>.jsonl
 |- runtime/<yyyy-mm-dd>.jsonl
+|- provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
 `- host/cli|server|webui/<yyyy-mm-dd>.jsonl
 ```
 
-Logs are for host and runtime visibility. Retention and defaults are configured under [`[logs]`](../reference/config.md#logs).
+Logs are for host and runtime visibility. Retention and defaults are configured under [`[logs]`](../reference/config.md#logs). Provider trace logs are opt-in with `KUKU_PROVIDER_TRACE=1`; they are diagnostics only and are not session facts.
 
 ## Lifecycle
 

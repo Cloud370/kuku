@@ -29,6 +29,12 @@ $KUKU_HOME/
 
 `logs/` 存放可观测性日志。Session 事实仍保存在各个 Session 的 `events.jsonl` 中。
 
+当通过 `KUKU_PROVIDER_TRACE=1` 开启 provider trace 时，请求和响应诊断信息会写入：
+
+```text
+$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
+```
+
 ## Project-Scoped Layout
 
 对于工作区 `/code/my-app`，项目 home 是：

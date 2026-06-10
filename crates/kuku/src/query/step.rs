@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
+use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
@@ -209,6 +210,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         pending.cumulative.cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
         pending.cumulative.cache_creation_input_tokens +=
             u.cache_creation_input_tokens.unwrap_or(0);
+        persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
     }
 
     pending.thinking_duration_ms += thinking_duration_ms;
@@ -396,6 +398,39 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         slot: None,
         event: None,
     })
+}
+
+fn persist_runtime_model_usage_log(
+    pending: &mut PendingRun,
+    request_id: &str,
+    usage: &crate::provider::types::ProviderUsage,
+) -> Result<()> {
+    let input_tokens = usage.input_tokens.unwrap_or(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0);
+    let cache_read_input_tokens = usage.cache_read_input_tokens.unwrap_or(0);
+    let cache_creation_input_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
+    let input_tokens_total = input_tokens + cache_read_input_tokens + cache_creation_input_tokens;
+    let cache_hit_rate = (input_tokens_total > 0)
+        .then(|| cache_read_input_tokens as f64 / input_tokens_total as f64);
+
+    let mut record = LogRecord::new(now_timestamp()?, LogLevel::Info, LogScope::Runtime);
+    record.kind = "runtime.model_usage".to_string();
+    record.message = format!("model request {request_id} usage");
+    record.session_id = Some(pending.session_id.clone());
+    record.workspace = Some(pending.workspace.display().to_string());
+    record.run_id = Some(pending.session_id.clone());
+    record.request_id = Some(request_id.to_string());
+    record.turn = Some(pending.turn);
+    record.data = Some(serde_json::json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "input_tokens_total": input_tokens_total,
+        "cache_hit_rate": cache_hit_rate,
+    }));
+    let _ = pending.runtime_log_writer.push(record);
+    Ok(())
 }
 
 pub(super) async fn advance_pending(

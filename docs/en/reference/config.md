@@ -79,7 +79,7 @@ When estimated context usage crosses `threshold`, kuku injects a handoff instruc
 | `max_age_days` | integer | `14` |
 | `max_total_size_mb` | integer | `512` |
 
-Observability logs are on by default and have no disable switch. kuku prunes logs by age first, then by total size budget. Pruning never touches session `events.jsonl` files.
+Observability logs are on by default and have no disable switch. kuku prunes logs by age first, then by total size budget. Pruning never touches session `events.jsonl` files. Opt-in provider trace files under `logs/provider-trace/` use the same retention budget.
 
 ## `plugin`
 

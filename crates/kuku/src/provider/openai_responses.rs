@@ -29,7 +29,7 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
                             items.push(json!({
                                 "type": "message",
                                 "role": "user",
-                                "content": text_parts.join("\n"),
+                                "content": input_text_parts(&text_parts),
                             }));
                             text_parts.clear();
                         }
@@ -47,7 +47,7 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
                 items.push(json!({
                     "type": "message",
                     "role": "user",
-                    "content": text_parts.join("\n"),
+                    "content": input_text_parts(&text_parts),
                 }));
             }
 
@@ -90,6 +90,13 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
             items
         }
     }
+}
+
+fn input_text_parts(text_parts: &[String]) -> Value {
+    json!(text_parts
+        .iter()
+        .map(|text| json!({"type": "input_text", "text": text}))
+        .collect::<Vec<_>>())
 }
 
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
@@ -191,6 +198,7 @@ pub(crate) async fn stream(
     let eof_parser = Arc::clone(&parser);
     Ok(stream_sse_events(
         response,
+        |_| {},
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))

@@ -219,7 +219,7 @@ async fn call_secondary_llm(
         thinking: resolved.thinking.clone(),
     };
 
-    let mut stream = crate::provider::stream_provider(&resolved, &request)
+    let mut stream = crate::provider::stream_provider(&resolved, &request, None)
         .await
         .map_err(|e| {
             ToolResultEnvelope::error("failed: LLM call", format!("secondary LLM error: {e:?}"))
