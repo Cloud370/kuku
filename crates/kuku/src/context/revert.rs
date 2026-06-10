@@ -507,7 +507,17 @@ pub fn list_user_turns(events: &[StoredEvent]) -> Vec<UserTurnEntry> {
     let mut turns: Vec<UserTurnEntry> = events
         .iter()
         .filter_map(|e| {
-            if let EventPayload::MessageUser { turn, ts, text, .. } = &e.payload {
+            if let EventPayload::MessageUser {
+                conversation,
+                turn,
+                ts,
+                text,
+                ..
+            } = &e.payload
+            {
+                if conversation != ConversationAddress::MAIN.as_str() {
+                    return None;
+                }
                 Some(UserTurnEntry {
                     turn: *turn,
                     ts: ts.clone(),

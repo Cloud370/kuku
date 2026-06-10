@@ -33,6 +33,8 @@ Lowercase and dot-separated.
 | `turn.interrupted` | Interrupted end of one conversation turn. |
 | `context.sources` | Instruction and memory source files used for one main-turn rebuild. |
 | `context.skills` | Skill registry snapshot and bootstrap-loaded skills for one conversation turn. |
+| `model.response` | Completed provider response for one model request. |
+| `model.error` | Provider failure for one model request. |
 | `tool.call` | One requested tool call. |
 | `permission.requested` | Durable pending permission state for one tool call. |
 | `permission.allow` | Tool authorization allow decision. |
@@ -70,6 +72,8 @@ Conversation-scoped events also carry `conversation`. Turn-scoped events also ca
 | `turn.interrupted` | `ts`, `conversation`, `turn`, `reason` |
 | `context.sources` | `turn`, `ts`, `request_id`, `project_instruction_sources`, `memory_sources` |
 | `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
+| `model.response` | `turn`, `ts`, `request_id`, `text` |
+| `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
 | `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
 | `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
 | `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
@@ -79,7 +83,7 @@ Conversation-scoped events also carry `conversation`. Turn-scoped events also ca
 | `conversation.rollback` | `ts`, `conversation`, `to_turn`, `to_event_id`, `scope` |
 | `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
 
-`tool.call` and `tool.result` optionally include `conversation`. When absent, they belong to the `main` conversation.
+`model.response`, `model.error`, `context.sources`, `handoff`, and permission events belong to the `main` conversation through their global `turn`. `tool.call` and `tool.result` optionally include `conversation`; when absent, they belong to `main`.
 
 ## Rollback Scope Values
 

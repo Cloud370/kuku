@@ -19,6 +19,11 @@ import { useSessionEvents } from "@/queries/sessions";
 import { replayToTurns } from "@/adapters/replay";
 import type { EventPayload } from "@/adapters/replay";
 import { createRun } from "@/api/runs";
+import type { StoredEventItem } from "@/api/sessions";
+
+function replayEvent(event: StoredEventItem): EventPayload {
+  return { ...(event.payload as EventPayload), id: event.id };
+}
 
 function riskIcon(risk: string): string {
   if (risk === "command") return ">";
@@ -43,9 +48,9 @@ export function Session() {
   useEffect(() => {
     if (!data) return;
     if (Array.isArray(data)) {
-      loadTurns(replayToTurns(data.map((e) => e.payload as EventPayload)));
+      loadTurns(replayToTurns(data.map(replayEvent)));
     } else {
-      loadTurns(replayToTurns(data.events.map((e) => e.payload as EventPayload)));
+      loadTurns(replayToTurns(data.events.map(replayEvent)));
       if (data.active_stream?.length) {
         pushActiveStream(data.active_stream);
       }

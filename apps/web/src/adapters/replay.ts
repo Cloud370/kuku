@@ -6,8 +6,9 @@ export interface EventPayload {
 }
 
 export function replayToTurns(events: EventPayload[]): Turn[] {
+  const visibleEvents = filterRolledBackEvents(events);
   const byTurn = new Map<number, EventPayload[]>();
-  for (const e of events) {
+  for (const e of visibleEvents) {
     const t = e.turn as number | undefined;
     if (t) {
       const list = byTurn.get(t) ?? [];
@@ -47,6 +48,9 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
         if (thinking) agent.thinking = thinking;
         break;
       }
+      case "message.assistant":
+        agent.text = e.text as string;
+        break;
       case "tool.call":
         toolCallMap.set(e.tool_call_id as string, {
           name: e.tool as string,
@@ -72,7 +76,7 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
           message: e.message as string,
         };
         break;
-      case "permission.request":
+      case "permission.requested":
         agent.permissions.push({
           id: e.tool_call_id as string,
           tool: e.tool as string,
@@ -87,8 +91,85 @@ function buildTurn(turnNumber: number, events: EventPayload[]): Turn {
     turnNumber,
     userText,
     agent,
-    status: events.some((e) => e.kind === "turn.completed") ? "complete" : "error",
+    status: turnStatus(events),
   };
+}
+
+function filterRolledBackEvents(events: EventPayload[]): EventPayload[] {
+  const rollbacks = activeRollbacks(events);
+  if (rollbacks.size === 0) return events;
+  const turnConversations = buildTurnConversations(events);
+
+  return events.filter((event) => {
+    const turn = event.turn as number | undefined;
+    const conversation = eventConversation(event, turnConversations);
+    if (!conversation) return true;
+
+    const rollback = rollbacks.get(conversation);
+    if (!rollback) return true;
+
+    if (turn !== undefined) return turn < rollback.toTurn;
+
+    const id = event.id as number | undefined;
+    return id === undefined || id <= rollback.toEventId;
+  });
+}
+
+function activeRollbacks(events: EventPayload[]): Map<string, { toTurn: number; toEventId: number }> {
+  const undone = new Set<number>();
+  for (const event of events) {
+    if (event.kind === "conversation.rollback.undone") {
+      const rollbackId = event.rollback_event_id as number | undefined;
+      if (rollbackId !== undefined) undone.add(rollbackId);
+    }
+  }
+
+  const rollbacks = new Map<string, { toTurn: number; toEventId: number }>();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.kind !== "conversation.rollback") continue;
+
+    const id = event.id as number | undefined;
+    const conversation = event.conversation as string | undefined;
+    const toTurn = event.to_turn as number | undefined;
+    const toEventId = event.to_event_id as number | undefined;
+    const scope = event.scope as string | undefined;
+    if (!conversation || toTurn === undefined || toEventId === undefined || scope === "file_changes") continue;
+    if (id !== undefined && undone.has(id)) continue;
+    if (!rollbacks.has(conversation)) rollbacks.set(conversation, { toTurn, toEventId });
+  }
+  return rollbacks;
+}
+
+function buildTurnConversations(events: EventPayload[]): Map<number, string> {
+  const conversations = new Map<number, string>();
+  for (const event of events) {
+    const turn = event.turn as number | undefined;
+    const conversation = event.conversation as string | undefined;
+    if (turn !== undefined && conversation && !conversations.has(turn)) {
+      conversations.set(turn, conversation);
+    }
+  }
+  return conversations;
+}
+
+function eventConversation(
+  event: EventPayload,
+  turnConversations: Map<number, string>,
+): string | undefined {
+  const conversation = event.conversation as string | undefined;
+  if (conversation) return conversation;
+
+  const turn = event.turn as number | undefined;
+  if (turn !== undefined) return turnConversations.get(turn) ?? "main";
+
+  return undefined;
+}
+
+function turnStatus(events: EventPayload[]): Turn["status"] {
+  if (events.some((e) => e.kind === "turn.completed")) return "complete";
+  if (events.some((e) => e.kind === "turn.cancelled")) return "cancelled";
+  return "error";
 }
 
 function inferKind(name: string): ToolRender["kind"] {

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore};
 use crate::tool::ToolResultEnvelope;
 
@@ -70,10 +71,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
         &[]
     };
 
-    let type_filter = args
-        .get("kind")
-        .and_then(Value::as_str)
-        .map(normalize_type_filter);
+    let kind_filter = args.get("kind").and_then(Value::as_str);
     let conversation_filter = args.get("conversation").and_then(Value::as_str);
     let after = args.get("after").and_then(Value::as_u64).unwrap_or(0);
     let search = args.get("search").and_then(Value::as_str);
@@ -92,6 +90,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
     } else {
         build_turn_map_from_events(&all_events)
     };
+    let turn_conversations = build_turn_conversations(&all_events);
 
     let iter: Box<dyn Iterator<Item = &crate::event::StoredEvent>> = if skip_rolled_back {
         Box::new(events.iter().rev().copied())
@@ -109,7 +108,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
             continue;
         }
 
-        if type_filter.is_none() && !include_in_default_results(&event.payload) {
+        if kind_filter.is_none() && !include_in_default_results(&event.payload) {
             continue;
         }
 
@@ -125,14 +124,14 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
             }
         }
 
-        if let Some(ref filter) = type_filter {
+        if let Some(filter) = kind_filter {
             if !event_type_matches(&event.payload, filter) {
                 continue;
             }
         }
 
         if let Some(conversation) = conversation_filter {
-            if event_conversation(&event.payload) != Some(conversation) {
+            if !event_matches_conversation(&event.payload, conversation, &turn_conversations) {
                 continue;
             }
         }
@@ -288,25 +287,89 @@ fn build_turn_map_from_filtered(
     map
 }
 
-fn normalize_type_filter(raw: &str) -> String {
-    match raw {
-        "MessageUser" => "message.user".to_string(),
-        "ModelResponse" => "model.response".to_string(),
-        "ToolCall" => "tool.call".to_string(),
-        "ToolResult" => "tool.result".to_string(),
-        "PermissionRequested" => "permission.requested".to_string(),
-        "PermissionAllow" => "permission.allow".to_string(),
-        "PermissionDeny" => "permission.deny".to_string(),
-        "ContextSkills" => "context.skills".to_string(),
-        "Handoff" => "handoff".to_string(),
-        "ConversationRollback" => "conversation.rollback".to_string(),
-        "ConversationRollbackUndone" => "conversation.rollback.undone".to_string(),
-        other => other.to_lowercase(),
+fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
+    payload.kind_name() == filter
+}
+
+fn build_turn_conversations(
+    events: &[crate::event::StoredEvent],
+) -> std::collections::HashMap<u64, String> {
+    let mut map = std::collections::HashMap::new();
+    for event in events {
+        if let (Some(turn), Some(conversation)) = (
+            event_turn(&event.payload),
+            event_conversation(&event.payload),
+        ) {
+            map.entry(turn).or_insert_with(|| conversation.to_string());
+        }
+    }
+    map
+}
+
+fn event_matches_conversation(
+    payload: &EventPayload,
+    conversation: &str,
+    turn_conversations: &std::collections::HashMap<u64, String>,
+) -> bool {
+    if let Some(value) = event_conversation(payload) {
+        return value == conversation;
+    }
+    if let Some(turn) = event_turn(payload) {
+        if let Some(value) = turn_conversations.get(&turn) {
+            return value == conversation;
+        }
+    }
+    conversation == ConversationAddress::MAIN.as_str() && unscoped_main_event(payload)
+}
+
+fn event_turn(payload: &EventPayload) -> Option<u64> {
+    match payload {
+        EventPayload::ContextSources { turn, .. }
+        | EventPayload::ContextSkills { turn, .. }
+        | EventPayload::ModelResponse { turn, .. }
+        | EventPayload::ModelError { turn, .. }
+        | EventPayload::ToolCall { turn, .. }
+        | EventPayload::PermissionRequested { turn, .. }
+        | EventPayload::PermissionAllow { turn, .. }
+        | EventPayload::PermissionDeny { turn, .. }
+        | EventPayload::ToolResult { turn, .. }
+        | EventPayload::Handoff { turn, .. }
+        | EventPayload::PromptSnapshot { turn, .. }
+        | EventPayload::MessageUser { turn, .. }
+        | EventPayload::MessageAssistant { turn, .. }
+        | EventPayload::TurnStarted { turn, .. }
+        | EventPayload::TurnCompleted { turn, .. }
+        | EventPayload::TurnCancelled { turn, .. }
+        | EventPayload::TurnInterrupted { turn, .. } => Some(*turn),
+        EventPayload::SessionCreated { .. }
+        | EventPayload::ConversationOpened { .. }
+        | EventPayload::ConversationBound { .. }
+        | EventPayload::ConversationRollback { .. }
+        | EventPayload::ConversationRollbackUndone { .. }
+        | EventPayload::Unknown(_) => None,
     }
 }
 
-fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
-    payload.kind_name() == filter
+fn unscoped_main_event(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::SessionCreated { .. }
+            | EventPayload::ModelResponse { .. }
+            | EventPayload::ModelError { .. }
+            | EventPayload::ToolCall {
+                conversation: None,
+                ..
+            }
+            | EventPayload::ToolResult {
+                conversation: None,
+                ..
+            }
+            | EventPayload::PermissionRequested { .. }
+            | EventPayload::PermissionAllow { .. }
+            | EventPayload::PermissionDeny { .. }
+            | EventPayload::ContextSources { .. }
+            | EventPayload::Handoff { .. }
+    )
 }
 
 fn include_in_default_results(payload: &EventPayload) -> bool {
@@ -424,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn query_session_filters_by_type() {
+    fn query_session_filters_by_kind() {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
@@ -445,10 +508,21 @@ mod tests {
                 },
             ],
         );
-        let result = query_session(&json!({"kind": "MessageUser"}), &path);
+        let result = query_session(&json!({"kind": "message.user"}), &path);
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("hello"));
         assert!(!result.model_content.contains("\"hi\""));
+    }
+
+    #[test]
+    fn query_session_rejects_non_canonical_kind_aliases() {
+        let dir = tempdir().unwrap();
+        let path = write_events(dir.path(), &[message_user(1, "hello")]);
+
+        let result = query_session(&json!({"kind": "MessageUser"}), &path);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.model_content, "[\n\n]");
     }
 
     #[test]
@@ -477,7 +551,7 @@ mod tests {
         assert!(!default_result.model_content.contains("context.skills"));
         assert!(!default_result.model_content.contains("bootstrap-alpha"));
 
-        let explicit_result = query_session(&json!({"kind": "ContextSkills"}), &path);
+        let explicit_result = query_session(&json!({"kind": "context.skills"}), &path);
         assert_eq!(explicit_result.status, "ok");
         assert!(explicit_result.model_content.contains("context.skills"));
         assert!(explicit_result.model_content.contains("bootstrap-alpha"));
@@ -694,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn query_session_type_filter_conversation_rollback() {
+    fn query_session_kind_filter_conversation_rollback() {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
@@ -710,7 +784,7 @@ mod tests {
             ],
         );
         let result = query_session(
-            &json!({"kind": "ConversationRollback", "skip_rolled_back": false}),
+            &json!({"kind": "conversation.rollback", "skip_rolled_back": false}),
             &path,
         );
         assert_eq!(result.status, "ok");
@@ -719,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn query_session_type_filter_permission_requested() {
+    fn query_session_kind_filter_permission_requested() {
         let dir = tempdir().unwrap();
         let path = write_events(
             dir.path(),
@@ -738,7 +812,7 @@ mod tests {
             ],
         );
 
-        let result = query_session(&json!({"kind": "PermissionRequested"}), &path);
+        let result = query_session(&json!({"kind": "permission.requested"}), &path);
 
         assert_eq!(result.status, "ok");
         assert!(result.model_content.contains("permission.requested"));
@@ -902,6 +976,36 @@ mod tests {
         assert!(result.model_content.contains("review"));
         assert!(result.model_content.contains("review text"));
         assert!(!result.model_content.contains("explore text"));
+    }
+
+    #[test]
+    fn query_session_main_conversation_includes_main_model_response() {
+        let dir = tempdir().unwrap();
+        let path = write_events(
+            dir.path(),
+            &[
+                message_user(1, "hello"),
+                EventPayload::ModelResponse {
+                    turn: 1,
+                    ts: ts("t"),
+                    request_id: "r1".into(),
+                    text: "main answer".into(),
+                    thinking: None,
+                    input_tokens_total: None,
+                },
+                EventPayload::TurnCompleted {
+                    turn: 1,
+                    ts: ts("t"),
+                    conversation: "main".into(),
+                },
+            ],
+        );
+
+        let result = query_session(&json!({"conversation": "main"}), &path);
+
+        assert_eq!(result.status, "ok");
+        assert!(result.model_content.contains("hello"));
+        assert!(result.model_content.contains("main answer"));
     }
 
     #[test]

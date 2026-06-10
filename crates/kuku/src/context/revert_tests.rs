@@ -578,6 +578,23 @@ fn user_turns_listed_reverse() {
     assert_eq!(turns[0].text_preview, "second message");
 }
 
+#[test]
+fn user_turns_for_main_undo_ignore_child_conversations() {
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "main message"),
+        te(3, 1),
+        conversation_opened(4, "review"),
+        message_user(5, "review", 2, "child message"),
+    ];
+
+    let turns = list_user_turns(&events);
+
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].turn, 1);
+    assert_eq!(turns[0].text_preview, "main message");
+}
+
 // count_file_turns_after tests
 
 #[test]
