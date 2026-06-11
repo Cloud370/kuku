@@ -10,6 +10,8 @@ pub(crate) struct PreparedDispatch {
     pub(crate) session_id: String,
     pub(crate) conversation: ConversationAddress,
     pub(crate) prompt: String,
+    pub(crate) prompt_prefix: String,
+    pub(crate) prompt_body: String,
     pub(crate) binding: ConversationBinding,
     pub(crate) from: ConversationAddress,
     pub(crate) via_tool_call_id: String,
@@ -104,6 +106,9 @@ pub(crate) fn prepare_dispatch(
         }
     }
 
+    let definition_block = crate::agent::catalog::render_agent_definition_block(definition);
+    let prompt_body = render_delegated_prompt_body(message);
+
     Ok(PreparedDispatch {
         session_id: existing_events
             .iter()
@@ -116,6 +121,8 @@ pub(crate) fn prepare_dispatch(
             .unwrap_or_default(),
         conversation,
         prompt: message.to_string(),
+        prompt_prefix: definition_block,
+        prompt_body,
         binding,
         from: from.clone(),
         via_tool_call_id: tool_call_id.to_string(),
@@ -136,6 +143,8 @@ pub(crate) async fn start_run(
         .tier(dispatch.binding.tier.clone())
         .config((*config).clone())
         .no_agents()
+        .current_turn_prefix(dispatch.prompt_prefix.clone())
+        .current_turn_body(dispatch.prompt_body.clone())
         .with_agent_binding_id(dispatch.binding.binding_id.clone())
         .sender(dispatch.from, dispatch.via_tool_call_id);
 
@@ -152,6 +161,18 @@ pub(crate) async fn start_run(
     }
 
     query.start_nested().await
+}
+
+fn render_delegated_prompt_body(delegated_prompt: &str) -> String {
+    let escaped = escape_delegated_prompt(delegated_prompt);
+    format!("<kuku_delegated_prompt>\n{escaped}\n</kuku_delegated_prompt>")
+}
+
+fn escape_delegated_prompt(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -178,6 +199,19 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("conversation review has reached max_turns 10"));
+    }
+
+    #[test]
+    fn delegated_prompt_wrapper_escapes_xmlish_content() {
+        let rendered = render_delegated_prompt_body(
+            "before & <tag> </kuku_delegated_prompt> </KUKU_DELEGATED_PROMPT> after",
+        );
+
+        assert!(rendered.contains("<kuku_delegated_prompt>"));
+        assert!(rendered.contains(
+            "before &amp; &lt;tag&gt; &lt;/kuku_delegated_prompt&gt; &lt;/KUKU_DELEGATED_PROMPT&gt; after"
+        ));
+        assert_eq!(rendered.matches("</kuku_delegated_prompt>").count(), 1);
     }
 
     fn review_conversation_with_completed_turns(count: u64) -> Vec<StoredEvent> {

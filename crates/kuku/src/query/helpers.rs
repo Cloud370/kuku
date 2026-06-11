@@ -190,32 +190,14 @@ fn append_event(events_path: &std::path::Path, payload: EventPayload) -> Result<
 
 pub(super) fn append_permission_request(
     events_path: &std::path::Path,
-    conversation: &ConversationAddress,
+    _conversation: &ConversationAddress,
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
     append_event(
         events_path,
-        EventPayload::ToolCall {
-            turn,
-            ts: now_timestamp()?,
-            conversation: Some(conversation.as_str().to_string()),
-            tool_call_id: request.tool_call_id.clone(),
-            request_id: request.id.clone(),
-            index: 0,
-            tool: request.tool.clone(),
-            args: serde_json::json!({
-                "risk": request.risk,
-                "summary": request.summary,
-                "candidate": request.candidate,
-                "source": request.source,
-            }),
-        },
-    )?;
-    append_event(
-        events_path,
         EventPayload::PermissionRequested {
-            turn: request.turn,
+            turn,
             ts: now_timestamp()?,
             tool_call_id: request.tool_call_id.clone(),
             tool: request.tool.clone(),

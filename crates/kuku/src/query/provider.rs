@@ -1,8 +1,8 @@
 use crate::context::{
-    assemble_context, rebuild_history, restore_prompt_snapshot, AgentRegistryProvenance,
-    CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
-    PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
-    ToolRegistryProvenance,
+    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,
+    AgentRegistryProvenance, CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock,
+    PluginRegistryProvenance, PromptCapabilityMetadata, PromptRendererIdentity, Role,
+    SkillRegistryProvenance, ToolRegistryProvenance,
 };
 use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
@@ -34,7 +34,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     let existing_events = EventStore::replay(&pending.events_path)?;
-    let (handoff_summary, history) = rebuild_history(&existing_events, &pending.conversation);
+    let (handoff_summary, history) =
+        rebuild_history_for_provider(&existing_events, &pending.conversation);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
@@ -130,6 +131,15 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         assembly.prelude_messages = frozen;
     }
 
+    if let Some(prefix) = pending
+        .query
+        .current_turn_prefix
+        .as_ref()
+        .filter(|value| !value.is_empty())
+    {
+        append_current_turn_prefix_once(&mut assembly.prelude_messages, prefix);
+    }
+
     if let Some(skill) = pending.bootstrap_skill.as_ref() {
         assembly
             .prelude_messages
@@ -186,10 +196,16 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .frozen_turn_prefix
             .replace(current_turn_prefix.clone());
     }
-    let current_input = build_current_user_message(current_turn_prefix, &pending.query.prompt);
-    if !replace_latest_user_message(
+    let current_body = pending
+        .query
+        .current_turn_body
+        .as_deref()
+        .unwrap_or(&pending.query.prompt);
+    let current_input = build_current_user_message(current_turn_prefix, current_body);
+    if !replace_current_user_message(
         &mut assembly.history,
         &pending.query.prompt,
+        current_body,
         current_input.clone(),
     ) {
         assembly.history.push(current_input.clone());
@@ -685,9 +701,24 @@ fn build_runtime_blocks(
     if turn > 1 {
         let conversation =
             ConversationAddress::parse(conversation).unwrap_or(ConversationAddress::MAIN);
+        let notice_events = existing_events
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    &event.payload,
+                    EventPayload::MessageUser {
+                        conversation: event_conversation,
+                        from: Some(_),
+                        via_tool_call_id: Some(_),
+                        ..
+                    } if event_conversation == conversation.as_str()
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace,
-            events: existing_events,
+            events: &notice_events,
             context_budget_tier: context_headroom.tier,
             conversation: &conversation,
             agent_registry,
@@ -793,6 +824,34 @@ fn replace_latest_user_message(
     false
 }
 
+fn replace_current_user_message(
+    history: &mut [CanonicalMessage],
+    raw_prompt: &str,
+    current_body: &str,
+    replacement: CanonicalMessage,
+) -> bool {
+    if current_body != raw_prompt
+        && replace_latest_user_message(history, current_body, replacement.clone())
+    {
+        return true;
+    }
+    replace_latest_user_message(history, raw_prompt, replacement)
+}
+
+fn append_current_turn_prefix_once(messages: &mut Vec<CanonicalMessage>, prefix: &str) {
+    if messages.iter().any(|message| {
+        message.blocks.iter().any(|block| match block {
+            MessageBlock::Text(text) => text.contains(prefix),
+            MessageBlock::Thinking(_) | MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => {
+                false
+            }
+        })
+    }) {
+        return;
+    }
+    messages.push(CanonicalMessage::user_text(prefix.to_string()));
+}
+
 fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {
     let insert_at = message.blocks.len().saturating_sub(1);
     message
@@ -850,6 +909,13 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn message_text(message: &CanonicalMessage) -> &str {
+        match &message.blocks[0] {
+            MessageBlock::Text(text) => text,
+            _ => panic!("expected text block"),
+        }
+    }
+
     #[test]
     fn handoff_trigger_requires_known_token_headroom() {
         let headroom = compute_context_headroom(200_000, Some(64_000), None);
@@ -862,5 +928,45 @@ mod tests {
         let headroom = compute_context_headroom(200_000, Some(64_000), Some(125_000));
 
         assert!(should_trigger_handoff(&headroom, 0.7));
+    }
+
+    #[test]
+    fn delegated_body_replacement_prefers_current_wrapped_message() {
+        let raw = "same text";
+        let wrapped = "<kuku_delegated_prompt>\nsame text\n</kuku_delegated_prompt>";
+        let replacement = CanonicalMessage::user_text("provider body");
+        let mut history = vec![
+            CanonicalMessage::user_text(raw),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("answer".to_string())]),
+            CanonicalMessage::user_text(wrapped),
+        ];
+
+        assert!(replace_current_user_message(
+            &mut history,
+            raw,
+            wrapped,
+            replacement
+        ));
+
+        assert_eq!(message_text(&history[0]), raw);
+        assert_eq!(message_text(&history[2]), "provider body");
+    }
+
+    #[test]
+    fn current_turn_prefix_is_appended_once_to_restored_prelude() {
+        let prefix = "You are a code and document reviewer";
+        let mut missing = vec![CanonicalMessage::user_text("old snapshot")];
+        append_current_turn_prefix_once(&mut missing, prefix);
+        assert_eq!(missing.len(), 2);
+        assert_eq!(message_text(&missing[1]), prefix);
+
+        append_current_turn_prefix_once(&mut missing, prefix);
+        assert_eq!(missing.len(), 2);
+
+        let mut existing = vec![CanonicalMessage::user_text(format!(
+            "before {prefix} after"
+        ))];
+        append_current_turn_prefix_once(&mut existing, prefix);
+        assert_eq!(existing.len(), 1);
     }
 }

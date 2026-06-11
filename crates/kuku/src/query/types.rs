@@ -34,6 +34,8 @@ pub struct Query {
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
+    pub(super) current_turn_prefix: Option<String>,
+    pub(super) current_turn_body: Option<String>,
     pub(super) agent_registry: Option<crate::agent::registry::AgentRegistry>,
     pub(super) agent_binding_id: Option<String>,
     pub(super) message_from: Option<ConversationAddress>,
@@ -506,6 +508,8 @@ impl Query {
             disable_agents: false,
             disable_skills: false,
             bootstrap_skill: None,
+            current_turn_prefix: None,
+            current_turn_body: None,
             agent_registry: None,
             agent_binding_id: None,
             message_from: None,
@@ -535,6 +539,16 @@ impl Query {
     /// Attach a skill body to be injected as a separate block before user input.
     pub fn skill_body(mut self, body: String) -> Self {
         self.bootstrap_skill = Some(BootstrapSkill { name: None, body });
+        self
+    }
+
+    pub(crate) fn current_turn_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.current_turn_prefix = Some(prefix.into());
+        self
+    }
+
+    pub(crate) fn current_turn_body(mut self, body: impl Into<String>) -> Self {
+        self.current_turn_body = Some(body.into());
         self
     }
 

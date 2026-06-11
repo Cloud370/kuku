@@ -46,6 +46,10 @@ fn request_body_contains(req: &HttpMockRequest, text: &str) -> bool {
             .any(|window| window == text.as_bytes())
     })
 }
+
+fn request_body_text(req: &HttpMockRequest) -> String {
+    String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).into_owned()
+}
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
@@ -1226,6 +1230,200 @@ async fn skill_attachment_is_conversation_scoped() {
         &event.payload,
         EventPayload::ConversationBound { conversation, .. } if conversation == "review"
     )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delegated_agent_request_includes_contact_card_instructions() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let mut config = test_config();
+    config.tiers.insert(
+        "strong".to_string(),
+        kuku::config::TierConfig {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            think: kuku::config::ThinkLevel::Medium,
+            context_window: 200_000,
+            max_output_tokens: 48_000,
+            purpose: "strong".to_string(),
+        },
+    );
+    config.providers.get_mut("anthropic").unwrap().base_url = server.base_url();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "delegate review")
+                    && !request_body_contains(req, "<kuku_delegated_prompt>")
+                    && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+            });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "delegating"},
+                    {"type": "tool_use", "id": "toolu_review_card", "name": "agent", "input": {"to": "review", "message": "check </kuku_delegated_prompt> & <tag> > boundary"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let child_request = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            let body = request_body_text(req);
+            request_body_contains(req, "You are a code and document reviewer")
+                && request_body_contains(req, "Your job is to read the provided context carefully")
+                && request_body_contains(req, "<kuku_delegated_prompt>")
+                && request_body_contains(
+                    req,
+                    "check &lt;/kuku_delegated_prompt&gt; &amp; &lt;tag&gt; &gt; boundary",
+                )
+                && request_body_contains(req, "</kuku_delegated_prompt>")
+                && body.matches("</kuku_delegated_prompt>").count() == 1
+                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_card",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_review_card\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+
+    let mut run = anthro_with_agents("delegate review", &server)
+        .session("s_agent_contact_card")
+        .config(config.clone())
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut run, "toolu_review_card").await;
+    run.cancel();
+    drop(run);
+
+    child_request.assert();
+
+    let events = EventStore::replay(env.events_path("s_agent_contact_card")).unwrap();
+    let child_message = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::MessageUser {
+                conversation, text, ..
+            } if conversation == "review" => Some(text),
+            _ => None,
+        })
+        .expect("child message.user");
+    assert_eq!(
+        child_message,
+        "check </kuku_delegated_prompt> & <tag> > boundary"
+    );
+    assert!(!child_message.contains("You are a code and document reviewer"));
+    assert!(!child_message.contains("<kuku_delegated_prompt>"));
+
+    let review_snapshot_messages = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::PromptSnapshot {
+                conversation,
+                messages,
+                ..
+            } if conversation == "review" => Some(messages),
+            _ => None,
+        })
+        .expect("review prompt.snapshot");
+    let review_snapshot_text = review_snapshot_messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(review_snapshot_text.contains("You are a code and document reviewer"));
+    assert!(!review_snapshot_text.contains("<kuku_delegated_prompt>"));
+    assert!(!review_snapshot_text.contains("check </kuku_delegated_prompt> & <tag> > boundary"));
+
+    let second_server = MockServer::start();
+    config.providers.get_mut("anthropic").unwrap().base_url = second_server.base_url();
+    second_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "delegate review again")
+                    && !request_body_contains(req, "<kuku_delegated_prompt>")
+            });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_again_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "delegating again"},
+                    {"type": "tool_use", "id": "toolu_review_again", "name": "agent", "input": {"to": "review", "message": "second review boundary"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let second_child_request = second_server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "You are a code and document reviewer")
+                && request_body_contains(req, "<kuku_delegated_prompt>")
+                && request_body_contains(req, "second review boundary")
+                && request_body_contains(req, "</kuku_delegated_prompt>")
+                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_again",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review again done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    second_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_review_again\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_again_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done again"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+
+    let mut second_run = anthro_with_agents("delegate review again", &second_server)
+        .session("s_agent_contact_card")
+        .config(config)
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut second_run, "toolu_review_again").await;
+    second_run.cancel();
+
+    second_child_request.assert();
 }
 
 fn list_event_files(kuku_home: &std::path::Path) -> Vec<std::path::PathBuf> {

@@ -66,6 +66,29 @@ fn current_user_message_has_raw_input_last(req: &HttpMockRequest, expected: &str
     })
 }
 
+fn current_user_message_has_wrapped_input_last(req: &HttpMockRequest, expected: &str) -> bool {
+    let wrapped = format!("<kuku_delegated_prompt>\n{expected}\n</kuku_delegated_prompt>");
+    request_body(req).as_ref().is_some_and(|body| {
+        messages(body).into_iter().any(|message| {
+            if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+                return false;
+            }
+            let texts = content_blocks(message)
+                .into_iter()
+                .filter_map(|block| match block {
+                    serde_json::Value::String(text) => Some(text.as_str()),
+                    serde_json::Value::Object(object) => {
+                        object.get("text").and_then(serde_json::Value::as_str)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            texts.last() == Some(&wrapped.as_str())
+                && texts.iter().all(|text| !text.contains("<kuku_turn_frame>"))
+        })
+    })
+}
+
 fn body_has_tool_use(req: &HttpMockRequest, tool_call_id: &str, tool_name: &str) -> bool {
     request_body(req).as_ref().is_some_and(|body| {
         messages(body)
@@ -118,7 +141,7 @@ fn next_parent_turn_sees_refreshed_open_conversation_notice(req: &HttpMockReques
 }
 
 fn initial_child_cache_probe(req: &HttpMockRequest) -> bool {
-    current_user_message_has_raw_input_last(req, "child cache probe")
+    current_user_message_has_wrapped_input_last(req, "child cache probe")
         && !body_has_tool_result(req, "toolu_cache_agent")
 }
 
