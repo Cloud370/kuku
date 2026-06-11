@@ -1,37 +1,60 @@
 use kuku::event::{EventPayload, StoredEvent};
 
+fn event_conversation(payload: &EventPayload) -> Option<&str> {
+    match payload {
+        EventPayload::ToolCall { conversation, .. }
+        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::MessageAssistant { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+        | EventPayload::ConversationRollback { conversation, .. }
+        | EventPayload::ConversationRollbackUndone { conversation, .. }
+        | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
+        EventPayload::Unknown(value) => value.get("conversation").and_then(|item| item.as_str()),
+        _ => None,
+    }
+}
+
+fn is_session_envelope(payload: &EventPayload) -> bool {
+    matches!(payload, EventPayload::SessionCreated { .. })
+}
+
+fn event_matches_conversation(payload: &EventPayload, conversation: &str) -> bool {
+    match event_conversation(payload) {
+        Some(value) => value == conversation,
+        None => is_session_envelope(payload) || conversation == "main",
+    }
+}
+
+pub fn filter_events_for_conversation<'a>(
+    events: &'a [StoredEvent],
+    conversation: &str,
+) -> Vec<&'a StoredEvent> {
+    events
+        .iter()
+        .filter(|event| event_matches_conversation(&event.payload, conversation))
+        .collect()
+}
+
 pub fn render_event_brief(event: &StoredEvent, verbose: u8) -> String {
-    let mut line = format!("evt:{} | {}", event.id, event.payload.type_name());
+    let mut line = format!("evt:{} | {}", event.id, event.payload.kind_name());
     let details = event_details(&event.payload, verbose > 0);
     if !details.is_empty() {
         line.push_str(" | ");
         line.push_str(&details);
     }
-    if verbose >= 2 {
-        if let EventPayload::ContextPrelude { messages, .. } = &event.payload {
-            line.push('\n');
-            line.push_str(&render_prelude(messages));
-        }
-    }
     line
-}
-
-fn render_prelude(messages: &[kuku::event::types::ContextMessage]) -> String {
-    let mut out = String::new();
-    out.push_str("    -- prelude -------------------------\n");
-    for msg in messages {
-        for line in msg.content.lines() {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 fn event_details(payload: &EventPayload, verbose: bool) -> String {
     match payload {
-        EventPayload::UserInput { text, .. } => text.chars().take(60).collect(),
+        EventPayload::MessageUser { text, .. } => text.chars().take(60).collect(),
         EventPayload::ContextSources {
             request_id,
             project_instruction_sources,
@@ -153,17 +176,94 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
                 format!("handoff  {preview}")
             }
         }
+        EventPayload::ConversationOpened { conversation, .. } => conversation.clone(),
+        EventPayload::ConversationBound {
+            conversation,
+            binding_id,
+            ..
+        } => {
+            if verbose {
+                format!("{conversation}  binding={binding_id}")
+            } else {
+                conversation.clone()
+            }
+        }
+        EventPayload::TurnCancelled {
+            conversation,
+            turn,
+            reason,
+            ..
+        }
+        | EventPayload::TurnInterrupted {
+            conversation,
+            turn,
+            reason,
+            ..
+        } => {
+            if verbose {
+                format!("{conversation}  turn={turn}  {reason}")
+            } else {
+                format!("turn={turn}  {reason}")
+            }
+        }
+        EventPayload::Unknown(value) => render_unknown_event_details(value, verbose),
+        _ => String::new(),
+    }
+}
+
+fn render_unknown_event_details(value: &serde_json::Value, verbose: bool) -> String {
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("unknown");
+
+    match kind {
+        "conversation.opened" => value
+            .get("conversation")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "turn.cancelled" | "turn.interrupted" => {
+            let conversation = value
+                .get("conversation")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            let turn = value
+                .get("turn")
+                .and_then(|item| item.as_u64())
+                .unwrap_or(0);
+            let reason = value
+                .get("reason")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            if verbose {
+                format!("{conversation}  turn={turn}  {reason}")
+            } else {
+                format!("turn={turn}  {reason}")
+            }
+        }
         _ => String::new(),
     }
 }
 
 pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
+    derive_final_output_for_conversation(events, "main")
+}
+
+pub fn derive_final_output_for_conversation(
+    events: &[StoredEvent],
+    conversation: &str,
+) -> Option<String> {
     let filtered = kuku::context::revert::filter_rolled_back_events(events);
     let final_turn = filtered
         .iter()
         .rev()
         .find_map(|event| match &event.payload {
-            EventPayload::TurnEnd { turn, .. } => Some(*turn),
+            EventPayload::TurnCompleted {
+                conversation: event_conversation,
+                turn,
+                ..
+            } if event_conversation == conversation => Some(*turn),
             _ => None,
         })?;
 
@@ -171,9 +271,17 @@ pub fn derive_final_output(events: &[StoredEvent]) -> Option<String> {
         .iter()
         .rev()
         .find_map(|event| match &event.payload {
-            EventPayload::ModelResponse { turn, text, .. } if *turn == final_turn => {
+            EventPayload::ModelResponse { turn, text, .. }
+                if conversation == "main" && *turn == final_turn =>
+            {
                 Some(text.clone())
             }
+            EventPayload::MessageAssistant {
+                conversation: event_conversation,
+                turn,
+                text,
+                ..
+            } if event_conversation == conversation && *turn == final_turn => Some(text.clone()),
             _ => None,
         })
 }
@@ -188,7 +296,8 @@ mod tests {
         let events = vec![
             StoredEvent {
                 id: 1,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t0".to_string(),
                 },
@@ -209,6 +318,7 @@ mod tests {
                 payload: EventPayload::ToolCall {
                     turn: 1,
                     ts: "t2".to_string(),
+                    conversation: None,
                     tool_call_id: "tool_1".to_string(),
                     request_id: "req_1".to_string(),
                     index: 0,
@@ -229,7 +339,8 @@ mod tests {
             },
             StoredEvent {
                 id: 4,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t4".to_string(),
                 },
@@ -287,14 +398,16 @@ mod tests {
             },
             StoredEvent {
                 id: 3,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t2".to_string(),
                 },
             },
             StoredEvent {
                 id: 4,
-                payload: EventPayload::TurnStart {
+                payload: EventPayload::TurnStarted {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t2.5".to_string(),
                 },
@@ -312,17 +425,19 @@ mod tests {
             },
             StoredEvent {
                 id: 6,
-                payload: EventPayload::TurnEnd {
+                payload: EventPayload::TurnCompleted {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t4".to_string(),
                 },
             },
             StoredEvent {
                 id: 7,
-                payload: EventPayload::TurnRollback {
-                    turn: 3,
+                payload: EventPayload::ConversationRollback {
                     ts: "t5".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 6,
                     scope: kuku::event::RollbackScope::ConversationOnly,
                 },
             },

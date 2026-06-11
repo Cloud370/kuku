@@ -210,6 +210,7 @@ async fn call_secondary_llm(
     let request = crate::provider::types::ProviderRequest {
         assembly,
         catalog,
+        current_input: crate::provider::types::CanonicalPromptInput { parts: vec![] },
         model: resolved.model.clone(),
         max_output_tokens: Some(resolved.max_output_tokens),
         temperature: None,
@@ -218,7 +219,7 @@ async fn call_secondary_llm(
         thinking: resolved.thinking.clone(),
     };
 
-    let mut stream = crate::provider::stream_provider(&resolved, &request)
+    let mut stream = crate::provider::stream_provider(&resolved, &request, None)
         .await
         .map_err(|e| {
             ToolResultEnvelope::error("failed: LLM call", format!("secondary LLM error: {e:?}"))

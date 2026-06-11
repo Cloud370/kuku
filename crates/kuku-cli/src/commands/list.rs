@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use kuku::conversation::{reduce_conversations, TurnTerminal};
+use kuku::event::EventStore;
 use kuku::session::{current_workspace, kuku_home, list_sessions, SessionStatus};
 
 use crate::cli_args::ListArgs;
@@ -8,6 +10,47 @@ use crate::display::util::truncate;
 /// List sessions: `kuku list [-a] [-w <workspace>] [-v]`
 pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = kuku_home()?;
+
+    if let Some(session_id) = args.session_id.as_deref() {
+        let workspace = match args.workspace.as_deref() {
+            Some(path) => PathBuf::from(path),
+            None => current_workspace()?,
+        };
+        let path = kuku::session::session_events_path(&home, &workspace, session_id)?;
+        let events = EventStore::replay(&path)?;
+        let conversations = reduce_conversations(&events);
+
+        if conversations.is_empty() {
+            println!("no conversations found");
+            return Ok(());
+        }
+
+        println!("{:<24} {:<16} status", "conversation", "binding");
+        for conversation in conversations {
+            let binding = conversation
+                .active_binding
+                .unwrap_or_else(|| "-".to_string());
+            let status = if let Some(active_turn) = conversation.active_turn {
+                format!("active turn {}", active_turn.turn)
+            } else {
+                match conversation.last_terminal {
+                    Some((turn, TurnTerminal::Completed)) => format!("turn {} completed", turn),
+                    Some((turn, TurnTerminal::Cancelled)) => format!("turn {} cancelled", turn),
+                    Some((turn, TurnTerminal::Interrupted)) => {
+                        format!("turn {} interrupted", turn)
+                    }
+                    None => "opened".to_string(),
+                }
+            };
+            println!(
+                "{:<24} {:<16} {}",
+                conversation.address.as_str(),
+                truncate(&binding, 16),
+                status
+            );
+        }
+        return Ok(());
+    }
 
     let workspace_override = args.workspace.map(PathBuf::from);
     let default_ws;

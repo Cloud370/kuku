@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::conversation::address::ConversationAddress;
+use crate::conversation::{reduce_conversations, TurnTerminal};
 use crate::error::Result;
 use crate::event;
 use crate::session::SessionStatus;
@@ -60,9 +62,9 @@ fn collect_sessions(
         let title = event::scan::scan_first_user_input(&events_path).unwrap_or_default();
         let created_at = event::scan::scan_session_meta(&events_path).unwrap_or_default();
         let turn_count = event::scan::scan_turn_count(&events_path);
-        let last_type = event::scan::scan_last_event_type(&events_path);
+        let events = event::EventStore::replay(&events_path).unwrap_or_default();
         let lock_path = entry.path().join("lock");
-        let status = session_status(&lock_path, last_type);
+        let status = session_status(&lock_path, &events);
 
         let (mtime, size) = file_stat(&events_path);
 
@@ -80,7 +82,7 @@ fn collect_sessions(
     Ok(())
 }
 
-fn session_status(lock_path: &Path, last_event_type: Option<&str>) -> SessionStatus {
+fn session_status(lock_path: &Path, events: &[event::StoredEvent]) -> SessionStatus {
     if let Ok(content) = fs::read_to_string(lock_path) {
         let pid_str = content.lines().next().unwrap_or("");
         if let Ok(pid) = pid_str.parse::<i32>() {
@@ -89,9 +91,33 @@ fn session_status(lock_path: &Path, last_event_type: Option<&str>) -> SessionSta
             }
         }
     }
-    match last_event_type {
-        Some("turn.end") => SessionStatus::Done,
-        _ => SessionStatus::Interrupted,
+    let main = reduce_conversations(events)
+        .into_iter()
+        .find(|conversation| conversation.address == ConversationAddress::MAIN);
+    match main {
+        Some(conversation) if conversation.active_turn.is_some() => SessionStatus::Interrupted,
+        Some(conversation)
+            if matches!(
+                conversation.last_terminal,
+                Some((_, TurnTerminal::Completed))
+            ) =>
+        {
+            SessionStatus::Done
+        }
+        Some(conversation)
+            if matches!(
+                conversation.last_terminal,
+                Some((_, TurnTerminal::Interrupted))
+            ) =>
+        {
+            SessionStatus::Interrupted
+        }
+        _ => match event::scan::scan_last_event_type(
+            &lock_path.parent().unwrap().join("events.jsonl"),
+        ) {
+            Some("turn.completed") => SessionStatus::Done,
+            _ => SessionStatus::Interrupted,
+        },
     }
 }
 

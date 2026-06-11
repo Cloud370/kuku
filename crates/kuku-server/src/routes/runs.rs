@@ -5,6 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use kuku::conversation::address::ConversationAddress;
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
@@ -17,6 +18,8 @@ pub struct RunRequest {
     pub workspace: PathBuf,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub conversation: Option<String>,
     #[serde(default)]
     pub tier: Option<String>,
 }
@@ -41,6 +44,15 @@ pub async fn create_run(
 
     if let Some(sid) = body.session_id {
         query = query.session(sid);
+    }
+    if let Some(conversation) = body.conversation {
+        if ConversationAddress::parse(&conversation).is_err() {
+            return Json(
+                json!({"ok": false, "code": "invalid_request", "message": "invalid conversation"}),
+            )
+            .into_response();
+        }
+        query = query.conversation(conversation);
     }
     if let Some(tier) = body.tier {
         query = query.tier(tier);

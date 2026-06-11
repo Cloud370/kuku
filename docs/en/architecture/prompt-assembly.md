@@ -1,6 +1,6 @@
 # Prompt Assembly
 
-This page describes how kuku builds a request for the model.
+This page describes how kuku builds a model request.
 
 ## Goal
 
@@ -10,6 +10,14 @@ Prompt assembly tries to keep four things true at once:
 - clear ownership between static and dynamic context
 - good cache behavior
 - low format noise
+
+## Canonical Inputs
+
+Prompt assembly is conversation-scoped, not based on separate delegated session trees.
+
+- the session ledger is global history storage
+- the active conversation address selects the replay slice
+- the bound agent identity shapes tools and notices for that conversation
 
 ## Layers
 
@@ -22,7 +30,7 @@ The stable runtime contract. It carries identity, hard rules, and working style.
 The first prelude messages carry reusable context:
 
 | Position | Content |
-|----------|---------|
+|---|---|
 | `messages[0]` | tool guidance |
 | `messages[1]` | global `Memory` |
 | `messages[2]` | project `Memory` |
@@ -32,13 +40,21 @@ Project context includes project instructions, execution context, and available 
 
 ### History
 
-Conversation history is rebuilt from `events.jsonl`, after filtering rolled-back turns and applying the current handoff boundary.
+Conversation history is rebuilt from `events.jsonl` for the active conversation address, after filtering rolled-back events and applying the current handoff boundary.
 
 ### Runtime context
 
-Dynamic data for the current turn goes into the last user message before the human input. This includes catalogs and system notices such as context drift.
+Dynamic data for the current turn goes into the last user message before the human input. This includes:
 
-## Assembly order
+- agent directory notices for `main`
+- open conversation notices
+- inbox notices
+- loaded-skill notices
+- pending-permission notices
+- interrupted-turn notices
+- context-drift notices
+
+## Assembly Order
 
 ```text
 system prompt
@@ -46,16 +62,16 @@ messages[0]    tool_guidance
 messages[1]    global_memory
 messages[2]    project_memory
 messages[3]    project_context
-messages[4..]  rebuilt history
+messages[4..]  replayed history for one conversation
 last user turn runtime_context + human input
 ```
 
-## Cache behavior
+## Cache Behavior
 
-Stable content is kept in the prelude so provider-side prompt caching can reuse it across turns and sessions. Dynamic runtime data stays in the last user message so it can change without invalidating the whole prefix.
+Stable content stays in the prelude so provider-side prompt caching can reuse it across turns and conversations. Dynamic runtime data stays in the last user message so it can change without invalidating the whole prefix.
 
-## Asset ownership
+## Asset Ownership
 
-Prompt text lives in `crates/kuku/prompts/`. The `prompt/` module owns asset loading and rendering, while `context/` decides how those rendered pieces are assembled into a request.
+Prompt text lives in `crates/kuku/prompts/`. The `prompt/` module owns asset loading and rendering. The `context/` and `conversation/` modules decide how one conversation's history, rollback state, and notices become a request.
 
-See [Module Contracts](module-contracts.md) for the boundary between those modules. For the reader-facing explanation of the same behavior, see [File-Native Model](../how-it-works/file-native-model.md) and [Memory](../how-it-works/memory.md).
+See [Module Contracts](module-contracts.md) for ownership boundaries. For reader-facing behavior, see [Sessions](../how-it-works/sessions.md) and [Agents and Skills](../how-it-works/agents-and-skills.md).

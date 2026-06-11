@@ -1,18 +1,23 @@
 use crate::context::{
-    assemble_context, rebuild_history, restore_frozen_prelude, ContextInput, EnvironmentSource,
+    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,
+    AgentRegistryProvenance, CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock,
+    PluginRegistryProvenance, PromptCapabilityMetadata, PromptRendererIdentity, Role,
+    SkillRegistryProvenance, ToolRegistryProvenance,
 };
+use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::{
-    build_runtime_notices, compute_context_headroom, render_notice_body, NoticeAssemblyInput,
+    build_runtime_notices, compute_context_headroom, render_notice_body, types::ContextHeadroom,
+    NoticeAssemblyInput,
 };
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
 use super::helpers::{
-    append_model_error, append_turn_end, current_date_string, last_input_tokens,
+    append_model_error, append_turn_interrupted, current_date_string, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, platform_label,
 };
 use super::tool_exec::record_plugin_hooks;
@@ -29,7 +34,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     let existing_events = EventStore::replay(&pending.events_path)?;
-    let (handoff_summary, history) = rebuild_history(&existing_events);
+    let (handoff_summary, history) =
+        rebuild_history_for_provider(&existing_events, &pending.conversation);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
@@ -50,8 +56,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     let (runtime_blocks, _notice_snapshots) = build_runtime_blocks(
         &pending.workspace,
+        pending.conversation.as_str(),
         pending.turn,
-        pending.subagent_registry.as_ref(),
+        pending.agent_registry.as_ref(),
         pending.skill_registry.as_ref(),
         pending.previous_skill_registry.as_ref(),
         &resolved_config,
@@ -108,15 +115,37 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 "prompt_render",
                 &error.to_string(),
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "prompt_render_error",
+            )?;
             return Err(error);
         }
     };
 
-    let frozen = restore_frozen_prelude(&existing_events);
+    let frozen = restore_prompt_snapshot(&existing_events, pending.conversation.as_str());
     let is_first_request = frozen.is_none();
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
+    }
+
+    if let Some(prefix) = pending
+        .query
+        .current_turn_prefix
+        .as_ref()
+        .filter(|value| !value.is_empty())
+    {
+        append_current_turn_prefix_once(&mut assembly.prelude_messages, prefix);
+    }
+
+    if let Some(skill) = pending.bootstrap_skill.as_ref() {
+        assembly
+            .prelude_messages
+            .push(crate::context::CanonicalMessage::user_text(
+                skill.body.clone(),
+            ));
     }
 
     assembly.handoff_summary = handoff_summary;
@@ -131,42 +160,56 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         estimated_input,
     );
 
-    {
+    let handoff_instruction = {
         let handoff_config = pending.config.handoff();
-        if handoff_config.enabled {
-            let budget = (headroom.max_context_tokens
-                - headroom.reserved_output_tokens
-                - headroom.reserved_margin_tokens) as f64;
-            if budget > 0.0 {
-                let remaining = headroom.remaining_input_tokens.unwrap_or(0) as f64;
-                let used_ratio = 1.0 - (remaining / budget);
-                if used_ratio >= handoff_config.threshold {
-                    pending.handoff_triggered = true;
-                    pending.handoff_keep_turns = handoff_config.keep_turns;
-                    let instruction = if let Some(dir) = &pending.prompts_dir {
-                        load_prompt_template(dir, "handoff-instruction")
-                            .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
-                    } else {
-                        builtin_handoff_instruction().to_string()
-                    };
-                    let rt = assembly.runtime_context.get_or_insert_with(String::new);
-                    rt.push_str("\n\n");
-                    rt.push_str(&instruction);
-                }
-            }
+        if !pending.handoff_triggered
+            && handoff_config.enabled
+            && should_trigger_handoff(&headroom, handoff_config.threshold)
+        {
+            pending.handoff_triggered = true;
+            pending.handoff_keep_turns = handoff_config.keep_turns;
+            Some(if let Some(dir) = &pending.prompts_dir {
+                load_prompt_template(dir, "handoff-instruction")
+                    .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
+            } else {
+                builtin_handoff_instruction().to_string()
+            })
+        } else {
+            None
         }
-    }
+    };
 
     let prelude_snapshot = assembly.snapshot_prelude();
-
-    inject_runtime_context(
-        &mut assembly.history,
+    let dynamic_turn_prefix = assembly_runtime_prefix(
         assembly.runtime_context.as_deref(),
         pending
             .bootstrap_skill
             .as_ref()
             .map(|skill| skill.body.as_str()),
     );
+    let mut current_turn_prefix = pending
+        .frozen_turn_prefix
+        .freeze_or_reuse(dynamic_turn_prefix);
+    if let Some(instruction) = handoff_instruction {
+        current_turn_prefix = append_handoff_instruction(current_turn_prefix, &instruction);
+        pending
+            .frozen_turn_prefix
+            .replace(current_turn_prefix.clone());
+    }
+    let current_body = pending
+        .query
+        .current_turn_body
+        .as_deref()
+        .unwrap_or(&pending.query.prompt);
+    let current_input = build_current_user_message(current_turn_prefix, current_body);
+    if !replace_current_user_message(
+        &mut assembly.history,
+        &pending.query.prompt,
+        current_body,
+        current_input.clone(),
+    ) {
+        assembly.history.push(current_input.clone());
+    }
 
     if !pending.hook_context.is_empty() {
         let hook_text = pending.hook_context.join("\n");
@@ -177,11 +220,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .rev()
             .find(|m| m.role == crate::context::Role::User)
         {
-            last_user
-                .blocks
-                .push(crate::context::MessageBlock::Text(format!(
-                    "\n\n<hook_context>\n{hook_text}\n</hook_context>"
-                )));
+            insert_current_turn_metadata_block(
+                last_user,
+                format!("<kuku_hook_context>\n{hook_text}\n</kuku_hook_context>"),
+            );
         }
     }
 
@@ -231,9 +273,104 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     {
         let mut store = EventStore::open(&pending.events_path)?;
         if is_first_request {
-            store.append(EventPayload::ContextPrelude {
+            let tool_registry = ToolRegistryProvenance {
+                hash: format!("count:{}", assembly.tools.len()),
+                names: assembly
+                    .tools
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
+                tool_count: assembly.tools.len(),
+            };
+            let agent_registry =
+                pending
+                    .agent_registry
+                    .as_ref()
+                    .map(|registry| AgentRegistryProvenance {
+                        hash: registry.hash().to_string(),
+                        names: registry.names().to_vec(),
+                    });
+            let skill_registry =
+                pending
+                    .skill_registry
+                    .as_ref()
+                    .map(|registry| SkillRegistryProvenance {
+                        hash: registry.hash().to_string(),
+                        names: registry.names().to_vec(),
+                    });
+            let plugin_registry =
+                pending
+                    .plugin_registry
+                    .as_ref()
+                    .map(|registry| PluginRegistryProvenance {
+                        hash: format!("count:{}", registry.names().len()),
+                        names: registry.names().to_vec(),
+                        count: registry.names().len(),
+                    });
+            store.append(EventPayload::PromptSnapshot {
                 ts: now_timestamp()?,
+                conversation: pending.conversation.as_str().to_string(),
+                binding_id: pending
+                    .agent_binding_id
+                    .clone()
+                    .unwrap_or_else(|| pending.conversation.as_str().to_string()),
+                snapshot_id: format!(
+                    "{}:{}:{}",
+                    pending.conversation.as_str(),
+                    pending.turn,
+                    pending.request_num
+                ),
+                turn: pending.turn,
                 messages: prelude_snapshot,
+                project_instruction_sources: assembly
+                    .project_instruction_sources
+                    .iter()
+                    .map(|source| crate::context::FileSource {
+                        path: source.path.clone(),
+                        hash: source.hash.clone(),
+                    })
+                    .collect(),
+                memory_sources: assembly
+                    .memory_sources
+                    .iter()
+                    .map(|source| crate::context::FileSource {
+                        path: source.path.clone(),
+                        hash: source.hash.clone(),
+                    })
+                    .collect(),
+                prompt_asset_sources: assembly.prompt_asset_sources.clone(),
+                skills: pending
+                    .skill_registry
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or_else(|| serde_json::json!({})),
+                bootstrap_loaded: pending
+                    .bootstrap_skill
+                    .as_ref()
+                    .and_then(|skill| skill.name.clone())
+                    .into_iter()
+                    .collect(),
+                provider: resolved_config.kind.as_str().to_string(),
+                model: resolved_config.model.clone(),
+                renderer: PromptRendererIdentity {
+                    provider: resolved_config.kind.as_str().to_string(),
+                    renderer: resolved_config.kind.as_str().to_string(),
+                },
+                tool_registry: Box::new(tool_registry),
+                agent_registry,
+                skill_registry: Box::new(skill_registry),
+                plugin_registry: Box::new(plugin_registry),
+                capabilities: PromptCapabilityMetadata {
+                    context_budget_tier: match headroom.tier {
+                        crate::notice::types::ContextBudgetTier::Tight => "tight",
+                        crate::notice::types::ContextBudgetTier::Normal => "normal",
+                        crate::notice::types::ContextBudgetTier::Roomy => "roomy",
+                    }
+                    .to_string(),
+                    max_context_tokens: Some(headroom.max_context_tokens),
+                    remaining_input_tokens: headroom.remaining_input_tokens,
+                },
             })?;
         }
         store.append(EventPayload::ContextSources {
@@ -262,6 +399,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let request = crate::provider::types::ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: crate::provider::types::CanonicalPromptInput {
+            parts: vec![current_input],
+        },
         model: resolved_config.model.clone(),
         max_output_tokens: Some(max_output),
         temperature: pending.query.temperature,
@@ -269,6 +409,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         think_level: think,
         thinking: resolved_config.thinking.clone(),
     };
+
+    let provider_trace = Some(crate::provider::trace::ProviderTraceMetadata {
+        kuku_home: pending.kuku_home.clone(),
+        session_id: pending.session_id.clone(),
+        turn: pending.turn,
+        request_id: request_id.clone(),
+    });
 
     let mut lead_events = Vec::new();
     let provider_name = resolved_config.kind.as_str().to_string();
@@ -294,27 +441,31 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     let handoff_active = pending.handoff_triggered;
-    match crate::provider::stream_provider(&resolved_config, &request).await {
-        Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
-            pending,
-            request_id,
-            stream,
-            accumulated_text: String::new(),
-            accumulated_thinking: String::new(),
-            stop_reason: None,
-            tool_calls: Vec::new(),
-            tool_arg_buffers: Vec::new(),
-            provider_request_id: None,
-            usage: None,
-            lead_events,
-            handoff_detector: if handoff_active {
-                Some(super::handoff::HandoffDetector::new())
-            } else {
-                None
-            },
-            thinking_start: None,
-            thinking_duration_ms: 0,
-        }))),
+    match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
+        Ok(stream) => {
+            let conversation = pending.conversation.clone();
+            Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
+                pending,
+                conversation,
+                request_id,
+                stream,
+                accumulated_text: String::new(),
+                accumulated_thinking: String::new(),
+                stop_reason: None,
+                tool_calls: Vec::new(),
+                tool_arg_buffers: Vec::new(),
+                provider_request_id: None,
+                usage: None,
+                lead_events,
+                handoff_detector: if handoff_active {
+                    Some(super::handoff::HandoffDetector::new())
+                } else {
+                    None
+                },
+                thinking_start: None,
+                thinking_duration_ms: 0,
+            })))
+        }
         Err(failure)
             if matches!(
                 failure.kind,
@@ -325,7 +476,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 .iter()
                 .rev()
                 .find_map(|e| match &e.payload {
-                    EventPayload::UserInput { text, .. } => Some(text.clone()),
+                    EventPayload::MessageUser {
+                        conversation, text, ..
+                    } if conversation == pending.conversation.as_str() => Some(text.clone()),
                     _ => None,
                 })
                 .unwrap_or_default();
@@ -344,10 +497,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 kind: "context_too_large".to_string(),
                 message: failure.message.clone(),
             })?;
-            store.append(EventPayload::TurnEnd {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-            })?;
+            drop(store);
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "context_too_large",
+            )?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,
@@ -367,7 +523,12 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 failure.kind.as_event_kind(),
                 &failure.message,
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                failure.kind.as_event_kind(),
+            )?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,
@@ -454,7 +615,12 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             "loop_limit",
             "tool loop exceeded maximum provider requests",
         )?;
-        append_turn_end(&pending.events_path, pending.turn)?;
+        append_turn_interrupted(
+            &pending.events_path,
+            &pending.conversation,
+            pending.turn,
+            "loop_limit",
+        )?;
         return Err(crate::error::Error::Provider {
             kind: crate::provider::types::ProviderFailureKind::Unknown,
             message: "tool loop exceeded maximum provider requests".to_string(),
@@ -465,11 +631,28 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
     Ok(())
 }
 
+fn should_trigger_handoff(headroom: &ContextHeadroom, threshold: f64) -> bool {
+    let Some(remaining) = headroom.remaining_input_tokens else {
+        return false;
+    };
+    let budget = headroom
+        .max_context_tokens
+        .saturating_sub(headroom.reserved_output_tokens)
+        .saturating_sub(headroom.reserved_margin_tokens);
+    if budget == 0 {
+        return false;
+    }
+
+    let used_ratio = 1.0 - (f64::from(remaining) / f64::from(budget));
+    used_ratio >= threshold
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
+    conversation: &str,
     turn: u64,
-    subagent_registry: Option<&crate::subagent::registry::SubagentRegistry>,
+    agent_registry: Option<&crate::agent::registry::AgentRegistry>,
     skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     previous_skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     resolved_config: &crate::provider::types::ResolvedProvider,
@@ -489,16 +672,15 @@ fn build_runtime_blocks(
     let mut notice_bodies: Vec<String> = Vec::new();
     let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
 
-    if let Some(subagent_registry) = subagent_registry {
-        if let Some(catalog_text) =
-            crate::subagent::catalog::render_agent_catalog(subagent_registry)
-        {
+    if let Some(agent_registry) = agent_registry {
+        if let Some(catalog_text) = crate::agent::catalog::render_agent_catalog(agent_registry) {
             parts.push(catalog_text);
         }
     }
 
     if let Some(skill_reg) = skill_registry {
-        let loaded_skill_names = crate::skill::session::loaded_skill_names(existing_events);
+        let loaded_skill_names =
+            crate::skill::session::loaded_skill_names(existing_events, conversation);
         let skill_changes = if turn > 1 {
             previous_skill_registry.and_then(|previous_skill_registry| {
                 crate::skill::registry::detect_skill_changes(previous_skill_registry, skill_reg)
@@ -517,10 +699,29 @@ fn build_runtime_blocks(
     }
 
     if turn > 1 {
+        let conversation =
+            ConversationAddress::parse(conversation).unwrap_or(ConversationAddress::MAIN);
+        let notice_events = existing_events
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    &event.payload,
+                    EventPayload::MessageUser {
+                        conversation: event_conversation,
+                        from: Some(_),
+                        via_tool_call_id: Some(_),
+                        ..
+                    } if event_conversation == conversation.as_str()
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace,
-            events: existing_events,
+            events: &notice_events,
             context_budget_tier: context_headroom.tier,
+            conversation: &conversation,
+            agent_registry,
         });
         for notice in &notices {
             if let Some(body) = render_notice_body(notice) {
@@ -554,30 +755,108 @@ fn build_runtime_blocks(
     Ok((runtime_blocks, notice_snapshots))
 }
 
-fn inject_runtime_context(
-    history: &mut [crate::context::CanonicalMessage],
+fn assembly_runtime_prefix(
     runtime_context: Option<&str>,
     skill_body: Option<&str>,
-) {
-    let Some(ctx) = runtime_context else { return };
-    let Some(user_msg) = history.iter_mut().rev().find(|msg| {
-        msg.role == crate::context::Role::User
-            && msg
-                .blocks
-                .iter()
-                .any(|b| matches!(b, crate::context::MessageBlock::Text(_)))
-    }) else {
-        return;
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
+        parts.push(format!(
+            "<kuku_runtime_notices>{runtime_context}</kuku_runtime_notices>"
+        ));
+    }
+    if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
+        parts.push(format!(
+            "<kuku_conversation_inbox>{skill_body}</kuku_conversation_inbox>"
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn append_handoff_instruction(prefix: Option<String>, instruction: &str) -> Option<String> {
+    let Some(prefix) = prefix else {
+        return Some(format!(
+            "<kuku_runtime_notices>{instruction}</kuku_runtime_notices>\n<kuku_conversation_inbox></kuku_conversation_inbox>"
+        ));
     };
-    let mut new_blocks: Vec<crate::context::MessageBlock> = Vec::new();
-    new_blocks.push(crate::context::MessageBlock::Text(ctx.to_string()));
-    if let Some(sb) = skill_body {
-        new_blocks.push(crate::context::MessageBlock::Text(sb.to_string()));
+
+    if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
+        let (before, after) = prefix.split_at(index);
+        Some(format!("{before}\n\n{instruction}{after}"))
+    } else {
+        Some(format!("{prefix}\n{instruction}"))
     }
-    for block in &user_msg.blocks {
-        new_blocks.push(block.clone());
+}
+
+fn build_current_user_message(
+    prefix: Option<String>,
+    prompt: &str,
+) -> crate::context::CanonicalMessage {
+    let mut blocks = Vec::new();
+    if let Some(prefix) = prefix {
+        blocks.push(crate::context::MessageBlock::Text(prefix));
     }
-    user_msg.blocks = new_blocks;
+    blocks.push(crate::context::MessageBlock::Text(prompt.to_string()));
+    crate::context::CanonicalMessage::user(blocks)
+}
+
+fn replace_latest_user_message(
+    history: &mut [CanonicalMessage],
+    prompt: &str,
+    replacement: CanonicalMessage,
+) -> bool {
+    for message in history.iter_mut().rev() {
+        if message.role != Role::User || message.blocks.len() != 1 {
+            continue;
+        }
+        let MessageBlock::Text(text) = &message.blocks[0] else {
+            continue;
+        };
+        if text == prompt {
+            *message = replacement;
+            return true;
+        }
+    }
+    false
+}
+
+fn replace_current_user_message(
+    history: &mut [CanonicalMessage],
+    raw_prompt: &str,
+    current_body: &str,
+    replacement: CanonicalMessage,
+) -> bool {
+    if current_body != raw_prompt
+        && replace_latest_user_message(history, current_body, replacement.clone())
+    {
+        return true;
+    }
+    replace_latest_user_message(history, raw_prompt, replacement)
+}
+
+fn append_current_turn_prefix_once(messages: &mut Vec<CanonicalMessage>, prefix: &str) {
+    if messages.iter().any(|message| {
+        message.blocks.iter().any(|block| match block {
+            MessageBlock::Text(text) => text.contains(prefix),
+            MessageBlock::Thinking(_) | MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => {
+                false
+            }
+        })
+    }) {
+        return;
+    }
+    messages.push(CanonicalMessage::user_text(prefix.to_string()));
+}
+
+fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {
+    let insert_at = message.blocks.len().saturating_sub(1);
+    message
+        .blocks
+        .insert(insert_at, crate::context::MessageBlock::Text(text));
 }
 
 pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
@@ -607,7 +886,12 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
                 "missing_config",
                 &error.to_string(),
             )?;
-            append_turn_end(&pending.events_path, pending.turn)?;
+            append_turn_interrupted(
+                &pending.events_path,
+                &pending.conversation,
+                pending.turn,
+                "missing_config",
+            )?;
             return Err(error);
         }
     };
@@ -619,4 +903,70 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     };
     pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message_text(message: &CanonicalMessage) -> &str {
+        match &message.blocks[0] {
+            MessageBlock::Text(text) => text,
+            _ => panic!("expected text block"),
+        }
+    }
+
+    #[test]
+    fn handoff_trigger_requires_known_token_headroom() {
+        let headroom = compute_context_headroom(200_000, Some(64_000), None);
+
+        assert!(!should_trigger_handoff(&headroom, 0.7));
+    }
+
+    #[test]
+    fn handoff_trigger_uses_known_token_headroom() {
+        let headroom = compute_context_headroom(200_000, Some(64_000), Some(125_000));
+
+        assert!(should_trigger_handoff(&headroom, 0.7));
+    }
+
+    #[test]
+    fn delegated_body_replacement_prefers_current_wrapped_message() {
+        let raw = "same text";
+        let wrapped = "<kuku_delegated_prompt>\nsame text\n</kuku_delegated_prompt>";
+        let replacement = CanonicalMessage::user_text("provider body");
+        let mut history = vec![
+            CanonicalMessage::user_text(raw),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("answer".to_string())]),
+            CanonicalMessage::user_text(wrapped),
+        ];
+
+        assert!(replace_current_user_message(
+            &mut history,
+            raw,
+            wrapped,
+            replacement
+        ));
+
+        assert_eq!(message_text(&history[0]), raw);
+        assert_eq!(message_text(&history[2]), "provider body");
+    }
+
+    #[test]
+    fn current_turn_prefix_is_appended_once_to_restored_prelude() {
+        let prefix = "You are a code and document reviewer";
+        let mut missing = vec![CanonicalMessage::user_text("old snapshot")];
+        append_current_turn_prefix_once(&mut missing, prefix);
+        assert_eq!(missing.len(), 2);
+        assert_eq!(message_text(&missing[1]), prefix);
+
+        append_current_turn_prefix_once(&mut missing, prefix);
+        assert_eq!(missing.len(), 2);
+
+        let mut existing = vec![CanonicalMessage::user_text(format!(
+            "before {prefix} after"
+        ))];
+        append_current_turn_prefix_once(&mut existing, prefix);
+        assert_eq!(existing.len(), 1);
+    }
 }

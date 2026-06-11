@@ -6,6 +6,7 @@ pub(crate) mod http_client;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
 pub(crate) mod sse;
+pub(crate) mod trace;
 pub(crate) mod types;
 
 pub use types::{Provider, ProviderUsage};
@@ -14,6 +15,7 @@ use std::pin::Pin;
 
 use futures_core::Stream;
 
+use trace::ProviderTraceMetadata;
 use types::{ProviderFailure, ProviderKind, ProviderRequest, ResolvedProvider};
 
 pub(crate) type ProviderChunkStream =
@@ -22,9 +24,10 @@ pub(crate) type ProviderChunkStream =
 pub(crate) async fn stream_provider(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
+    trace: Option<ProviderTraceMetadata>,
 ) -> Result<ProviderChunkStream, ProviderFailure> {
     match config.kind {
-        ProviderKind::Anthropic => anthropic::stream(config, request).await,
+        ProviderKind::Anthropic => anthropic::stream(config, request, trace).await,
         ProviderKind::OpenAiCompatible => openai_compat::stream(config, request).await,
         ProviderKind::OpenAiResponses => openai_responses::stream(config, request).await,
     }

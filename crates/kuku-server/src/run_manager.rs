@@ -76,7 +76,8 @@ impl RunManager {
         let recent_clone = recent_events.clone();
         let cancel_for_perm = cancel_token.clone();
         let run_id_for_loop = run_id.clone();
-        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let runs = self.runs.clone();
+        let rid_for_cleanup = run_id.clone();
         let join_handle = tokio::spawn(async move {
             Self::run_loop(
                 run,
@@ -88,7 +89,7 @@ impl RunManager {
                 cancel_for_perm,
             )
             .await;
-            let _ = done_tx.send(());
+            runs.lock().unwrap().remove(&rid_for_cleanup);
         });
 
         let handle = RunHandle {
@@ -98,13 +99,6 @@ impl RunManager {
             recent_events,
         };
         self.runs.lock().unwrap().insert(run_id.clone(), handle);
-
-        let runs = self.runs.clone();
-        let rid = run_id.clone();
-        tokio::spawn(async move {
-            let _ = done_rx.await;
-            runs.lock().unwrap().remove(&rid);
-        });
 
         Ok((run_id, event_rx))
     }
@@ -121,13 +115,15 @@ impl RunManager {
         loop {
             match run.next().await {
                 Ok(Some(event)) => {
-                    if let kuku::UiEvent::PermissionRequested { ref request } = event {
+                    if let Some(metadata) = pending_permission_metadata(&event) {
                         if let Some(line) = crate::wire::serialize_event(&event) {
                             push_event(&recent_events, &line);
                             let _ = event_tx.send(line);
                         }
+                        let request_id = metadata.request.id.clone();
+                        let parent_tool_id = metadata.parent_tool_id.map(str::to_string);
                         let (tx, rx) = oneshot::channel();
-                        let permission_key = (run_id.clone(), request.id.clone());
+                        let permission_key = (run_id.clone(), request_id.clone());
                         permissions.lock().await.insert(permission_key.clone(), tx);
                         enum PendingPermissionOutcome {
                             Choice(kuku::PermissionChoice),
@@ -141,8 +137,9 @@ impl RunManager {
                         permissions.lock().await.remove(&permission_key);
                         match outcome {
                             PendingPermissionOutcome::Choice(choice) => {
-                                if let Ok(Some(result_event)) =
-                                    run.decide(&request.id, choice, None).await
+                                if let Ok(Some(result_event)) = run
+                                    .decide(&request_id, choice, parent_tool_id.as_deref())
+                                    .await
                                 {
                                     if let Some(line) = crate::wire::serialize_event(&result_event)
                                     {
@@ -235,4 +232,64 @@ fn push_event(buf: &Mutex<VecDeque<String>>, line: &str) {
         buf.pop_front();
     }
     buf.push_back(line.to_string());
+}
+
+struct PendingPermissionMetadata<'a> {
+    request: &'a kuku::query::PermissionRequest,
+    parent_tool_id: Option<&'a str>,
+}
+
+fn pending_permission_metadata(event: &kuku::UiEvent) -> Option<PendingPermissionMetadata<'_>> {
+    match event {
+        kuku::UiEvent::PermissionRequested { request } => Some(PendingPermissionMetadata {
+            request,
+            parent_tool_id: None,
+        }),
+        kuku::UiEvent::ToolOutput {
+            id,
+            event: kuku::query::ToolEvent::PermissionRequested { request },
+        } => Some(PendingPermissionMetadata {
+            request,
+            parent_tool_id: Some(id),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kuku::conversation::address::ConversationAddress;
+    use kuku::query::{PermissionRequest, ToolEvent, UiEvent};
+
+    use super::*;
+
+    fn permission_request(id: &str) -> PermissionRequest {
+        PermissionRequest {
+            id: id.to_string(),
+            conversation: ConversationAddress::parse("child").unwrap(),
+            turn: 1,
+            tool_call_id: "child_tool".to_string(),
+            tool: "run_command".to_string(),
+            risk: "medium".to_string(),
+            summary: "child command".to_string(),
+            candidate: "printf child".to_string(),
+            source: "agent".to_string(),
+        }
+    }
+
+    #[test]
+    fn pending_permission_metadata_extracts_nested_parent_tool_id() {
+        let request = permission_request("perm_child");
+        let event = UiEvent::ToolOutput {
+            id: "parent_tool".to_string(),
+            event: ToolEvent::PermissionRequested {
+                request: request.clone(),
+            },
+        };
+
+        let metadata = pending_permission_metadata(&event).unwrap();
+
+        assert_eq!(metadata.request.id, request.id);
+        assert_eq!(metadata.parent_tool_id, Some("parent_tool"));
+    }
 }

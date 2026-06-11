@@ -1,63 +1,106 @@
 # Events
 
-`events.jsonl` 是追加写入的 Session 事实日志。每一行都是一个 Session 的已持久化事实。
+`events.jsonl` 是单个 Session 的追加式账本。Session 是一份账本，conversation 是这份账本中的一个聊天线程。
 
-## 命名规则
+## Naming Rule
 
 ```text
 <domain>.<action>
 ```
 
-全部使用小写，并以点分隔。
+全部小写，使用点分隔。
 
-## 事件类型
+## Canonical Mental Model
+
+- `session`：一段运行历史的持久账本
+- `conversation`：账本中的一个聊天线程
+- `agent`：可拥有一个或多个 conversation 的联系人卡片
+- `address`：conversation 的连续性标识；重复使用同一个 address 就表示延续同一线程
+
+## Canonical Event Kinds
 
 | Event | Meaning |
 |---|---|
-| `session.meta` | Session 元数据。新 Session 中的第一个事件。 |
-| `context.prelude` | 用于上下文重建的运行时 prelude。 |
-| `context.sources` | 上下文来源摘要。 |
-| `turn.start` | 一轮开始。 |
-| `user.input` | 本轮的用户 Prompt。 |
-| `model.response` | 已完成的 provider 响应。 |
-| `model.error` | provider 失败。 |
+| `session.created` | 账本元数据。新 Session 的首个规范事件。 |
+| `conversation.opened` | 某个 conversation address 首次在账本中打开。 |
+| `conversation.bound` | 某个 conversation 绑定到一个 agent 身份快照。 |
+| `prompt.snapshot` | 某个 conversation turn 的 prompt 重建输入。 |
+| `message.user` | 某个 conversation 中的一条用户消息。 |
+| `message.assistant` | 某个 conversation 中的一条助手消息。 |
+| `turn.started` | 某个 conversation turn 开始。 |
+| `turn.completed` | 某个 conversation turn 正常结束。 |
+| `turn.cancelled` | 某个 conversation turn 被取消结束。 |
+| `turn.interrupted` | 某个 conversation turn 被中断结束。 |
+| `context.sources` | 一次主线程 turn 重建时使用的指令与 memory 来源文件。 |
+| `context.skills` | 某个 conversation turn 的 skill registry 快照和 bootstrap skill 列表。 |
+| `model.response` | 一次模型请求完成后的 Provider 响应。 |
+| `model.error` | 一次模型请求产生的 Provider 失败。 |
 | `tool.call` | 一次请求的 Tool 调用。 |
-| `permission.requested` | 一次 Tool 调用的持久待处理权限状态。 |
+| `permission.requested` | 某次 Tool 调用的持久待决权限状态。 |
 | `permission.allow` | Tool 授权允许决策。 |
 | `permission.deny` | Tool 授权拒绝决策。 |
 | `tool.result` | 一次 Tool 调用的结果。 |
-| `handoff` | handoff 摘要载荷。 |
-| `turn.end` | 一轮结束。 |
-| `turn.rollback` | 回滚标记。 |
-| `turn.rollback.undo` | 撤销一次回滚。 |
+| `handoff` | 用于未来 replay 的摘要边界。 |
+| `conversation.rollback` | conversation 作用域回滚标记。 |
+| `conversation.rollback.undone` | 撤销一次 conversation rollback。 |
 
-## 通用字段
+## Common Fields
 
-每一行已持久化事件至少包含：
+每条持久化事件至少都包含：
 
 | Field | Meaning |
 |---|---|
-| `id` | Session 内单调递增的整数 |
-| `type` | 事件类型 |
+| `id` | Session 账本内单调递增的整数 |
+| `kind` | 事件类型 |
 | `ts` | ISO 8601 时间戳 |
-| `turn` | 轮作用域事件的轮编号 |
 
-## 回滚作用域值
+conversation 作用域事件还会带上 `conversation`。turn 作用域事件还会带上 `turn`。
 
-`turn.rollback` 会记录以下作用域值之一：
+## Required Fields By Event
 
-- `conversation_only`
-- `files_only`
+| Event | Required fields |
+|---|---|
+| `session.created` | `ts`, `schema_version`, `session_id`, `created_at`, `kuku_version` |
+| `conversation.opened` | `ts`, `conversation` |
+| `conversation.bound` | `ts`, `conversation`, `binding_id` |
+| `prompt.snapshot` | `ts`, `conversation`, `binding_id`, `snapshot_id`, `turn`, `messages`, `project_instruction_sources`, `memory_sources`, `prompt_asset_sources`, `skills`, `bootstrap_loaded`, `provider`, `model`, `renderer`, `tool_registry`, `capabilities` |
+| `message.user` | `ts`, `conversation`, `turn`, `text` |
+| `message.assistant` | `ts`, `conversation`, `turn`, `message_id`, `text` |
+| `turn.started` | `ts`, `conversation`, `turn` |
+| `turn.completed` | `ts`, `conversation`, `turn` |
+| `turn.cancelled` | `ts`, `conversation`, `turn`, `reason` |
+| `turn.interrupted` | `ts`, `conversation`, `turn`, `reason` |
+| `context.sources` | `turn`, `ts`, `request_id`, `project_instruction_sources`, `memory_sources` |
+| `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
+| `model.response` | `turn`, `ts`, `request_id`, `text` |
+| `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
+| `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
+| `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
+| `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
+| `permission.deny` | `turn`, `ts`, `tool_call_id`, `tool`, `reason`, `source` |
+| `tool.result` | `turn`, `ts`, `tool_call_id`, `status`, `summary`, `model_content`, `truncated`, `files_read`, `files_changed`, `commands_run` |
+| `handoff` | `turn`, `ts`, `request_id`, `summary`, `keep_turns` |
+| `conversation.rollback` | `ts`, `conversation`, `to_turn`, `to_event_id`, `scope` |
+| `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
+
+`model.response`、`model.error`、`context.sources`、`handoff` 和 permission 事件通过全局 `turn` 归属到 `main` conversation。`tool.call` 和 `tool.result` 可以选择性包含 `conversation`；省略时表示属于 `main`。
+
+## Rollback Scope Values
+
+Rollback 事件会记录以下 scope 之一：
+
+- `messages`
+- `file_changes`
 - `both`
 
-## 权限状态
+`messages` 会让该 conversation 后续事件不再参与未来 replay。`file_changes` 只回退工作区文件，不隐藏 conversation 历史。`both` 同时执行这两件事。
 
-`permission.requested` 记录某个 Tool 调用正在等待 Host 授权。它是持久的待处理权限状态，不是允许或拒绝决策，也不是可观测性日志记录。
+## Permission State
 
-当 Host 解决该请求后，kuku 会在 `tool.result` 之前追加写入 `permission.allow` 或 `permission.deny`。
+`permission.requested` 是持久的待决状态，不是可观测性记录。Host 决定结果后，kuku 会在 `tool.result` 之前追加 `permission.allow` 或 `permission.deny`。
 
-## Session 事实与运行时流
+## Session Facts vs Runtime Streams
 
-并非每个运行时事件都是 Session 事实。流式增量，例如文本块、thinking 块、实时 Tool 输出，以及 host 可见的日志记录，都是运行时流事件，不会写入 `events.jsonl`。
+并非所有运行时事件都是 Session 事实。流式文本、实时命令输出、Tool 进度和 host 可见日志记录都属于 runtime stream 事件，不写入 `events.jsonl`。
 
-HTTP 线路事件见 [Server API](server-api.md)。
+HTTP wire 事件见 [Server API](server-api.md)。

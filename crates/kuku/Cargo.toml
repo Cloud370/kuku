@@ -44,6 +44,10 @@ required-features = ["test_support"]
 name = "query_runtime"
 required-features = ["test_support"]
 
+[[test]]
+name = "cache_runtime_notices"
+required-features = ["test_support"]
+
 [dev-dependencies]
 httpmock = "0.7"
 tokio-test = "0.4"

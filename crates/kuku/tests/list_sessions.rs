@@ -4,6 +4,21 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tempfile::tempdir;
 
+fn session_events(session_id: &str, created_at: &str, prompt: &str) -> String {
+    format!(
+        concat!(
+            "{{\"id\":1,\"ts\":\"{created_at}\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"{session_id}\",\"created_at\":\"{created_at}\",\"kuku_version\":\"0.1.0\"}}\n",
+            "{{\"id\":2,\"ts\":\"{created_at}\",\"kind\":\"conversation.opened\",\"conversation\":\"main\"}}\n",
+            "{{\"id\":3,\"ts\":\"{created_at}\",\"kind\":\"message.user\",\"conversation\":\"main\",\"turn\":1,\"text\":\"{prompt}\"}}\n",
+            "{{\"id\":4,\"ts\":\"{created_at}\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}}\n",
+            "{{\"id\":5,\"ts\":\"{created_at}\",\"kind\":\"turn.completed\",\"conversation\":\"main\",\"turn\":1}}\n"
+        ),
+        session_id = session_id,
+        created_at = created_at,
+        prompt = prompt,
+    )
+}
+
 fn write_session(dir: &Path, id: &str, events: &str) {
     let session_dir = dir.join(id);
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -38,7 +53,7 @@ fn finds_sessions_in_workspace() {
     write_session(
         &sessions_dir,
         "s_test1",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_test1\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"hello world\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\"}\n",
+        &session_events("s_test1", "2026-05-01T00:00:00Z", "hello world"),
     );
 
     let sessions = list_sessions(home, Some(&workspace)).unwrap();
@@ -72,13 +87,13 @@ fn global_lists_all_workspaces() {
     write_session(
         &ws1,
         "s_aaa",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_aaa\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"proj a\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\"}\n",
+        &session_events("s_aaa", "2026-05-01T00:00:00Z", "proj a"),
     );
     std::thread::sleep(std::time::Duration::from_millis(50));
     write_session(
         &ws2,
         "s_bbb",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-02T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_bbb\",\"created_at\":\"2026-05-02T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-02T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-02T00:00:01Z\",\"text\":\"proj b\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-02T00:00:02Z\"}\n",
+        &session_events("s_bbb", "2026-05-02T00:00:00Z", "proj b"),
     );
 
     let sessions = list_sessions(home, None).unwrap();
@@ -115,7 +130,11 @@ fn corrupted_json_lines_are_skipped() {
     write_session(
         &sessions_dir,
         "s_corrupt",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_corrupt\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\nNOT JSON HERE\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"hello\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\"}\n",
+        &(session_events("s_corrupt", "2026-05-01T00:00:00Z", "hello").replacen(
+            '\n',
+            "\nNOT JSON HERE\n",
+            1,
+        )),
     );
 
     let sessions = list_sessions(home, Some(&workspace)).unwrap();
@@ -136,7 +155,7 @@ fn session_with_only_meta_has_zero_turns() {
     write_session(
         &sessions_dir,
         "s_meta_only",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_meta_only\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
+        "{\"id\":1,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_meta_only\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n",
     );
 
     let sessions = list_sessions(home, Some(&workspace)).unwrap();
@@ -157,11 +176,11 @@ fn pruning_logs_does_not_break_session_listing() {
     write_session(
         &sessions_dir,
         "s_keep",
-        "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_keep\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}\n{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}\n{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"keep session\"}\n{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\"}\n",
+        &session_events("s_keep", "2026-05-01T00:00:00Z", "keep session"),
     );
     let events_path = sessions_dir.join("s_keep/events.jsonl");
     let before = EventStore::replay(&events_path).unwrap();
-    assert_eq!(before.len(), 4);
+    assert_eq!(before.len(), 5);
 
     let logs = home.join("logs/runtime");
     std::fs::create_dir_all(&logs).unwrap();
@@ -187,10 +206,10 @@ fn pruning_logs_does_not_break_session_listing() {
     assert_eq!(sessions[0].status, SessionStatus::Done);
     assert!(events_path.exists());
     let replayed = EventStore::replay(&events_path).unwrap();
-    assert_eq!(replayed.len(), 4);
+    assert_eq!(replayed.len(), 5);
     assert!(matches!(
         &replayed[0].payload,
-        EventPayload::SessionMeta { session_id, .. } if session_id == "s_keep"
+        EventPayload::SessionCreated { session_id, .. } if session_id == "s_keep"
     ));
 }
 
@@ -207,7 +226,7 @@ fn oversized_final_event_line_still_marks_session_done() {
         &sessions_dir,
         "s_large_tail",
         &format!(
-            "{{\"id\":1,\"type\":\"session.meta\",\"ts\":\"2026-05-01T00:00:00Z\",\"schema_version\":1,\"session_id\":\"s_large_tail\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}}\n{{\"id\":2,\"type\":\"turn.start\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\"}}\n{{\"id\":3,\"type\":\"user.input\",\"turn\":1,\"ts\":\"2026-05-01T00:00:01Z\",\"text\":\"hello\"}}\n{{\"id\":4,\"type\":\"turn.end\",\"turn\":1,\"ts\":\"2026-05-01T00:00:02Z\",\"summary\":\"{}\"}}\n",
+            "{{\"id\":1,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_large_tail\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}}\n{{\"id\":2,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"conversation.opened\",\"conversation\":\"main\"}}\n{{\"id\":3,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"message.user\",\"conversation\":\"main\",\"turn\":1,\"text\":\"hello\"}}\n{{\"id\":4,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}}\n{{\"id\":5,\"ts\":\"2026-05-01T00:00:02Z\",\"kind\":\"turn.completed\",\"conversation\":\"main\",\"turn\":1,\"summary\":\"{}\"}}\n",
             large_text
         ),
     );

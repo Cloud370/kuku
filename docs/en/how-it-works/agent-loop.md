@@ -5,27 +5,27 @@ Nothing counts as a session fact until it is written to `events.jsonl`.
 ## Turn flow
 
 ```text
-turn.start
-  -> user.input
+turn.started
+  -> message.user
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
-        no  -> turn.end
+        no  -> turn.completed
 ```
 
 ## Per turn
 
-1. kuku appends `turn.start` and `user.input`.
+1. kuku appends `turn.started` and `message.user`.
 2. It rebuilds the model context from files and persisted events.
 3. It streams the model response to the host and appends `model.response` when complete.
-4. If the response ends the turn, kuku appends `turn.end`.
+4. If the response ends the turn, kuku appends `turn.completed` for the active conversation.
 5. If the response asks for tools, kuku appends `tool.call`, records pending permission with `permission.requested`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
 
 ## Tool execution
 
 Independent tool calls can run in parallel. kuku preserves the model's original `tool.call` order when it writes results back to the event log.
 
-Subagents use the same loop in child sessions. They do not create a second runtime model.
+Delegated agent conversations use the same loop inside the same session ledger. They do not create a second runtime model.
 
 ## Permissions inside the loop
 

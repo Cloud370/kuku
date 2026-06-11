@@ -1,12 +1,14 @@
 use super::http_client;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
 use super::sse::stream_sse_events;
+use super::trace::{ProviderTrace, ProviderTraceDirection};
 use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -45,14 +47,18 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
             .iter()
             .map(convert_canonical_message),
     );
+    mark_last_content_block_ephemeral(&mut messages);
 
     let mut body = json!({
         "model": request.model,
         "messages": messages,
         "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u32),
         "stream": false,
-        "system": request.assembly.system_prompt,
-        "cache_control": {"type": "ephemeral"},
+        "system": [{
+            "type": "text",
+            "text": request.assembly.system_prompt,
+            "cache_control": cache_control_ephemeral(),
+        }],
     });
 
     if let Some(temperature) = request.temperature {
@@ -72,21 +78,46 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         body["output_config"] = json!({ "effort": effort });
     }
     if !request.assembly.tools.is_empty() {
+        let last_tool_index = request.assembly.tools.len() - 1;
         body["tools"] = json!(request
             .assembly
             .tools
             .iter()
-            .map(|schema| {
-                json!({
+            .enumerate()
+            .map(|(index, schema)| {
+                let mut tool = json!({
                     "name": schema.name,
                     "description": schema.description,
                     "input_schema": schema.input_schema,
-                })
+                });
+                if index == last_tool_index {
+                    tool["cache_control"] = cache_control_ephemeral();
+                }
+                tool
             })
             .collect::<Vec<_>>());
     }
 
     body
+}
+
+fn cache_control_ephemeral() -> Value {
+    json!({"type": "ephemeral"})
+}
+
+fn mark_last_content_block_ephemeral(messages: &mut [Value]) {
+    for message in messages.iter_mut().rev() {
+        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in content.iter_mut().rev() {
+            let Some(object) = block.as_object_mut() else {
+                continue;
+            };
+            object.insert("cache_control".to_string(), cache_control_ephemeral());
+            return;
+        }
+    }
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {
@@ -139,30 +170,71 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
 pub(crate) async fn stream(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
+    trace_metadata: Option<super::trace::ProviderTraceMetadata>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
     let mut body = render_body(request);
     body["stream"] = json!(true);
     let url = messages_url(&config.base_url);
     let client = http_client::api_client();
+    let trace = ProviderTrace::from_request(
+        trace_metadata.as_ref(),
+        config.kind.as_str(),
+        config.model.clone(),
+    );
+    let headers = anthropic_headers(config);
+
+    if let Some(trace) = &trace {
+        trace.record(
+            ProviderTraceDirection::Request,
+            Some(&url),
+            Some(&headers),
+            json!({ "body": body }),
+        );
+    }
 
     let response = client
-        .post(url)
-        .header("content-type", "application/json")
-        .header("x-api-key", config.api_key.expose())
-        .header("anthropic-version", ANTHROPIC_VERSION)
+        .post(url.clone())
+        .headers(headers)
         .json(&body)
         .send()
         .await
-        .map_err(|error| transport_error(&error))?;
+        .map_err(|error| {
+            if let Some(trace) = &trace {
+                trace.record(
+                    ProviderTraceDirection::Error,
+                    Some(&url),
+                    None,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+            transport_error(&error)
+        })?;
 
     let status = response.status();
+    let response_headers = response.headers().clone();
     let request_id = response
         .headers()
         .get("request-id")
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
+    if let Some(trace) = &trace {
+        trace.record(
+            ProviderTraceDirection::Response,
+            Some(&url),
+            Some(&response_headers),
+            json!({ "status": status.as_u16() }),
+        );
+    }
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
+        if let Some(trace) = &trace {
+            trace.record(
+                ProviderTraceDirection::Error,
+                Some(&url),
+                Some(&response_headers),
+                json!({ "status": status.as_u16(), "body": body_text }),
+            );
+        }
         let mut failure = classify_http_error(status.as_u16(), &body_text);
         failure.provider_request_id = request_id;
         return Err(failure);
@@ -171,11 +243,37 @@ pub(crate) async fn stream(
     let parser = Arc::new(Mutex::new(AnthropicSseParser::new()));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
+    let frame_trace = trace.clone();
     Ok(stream_sse_events(
         response,
+        move |frame| {
+            if let Some(trace) = &frame_trace {
+                trace.record(
+                    ProviderTraceDirection::Event,
+                    Some(&url),
+                    None,
+                    json!({ "frame": frame }),
+                );
+            }
+        },
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))
+}
+
+fn anthropic_headers(config: &ResolvedProvider) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    headers.insert(
+        "x-api-key",
+        HeaderValue::from_str(config.api_key.expose())
+            .unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+    headers.insert(
+        "anthropic-version",
+        HeaderValue::from_static(ANTHROPIC_VERSION),
+    );
+    headers
 }
 
 struct AnthropicSseParser {
@@ -380,7 +478,7 @@ impl AnthropicSseParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ContextAssembly;
+    use crate::context::{CanonicalMessage, ContextAssembly};
     use crate::prompt::PromptCatalog;
     use crate::provider::types::ProviderRequest;
 
@@ -401,6 +499,9 @@ mod tests {
                 handoff_summary: None,
             },
             catalog,
+            current_input: crate::provider::types::CanonicalPromptInput {
+                parts: vec![CanonicalMessage::user_text("input")],
+            },
             model: "test-model".into(),
             max_output_tokens: Some(1024),
             temperature: None,
@@ -455,10 +556,8 @@ mod tests {
     fn render_body_includes_cache_control() {
         let catalog = crate::prompt::builtin_prompt_catalog();
         let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
-        let cc = body
-            .get("cache_control")
-            .expect("cache_control field should be present");
-        assert_eq!(cc["type"], "ephemeral");
+        assert!(body.get("cache_control").is_none());
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]

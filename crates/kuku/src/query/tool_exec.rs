@@ -43,11 +43,19 @@ pub(crate) fn write_tool_result(
     let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
+        conversation: slot
+            .conversation
+            .as_ref()
+            .map(|value| value.as_str().to_string()),
         tool_call_id: slot.tool_call_id.clone(),
         status: status.to_string(),
         summary: summary.to_string(),
         model_content: model_content.to_string(),
         truncated: false,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
         structured: structured.clone(),
     })?;
     Ok(match stored.payload {
@@ -120,7 +128,7 @@ fn clamp_inline_skill_tool_result(
 }
 
 fn handle_use_skill(
-    pending: &PendingRun,
+    pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
     let skill_name = tool_call
@@ -144,6 +152,37 @@ fn handle_use_skill(
     let skill_dir = def.source_path.as_deref().unwrap_or("").to_string();
     let result = format!("<!-- loaded: {skill_dir} -->\n\n{}", def.instructions);
 
+    let events = EventStore::replay(&pending.events_path)?;
+    let mut skill_names =
+        crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
+    if !skill_names.iter().any(|name| name == &def.name) {
+        skill_names.push(def.name.clone());
+        skill_names.sort();
+    }
+    let registry = current_skill_registry(pending);
+    let binding_sources =
+        crate::skill::session::binding_sources_for_skills(&registry, &skill_names);
+    let binding_id = crate::conversation::binding::skill_attachment_binding_id(
+        &pending.conversation,
+        pending.agent_binding_id.as_deref(),
+        &skill_names,
+        &binding_sources,
+    );
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ConversationBound {
+        ts: now_timestamp()?,
+        conversation: pending.conversation.as_str().to_string(),
+        binding_id: binding_id.clone(),
+    })?;
+    store.append(EventPayload::ContextSkills {
+        conversation: pending.conversation.as_str().to_string(),
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        registry: serde_json::to_value(&registry)?,
+        bootstrap_loaded: skill_names,
+    })?;
+    pending.agent_binding_id = Some(binding_id);
+
     Ok(crate::tool::ToolResultEnvelope {
         status: "ok".to_string(),
         summary: format!("loaded skill: {skill_name}"),
@@ -151,6 +190,7 @@ fn handle_use_skill(
         truncated: false,
         structured: Some(json!({
             "kind": "skill_load",
+            "conversation": pending.conversation.as_str(),
             "name": def.name,
             "description": def.description,
             "source": def.source.as_str(),
@@ -165,7 +205,12 @@ fn handle_list_skills(
 ) -> Result<crate::tool::ToolResultEnvelope> {
     let events = current_skill_events(pending)?;
     let registry = current_skill_registry(pending);
-    let payload = crate::skill::search::list_skills_result(&registry, &events, &tool_call.args);
+    let payload = crate::skill::search::list_skills_result(
+        &registry,
+        &events,
+        pending.conversation.as_str(),
+        &tool_call.args,
+    );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
     json_result(format!("{count} skills returned"), payload)
 }
@@ -176,7 +221,12 @@ fn handle_search_skills(
 ) -> Result<crate::tool::ToolResultEnvelope> {
     let events = current_skill_events(pending)?;
     let registry = current_skill_registry(pending);
-    let payload = crate::skill::search::search_skills_result(&registry, &events, &tool_call.args);
+    let payload = crate::skill::search::search_skills_result(
+        &registry,
+        &events,
+        pending.conversation.as_str(),
+        &tool_call.args,
+    );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
     json_result(format!("{count} skill matches returned"), payload)
 }
@@ -206,11 +256,16 @@ pub(super) async fn execute_tool_call(
         store.append(EventPayload::ToolResult {
             turn: pending.turn,
             ts: now_timestamp()?,
+            conversation: Some(pending.conversation.as_str().to_string()),
             tool_call_id: tool_call.id.clone(),
             status: result.status.clone(),
             summary: result.summary.clone(),
             model_content: result.model_content.clone(),
             truncated: result.truncated,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: result.structured.clone(),
         })?;
         return Ok(result);
@@ -235,11 +290,16 @@ pub(super) async fn execute_tool_call(
     let stored = store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
+        conversation: Some(pending.conversation.as_str().to_string()),
         tool_call_id: tool_call.id.clone(),
         status: result.status.clone(),
         summary: result.summary.clone(),
         model_content: result.model_content.clone(),
         truncated: result.truncated,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
         structured: result.structured.clone(),
     })?;
     let mut result = result;
@@ -333,7 +393,7 @@ mod tests {
 
     use super::*;
     use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
-    use crate::query::types::{CumulativeUsage, PendingRun, Query, ResolvedRuntime};
+    use crate::query::types::{CumulativeUsage, ExecSlot, PendingRun, Query, ResolvedRuntime};
     use crate::skill::definition::{SkillDefinition, SkillSource};
     use crate::tool::ToolDefinition;
 
@@ -405,6 +465,7 @@ mod tests {
         PendingRun {
             session_id: "test".to_string(),
             query,
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
             events_path,
             kuku_home: workspace.clone(),
             workspace: workspace.clone(),
@@ -417,11 +478,13 @@ mod tests {
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),
             prompts_dir: None,
-            subagent_registry: None,
+            agent_registry: None,
             skill_registry: Some(skill_registry()),
             previous_skill_registry: None,
             bootstrap_skill: None,
+            frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
             child_session_count: 0,
+            agent_binding_id: None,
             tool_registry_override: override_registry,
             catalog: crate::prompt::builtin_prompt_catalog(),
             pending_events: std::collections::VecDeque::new(),
@@ -512,5 +575,45 @@ mod tests {
             assert!(result.truncated, "{tool_name} should be truncated");
             assert_eq!(result.model_content.chars().count(), 30);
         }
+    }
+
+    #[test]
+    fn slot_tool_result_is_persisted_with_non_main_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(&events_path, "").unwrap();
+        let slot = ExecSlot {
+            tool_call_id: "toolu_read".to_string(),
+            conversation: Some(
+                crate::conversation::address::ConversationAddress::parse("review").unwrap(),
+            ),
+            kind: crate::query::ToolKind::Agent {
+                conversation: crate::conversation::address::ConversationAddress::parse("review")
+                    .unwrap(),
+                binding_id: "binding:review".to_string(),
+            },
+            ordered_with_simple_tools: false,
+            label: "read".to_string(),
+            cancel: Arc::new(tokio::sync::Notify::new()),
+            nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        };
+
+        write_tool_result(
+            &slot,
+            "ok",
+            "read README.md",
+            "README contents",
+            &None,
+            &events_path,
+            1,
+        )
+        .unwrap();
+
+        let events = crate::event::EventStore::replay(&events_path).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            crate::event::EventPayload::ToolResult { conversation, tool_call_id, .. }
+                if conversation.as_deref() == Some("review") && tool_call_id == "toolu_read"
+        )));
     }
 }

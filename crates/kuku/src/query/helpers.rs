@@ -2,6 +2,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::context::{InstructionSource, MemorySource};
+use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderKind;
@@ -116,7 +117,7 @@ pub(super) fn display_summary(
             .unwrap_or(tool)
             .to_string(),
         "agent" => args
-            .get("name")
+            .get("to")
             .and_then(|v| v.as_str())
             .unwrap_or("agent")
             .to_string(),
@@ -189,6 +190,7 @@ fn append_event(events_path: &std::path::Path, payload: EventPayload) -> Result<
 
 pub(super) fn append_permission_request(
     events_path: &std::path::Path,
+    _conversation: &ConversationAddress,
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
@@ -203,6 +205,42 @@ pub(super) fn append_permission_request(
             summary: request.summary.clone(),
             candidate: request.candidate.clone(),
             source: request.source.clone(),
+        },
+    )
+}
+
+pub(super) fn append_turn_started(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+) -> Result<()> {
+    append_event(
+        events_path,
+        EventPayload::TurnStarted {
+            ts: now_timestamp()?,
+            conversation: conversation.as_str().to_string(),
+            turn,
+        },
+    )
+}
+
+pub(super) fn append_message_user_with_sender(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+    text: &str,
+    from: Option<&ConversationAddress>,
+    via_tool_call_id: Option<&str>,
+) -> Result<()> {
+    append_event(
+        events_path,
+        EventPayload::MessageUser {
+            turn,
+            ts: now_timestamp()?,
+            conversation: conversation.as_str().to_string(),
+            text: text.to_string(),
+            from: from.map(|address| address.as_str().to_string()),
+            via_tool_call_id: via_tool_call_id.map(ToOwned::to_owned),
         },
     )
 }
@@ -258,14 +296,101 @@ pub(super) fn append_model_error(
     )
 }
 
-pub(super) fn append_turn_end(events_path: &std::path::Path, turn: u64) -> Result<()> {
+fn has_terminal_event(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+) -> Result<bool> {
+    Ok(EventStore::replay(events_path)?
+        .iter()
+        .any(|event| match &event.payload {
+            EventPayload::TurnCompleted {
+                conversation: event_conversation,
+                turn: event_turn,
+                ..
+            }
+            | EventPayload::TurnCancelled {
+                conversation: event_conversation,
+                turn: event_turn,
+                ..
+            }
+            | EventPayload::TurnInterrupted {
+                conversation: event_conversation,
+                turn: event_turn,
+                ..
+            } => *event_turn == turn && event_conversation == conversation.as_str(),
+            _ => false,
+        }))
+}
+
+pub(super) fn append_turn_completed(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+) -> Result<()> {
+    if has_terminal_event(events_path, conversation, turn)? {
+        return Ok(());
+    }
     append_event(
         events_path,
-        EventPayload::TurnEnd {
-            turn,
+        EventPayload::TurnCompleted {
             ts: now_timestamp()?,
+            conversation: conversation.as_str().to_string(),
+            turn,
         },
     )
+}
+
+pub(super) fn append_turn_cancelled(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+    reason: &str,
+) -> Result<()> {
+    if has_terminal_event(events_path, conversation, turn)? {
+        return Ok(());
+    }
+    append_event(
+        events_path,
+        EventPayload::TurnCancelled {
+            ts: now_timestamp()?,
+            conversation: conversation.as_str().to_string(),
+            turn,
+            reason: reason.to_string(),
+        },
+    )
+}
+
+pub(super) fn append_turn_interrupted(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+    reason: &str,
+) -> Result<()> {
+    if has_terminal_event(events_path, conversation, turn)? {
+        return Ok(());
+    }
+    append_event(
+        events_path,
+        EventPayload::TurnInterrupted {
+            ts: now_timestamp()?,
+            conversation: conversation.as_str().to_string(),
+            turn,
+            reason: reason.to_string(),
+        },
+    )
+}
+
+pub(super) fn append_interrupted_active_turn(
+    events_path: &std::path::Path,
+    events: &[crate::event::StoredEvent],
+    conversation: &ConversationAddress,
+    reason: &str,
+) -> Result<()> {
+    if let Some(active_turn) = crate::conversation::active_turn(events, conversation) {
+        append_turn_interrupted(events_path, conversation, active_turn.turn, reason)?;
+    }
+    Ok(())
 }
 
 // ---------- Env / utility helpers ----------
@@ -276,9 +401,9 @@ pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) ->
     }
 
     match events.first().map(|event| &event.payload) {
-        Some(EventPayload::SessionMeta { .. }) => Ok(()),
+        Some(EventPayload::SessionCreated { .. }) => Ok(()),
         _ => Err(crate::error::Error::InvalidEventStream(
-            "first event must be session.meta".to_string(),
+            "first event must be session.created".to_string(),
         )),
     }
 }
@@ -287,7 +412,7 @@ pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
     events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::TurnStart { turn, .. } => Some(*turn),
+            EventPayload::TurnStarted { turn, .. } => Some(*turn),
             _ => None,
         })
         .max()
@@ -515,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_find_files_only_pattern() {
+    fn display_summary_find_files_with_only_pattern() {
         let args = serde_json::json!({"pattern": "*.rs"});
         let s = display_summary("find_files", &args, None);
         assert_eq!(

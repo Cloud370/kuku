@@ -6,7 +6,7 @@ use serde_json::Value;
 
 const LAST_EVENT_SCAN_CHUNK_BYTES: u64 = 4096;
 
-/// Read events.jsonl from the start and return the text of the first `user.input` event.
+/// Read events.jsonl from the start and return the text of the first `message.user` event.
 pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -16,7 +16,8 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_user_input = value.get("type").and_then(|t| t.as_str()) == Some("user.input");
+            let kind = value.get("kind").and_then(|t| t.as_str());
+            let is_user_input = matches!(kind, Some("message.user"));
             if is_user_input {
                 return value
                     .get("text")
@@ -38,8 +39,8 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
-            let is_session_meta =
-                value.get("type").and_then(|t| t.as_str()) == Some("session.meta");
+            let kind = value.get("kind").and_then(|t| t.as_str());
+            let is_session_meta = matches!(kind, Some("session.created"));
             if is_session_meta {
                 return value
                     .get("created_at")
@@ -52,9 +53,8 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
     None
 }
 
-/// Count occurrences of `"type":"turn.start"` by string scan (no JSON parse).
-/// Safe because serde serializes the same struct definition deterministically,
-/// so the byte pattern `"type":"turn.start"` is stable across runs.
+/// Count occurrences of turn start events by string scan (no JSON parse).
+/// Safe because serde serializes the same struct definition deterministically.
 pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -64,17 +64,10 @@ pub(crate) fn scan_turn_count(path: &Path) -> u64 {
     if file.read_to_end(&mut buf).is_err() {
         return 0;
     }
-    let needle = b"\"type\":\"turn.start\"";
-    let mut count = 0;
-    let mut pos = 0;
-    while let Some(idx) = buf[pos..].windows(needle.len()).position(|w| w == needle) {
-        count += 1;
-        pos += idx + needle.len();
-    }
-    count
+    count_occurrences(&buf, b"\"kind\":\"turn.started\"")
 }
 
-/// Read the last complete JSON line from events.jsonl and return its `type` tag.
+/// Read the last complete JSON line from events.jsonl and return its `kind` tag.
 /// Scans backward in bounded chunks until it finds the final complete line.
 pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     let mut file = File::open(path).ok()?;
@@ -109,9 +102,10 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
             .find(|line| !line.is_empty() && !line.iter().all(|byte| byte.is_ascii_whitespace()))
         {
             let value: Value = serde_json::from_slice(last_line).ok()?;
-            return match value.get("type").and_then(|t| t.as_str()) {
-                Some("turn.end") => Some("turn.end"),
-                Some("turn.start") => Some("turn.start"),
+            let kind = value.get("kind").and_then(|t| t.as_str());
+            return match kind {
+                Some("turn.completed") => Some("turn.completed"),
+                Some("turn.started") => Some("turn.started"),
                 Some("model.response") => Some("model.response"),
                 Some("tool.result") => Some("tool.result"),
                 _ => None,
@@ -122,6 +116,19 @@ pub(crate) fn scan_last_event_type(path: &Path) -> Option<&'static str> {
     }
 
     None
+}
+
+fn count_occurrences(haystack: &[u8], needle: &[u8]) -> u64 {
+    let mut count = 0;
+    let mut pos = 0;
+    while let Some(idx) = haystack[pos..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+    {
+        count += 1;
+        pos += idx + needle.len();
+    }
+    count
 }
 
 #[cfg(test)]
@@ -136,12 +143,12 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{{\"id\":1,\"type\":\"turn.start\"}}\n{{\"id\":2,\"type\":\"turn.end\",\"summary\":\"{}\"}}\n",
+                "{{\"id\":1,\"kind\":\"turn.started\",\"conversation\":\"session://s/conversations/c_main\",\"turn\":1,\"ts\":\"2026-01-01T00:00:00Z\"}}\n{{\"id\":2,\"kind\":\"turn.completed\",\"conversation\":\"session://s/conversations/c_main\",\"turn\":1,\"ts\":\"2026-01-01T00:00:01Z\",\"summary\":\"{}\"}}\n",
                 large
             ),
         )
         .unwrap();
 
-        assert_eq!(Some("turn.end"), scan_last_event_type(&path));
+        assert_eq!(Some("turn.completed"), scan_last_event_type(&path));
     }
 }

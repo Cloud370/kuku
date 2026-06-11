@@ -22,11 +22,16 @@ pub(crate) fn stored_read_event(id: u64, structured: serde_json::Value) -> Store
         payload: EventPayload::ToolResult {
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
+            conversation: None,
             tool_call_id: format!("tool_{id}"),
             status: "ok".to_string(),
             summary: "read".to_string(),
             model_content: "content".to_string(),
             truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: Some(structured),
         },
     }
@@ -46,11 +51,16 @@ pub(crate) fn read_snapshot_event(
         payload: EventPayload::ToolResult {
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
+            conversation: None,
             tool_call_id: format!("tool_{id}"),
             status: "ok".to_string(),
             summary: "read".to_string(),
             model_content: model_content.to_string(),
             truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: Some(serde_json::json!({
                 "kind": "file_content",
                 "path": path,

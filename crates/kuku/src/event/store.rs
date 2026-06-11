@@ -29,6 +29,8 @@ impl EventStore {
             std::fs::create_dir_all(parent)?;
         }
 
+        let mut file_lock = event_file_lock(&path)?;
+        file_lock.lock()?;
         let scan = Self::scan(&path)?;
         if scan.needs_truncation {
             OpenOptions::new()
@@ -50,10 +52,10 @@ impl EventStore {
 
     /// Append a new event to the store and return the stored event with its assigned ID.
     pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
-        let mut next_id = self.next_id.lock().unwrap();
         let mut file_lock = event_file_lock(&self.path)?;
         file_lock.lock()?;
 
+        let mut next_id = self.next_id.lock().unwrap();
         let scan = Self::scan(&self.path)?;
         if scan.needs_truncation {
             OpenOptions::new()
@@ -82,7 +84,10 @@ impl EventStore {
 
     /// Read all events from an events.jsonl file.
     pub fn replay(path: impl AsRef<Path>) -> Result<Vec<StoredEvent>> {
-        Ok(Self::scan(path.as_ref())?.events)
+        let path = path.as_ref();
+        let mut file_lock = event_file_lock(path)?;
+        file_lock.lock()?;
+        Ok(Self::scan(path)?.events)
     }
 
     fn scan(path: &Path) -> Result<ReplayScan> {
@@ -131,20 +136,9 @@ impl EventStore {
                 continue;
             }
 
-            let event = match serde_json::from_slice::<StoredEvent>(line) {
-                Ok(event) => event,
-                Err(_) => {
-                    let raw: serde_json::Value = serde_json::from_slice(line).map_err(|error| {
-                        Error::InvalidEventStream(format!(
-                            "invalid event at line {line_number}: {error}"
-                        ))
-                    })?;
-                    StoredEvent {
-                        id: raw["id"].as_u64().unwrap_or(0),
-                        payload: super::types::EventPayload::Unknown(raw),
-                    }
-                }
-            };
+            let event = serde_json::from_slice::<StoredEvent>(line).map_err(|error| {
+                Error::InvalidEventStream(format!("invalid event at line {line_number}: {error}"))
+            })?;
 
             if event.id <= previous_id {
                 return Err(Error::InvalidEventStream(format!(
@@ -183,6 +177,9 @@ fn event_file_lock(path: &Path) -> Result<fslock::LockFile> {
             .map(|extension| format!("{extension}."))
             .unwrap_or_default()
     ));
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     Ok(fslock::LockFile::open(&lock_path)?)
 }
 
@@ -227,8 +224,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let content = concat!(
-            "{\"id\":1,\"type\":\"session.meta\",\"ts\":\"a\",\"schema_version\":1,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
-            "{\"id\":2,\"type\":\"future.event\",\"ts\":\"b\",\"turn\":1,\"custom\":\"x\"}\n",
+            "{\"id\":1,\"ts\":\"a\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
+            "{\"id\":2,\"ts\":\"b\",\"kind\":\"future.event\",\"turn\":1,\"custom\":\"x\"}\n",
         );
         std::fs::write(&path, content).unwrap();
         let events = EventStore::replay(&path).unwrap();

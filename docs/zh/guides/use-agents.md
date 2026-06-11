@@ -1,19 +1,19 @@
 # Use Agents
 
-Agent 是在子 Session 中运行的命名 subagent。
+Agent 是联系人卡片。kuku 调用它时，会在当前 Session 中打开或继续某个委派 conversation address。
 
 ## Add an Agent
 
-把 agent 文件放到以下位置之一：
+把 agent 文件放在以下任一位置：
 
 - `~/.kuku/agents/`
 - `<workspace>/.kuku/agents/`
 
-这些是约定位置。启用 auto-discovery 时，kuku 也会扫描其他用户级和项目级 dot-directory 中的 `agents/` 和 `agent/`，例如 `.claude/agents` 与 `.opencode/agent`。
+这些是约定位置。启用 auto-discovery 后，kuku 也会扫描其他用户和项目 dot-directory 中的 `agents/` 和 `agent/`，例如 `.claude/agents` 和 `.opencode/agent`。
 
-同名情况下，项目级 agent 会覆盖用户级 agent。
+同名时，项目级 agent 会覆盖用户级 agent。
 
-文件格式定义见 [Agent Format](../reference/agent-format.md)。
+文件格式见 [Agent Format](../reference/agent-format.md)。
 
 ## Check Discovery
 
@@ -26,9 +26,19 @@ kuku agents show <name>
 
 ## Use Agents in a Run
 
-当 agent tool 启用时，kuku 可以把部分工作委派给已发现的 Agent。
+启用 agent Tool 时，kuku 可以把部分工作委派给已发现的 agent contacts。
 
-如果要在某一次运行中禁用 agent delegation：
+要用 address 来思考：
+
+- `review` 表示一条持续中的 review 线程
+- `review/api` 表示一个以 `review` contact 为根的独立嵌套线程
+- 复用 `review` 表示保持连续性
+
+`main` address 是 Host conversation 的保留名，不能作为 agent 目标。
+
+只有在首次打开新 address 时，传 model tier 才有意义。如果在继续已有 address 时传 tier，运行时会拒绝这次调用。
+
+要在单次运行中禁用 agent 委派：
 
 ```bash
 kuku run --no-agents "task"
@@ -36,10 +46,22 @@ kuku run --no-agents "task"
 
 ## Choose User vs Project Scope
 
-- `~/.kuku/agents/` 适合个人可复用的 agent。
-- `<workspace>/.kuku/agents/` 适合只属于某个仓库的 agent。
+- `~/.kuku/agents/` 适合个人复用 contacts。
+- `<workspace>/.kuku/agents/` 适合属于某个仓库的 contacts。
+
+## Inspect Conversations
+
+```bash
+kuku list <session-id>
+kuku show <session-id> --conversation review
+kuku events <session-id> --conversation review
+```
+
+- `kuku list <session-id>` 列出一个 Session 内的 conversation addresses。
+- `kuku show` 显示某个 conversation 的最终 transcript 输出。
+- `kuku events` 显示底层账本事实，并可按 conversation 过滤。
 
 ## Related Pages
 
-- [Skill Format](../reference/skill-format.md)
 - [Tools](../reference/tools.md)
+- [Manage Sessions](manage-sessions.md)

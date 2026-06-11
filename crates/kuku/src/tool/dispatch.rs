@@ -27,7 +27,7 @@ pub(crate) async fn dispatch(
 ) -> ToolResultEnvelope {
     match name {
         "agent" => ToolResultEnvelope::error(
-            "agent tool must be executed via subagent handler".to_string(),
+            "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
         "find_files" => builtin::find_files(args, workspace),
@@ -91,6 +91,7 @@ mod tests {
             payload: EventPayload::ToolResult {
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
+                conversation: None,
                 tool_call_id: format!("read_{id}"),
                 status: "ok".to_string(),
                 summary: "read".to_string(),
@@ -101,6 +102,10 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
                 structured: Some(serde_json::json!({
                     "kind": "file_content",
                     "path": path,

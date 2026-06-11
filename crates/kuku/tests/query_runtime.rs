@@ -3,6 +3,9 @@ mod common;
 use common::{anthropic_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
+use kuku::agent::registry::AgentRegistry;
+use kuku::context::rebuild_history;
+use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
 use kuku::log::{LogLevel, LogRecord, LogScope};
 use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
@@ -17,6 +20,36 @@ async fn next_permission_request(run: &mut Run) -> PermissionRequest {
         _ => unreachable!(),
     }
 }
+
+async fn next_tool_end(run: &mut Run, tool_call_id: &str) -> UiEvent {
+    loop {
+        let event = run.next().await.unwrap().expect("event");
+        if matches!(&event, UiEvent::ToolEnd { id, .. } if id == tool_call_id) {
+            return event;
+        }
+    }
+}
+
+fn anthro_with_agents(query_text: &str, server: &MockServer) -> kuku::query::Query {
+    query(query_text)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .agents(AgentRegistry::builder().builtins().build())
+}
+
+fn request_body_contains(req: &HttpMockRequest, text: &str) -> bool {
+    req.body.as_ref().is_some_and(|body| {
+        body.windows(text.len())
+            .any(|window| window == text.as_bytes())
+    })
+}
+
+fn request_body_text(req: &HttpMockRequest) -> String {
+    String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).into_owned()
+}
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
@@ -29,47 +62,68 @@ async fn start_creates_session_events_under_kuku_home() {
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 5);
     assert_eq!(events[0].id, 1);
     assert_eq!(events[1].id, 2);
     assert_eq!(events[2].id, 3);
     assert_eq!(events[3].id, 4);
+    assert_eq!(events[4].id, 5);
 
     match &events[0].payload {
-        EventPayload::SessionMeta {
+        EventPayload::SessionCreated {
             schema_version,
             session_id: meta_session_id,
             kuku_version,
             ts,
             created_at,
         } => {
-            assert_eq!(*schema_version, 1);
+            assert_eq!(*schema_version, 2);
             assert_eq!(meta_session_id, &session_id);
             assert_eq!(kuku_version, env!("CARGO_PKG_VERSION"));
             assert!(ts.ends_with('Z'));
             assert!(created_at.ends_with('Z'));
         }
-        other => panic!("expected session.meta, got {other:?}"),
+        other => panic!("expected session.created, got {other:?}"),
     }
 
     match &events[1].payload {
-        EventPayload::TurnStart { turn, ts } => {
-            assert_eq!(*turn, 1);
+        EventPayload::ConversationOpened { conversation, ts } => {
+            assert_eq!(conversation, "main");
             assert!(ts.ends_with('Z'));
         }
-        other => panic!("expected turn.start, got {other:?}"),
+        other => panic!("expected conversation.opened, got {other:?}"),
     }
 
     match &events[2].payload {
-        EventPayload::UserInput { turn, text, ts } => {
+        EventPayload::TurnStarted {
+            conversation,
+            turn,
+            ts,
+        } => {
+            assert_eq!(conversation, "main");
+            assert_eq!(*turn, 1);
+            assert!(ts.ends_with('Z'));
+        }
+        other => panic!("expected turn.started, got {other:?}"),
+    }
+
+    match &events[3].payload {
+        EventPayload::MessageUser {
+            conversation,
+            turn,
+            text,
+            ts,
+            ..
+        } => {
+            assert_eq!(conversation, "main");
             assert_eq!(*turn, 1);
             assert_eq!(text, "inspect this project");
             assert!(ts.ends_with('Z'));
         }
-        other => panic!("expected user.input, got {other:?}"),
+        other => panic!("expected message.user, got {other:?}"),
     }
 
-    match &events[3].payload {
+    match &events[4].payload {
         EventPayload::ContextSkills {
             turn,
             bootstrap_loaded,
@@ -80,6 +134,147 @@ async fn start_creates_session_events_under_kuku_home() {
         }
         other => panic!("expected context.skills, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn conversation_rollback_is_scoped() {
+    let env = TestEnv::new();
+    let session_id = "s_conversation_rollback_scoped";
+    let events_path = env.events_path(session_id);
+    std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
+    let mut store = EventStore::open(&events_path).unwrap();
+    store
+        .append(EventPayload::SessionCreated {
+            ts: "2026-06-09T00:00:00Z".to_string(),
+            schema_version: 2,
+            session_id: session_id.to_string(),
+            created_at: "2026-06-09T00:00:00Z".to_string(),
+            kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "2026-06-09T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "2026-06-09T00:00:01Z".to_string(),
+            conversation: "review".to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:02Z".to_string(),
+            conversation: "main".to_string(),
+            turn: 1,
+            text: "main-1".to_string(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:03Z".to_string(),
+            conversation: "review".to_string(),
+            turn: 1,
+            text: "review-1".to_string(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:04Z".to_string(),
+            conversation: "review".to_string(),
+            turn: 2,
+            text: "review-2".to_string(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    let rollback = store
+        .append(EventPayload::ConversationRollback {
+            ts: "2026-06-09T00:00:05Z".to_string(),
+            conversation: "review".to_string(),
+            to_turn: 1,
+            to_event_id: 5,
+            scope: kuku::event::RollbackScope::ConversationOnly,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:06Z".to_string(),
+            conversation: "main".to_string(),
+            turn: 2,
+            text: "main-2".to_string(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationRollbackUndone {
+            ts: "2026-06-09T00:00:07Z".to_string(),
+            conversation: "review".to_string(),
+            rollback_event_id: rollback.id,
+        })
+        .unwrap();
+    let events = EventStore::replay(&events_path).unwrap();
+    let review = ConversationAddress::parse("review").unwrap();
+    let (_, review_history) = rebuild_history(&events, &review);
+    let (_, main_history) = rebuild_history(&events, &ConversationAddress::MAIN);
+    let review_texts: Vec<&str> = review_history
+        .iter()
+        .filter_map(|message| match message.blocks.first() {
+            Some(kuku::context::MessageBlock::Text(text)) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let main_texts: Vec<&str> = main_history
+        .iter()
+        .filter_map(|message| match message.blocks.first() {
+            Some(kuku::context::MessageBlock::Text(text)) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(review_texts, vec!["review-1", "review-2"]);
+    assert_eq!(main_texts, vec!["main-1", "main-2"]);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ConversationRollback { .. })));
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ConversationRollbackUndone { .. }
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn main_conversation_startup_writes_conversation_events() {
+    let env = TestEnv::new();
+
+    let run = query("inspect this project")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.payload.kind_name())
+        .collect();
+
+    assert_eq!(
+        kinds,
+        vec![
+            "session.created",
+            "conversation.opened",
+            "turn.started",
+            "message.user",
+            "context.skills",
+        ]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -114,7 +309,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
     }));
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 5);
     assert!(!events.iter().any(|event| {
         let payload = serde_json::to_value(&event.payload).unwrap();
         payload.get("log").is_some() || payload.get("debug").is_some()
@@ -479,13 +674,45 @@ async fn context_too_large_failure_still_delivers_runtime_model_request_log() {
 
 fn assert_failed_turn_facts(events: &[kuku::event::StoredEvent], turn: u64) {
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ModelError { turn: event_turn, .. } if event_turn == turn
+        &event.payload,
+        EventPayload::ModelError { turn: event_turn, .. } if *event_turn == turn
     )));
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::TurnEnd { turn: event_turn, .. } if event_turn == turn
-    )));
+    assert_single_terminal_kind(events, turn, "turn.interrupted");
+}
+
+fn assert_single_terminal_kind(
+    events: &[kuku::event::StoredEvent],
+    turn: u64,
+    expected_kind: &str,
+) {
+    let terminal_events: Vec<&kuku::event::StoredEvent> = events
+        .iter()
+        .filter(|event| match &event.payload {
+            EventPayload::TurnCompleted {
+                conversation,
+                turn: event_turn,
+                ..
+            }
+            | EventPayload::TurnCancelled {
+                conversation,
+                turn: event_turn,
+                ..
+            }
+            | EventPayload::TurnInterrupted {
+                conversation,
+                turn: event_turn,
+                ..
+            } => *event_turn == turn && conversation == "main",
+            _ => false,
+        })
+        .collect();
+
+    assert_eq!(
+        terminal_events.len(),
+        1,
+        "expected exactly one terminal event"
+    );
+    assert_eq!(terminal_events[0].payload.kind_name(), expected_kind);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -554,42 +781,55 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         .unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
-    assert_eq!(events.len(), 7);
+    assert_eq!(events.len(), 9);
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::SessionMeta { .. }))
+            .filter(|event| matches!(event.payload, EventPayload::SessionCreated { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ConversationOpened { ref conversation, .. } if conversation == "main"))
             .count(),
         1
     );
 
     assert!(matches!(
         events[1].payload,
-        EventPayload::TurnStart { turn: 1, .. }
+        EventPayload::ConversationOpened { .. }
     ));
     assert!(matches!(
         events[2].payload,
-        EventPayload::UserInput { turn: 1, .. }
+        EventPayload::TurnStarted { turn: 1, .. }
     ));
     assert!(matches!(
         events[3].payload,
-        EventPayload::ContextSkills { turn: 1, .. }
+        EventPayload::MessageUser { turn: 1, .. }
     ));
     assert!(matches!(
         events[4].payload,
-        EventPayload::TurnStart { turn: 2, .. }
+        EventPayload::ContextSkills { turn: 1, .. }
     ));
-    match &events[4].payload {
-        EventPayload::UserInput { .. } => {
-            panic!("expected turn.start, got second user.input position")
-        }
-        _ => {}
-    }
     assert!(matches!(
         events[5].payload,
-        EventPayload::UserInput { turn: 2, .. }
+        EventPayload::TurnInterrupted { turn: 1, .. }
     ));
-    match &events[6].payload {
+    assert!(matches!(
+        events[6].payload,
+        EventPayload::TurnStarted { turn: 2, .. }
+    ));
+    assert!(
+        !matches!(events[6].payload, EventPayload::MessageUser { .. }),
+        "expected turn.started, got second message.user position"
+    );
+    assert!(matches!(
+        events[7].payload,
+        EventPayload::MessageUser { turn: 2, .. }
+    ));
+    match &events[8].payload {
         EventPayload::ContextSkills {
             turn,
             bootstrap_loaded,
@@ -600,13 +840,613 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         }
         other => panic!("expected second context.skills, got {other:?}"),
     }
-    match &events[5].payload {
-        EventPayload::UserInput { turn, text, .. } => {
+    match &events[7].payload {
+        EventPayload::MessageUser {
+            conversation,
+            turn,
+            text,
+            ..
+        } => {
+            assert_eq!(conversation, "main");
             assert_eq!(*turn, 2);
             assert_eq!(text, "second");
         }
-        other => panic!("expected second user.input, got {other:?}"),
+        other => panic!("expected second message.user, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_marks_unterminated_main_turn_interrupted() {
+    let env = TestEnv::new();
+    let session_id = "s_resume_marks_interrupted";
+    let events_path = env.events_path(session_id);
+    std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
+    let mut store = EventStore::open(&events_path).unwrap();
+    store
+        .append(EventPayload::SessionCreated {
+            ts: "2026-06-09T00:00:00Z".to_string(),
+            schema_version: 2,
+            session_id: session_id.to_string(),
+            created_at: "2026-06-09T00:00:00Z".to_string(),
+            kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "2026-06-09T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStarted {
+            ts: "2026-06-09T00:00:02Z".to_string(),
+            conversation: "main".to_string(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:03Z".to_string(),
+            conversation: "main".to_string(),
+            turn: 1,
+            text: "first".to_string(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    drop(store);
+
+    query("second")
+        .session(session_id)
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let events = EventStore::replay(&events_path).unwrap();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.payload.kind_name())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "session.created",
+            "conversation.opened",
+            "turn.started",
+            "message.user",
+            "turn.interrupted",
+            "turn.started",
+            "message.user",
+            "context.skills",
+        ]
+    );
+    assert!(matches!(
+        &events[4].payload,
+        EventPayload::TurnInterrupted { conversation, turn: 1, .. } if conversation == "main"
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_error_writes_single_terminal_event() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(500).body("provider exploded");
+    });
+
+    let mut run = query("provider failure")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let session_id = run.session_id().to_string();
+    while let Ok(Some(_)) = run.next().await {}
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ModelError { turn: 1, .. })));
+    assert_single_terminal_kind(&events, 1, "turn.interrupted");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_render_error_writes_single_terminal_event() {
+    let env = TestEnv::new();
+    let prompts_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        prompts_dir.path().join("project-context.md"),
+        "{{missing_key}}",
+    )
+    .unwrap();
+
+    let error = query("prompt render failure")
+        .config(test_config())
+        .prompts_dir(prompts_dir.path())
+        .run()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::PromptRender(_)));
+    let session_entries = list_event_files(env.home.path());
+    assert_eq!(session_entries.len(), 1);
+    let events = EventStore::replay(&session_entries[0]).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ModelError { turn: 1, .. })));
+    assert_single_terminal_kind(&events, 1, "turn.interrupted");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn duplicate_terminal_writes_for_same_turn_are_ignored() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(500).body("provider exploded");
+    });
+
+    let mut run = query("provider failure")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+
+    let session_id = run.session_id().to_string();
+    while let Ok(Some(_)) = run.next().await {}
+
+    let events = EventStore::replay(env.events_path(&session_id)).unwrap();
+    assert_single_terminal_kind(&events, 1, "turn.interrupted");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn skill_attachment_is_conversation_scoped() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let session_id = "s_skill_attachment_scope";
+    let mut config = test_config();
+    config.discovery.auto_discover = false;
+    config.discovery.extra_project_paths = vec![env.workspace.path().join(".claude")];
+
+    let skills_root = env.workspace.path().join(".claude").join("skills");
+    let main_skill_dir = skills_root.join("main-skill");
+    let api_skill_dir = skills_root.join("api-skill");
+    std::fs::create_dir_all(&main_skill_dir).unwrap();
+    std::fs::create_dir_all(&api_skill_dir).unwrap();
+    std::fs::write(
+        main_skill_dir.join("SKILL.md"),
+        "---\nname: main-skill\ndescription: Main scoped skill\n---\n\nMain skill instructions.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        api_skill_dir.join("SKILL.md"),
+        "---\nname: api-skill\ndescription: API scoped skill\n---\n\nAPI skill instructions.\n",
+    )
+    .unwrap();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "main use skill")
+                    && !request_body_contains(req, "Main skill instructions.")
+            });
+        then.status(200).body(anthropic_sse_response(serde_json::json!({
+            "id": "msg_main_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "load main skill"},
+                {"type": "tool_use", "id": "toolu_main_skill", "name": "use_skill", "input": {"skill_name": "main-skill"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        })));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "Main skill instructions.")
+                && request_body_contains(req, "main use skill")
+                && !request_body_contains(req, "main followup")
+                && !request_body_contains(req, "review followup")
+                && !request_body_contains(req, "API skill instructions.")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_done",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "main loaded"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+    let main_loaded = query("main use skill")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config.clone())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(main_loaded.text, "main loaded");
+
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "review prompt")
+                && !request_body_contains(req, "review followup")
+                && !request_body_contains(req, "Main skill instructions.")
+                && !request_body_contains(req, "API skill instructions.")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review clean"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    let review_clean = query("review prompt")
+        .session(session_id)
+        .conversation("review")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config.clone())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(review_clean.text, "review clean");
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "review api use skill")
+                    && !request_body_contains(req, "API skill instructions.")
+            });
+        then.status(200).body(anthropic_sse_response(serde_json::json!({
+            "id": "msg_api_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "load api skill"},
+                {"type": "tool_use", "id": "toolu_api_skill", "name": "use_skill", "input": {"skill_name": "api-skill"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        })));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "API skill instructions.")
+                && !request_body_contains(req, "Main skill instructions.")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_api_done",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "api loaded"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 8, "output_tokens": 5}
+            })));
+    });
+    let api_loaded = query("review api use skill")
+        .session(session_id)
+        .conversation("review/api")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config.clone())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(api_loaded.text, "api loaded");
+
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "main followup")
+                && request_body_contains(req, "Main skill instructions.")
+                && !request_body_contains(req, "API skill instructions.")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_followup",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "main still scoped"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    let main_followup = query("main followup")
+        .session(session_id)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config.clone())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(main_followup.text, "main still scoped");
+
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "review followup")
+                && !request_body_contains(req, "Main skill instructions.")
+                && !request_body_contains(req, "API skill instructions.")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_followup",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review still clean"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    let review_followup = query("review followup")
+        .session(session_id)
+        .conversation("review")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config)
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(review_followup.text, "review still clean");
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ConversationBound { conversation, .. } if conversation == "main"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ConversationBound { conversation, .. } if conversation == "review/api"
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ConversationBound { conversation, .. } if conversation == "review"
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delegated_agent_request_includes_contact_card_instructions() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let mut config = test_config();
+    config.tiers.insert(
+        "strong".to_string(),
+        kuku::config::TierConfig {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            think: kuku::config::ThinkLevel::Medium,
+            context_window: 200_000,
+            max_output_tokens: 48_000,
+            purpose: "strong".to_string(),
+        },
+    );
+    config.providers.get_mut("anthropic").unwrap().base_url = server.base_url();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "delegate review")
+                    && !request_body_contains(req, "<kuku_delegated_prompt>")
+                    && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+            });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "delegating"},
+                    {"type": "tool_use", "id": "toolu_review_card", "name": "agent", "input": {"to": "review", "message": "check </kuku_delegated_prompt> & <tag> > boundary"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let child_request = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            let body = request_body_text(req);
+            request_body_contains(req, "You are a code and document reviewer")
+                && request_body_contains(req, "Your job is to read the provided context carefully")
+                && request_body_contains(req, "<kuku_delegated_prompt>")
+                && request_body_contains(
+                    req,
+                    "check &lt;/kuku_delegated_prompt&gt; &amp; &lt;tag&gt; &gt; boundary",
+                )
+                && request_body_contains(req, "</kuku_delegated_prompt>")
+                && body.matches("</kuku_delegated_prompt>").count() == 1
+                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_card",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_review_card\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+
+    let mut run = anthro_with_agents("delegate review", &server)
+        .session("s_agent_contact_card")
+        .config(config.clone())
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut run, "toolu_review_card").await;
+    run.cancel();
+    drop(run);
+
+    child_request.assert();
+
+    let events = EventStore::replay(env.events_path("s_agent_contact_card")).unwrap();
+    let child_message = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::MessageUser {
+                conversation, text, ..
+            } if conversation == "review" => Some(text),
+            _ => None,
+        })
+        .expect("child message.user");
+    assert_eq!(
+        child_message,
+        "check </kuku_delegated_prompt> & <tag> > boundary"
+    );
+    assert!(!child_message.contains("You are a code and document reviewer"));
+    assert!(!child_message.contains("<kuku_delegated_prompt>"));
+
+    let review_snapshot_messages = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::PromptSnapshot {
+                conversation,
+                messages,
+                ..
+            } if conversation == "review" => Some(messages),
+            _ => None,
+        })
+        .expect("review prompt.snapshot");
+    let review_snapshot_text = review_snapshot_messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(review_snapshot_text.contains("You are a code and document reviewer"));
+    assert!(!review_snapshot_text.contains("<kuku_delegated_prompt>"));
+    assert!(!review_snapshot_text.contains("check </kuku_delegated_prompt> & <tag> > boundary"));
+
+    let second_server = MockServer::start();
+    config.providers.get_mut("anthropic").unwrap().base_url = second_server.base_url();
+    second_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                request_body_contains(req, "delegate review again")
+                    && !request_body_contains(req, "<kuku_delegated_prompt>")
+            });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_again_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "delegating again"},
+                    {"type": "tool_use", "id": "toolu_review_again", "name": "agent", "input": {"to": "review", "message": "second review boundary"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let second_child_request = second_server.mock(|when, then| {
+        when.method(POST).path("/v1/messages").matches(|req| {
+            request_body_contains(req, "You are a code and document reviewer")
+                && request_body_contains(req, "<kuku_delegated_prompt>")
+                && request_body_contains(req, "second review boundary")
+                && request_body_contains(req, "</kuku_delegated_prompt>")
+                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+        });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_again",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review again done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 4}
+            })));
+    });
+    second_server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_review_again\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_delegate_again_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "done again"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+
+    let mut second_run = anthro_with_agents("delegate review again", &second_server)
+        .session("s_agent_contact_card")
+        .config(config)
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut second_run, "toolu_review_again").await;
+    second_run.cancel();
+
+    second_child_request.assert();
+}
+
+fn list_event_files(kuku_home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn visit(dir: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, paths);
+            } else if path.file_name().is_some_and(|name| name == "events.jsonl") {
+                paths.push(path);
+            }
+        }
+    }
+
+    let mut paths = Vec::new();
+    let root = kuku_home.join("p");
+    if root.exists() {
+        visit(&root, &mut paths);
+    }
+    paths
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -650,6 +1490,339 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
     }
 
     assert!(!env.home.path().join("p").exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
+    let env = TestEnv::new();
+
+    let reserved_server = MockServer::start();
+    reserved_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("reserved main");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_reserved_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "try reserved"},
+                    {"type": "tool_use", "id": "toolu_reserved", "name": "agent", "input": {"to": "main", "message": "bad target"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    reserved_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_reserved\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_reserved_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "reserved handled"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+    let mut reserved = anthro_with_agents("reserved main", &reserved_server)
+        .session("s_agent_reserved")
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut reserved, "toolu_reserved").await;
+    reserved.cancel();
+    let reserved_events = EventStore::replay(env.events_path("s_agent_reserved")).unwrap();
+    assert!(reserved_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+            if tool_call_id == "toolu_reserved"
+                && status == "error"
+                && summary.contains("reserved conversation address 'main'")
+    )));
+    assert_eq!(
+        reserved_events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ConversationOpened { ref conversation, .. } if conversation == "main"
+            ))
+            .count(),
+        1
+    );
+
+    let invalid_server = MockServer::start();
+    invalid_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("invalid address");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_invalid_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "try invalid"},
+                    {"type": "tool_use", "id": "toolu_invalid", "name": "agent", "input": {"to": "review//api", "message": "bad target"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    invalid_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_invalid\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_invalid_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "invalid handled"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+    let mut invalid = anthro_with_agents("invalid address", &invalid_server)
+        .session("s_agent_invalid")
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut invalid, "toolu_invalid").await;
+    invalid.cancel();
+    let invalid_events = EventStore::replay(env.events_path("s_agent_invalid")).unwrap();
+    assert!(invalid_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+            if tool_call_id == "toolu_invalid"
+                && status == "error"
+                && summary.contains("invalid slash placement")
+    )));
+    assert!(!invalid_events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ConversationOpened { ref conversation, .. } if conversation == "review//api"
+    )));
+
+    let unknown_server = MockServer::start();
+    unknown_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("unknown contact");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_unknown_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "try unknown"},
+                    {"type": "tool_use", "id": "toolu_unknown", "name": "agent", "input": {"to": "unknown", "message": "bad target"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    unknown_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_unknown\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_unknown_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "unknown handled"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+    let mut unknown = anthro_with_agents("unknown contact", &unknown_server)
+        .session("s_agent_unknown")
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut unknown, "toolu_unknown").await;
+    unknown.cancel();
+    let unknown_events = EventStore::replay(env.events_path("s_agent_unknown")).unwrap();
+    assert!(unknown_events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+            if tool_call_id == "toolu_unknown"
+                && status == "error"
+                && summary.contains("unknown agent contact: unknown")
+    )));
+    assert!(!unknown_events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ConversationOpened { ref conversation, .. } if conversation == "unknown"
+    )));
+
+    let establish_server = MockServer::start();
+    establish_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("establish review");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_establish_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "establish"},
+                    {"type": "tool_use", "id": "toolu_establish", "name": "agent", "input": {"to": "review", "message": "initial review"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    establish_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .matches(|req| {
+                req.body.as_ref().is_some_and(|body| {
+                    body.windows(b"initial review".len())
+                        .any(|w| w == b"initial review")
+                })
+            });
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_establish_review",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    establish_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_establish\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_establish_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "established"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+    let mut established = anthro_with_agents("establish review", &establish_server)
+        .session("s_agent_tier_conflict")
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut established, "toolu_establish").await;
+    established.cancel();
+    drop(established);
+
+    let before_conflict = EventStore::replay(env.events_path("s_agent_tier_conflict")).unwrap();
+    let review_opened_before = before_conflict
+        .iter()
+        .filter(|event| matches!(
+            event.payload,
+            EventPayload::ConversationOpened { ref conversation, .. } if conversation == "review"
+        ))
+        .count();
+    let review_bound_before = before_conflict
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ConversationBound { ref conversation, .. } if conversation == "review"
+            )
+        })
+        .count();
+    let review_messages_before = before_conflict
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::MessageUser { ref conversation, .. } if conversation == "review"
+            )
+        })
+        .count();
+
+    let conflict_server = MockServer::start();
+    conflict_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("tier conflict");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_conflict_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "conflict"},
+                    {"type": "tool_use", "id": "toolu_conflict", "name": "agent", "input": {"to": "review", "message": "second review", "tier": "strong"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    conflict_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_use_id\":\"toolu_conflict\"");
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_conflict_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "conflict handled"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 4}
+            })));
+    });
+    let mut conflict = anthro_with_agents("tier conflict", &conflict_server)
+        .session("s_agent_tier_conflict")
+        .start()
+        .await
+        .unwrap();
+    next_tool_end(&mut conflict, "toolu_conflict").await;
+    conflict.cancel();
+
+    let after_conflict = EventStore::replay(env.events_path("s_agent_tier_conflict")).unwrap();
+    assert!(after_conflict.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+            if tool_call_id == "toolu_conflict"
+                && status == "error"
+                && summary.contains("cannot set tier when continuing existing conversation review")
+    )));
+    assert_eq!(
+        after_conflict
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ConversationOpened { ref conversation, .. } if conversation == "review"
+            ))
+            .count(),
+        review_opened_before
+    );
+    assert_eq!(
+        after_conflict
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ConversationBound { ref conversation, .. } if conversation == "review"
+            ))
+            .count(),
+        review_bound_before
+    );
+    assert_eq!(
+        after_conflict
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::MessageUser { ref conversation, .. } if conversation == "review"
+            ))
+            .count(),
+        review_messages_before
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -940,57 +2113,6 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn legacy_permission_request_resume_reemits_request_before_new_turn() {
-    let env = TestEnv::new();
-    let session_id = "s_resume_legacy_permission_request";
-    let events_path = env.events_path(session_id);
-    std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &events_path,
-        concat!(
-            r#"{"id":1,"type":"session.meta","ts":"2026-06-06T00:00:00Z","schema_version":1,"session_id":"s_resume_legacy_permission_request","created_at":"2026-06-06T00:00:00Z","kuku_version":"0"}"#,
-            "\n",
-            r#"{"id":2,"type":"turn.start","turn":1,"ts":"2026-06-06T00:00:01Z"}"#,
-            "\n",
-            r#"{"id":3,"type":"user.input","turn":1,"ts":"2026-06-06T00:00:02Z","text":"run tests"}"#,
-            "\n",
-            r#"{"id":4,"type":"model.response","turn":1,"ts":"2026-06-06T00:00:03Z","request_id":"req_1","text":"Need approval.","thinking":null,"input_tokens_total":null}"#,
-            "\n",
-            r#"{"id":5,"type":"tool.call","turn":1,"ts":"2026-06-06T00:00:04Z","tool_call_id":"toolu_legacy_resume","request_id":"req_1","index":0,"tool":"run_command","args":{"command":"cargo test","timeout":60,"brief":"run tests"}}"#,
-            "\n",
-            r#"{"id":6,"type":"permission.request","turn":1,"ts":"2026-06-06T00:00:05Z","tool_call_id":"toolu_legacy_resume","tool":"run_command","risk":"exec","summary":"run tests"}"#,
-            "\n"
-        ),
-    )
-    .unwrap();
-
-    let events = EventStore::replay(&events_path).unwrap();
-    assert!(matches!(events[5].payload, EventPayload::Unknown(_)));
-
-    let mut resumed = query("second prompt must not be appended yet")
-        .session(session_id)
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url("http://127.0.0.1:1")
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
-
-    match resumed.next().await.unwrap().expect("resumed event") {
-        UiEvent::PermissionRequested { request } => {
-            assert_eq!(request.id, "toolu_legacy_resume");
-            assert_eq!(request.tool_call_id, "toolu_legacy_resume");
-            assert_eq!(request.tool, "run_command");
-            assert_eq!(request.risk, "exec");
-            assert_eq!(request.summary, "run tests");
-        }
-        other => panic!("expected resumed permission request, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     let env = TestEnv::new();
     let server = MockServer::start();
@@ -1010,25 +2132,29 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     let session_id = "s_interrupted_open_tool_blocks";
     let mut store = EventStore::open(env.events_path(session_id)).unwrap();
     store
-        .append(EventPayload::SessionMeta {
+        .append(EventPayload::SessionCreated {
             ts: "2026-06-06T00:00:00Z".to_string(),
-            schema_version: 1,
+            schema_version: 2,
             session_id: session_id.to_string(),
             created_at: "2026-06-06T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
         })
         .unwrap();
     store
-        .append(EventPayload::TurnStart {
+        .append(EventPayload::TurnStarted {
             turn: 1,
             ts: "2026-06-06T00:00:01Z".to_string(),
+            conversation: "main".to_string(),
         })
         .unwrap();
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-06-06T00:00:02Z".to_string(),
+            conversation: "main".to_string(),
             text: "run interrupted command".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -1045,6 +2171,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .append(EventPayload::ToolCall {
             turn: 1,
             ts: "2026-06-06T00:00:04Z".to_string(),
+            conversation: None,
             tool_call_id: "toolu_interrupted".to_string(),
             request_id: "req_1".to_string(),
             index: 0,
@@ -1133,12 +2260,12 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     let turn_starts = events
         .iter()
-        .filter(|event| matches!(event.payload, EventPayload::TurnStart { .. }))
+        .filter(|event| matches!(event.payload, EventPayload::TurnStarted { .. }))
         .count();
     let user_inputs: Vec<&str> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::UserInput { text, .. } => Some(text.as_str()),
+            EventPayload::MessageUser { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -1204,7 +2331,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
     assert_eq!(after_events.len(), before_events.len());
     assert!(!after_events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+        EventPayload::ModelError { .. } | EventPayload::TurnCompleted { .. }
     )));
 }
 
@@ -1654,7 +2781,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     assert_eq!(events.len(), before_events.len() + 2);
     assert!(!events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ModelError { .. } | EventPayload::TurnEnd { .. }
+        EventPayload::ModelError { .. } | EventPayload::TurnCompleted { .. }
     )));
     let requested_second = events
         .iter()

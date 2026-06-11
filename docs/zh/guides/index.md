@@ -5,6 +5,7 @@
 ## 页面
 
 - [Run a Task](run-a-task.md)
+- [Debug CLI Runs](debug-cli.md)
 - [Use Agents](use-agents.md)
 - [Use Skills](use-skills.md)
 - [Manage Memory](manage-memory.md)

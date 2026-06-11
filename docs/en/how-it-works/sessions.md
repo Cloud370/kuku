@@ -1,6 +1,13 @@
 # Sessions
 
-A `Session` is a directory. kuku does not keep a separate session object or database record as the source of truth.
+A `Session` is one directory and one ledger. kuku does not keep a separate database record as the source of truth.
+
+## Canonical Mental Model
+
+- A session is one ledger.
+- A conversation is one chat thread inside that ledger.
+- An agent is a contact card discovered from agent files.
+- A conversation address is the continuity key. Reuse the same address to continue the same thread.
 
 ## Layout
 
@@ -10,37 +17,51 @@ Sessions live under the workspace-specific area inside `$KUKU_HOME`:
 $KUKU_HOME/p/<workspace-path>/sessions/<id>/
 |- lock
 |- events.jsonl
-|- pre-revert-<id>/
-`- subs/
+`- pre-revert-<id>/
 ```
 
-`events.jsonl` is the durable session fact log. Child subagent sessions live under `subs/`.
+`events.jsonl` is the durable ledger. Conversations are encoded in events inside that ledger.
 
-## Event log
+## Event Log
 
-Each line in `events.jsonl` is one session fact. Common event types include:
+Each line in `events.jsonl` is one persisted fact. Canonical conversation events include:
 
-- `session.meta`
-- `context.prelude`
-- `context.sources`
-- `turn.start`
-- `user.input`
-- `model.response`
+- `session.created`
+- `conversation.opened`
+- `conversation.bound`
+- `prompt.snapshot`
+- `message.user`
+- `message.assistant`
+- `turn.started`
+- `turn.completed`
+- `turn.cancelled`
+- `turn.interrupted`
+- `context.skills`
 - `tool.call`
 - `permission.requested`
 - `permission.allow`
 - `permission.deny`
 - `tool.result`
 - `handoff`
-- `turn.end`
+- `conversation.rollback`
+- `conversation.rollback.undone`
 
 The full event set is documented in [Events](../reference/events.md).
 
 Readers trust file order. Trailing partial lines are ignored during recovery.
 
-Observability records are written separately under `$KUKU_HOME/logs/`; pruning those logs never changes `events.jsonl`.
+## Conversations Inside One Session
 
-## Observability logs
+The `main` conversation is the host thread. Agent conversations such as `review` or `review/api` live beside it in the same ledger.
+
+- `main` is reserved for the host conversation.
+- `review` and `review/api` are valid conversation addresses.
+- Reusing `review` continues that thread.
+- Opening `review/api` creates a distinct nested thread whose root contact is `review`.
+
+Conversation-scoped replay, notices, interruption recovery, and rollbacks all work by filtering the same ledger to one address.
+
+## Observability Logs
 
 `$KUKU_HOME/logs/` is the observability tree:
 
@@ -48,40 +69,47 @@ Observability records are written separately under `$KUKU_HOME/logs/`; pruning t
 $KUKU_HOME/logs/
 |- session/<session-id>.jsonl
 |- runtime/<yyyy-mm-dd>.jsonl
+|- provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
 `- host/cli|server|webui/<yyyy-mm-dd>.jsonl
 ```
 
-Logs are for host and runtime visibility. Retention and defaults are configured under [`[logs]`](../reference/config.md#logs).
+Logs are for host and runtime visibility. Retention and defaults are configured under [`[logs]`](../reference/config.md#logs). Provider trace logs are opt-in with `KUKU_PROVIDER_TRACE=1`; they are diagnostics only and are not session facts.
 
 ## Lifecycle
 
 ### New session
 
-Starting a run without a session id creates a new session directory and writes `session.meta` before the first turn.
+Starting a run without a session id creates a new session directory and writes `session.created` before the first conversation turn.
 
 ### Continuing a session
 
-Starting a run with an existing session id appends a new turn to that session. kuku rebuilds prior context from the event log.
+Starting a run with an existing session id appends a new turn to that same ledger. kuku rebuilds prior context by replaying the ledger and filtering to the active conversation.
 
-If a previous run stopped after `permission.requested` and before `permission.allow` or `permission.deny`, restart can re-present that unresolved permission request from `events.jsonl`. This recovery uses the session fact log, not observability logs.
+If a previous run stopped after `permission.requested` and before `permission.allow`, `permission.deny`, or `tool.result`, restart can recover that unresolved permission state from `events.jsonl`.
 
 ### Status
 
-Each session is one of:
+Session status is ledger-wide:
 
 | Status | Meaning |
-|--------|---------|
+|---|---|
 | `Active` | A live writer lock exists. |
-| `Done` | No lock exists and the last event is `turn.end`. |
-| `Interrupted` | No lock exists and the last event is not `turn.end`. |
+| `Done` | No lock exists and the most recent main-turn terminal event is complete. |
+| `Interrupted` | No lock exists and the ledger ended mid-turn or after interruption. |
 
-## Writer lock
+Conversation status is separate and can be listed per address. See [Manage Sessions](../guides/manage-sessions.md).
+
+## Writer Lock
 
 Only one writer may append to a session at a time. Read operations can happen concurrently.
 
-## Handoff
+## Replay and Handoff
 
-When context usage exceeds the configured threshold, kuku injects a handoff instruction before the model call. If the model returns a `<kuku_handoff>` document, the runtime stores it in the event log and uses it as the summary boundary for future context rebuilds.
+Replay is conversation-scoped:
+
+- `main` replay reads historical host-turn facts plus main-thread tool activity.
+- agent conversation replay reads only that address plus its tool activity.
+- handoff compresses older history and leaves a summary boundary for future replay.
 
 The next request keeps a small number of recent turns and replaces older history with the handoff summary.
 
@@ -89,18 +117,26 @@ The next request keeps a small number of recent turns and replaces older history
 
 Rollback is append-only. kuku records rollback marker events instead of deleting history.
 
-Three scopes exist:
+Conversation rollbacks are scoped by address:
 
 | Scope | Effect |
-|-------|--------|
-| `conversation_only` | Removes prior turns from future context rebuilds. |
-| `files_only` | Reverts workspace files to an earlier turn. |
+|---|---|
+| `messages` | Hides later events from future replay for that conversation. |
+| `file_changes` | Reverts workspace files to an earlier state without hiding later messages. |
 | `both` | Applies both behaviors. |
+
+Main-conversation rollback can hide historical host-turn facts. Agent-conversation rollback hides later events only for that address.
 
 File rollback uses snapshots already captured in `tool.result` data and stores pre-revert backups in `pre-revert-<id>/`.
 
-## Session operations
+## Cancellation and Interruption
 
-Hosts can list sessions, inspect their events, continue them, or delete them. These are convenience operations around the same on-disk layout.
+- Cancellation ends a conversation turn with `turn.cancelled`.
+- Crash, resume-before-new-turn, or mid-run stop ends a conversation turn with `turn.interrupted`.
+- Runtime notices can surface interrupted turns, pending permissions, open conversations, inbox messages, and loaded skills.
 
-See [Agent Loop](agent-loop.md) for turn execution and [Host Apps](../architecture/host-apps.md) for how different hosts expose session operations.
+## Session Operations
+
+Hosts can list sessions, list conversations within a session, inspect the full ledger, filter events by conversation, continue a specific thread, or delete the session directory.
+
+See [Agent Loop](agent-loop.md) for turn execution and [Host Apps](../architecture/host-apps.md) for host surfaces.

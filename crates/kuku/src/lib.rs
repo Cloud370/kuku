@@ -1,7 +1,9 @@
 #[doc(hidden)]
 pub mod context;
 
+pub mod agent;
 pub mod config;
+pub mod conversation;
 pub(crate) mod discovery;
 pub mod error;
 pub mod event;
@@ -17,7 +19,6 @@ pub(crate) mod provider;
 pub mod query;
 pub mod session;
 pub mod skill;
-pub mod subagent;
 pub(crate) mod tool;
 pub mod util;
 pub mod wire;

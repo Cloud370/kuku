@@ -100,11 +100,17 @@ impl ContextAssembly {
     }
 }
 
-/// Restore frozen prelude messages from the first context.prelude fact event.
-/// Returns None if no frozen prelude has been recorded yet.
-pub fn restore_frozen_prelude(events: &[StoredEvent]) -> Option<Vec<CanonicalMessage>> {
-    let prelude = events.iter().find_map(|ev| match &ev.payload {
-        EventPayload::ContextPrelude { messages, .. } => Some(messages),
+/// Restore frozen prompt snapshot messages for a conversation.
+pub fn restore_prompt_snapshot(
+    events: &[StoredEvent],
+    conversation: &str,
+) -> Option<Vec<CanonicalMessage>> {
+    let prelude = events.iter().rev().find_map(|ev| match &ev.payload {
+        EventPayload::PromptSnapshot {
+            conversation: event_conversation,
+            messages,
+            ..
+        } if event_conversation == conversation => Some(messages),
         _ => None,
     })?;
 

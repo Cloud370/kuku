@@ -6,6 +6,8 @@ use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use httpmock::When;
+use kuku::agent::registry::AgentRegistry;
+use kuku::config::ApiKey;
 use kuku::event::{EventPayload, EventStore};
 use kuku::query::Run;
 use kuku::{query, Error, Provider, UiEvent};
@@ -50,6 +52,54 @@ fn body_contains(req: &HttpMockRequest, needle: &[u8]) -> bool {
         .is_some_and(|body| body.windows(needle.len()).any(|window| window == needle))
 }
 
+fn body_contains_first_input_not_live_input(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"first input") && !body_contains(req, b"live input")
+}
+
+fn snapshot_history_and_input_are_in_order(req: &HttpMockRequest) -> bool {
+    let Some(body) = req.body.as_ref() else {
+        return false;
+    };
+
+    if !body_contains(req, b"live input") {
+        return false;
+    }
+
+    let history = br#"assistant history reply"#;
+    let frame = br#"<input.message>live input</input.message>"#;
+
+    let locate = |needle: &[u8]| {
+        body.windows(needle.len())
+            .position(|window| window == needle)
+    };
+
+    match (locate(history), locate(frame)) {
+        (Some(history_pos), Some(frame_pos)) => history_pos < frame_pos,
+        _ => true,
+    }
+}
+
+fn body_contains_main_not_review(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"main snapshot") && !body_contains(req, b"review snapshot")
+}
+
+fn body_contains_review_not_main(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"review snapshot") && !body_contains(req, b"main snapshot")
+}
+
+fn body_contains_review_assistant_history(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"review followup") && body_contains(req, b"previous review answer")
+}
+
+fn body_contains_child_agent_result(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"\"tool_use_id\":\"toolu_agent_child\"")
+        && body_contains(req, b"KUKU_CHILD_AGENT_RESULT")
+}
+
+fn body_contains_initial_child_task(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"child task") && is_initial_request(req)
+}
+
 fn has_read_tool_result_only(req: &HttpMockRequest) -> bool {
     body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
         && !body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
@@ -62,6 +112,18 @@ fn has_edit_tool_result(req: &HttpMockRequest) -> bool {
 fn has_read_and_edit_tool_results(req: &HttpMockRequest) -> bool {
     body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
         && body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
+}
+
+fn body_contains_open_conversation_summary_without_peer_transcript(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"Open conversations:")
+        && body_contains(req, b"review: turn 1 completed")
+        && !body_contains(req, b"review secret transcript")
+}
+
+fn body_contains_review_conversation_notices_only(req: &HttpMockRequest) -> bool {
+    body_contains(req, b"review followup")
+        && body_contains(req, b"please review this")
+        && !body_contains(req, b"explore secret transcript")
 }
 
 /// Register the common body conditions that always accompany a tool-use
@@ -78,12 +140,60 @@ fn context_conditions(when: When, query_text: &str) -> When {
 
 /// Shorthand for the common Anthropic query builder.
 fn anthro(query_text: &str, server: &MockServer) -> query::Query {
+    let mut config = test_config();
+    let light_tier = config
+        .tiers
+        .get("balanced")
+        .expect("test config has balanced tier")
+        .clone();
+    config.tiers.insert("light".to_string(), light_tier);
+    let provider = config
+        .providers
+        .get_mut("anthropic")
+        .expect("test config has anthropic provider");
+    provider.base_url = server.base_url();
+    provider.api_key = ApiKey::Plaintext("test-key".to_string());
+
     query(query_text)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
-        .config(test_config())
+        .config(config)
+}
+
+fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
+    anthro(query_text, server).agents(AgentRegistry::builder().builtins().build())
+}
+
+fn event_conversation(payload: &EventPayload) -> Option<&str> {
+    match payload {
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::MessageAssistant { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. } => Some(conversation.as_str()),
+        _ => None,
+    }
+}
+
+fn tree_contains_name(root: &std::path::Path, needle: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|name| name == needle) {
+            return true;
+        }
+        if path.is_dir() && tree_contains_name(&path, needle) {
+            return true;
+        }
+    }
+    false
 }
 
 async fn next_matching(
@@ -101,6 +211,23 @@ async fn next_matching(
             Err(_) => panic!("timed out waiting for matching UiEvent"),
         }
     }
+}
+
+async fn wait_for_tool_end(run: &mut Run, tool_call_id: &str) -> UiEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    next_matching(run, deadline, |event| {
+        matches!(
+            event,
+            UiEvent::ToolEnd {
+                id,
+                status: _,
+                summary: _,
+                model_content: _,
+                result: _,
+            } if id == tool_call_id
+        )
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -135,10 +262,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 8);
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ContextPrelude { .. })));
+    assert_eq!(events.len(), 9);
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSources { .. })));
@@ -151,7 +275,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
     ));
     assert!(matches!(
         events[events.len() - 1].payload,
-        EventPayload::TurnEnd { .. }
+        EventPayload::TurnCompleted { .. }
     ));
 }
 
@@ -320,6 +444,749 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
     assert_eq!(second.text, "drift ok");
 
     second_request.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_directory_notice_lists_open_conversations() {
+    let env = TestEnv::new();
+    let session_id = "s_notice_open_conversations";
+
+    let path = env.events_path(session_id);
+    let mut store = EventStore::open(&path).unwrap();
+    store
+        .append(EventPayload::SessionCreated {
+            ts: "2026-06-09T00:00:00Z".into(),
+            schema_version: 2,
+            session_id: session_id.into(),
+            created_at: "2026-06-09T00:00:00Z".into(),
+            kuku_version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "t0".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStarted {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+            text: "bootstrap main".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnCompleted {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "t1".into(),
+            conversation: "review".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStarted {
+            ts: "t1".into(),
+            conversation: "review".into(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "t1".into(),
+            conversation: "review".into(),
+            turn: 1,
+            text: "review secret transcript".into(),
+            from: Some("main".into()),
+            via_tool_call_id: Some("toolu_agent".into()),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnCompleted {
+            ts: "t1".into(),
+            conversation: "review".into(),
+            turn: 1,
+        })
+        .unwrap();
+
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_open_conversation_summary_without_peer_transcript)
+            .body_contains("Available contacts:")
+            .body_contains("routing hint:")
+            .body_contains("open conversations: 1")
+            .body_contains("main followup");
+        then.status(200)
+            .header("request-id", "req_notice_main")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_notice_main",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "main notice ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 6, "output_tokens": 4}
+            })));
+    });
+
+    let output = anthro_with_agents("main followup", &server)
+        .session(session_id)
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(output.text, "main notice ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
+    let env = TestEnv::new();
+    let session_id = "s_notice_review_only";
+
+    let path = env.events_path(session_id);
+    let mut store = EventStore::open(&path).unwrap();
+    store
+        .append(EventPayload::SessionCreated {
+            ts: "2026-06-09T00:00:00Z".into(),
+            schema_version: 2,
+            session_id: session_id.into(),
+            created_at: "2026-06-09T00:00:00Z".into(),
+            kuku_version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "t0".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStarted {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+            text: "bootstrap main".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnCompleted {
+            ts: "t0".into(),
+            conversation: "main".into(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "t1".into(),
+            conversation: "review".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "t1".into(),
+            conversation: "review".into(),
+            turn: 1,
+            text: "please review this".into(),
+            from: Some("main".into()),
+            via_tool_call_id: Some("toolu_agent_review".into()),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ContextSkills {
+            conversation: "review".into(),
+            turn: 1,
+            ts: "t1".into(),
+            registry: serde_json::json!({}),
+            bootstrap_loaded: vec!["review-skill".into()],
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnStarted {
+            ts: "t2".into(),
+            conversation: "review".into(),
+            turn: 2,
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ToolCall {
+            turn: 2,
+            ts: "t2".into(),
+            conversation: Some("review".into()),
+            tool_call_id: "toolu_cmd_review".into(),
+            request_id: "req_review_2".into(),
+            index: 0,
+            tool: "run_command".into(),
+            args: serde_json::json!({"command": "cargo test"}),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::PermissionRequested {
+            turn: 2,
+            ts: "t2".into(),
+            tool_call_id: "toolu_cmd_review".into(),
+            tool: "run_command".into(),
+            risk: "command".into(),
+            summary: "run gated command".into(),
+            candidate: "cargo test".into(),
+            source: "default_ask".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::TurnInterrupted {
+            ts: "t2".into(),
+            conversation: "review".into(),
+            turn: 2,
+            reason: "host_cancelled".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "t3".into(),
+            conversation: "explore".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "t3".into(),
+            conversation: "explore".into(),
+            turn: 1,
+            text: "explore secret transcript".into(),
+            from: Some("main".into()),
+            via_tool_call_id: Some("toolu_agent_explore".into()),
+        })
+        .unwrap();
+
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_review_conversation_notices_only)
+            .body_contains("review followup");
+        then.status(200)
+            .header("request-id", "req_notice_review")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_notice_review",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review notice ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 6, "output_tokens": 4}
+            })));
+    });
+
+    let output = anthro_with_agents("review followup", &server)
+        .session(session_id)
+        .conversation("review")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(output.text, "review notice ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_snapshot_is_conversation_scoped() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_main_not_review);
+        then.status(200)
+            .header("request-id", "req_main")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "main ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let first = query("main snapshot")
+        .session("s_snapshot_scope")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "main ok");
+
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_review_not_main);
+        then.status(200)
+            .header("request-id", "req_review")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let second = query("review snapshot")
+        .session("s_snapshot_scope")
+        .conversation("review")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(second.text, "review ok");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_main_provider_request_replays_previous_assistant_reply() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    let first_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("first review request")
+            .matches(|req| !body_contains(req, b"review followup"));
+        then.status(200)
+            .header("request-id", "req_review_first")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_first",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "previous review answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let first = anthro("first review request", &server)
+        .session("s_review_assistant_history")
+        .conversation("review")
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "previous review answer");
+    first_mock.assert();
+
+    let second_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_review_assistant_history);
+        then.status(200)
+            .header("request-id", "req_review_second")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_review_second",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review followup ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let second = anthro("review followup", &server)
+        .session("s_review_assistant_history")
+        .conversation("review")
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(second.text, "review followup ok");
+    second_mock.assert();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_request_uses_snapshot_then_history_then_current_input_frame() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    let bootstrap = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_first_input_not_live_input);
+        then.status(200)
+            .header("request-id", "req_bootstrap")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_bootstrap",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "assistant history reply"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let first = query("first input")
+        .session("s_snapshot_order")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(first.text, "assistant history reply");
+
+    let ordered = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(snapshot_history_and_input_are_in_order);
+        then.status(200)
+            .header("request-id", "req_ordered")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_ordered",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ordered ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let second = query("live input")
+        .session("s_snapshot_order")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.base_url())
+        .api_key("test-key")
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(second.text, "ordered ok");
+
+    bootstrap.assert_hits(1);
+    ordered.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_to_reuses_conversation_address() {
+    let env = TestEnv::new();
+    let session_id = "s_agent_reuse";
+
+    let server1 = MockServer::start();
+    let main_tool_1 = server1.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_initial_request)
+            .body_contains("delegate first");
+        then.status(200)
+            .header("request-id", "req_main_tool_1")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_tool_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Delegating first review."},
+                    {"type": "tool_use", "id": "toolu_agent_1", "name": "agent", "input": {"to": "review", "message": "review work one"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let followup_1 = server1.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_followup_1")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_followup_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review one done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    let mut first = anthro_with_agents("delegate first", &server1)
+        .session(session_id)
+        .start()
+        .await
+        .unwrap();
+    wait_for_tool_end(&mut first, "toolu_agent_1").await;
+    first.cancel();
+    main_tool_1.assert_hits(1);
+    let _ = followup_1.hits();
+    drop(first);
+
+    let server2 = MockServer::start();
+    let main_tool_2 = server2.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("delegate second");
+        then.status(200)
+            .header("request-id", "req_main_tool_2")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_tool_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Delegating second review."},
+                    {"type": "tool_use", "id": "toolu_agent_2", "name": "agent", "input": {"to": "review", "message": "review work two"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let followup_2 = server2.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_followup_2")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_followup_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "review two done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    let mut second = anthro_with_agents("delegate second", &server2)
+        .session(session_id)
+        .start()
+        .await
+        .unwrap();
+    wait_for_tool_end(&mut second, "toolu_agent_2").await;
+    second.cancel();
+    main_tool_2.assert_hits(1);
+    let _ = followup_2.hits();
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ConversationOpened { ref conversation, .. } if conversation == "review"
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ConversationBound { ref conversation, .. } if conversation == "review"
+            ))
+            .count(),
+        1
+    );
+    let review_messages: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::MessageUser {
+                conversation,
+                from,
+                via_tool_call_id,
+                ..
+            } if conversation == "review" => Some((
+                from.as_deref().unwrap_or(""),
+                via_tool_call_id.as_deref().unwrap_or(""),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        review_messages,
+        vec![("main", "toolu_agent_1"), ("main", "toolu_agent_2")]
+    );
+    assert!(!tree_contains_name(env.home.path(), "subs"));
+    assert!(!tree_contains_name(
+        env.home.path(),
+        "child_s_agent_reuse_0"
+    ));
+    assert!(!tree_contains_name(
+        env.home.path(),
+        "child_s_agent_reuse_1"
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_tool_result_includes_child_output_for_parent_followup() {
+    let _env = TestEnv::new();
+    let server = MockServer::start();
+
+    let main_tool = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_initial_request)
+            .body_contains("delegate child output");
+        then.status(200)
+            .header("request-id", "req_main_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Delegating to explore."},
+                    {"type": "tool_use", "id": "toolu_agent_child", "name": "agent", "input": {"to": "explore", "message": "child task"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let child_done = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_initial_child_task);
+        then.status(200)
+            .header("request-id", "req_child_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_child_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "KUKU_CHILD_AGENT_RESULT"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    let parent_followup = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(body_contains_child_agent_result);
+        then.status(200)
+            .header("request-id", "req_parent_after_agent_result")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_parent_after_agent_result",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "parent saw KUKU_CHILD_AGENT_RESULT"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 8}
+            })));
+    });
+
+    let output = anthro_with_agents("delegate child output", &server)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(output.text, "parent saw KUKU_CHILD_AGENT_RESULT");
+    main_tool.assert_hits(1);
+    child_done.assert_hits(1);
+    parent_followup.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_to_opens_nested_address_from_root_contact() {
+    let env = TestEnv::new();
+    let session_id = "s_agent_nested";
+    let server = MockServer::start();
+
+    let main_tool = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_initial_request)
+            .body_contains("delegate nested");
+        then.status(200)
+            .header("request-id", "req_main_tool_nested")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_main_tool_nested",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Delegating nested review."},
+                    {"type": "tool_use", "id": "toolu_agent_nested", "name": "agent", "input": {"to": "review/api", "message": "nested review"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
+    let nested_followup = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_nested_followup")
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_nested_followup",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "nested review done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 3}
+            })));
+    });
+    let mut output = anthro_with_agents("delegate nested", &server)
+        .session(session_id)
+        .start()
+        .await
+        .unwrap();
+    wait_for_tool_end(&mut output, "toolu_agent_nested").await;
+    output.cancel();
+    main_tool.assert_hits(1);
+    let _ = nested_followup.hits();
+
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    let nested_kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|event| {
+            (event_conversation(&event.payload) == Some("review/api"))
+                .then(|| event.payload.kind_name())
+        })
+        .collect();
+    let opened_index = nested_kinds
+        .iter()
+        .position(|kind| *kind == "conversation.opened")
+        .unwrap();
+    let bound_index = nested_kinds
+        .iter()
+        .position(|kind| *kind == "conversation.bound")
+        .unwrap();
+    let started_index = nested_kinds
+        .iter()
+        .position(|kind| *kind == "turn.started")
+        .unwrap();
+    let user_index = nested_kinds
+        .iter()
+        .position(|kind| *kind == "message.user")
+        .unwrap();
+    assert!(opened_index < bound_index);
+    assert!(bound_index < started_index);
+    assert!(started_index < user_index);
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::MessageUser { conversation, from, via_tool_call_id, .. }
+            if conversation == "review/api"
+                && from.as_deref() == Some("main")
+                && via_tool_call_id.as_deref() == Some("toolu_agent_nested")
+    )));
+    assert!(!tree_contains_name(env.home.path(), "subs"));
+    assert!(!tree_contains_name(
+        env.home.path(),
+        "child_s_agent_nested_0"
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1090,7 +1957,7 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 8);
+    assert_eq!(events.len(), 9);
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
@@ -1136,7 +2003,7 @@ async fn http_error_writes_model_error_and_turn_end() {
         .any(|event| matches!(event.payload, EventPayload::ModelError { .. })));
     assert!(events
         .iter()
-        .any(|event| matches!(event.payload, EventPayload::TurnEnd { .. })));
+        .any(|event| matches!(event.payload, EventPayload::TurnInterrupted { .. })));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1147,8 +2014,16 @@ async fn missing_config_fails_before_writing_session_events() {
     let err = query("test").session(sid).run().await.unwrap_err();
     assert!(matches!(err, Error::MissingProviderConfig(_)));
 
-    let events = EventStore::replay(env.events_path(sid)).unwrap();
-    assert!(events.is_empty());
+    let events_path = env.events_path(sid);
+    if events_path.exists() {
+        let events = EventStore::replay(&events_path).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ModelError { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::TurnInterrupted { .. })));
+    }
 }
 
 // ---------------------------------------------------------------------------

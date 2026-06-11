@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::config::DiscoveryConfig;
 use crate::context::revert::filter_rolled_back_events;
+use crate::conversation::binding::BindingSource;
 use crate::event::{EventPayload, StoredEvent};
 use crate::plugin::PluginRegistry;
 
@@ -29,6 +30,7 @@ pub fn build_registry_snapshot_for_host(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnSkillSnapshot {
+    pub conversation: String,
     pub registry: SkillRegistry,
     pub bootstrap_loaded: Vec<String>,
 }
@@ -49,14 +51,16 @@ pub(crate) fn build_registry_snapshot(
 
 pub(crate) fn restore_turn_snapshot(
     events: &[StoredEvent],
+    conversation: &str,
     turn: u64,
 ) -> Option<TurnSkillSnapshot> {
     let filtered = filter_rolled_back_events(events);
-    restore_turn_snapshot_from_filtered(&filtered, turn)
+    restore_turn_snapshot_from_filtered(&filtered, conversation, turn)
 }
 
 pub(crate) fn previous_snapshot_before_turn(
     events: &[StoredEvent],
+    conversation: &str,
     turn: u64,
 ) -> Option<TurnSkillSnapshot> {
     let filtered = filter_rolled_back_events(events);
@@ -65,13 +69,15 @@ pub(crate) fn previous_snapshot_before_turn(
         .rev()
         .find_map(|event| match &event.payload {
             EventPayload::ContextSkills {
+                conversation: event_conversation,
                 turn: event_turn,
                 registry,
                 bootstrap_loaded,
                 ..
-            } if *event_turn < turn => {
+            } if *event_turn < turn && event_conversation == conversation => {
                 let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
                 Some(TurnSkillSnapshot {
+                    conversation: event_conversation.clone(),
                     registry,
                     bootstrap_loaded: bootstrap_loaded.clone(),
                 })
@@ -80,7 +86,7 @@ pub(crate) fn previous_snapshot_before_turn(
         })
 }
 
-pub(crate) fn loaded_skill_names(events: &[StoredEvent]) -> Vec<String> {
+pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> Vec<String> {
     let filtered = filter_rolled_back_events(events);
     let mut loaded = BTreeSet::<String>::new();
     let mut pending_use_skill = HashMap::<String, String>::new();
@@ -88,26 +94,30 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent]) -> Vec<String> {
     for event in filtered {
         match &event.payload {
             EventPayload::ContextSkills {
-                bootstrap_loaded, ..
-            } => {
+                conversation: event_conversation,
+                bootstrap_loaded,
+                ..
+            } if event_conversation == conversation => {
                 loaded.extend(bootstrap_loaded.iter().cloned());
             }
             EventPayload::ToolCall {
+                conversation: Some(event_conversation),
                 tool_call_id,
                 tool,
                 args,
                 ..
-            } if tool == "use_skill" => {
+            } if tool == "use_skill" && event_conversation == conversation => {
                 if let Some(skill_name) = args.get("skill_name").and_then(|value| value.as_str()) {
                     pending_use_skill.insert(tool_call_id.clone(), skill_name.to_string());
                 }
             }
             EventPayload::ToolResult {
+                conversation: Some(event_conversation),
                 tool_call_id,
                 status,
                 truncated,
                 ..
-            } if status == "ok" => {
+            } if status == "ok" && event_conversation == conversation => {
                 if *truncated {
                     continue;
                 }
@@ -122,19 +132,42 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent]) -> Vec<String> {
     loaded.into_iter().collect()
 }
 
+pub(crate) fn binding_sources_for_skills(
+    registry: &SkillRegistry,
+    skill_names: &[String],
+) -> Vec<BindingSource> {
+    skill_names
+        .iter()
+        .filter_map(|skill_name| {
+            let definition = registry.get(skill_name)?;
+            Some(BindingSource {
+                kind: "skill_definition".to_string(),
+                source: definition
+                    .source_path
+                    .clone()
+                    .unwrap_or_else(|| definition.name.clone()),
+                hash: definition.hash.clone(),
+            })
+        })
+        .collect()
+}
+
 fn restore_turn_snapshot_from_filtered(
     events: &[&StoredEvent],
+    conversation: &str,
     turn: u64,
 ) -> Option<TurnSkillSnapshot> {
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ContextSkills {
+            conversation: event_conversation,
             turn: event_turn,
             registry,
             bootstrap_loaded,
             ..
-        } if *event_turn == turn => {
+        } if *event_turn == turn && event_conversation == conversation => {
             let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
             Some(TurnSkillSnapshot {
+                conversation: event_conversation.clone(),
                 registry,
                 bootstrap_loaded: bootstrap_loaded.clone(),
             })
@@ -194,6 +227,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha"]),
@@ -203,6 +237,7 @@ mod tests {
             event(
                 2,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t2".to_string(),
                     registry: registry(&["beta"]),
@@ -212,15 +247,17 @@ mod tests {
         ];
 
         assert_eq!(
-            restore_turn_snapshot(&events, 2),
+            restore_turn_snapshot(&events, "main", 2),
             Some(TurnSkillSnapshot {
+                conversation: "main".to_string(),
                 registry: skill_registry(&["beta"]),
                 bootstrap_loaded: vec!["bootstrap-beta".to_string()],
             })
         );
         assert_eq!(
-            previous_snapshot_before_turn(&events, 2),
+            previous_snapshot_before_turn(&events, "main", 2),
             Some(TurnSkillSnapshot {
+                conversation: "main".to_string(),
                 registry: skill_registry(&["alpha"]),
                 bootstrap_loaded: vec!["bootstrap-alpha".to_string()],
             })
@@ -233,6 +270,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t1".to_string(),
                     registry: registry(&["keep"]),
@@ -241,14 +279,16 @@ mod tests {
             ),
             event(
                 2,
-                EventPayload::TurnStart {
+                EventPayload::TurnStarted {
                     turn: 2,
                     ts: "t2".to_string(),
+                    conversation: "main".to_string(),
                 },
             ),
             event(
                 3,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t3".to_string(),
                     registry: registry(&["rollback"]),
@@ -257,19 +297,21 @@ mod tests {
             ),
             event(
                 4,
-                EventPayload::TurnRollback {
-                    turn: 3,
+                EventPayload::ConversationRollback {
                     ts: "t4".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 3,
                     scope: RollbackScope::ConversationOnly,
                 },
             ),
         ];
 
-        assert_eq!(restore_turn_snapshot(&events, 2), None);
+        assert_eq!(restore_turn_snapshot(&events, "main", 2), None);
         assert_eq!(
-            previous_snapshot_before_turn(&events, 3),
+            previous_snapshot_before_turn(&events, "main", 3),
             Some(TurnSkillSnapshot {
+                conversation: "main".to_string(),
                 registry: skill_registry(&["keep"]),
                 bootstrap_loaded: vec!["keep".to_string()],
             })
@@ -282,6 +324,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 3,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha", "beta"]),
@@ -293,6 +336,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 3,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_ok".to_string(),
                     request_id: "req_3".to_string(),
                     index: 0,
@@ -305,11 +349,16 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 3,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_ok".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "alpha".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
@@ -318,6 +367,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 3,
                     ts: "t4".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_blocked".to_string(),
                     request_id: "req_3".to_string(),
                     index: 1,
@@ -330,18 +380,23 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 3,
                     ts: "t5".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_blocked".to_string(),
                     status: "error".to_string(),
                     summary: "blocked".to_string(),
                     model_content: "blocked".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
         ];
 
         assert_eq!(
-            loaded_skill_names(&events),
+            loaded_skill_names(&events, "main"),
             vec!["alpha".to_string(), "bootstrap-beta".to_string(),]
         );
     }
@@ -352,6 +407,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 4,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha", "beta"]),
@@ -363,6 +419,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 4,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     request_id: "req_4".to_string(),
                     index: 0,
@@ -375,11 +432,16 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 4,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "alpha".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
@@ -388,6 +450,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 4,
                     ts: "t4".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     request_id: "req_4".to_string(),
                     index: 1,
@@ -400,17 +463,25 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 4,
                     ts: "t5".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     status: "blocked".to_string(),
                     summary: "blocked".to_string(),
                     model_content: "blocked".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
         ];
 
-        assert_eq!(loaded_skill_names(&events), vec!["alpha".to_string()]);
+        assert_eq!(
+            loaded_skill_names(&events, "main"),
+            vec!["alpha".to_string()]
+        );
     }
 
     #[test]
@@ -419,6 +490,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 4,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha"]),
@@ -430,6 +502,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 4,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     request_id: "req_4".to_string(),
                     index: 0,
@@ -442,17 +515,22 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 4,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "partial alpha".to_string(),
                     truncated: true,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
         ];
 
-        assert!(loaded_skill_names(&events).is_empty());
+        assert!(loaded_skill_names(&events, "main").is_empty());
     }
 
     #[test]
@@ -461,6 +539,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 5,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha", "beta", "gamma"]),
@@ -472,6 +551,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 5,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     request_id: "req_5".to_string(),
                     index: 0,
@@ -484,11 +564,16 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 5,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "alpha".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
@@ -497,6 +582,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 5,
                     ts: "t4".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     request_id: "req_5".to_string(),
                     index: 1,
@@ -509,11 +595,16 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 5,
                     ts: "t5".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
                     status: "error".to_string(),
                     summary: "failed".to_string(),
                     model_content: "failed".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
@@ -522,6 +613,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 5,
                     ts: "t6".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_gamma".to_string(),
                     request_id: "req_5".to_string(),
                     index: 2,
@@ -531,7 +623,10 @@ mod tests {
             ),
         ];
 
-        assert_eq!(loaded_skill_names(&events), vec!["alpha".to_string()]);
+        assert_eq!(
+            loaded_skill_names(&events, "main"),
+            vec!["alpha".to_string()]
+        );
     }
 
     #[test]
@@ -540,6 +635,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 4,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha"]),
@@ -551,6 +647,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 4,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     request_id: "req_4".to_string(),
                     index: 0,
@@ -563,34 +660,43 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 4,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "alpha".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
             event(
                 4,
-                EventPayload::TurnRollback {
-                    turn: 9,
+                EventPayload::ConversationRollback {
                     ts: "t4".to_string(),
-                    target_turn: 2,
+                    conversation: "main".to_string(),
+                    to_turn: 2,
+                    to_event_id: 3,
                     scope: RollbackScope::ConversationOnly,
                 },
             ),
             event(
                 5,
-                EventPayload::TurnRollbackUndo {
-                    turn: 10,
+                EventPayload::ConversationRollbackUndone {
                     ts: "t5".to_string(),
+                    conversation: "main".to_string(),
                     rollback_event_id: 4,
                 },
             ),
         ];
 
-        assert_eq!(loaded_skill_names(&events), vec!["alpha".to_string()]);
+        assert_eq!(
+            loaded_skill_names(&events, "main"),
+            vec!["alpha".to_string()]
+        );
     }
 
     #[test]
@@ -599,6 +705,7 @@ mod tests {
             event(
                 1,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 1,
                     ts: "t1".to_string(),
                     registry: registry(&["alpha"]),
@@ -610,6 +717,7 @@ mod tests {
                 EventPayload::ToolCall {
                     turn: 1,
                     ts: "t2".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     request_id: "req_1".to_string(),
                     index: 0,
@@ -622,17 +730,23 @@ mod tests {
                 EventPayload::ToolResult {
                     turn: 1,
                     ts: "t3".to_string(),
+                    conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
                     status: "ok".to_string(),
                     summary: "loaded skill: alpha".to_string(),
                     model_content: "alpha".to_string(),
                     truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
                     structured: None,
                 },
             ),
             event(
                 4,
                 EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
                     turn: 2,
                     ts: "t4".to_string(),
                     registry: registry(&["beta"]),
@@ -642,8 +756,71 @@ mod tests {
         ];
 
         assert_eq!(
-            loaded_skill_names(&events),
+            loaded_skill_names(&events, "main"),
             vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    #[test]
+    fn loaded_skill_names_are_conversation_scoped() {
+        let events = vec![
+            event(
+                1,
+                EventPayload::ContextSkills {
+                    conversation: "main".to_string(),
+                    turn: 1,
+                    ts: "t1".to_string(),
+                    registry: registry(&["review"]),
+                    bootstrap_loaded: vec![],
+                },
+            ),
+            event(
+                2,
+                EventPayload::ContextSkills {
+                    conversation: "review".to_string(),
+                    turn: 1,
+                    ts: "t2".to_string(),
+                    registry: registry(&["review"]),
+                    bootstrap_loaded: vec![],
+                },
+            ),
+            event(
+                3,
+                EventPayload::ToolCall {
+                    turn: 1,
+                    ts: "t3".to_string(),
+                    conversation: Some("review".to_string()),
+                    tool_call_id: "tool_review".to_string(),
+                    request_id: "req_1".to_string(),
+                    index: 0,
+                    tool: "use_skill".to_string(),
+                    args: json!({ "skill_name": "review" }),
+                },
+            ),
+            event(
+                4,
+                EventPayload::ToolResult {
+                    turn: 1,
+                    ts: "t4".to_string(),
+                    conversation: Some("review".to_string()),
+                    tool_call_id: "tool_review".to_string(),
+                    status: "ok".to_string(),
+                    summary: "loaded skill: review".to_string(),
+                    model_content: "review".to_string(),
+                    truncated: false,
+                    files_read: Vec::new(),
+                    files_changed: Vec::new(),
+                    commands_run: Vec::new(),
+                    memory_changed: None,
+                    structured: None,
+                },
+            ),
+        ];
+
+        assert!(loaded_skill_names(&events, "main").is_empty());
+        assert_eq!(
+            loaded_skill_names(&events, "review"),
+            vec!["review".to_string()]
         );
     }
 }

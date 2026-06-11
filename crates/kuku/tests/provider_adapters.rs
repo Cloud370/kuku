@@ -78,6 +78,14 @@ mod provider {
     }
 
     #[allow(dead_code)]
+    pub mod trace {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/trace.rs"
+        ));
+    }
+
+    #[allow(dead_code)]
     pub mod openai_responses {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -98,7 +106,7 @@ use provider::openai_compat::{chat_completions_url, render_body as render_openai
 use provider::openai_responses::{
     parse_responses_sse, render_body as render_responses_body, responses_url,
 };
-use provider::types::ProviderRequest;
+use provider::types::{CanonicalPromptInput, ProviderRequest};
 use serde_json::json;
 
 fn test_catalog() -> PromptCatalog {
@@ -159,6 +167,12 @@ fn sample_assembly() -> ContextAssembly {
     }
 }
 
+fn current_input() -> CanonicalPromptInput {
+    CanonicalPromptInput {
+        parts: vec![CanonicalMessage::user_text("input")],
+    }
+}
+
 fn sample_tool_schema() -> ToolSchema {
     ToolSchema {
         name: "find_files".to_string(),
@@ -181,6 +195,21 @@ fn assembly_with_drift_notice() -> ContextAssembly {
             "<kuku_system_notice>\n- Context drift: /workspace/AGENTS.md changed (sha256:old -> sha256:new)\n</kuku_system_notice>",
         ),
     );
+    assembly
+}
+
+fn assembly_with_multiblock_current_user() -> ContextAssembly {
+    let mut assembly = sample_assembly();
+    assembly.history.push(CanonicalMessage {
+        role: Role::User,
+        blocks: vec![
+            MessageBlock::Text("<kuku_runtime_notices>notice</kuku_runtime_notices>".to_string()),
+            MessageBlock::Text(
+                "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>".to_string(),
+            ),
+            MessageBlock::Text("raw user input".to_string()),
+        ],
+    });
     assembly
 }
 
@@ -262,6 +291,7 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
         stream: false,
         assembly: assembly_with_drift_notice(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -293,6 +323,7 @@ fn anthropic_render_body_preserves_layer_order() {
         stream: false,
         assembly: sample_assembly(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: Some(1024),
         temperature: Some(0.2),
@@ -306,10 +337,14 @@ fn anthropic_render_body_preserves_layer_order() {
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][1]["role"], "user");
     assert!(body.get("stop").is_none());
-    assert!(body["system"]
+    assert!(body["system"][0]["text"]
         .as_str()
         .unwrap()
         .contains("You are the agent running inside kuku"));
+    assert_eq!(
+        body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
     assert!(body["messages"][0]["content"][0]["text"]
         .as_str()
         .unwrap()
@@ -327,6 +362,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         stream: false,
         assembly: assembly_with_tool_schema(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -336,11 +372,16 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
 
     assert_eq!(tool_body["tools"][0]["name"], "find_files");
     assert_eq!(tool_body["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(
+        tool_body["tools"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
 
     let history_body = render_anthropic_body(&ProviderRequest {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "claude-sonnet-4-6".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -360,6 +401,75 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         history_body["messages"][3]["content"][0]["tool_use_id"],
         "toolu_01"
     );
+}
+
+#[test]
+fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
+    let catalog = test_catalog();
+    let body = render_anthropic_body(&ProviderRequest {
+        stream: false,
+        assembly: assembly_with_multiblock_current_user(),
+        catalog: &catalog,
+        current_input: current_input(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        think_level: kuku::config::ThinkLevel::Off,
+        thinking: ResolvedThinking::default(),
+    });
+
+    let messages = body["messages"].as_array().unwrap();
+    let current = messages.last().unwrap()["content"].as_array().unwrap();
+
+    assert_eq!(current.len(), 3);
+    assert_eq!(
+        current[0]["text"],
+        "<kuku_runtime_notices>notice</kuku_runtime_notices>"
+    );
+    assert_eq!(
+        current[1]["text"],
+        "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>"
+    );
+    assert_eq!(current[2]["text"], "raw user input");
+    assert_eq!(current[2]["cache_control"], json!({"type": "ephemeral"}));
+    assert!(current[0].get("cache_control").is_none());
+    assert!(current[1].get("cache_control").is_none());
+    assert!(!serde_json::to_string(&body)
+        .unwrap()
+        .contains("<kuku_turn_frame>"));
+}
+
+#[test]
+fn anthropic_render_body_uses_anthropic_block_level_cache_markers() {
+    let catalog = test_catalog();
+    let body = render_anthropic_body(&ProviderRequest {
+        stream: false,
+        assembly: sample_assembly(),
+        catalog: &catalog,
+        current_input: current_input(),
+        model: "claude-sonnet-4-6".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        think_level: kuku::config::ThinkLevel::Off,
+        thinking: ResolvedThinking::default(),
+    });
+
+    assert!(body.get("cache_control").is_none());
+    assert_eq!(
+        body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert_eq!(
+        body["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert!(body["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_none());
 }
 
 #[test]
@@ -393,6 +503,7 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
         stream: false,
         assembly: assembly_with_drift_notice(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -425,6 +536,7 @@ fn openai_render_body_preserves_layer_order() {
         stream: false,
         assembly: sample_assembly(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: Some(2048),
         temperature: Some(0.7),
@@ -452,6 +564,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         stream: false,
         assembly: assembly_with_tool_schema(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -470,6 +583,7 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4-mini".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -484,6 +598,31 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
     assert_eq!(history_body["messages"][4]["role"], "tool");
     assert_eq!(history_body["messages"][4]["tool_call_id"], "toolu_01");
     assert_eq!(history_body["messages"][4]["content"], "README.md");
+}
+
+#[test]
+fn openai_chat_render_body_joins_current_user_blocks_in_order() {
+    let catalog = test_catalog();
+    let body = render_openai_body(&ProviderRequest {
+        stream: false,
+        assembly: assembly_with_multiblock_current_user(),
+        catalog: &catalog,
+        current_input: current_input(),
+        model: "gpt-5.4-mini".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        think_level: kuku::config::ThinkLevel::Off,
+        thinking: ResolvedThinking::default(),
+    });
+
+    let messages = body["messages"].as_array().unwrap();
+    let current = messages.last().unwrap();
+
+    assert_eq!(current["role"], "user");
+    assert_eq!(
+        current["content"],
+        "<kuku_runtime_notices>notice</kuku_runtime_notices>\n\n<kuku_conversation_inbox>inbox</kuku_conversation_inbox>\n\nraw user input"
+    );
 }
 
 #[test]
@@ -645,6 +784,7 @@ fn render_responses_body_includes_prior_assistant_function_call() {
         stream: false,
         assembly: assembly_with_tool_history(),
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -668,12 +808,48 @@ fn render_responses_body_includes_prior_assistant_function_call() {
 }
 
 #[test]
+fn render_responses_body_maps_current_user_blocks_to_content_parts() {
+    let catalog = test_catalog();
+    let body = render_responses_body(&ProviderRequest {
+        stream: false,
+        assembly: assembly_with_multiblock_current_user(),
+        catalog: &catalog,
+        current_input: current_input(),
+        model: "gpt-5.4".to_string(),
+        max_output_tokens: None,
+        temperature: None,
+        think_level: kuku::config::ThinkLevel::Off,
+        thinking: ResolvedThinking::default(),
+    });
+
+    let input = body["input"].as_array().unwrap();
+    let current = input.last().unwrap();
+    let content = current["content"].as_array().unwrap();
+
+    assert_eq!(current["type"], "message");
+    assert_eq!(current["role"], "user");
+    assert_eq!(
+        content[0],
+        json!({"type": "input_text", "text": "<kuku_runtime_notices>notice</kuku_runtime_notices>"})
+    );
+    assert_eq!(
+        content[1],
+        json!({"type": "input_text", "text": "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>"})
+    );
+    assert_eq!(
+        content[2],
+        json!({"type": "input_text", "text": "raw user input"})
+    );
+}
+
+#[test]
 fn render_responses_body_basic_text() {
     let catalog = test_catalog();
     let assembly = sample_assembly();
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: Some(100),
         temperature: None,
@@ -702,6 +878,7 @@ fn render_responses_body_with_tools() {
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,
@@ -727,6 +904,7 @@ fn render_responses_body_with_reasoning() {
     let request = ProviderRequest {
         assembly,
         catalog: &catalog,
+        current_input: current_input(),
         model: "gpt-5.4".to_string(),
         max_output_tokens: None,
         temperature: None,

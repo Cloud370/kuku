@@ -30,7 +30,7 @@ pub enum Command {
     Init,
     /// Show or export embedded prompt assets
     Prompts(PromptsArgs),
-    /// List or inspect available subagent definitions
+    /// List or inspect available agent contact cards
     Agents(AgentsArgs),
     /// List or inspect available skill definitions
     Skills(SkillsArgs),
@@ -116,7 +116,7 @@ pub struct RunArgs {
     #[arg(long = "prompts-dir")]
     pub prompts_dir: Option<String>,
 
-    /// Disable the agent tool (subagent delegation)
+    /// Disable the agent tool (agent delegation)
     #[arg(long = "no-agents")]
     pub no_agents: bool,
 
@@ -143,11 +143,11 @@ pub struct AgentsArgs {
 
 #[derive(Subcommand)]
 pub enum AgentsSubcommand {
-    /// List all available subagent definitions
+    /// List all available agent contact cards
     List,
-    /// Show full details for a specific subagent
+    /// Show full details for a specific agent contact card
     Show {
-        /// Subagent name
+        /// Agent name
         name: String,
     },
 }
@@ -177,6 +177,10 @@ pub enum SkillsSubcommand {
 pub struct ShowArgs {
     /// Session ID
     pub session_id: String,
+
+    /// Conversation address (defaults to main)
+    #[arg(long = "conversation")]
+    pub conversation: Option<String>,
 }
 
 // ── Events ──
@@ -185,6 +189,10 @@ pub struct ShowArgs {
 pub struct EventsArgs {
     /// Session ID
     pub session_id: String,
+
+    /// Conversation address (defaults to full ledger)
+    #[arg(long = "conversation")]
+    pub conversation: Option<String>,
 
     /// Verbose output (-v for metadata, -vv for full context)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
@@ -195,6 +203,9 @@ pub struct EventsArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
+    /// Show conversations for a specific session
+    pub session_id: Option<String>,
+
     /// List sessions across all workspaces
     #[arg(short = 'a', long = "all")]
     pub all: bool,

@@ -3,7 +3,10 @@ mod json;
 pub mod text;
 pub mod util;
 
-pub use event::{derive_final_output, render_event_brief};
+pub use event::{
+    derive_final_output, derive_final_output_for_conversation, filter_events_for_conversation,
+    render_event_brief,
+};
 pub use json::{OutputLine, RunMetrics, RunUsageSummary};
 pub use text::{Display, RenderMode};
 

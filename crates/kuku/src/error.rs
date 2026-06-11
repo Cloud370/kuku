@@ -62,8 +62,8 @@ pub enum Error {
         holder_pid: i32,
     },
 
-    #[error("child session requested permission: {tool} on {candidate}")]
-    ChildPermissionRequested { tool: String, candidate: String },
+    #[error("delegated conversation requested permission: {tool} on {candidate}")]
+    DelegatedPermissionRequested { tool: String, candidate: String },
 
     #[error("plugin manifest error in {0:?}: {1}")]
     PluginManifest(std::path::PathBuf, String),
@@ -109,7 +109,7 @@ impl Error {
             Error::ConfigLoad(_) => "internal",
             Error::InvalidArgument(_) => "invalid_request",
             Error::SessionLocked { .. } => "session_locked",
-            Error::ChildPermissionRequested { .. } => "internal",
+            Error::DelegatedPermissionRequested { .. } => "internal",
             Error::PluginManifest(_, _) => "internal",
             Error::PluginValidation(_) => "invalid_request",
             Error::PluginHookTimeout(_, _) => "internal",

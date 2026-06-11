@@ -1,11 +1,52 @@
 use kuku::context::{
-    assemble_context, rebuild_history, CanonicalMessage, ContextInput, EnvironmentSource,
-    FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock, RequestProvenance,
-    ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
+    assemble_context, rebuild_history, restore_prompt_snapshot, CanonicalMessage, ContextInput,
+    EnvironmentSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
+    RequestProvenance, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
 };
+use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
 use kuku::prompt::builtin_prompt_catalog;
 use serde_json::json;
+
+fn prompt_snapshot(
+    conversation: &str,
+    turn: u64,
+    messages: Vec<kuku::event::types::ContextMessage>,
+    project_instruction_sources: Vec<FileSource>,
+) -> EventPayload {
+    EventPayload::PromptSnapshot {
+        ts: "2026-06-09T00:00:00Z".to_string(),
+        conversation: conversation.to_string(),
+        binding_id: format!("binding:{conversation}"),
+        snapshot_id: format!("snapshot:{conversation}:{turn}"),
+        turn,
+        messages,
+        project_instruction_sources,
+        memory_sources: vec![],
+        prompt_asset_sources: vec![],
+        skills: json!({}),
+        bootstrap_loaded: vec![],
+        provider: "anthropic".to_string(),
+        model: "claude-sonnet-4-6".to_string(),
+        renderer: kuku::context::PromptRendererIdentity {
+            provider: "anthropic".to_string(),
+            renderer: "anthropic".to_string(),
+        },
+        tool_registry: Box::new(ToolRegistryProvenance {
+            hash: "sha256:tools".to_string(),
+            names: vec![],
+            tool_count: 0,
+        }),
+        agent_registry: None,
+        skill_registry: Box::new(None),
+        plugin_registry: Box::new(None),
+        capabilities: kuku::context::PromptCapabilityMetadata {
+            context_budget_tier: "normal".to_string(),
+            max_context_tokens: Some(200_000),
+            remaining_input_tokens: Some(180_000),
+        },
+    }
+}
 
 #[test]
 fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
@@ -14,10 +55,13 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     let mut store = EventStore::open(&events_path).unwrap();
 
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
+            conversation: "main".to_string(),
             text: "inspect".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -32,7 +76,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         .unwrap();
 
     let events = EventStore::replay(&events_path).unwrap();
-    let (summary, history) = rebuild_history(&events);
+    let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
     assert!(summary.is_none());
     assert_eq!(
         history,
@@ -177,7 +221,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             names: vec!["read".to_string()],
             tool_count: 1,
         },
-        subagent_registry: None,
+        agent_registry: None,
         skill_registry: None,
         plugin_registry: None,
         provider_format: "anthropic".to_string(),
@@ -305,10 +349,13 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
     let mut store = EventStore::open(&events_path).unwrap();
 
     store
-        .append(EventPayload::UserInput {
+        .append(EventPayload::MessageUser {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
+            conversation: "main".to_string(),
             text: "inspect".to_string(),
+            from: None,
+            via_tool_call_id: None,
         })
         .unwrap();
     store
@@ -325,6 +372,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .append(EventPayload::ToolCall {
             turn: 1,
             ts: "2026-05-13T00:00:02Z".to_string(),
+            conversation: None,
             request_id: "req_1".to_string(),
             tool_call_id: "tool_b".to_string(),
             index: 1,
@@ -336,6 +384,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .append(EventPayload::ToolCall {
             turn: 1,
             ts: "2026-05-13T00:00:03Z".to_string(),
+            conversation: None,
             request_id: "req_1".to_string(),
             tool_call_id: "tool_a".to_string(),
             index: 0,
@@ -347,10 +396,15 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .append(EventPayload::ToolResult {
             turn: 1,
             ts: "2026-05-13T00:00:04Z".to_string(),
+            conversation: None,
             tool_call_id: "tool_a".to_string(),
             status: "ok".to_string(),
             summary: "tool_a summary".to_string(),
             model_content: "read output".to_string(),
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
             structured: None,
             truncated: false,
         })
@@ -366,7 +420,10 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         })
         .unwrap();
 
-    let (summary, history) = rebuild_history(&EventStore::replay(&events_path).unwrap());
+    let (summary, history) = rebuild_history(
+        &EventStore::replay(&events_path).unwrap(),
+        &ConversationAddress::MAIN,
+    );
     assert!(summary.is_none());
     assert_eq!(
         history,
@@ -413,9 +470,10 @@ fn restores_frozen_prelude_from_fact_event() {
     let events = vec![
         kuku::event::StoredEvent {
             id: 1,
-            payload: EventPayload::ContextPrelude {
-                ts: "2026-05-18T00:00:00Z".to_string(),
-                messages: vec![
+            payload: prompt_snapshot(
+                "main",
+                1,
+                vec![
                     kuku::event::types::ContextMessage {
                         role: "user".to_string(),
                         content: "<kuku_tool_guidance>use tools</kuku_tool_guidance>".to_string(),
@@ -427,19 +485,23 @@ fn restores_frozen_prelude_from_fact_event() {
                                 .to_string(),
                     },
                 ],
-            },
+                vec![],
+            ),
         },
         kuku::event::StoredEvent {
             id: 2,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
                 text: "inspect".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
     ];
 
-    let restored = kuku::context::restore_frozen_prelude(&events).unwrap();
+    let restored = kuku::context::restore_prompt_snapshot(&events, "main").unwrap();
     assert_eq!(restored.len(), 2);
     assert_eq!(
         restored[0],
@@ -450,6 +512,168 @@ fn restores_frozen_prelude_from_fact_event() {
         CanonicalMessage::user_text(
             "<kuku_execution_context>workspace: /tmp/evlog</kuku_execution_context>"
         )
+    );
+}
+
+#[test]
+fn rebuild_history_does_not_replay_snapshot_for_target_conversation() {
+    let review = ConversationAddress::parse("review").unwrap();
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: prompt_snapshot(
+                "main",
+                1,
+                vec![
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_project_instructions>main v1</kuku_project_instructions>"
+                            .to_string(),
+                    },
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<kuku_input_frame><input.message>main ask</input.message></kuku_input_frame>"
+                            .to_string(),
+                    },
+                ],
+                vec![FileSource {
+                    path: "/workspace/AGENTS.md".to_string(),
+                    hash: "sha256:main-v1".to_string(),
+                }],
+            ),
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: prompt_snapshot(
+                "review",
+                1,
+                vec![
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content:
+                            "<kuku_project_instructions>review v1</kuku_project_instructions>"
+                                .to_string(),
+                    },
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content:
+                            "<kuku_input_frame><input.message>review ask</input.message></kuku_input_frame>"
+                                .to_string(),
+                    },
+                ],
+                vec![FileSource {
+                    path: "/workspace/AGENTS.md".to_string(),
+                    hash: "sha256:review-v1".to_string(),
+                }],
+            ),
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: EventPayload::MessageAssistant {
+                ts: "2026-06-09T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
+                turn: 1,
+                message_id: "m1".to_string(),
+                text: "main answer".to_string(),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 4,
+            payload: EventPayload::MessageAssistant {
+                ts: "2026-06-09T00:00:03Z".to_string(),
+                conversation: "review".to_string(),
+                turn: 1,
+                message_id: "r1".to_string(),
+                text: "review answer".to_string(),
+            },
+        },
+    ];
+
+    let (_, main_history) = rebuild_history(&events, &ConversationAddress::MAIN);
+    let (_, review_history) = rebuild_history(&events, &review);
+
+    assert_eq!(
+        main_history,
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "main answer".to_string()
+        )])]
+    );
+    assert_eq!(
+        review_history,
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "review answer".to_string()
+        )])]
+    );
+}
+
+#[test]
+fn rebuild_history_replays_non_main_scoped_tool_result() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: EventPayload::MessageUser {
+                ts: "2026-06-09T00:00:01Z".to_string(),
+                conversation: "review".to_string(),
+                turn: 1,
+                text: "inspect".to_string(),
+                from: Some("main".to_string()),
+                via_tool_call_id: Some("toolu_agent_review".to_string()),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-06-09T00:00:02Z".to_string(),
+                conversation: Some("review".to_string()),
+                request_id: "req_review_1".to_string(),
+                tool_call_id: "toolu_read".to_string(),
+                index: 0,
+                tool: "read_file".to_string(),
+                args: json!({"path": "README.md"}),
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: EventPayload::ToolResult {
+                turn: 1,
+                ts: "2026-06-09T00:00:03Z".to_string(),
+                conversation: Some("review".to_string()),
+                tool_call_id: "toolu_read".to_string(),
+                status: "ok".to_string(),
+                summary: "read README.md".to_string(),
+                model_content: "README contents".to_string(),
+                truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: None,
+            },
+        },
+    ];
+
+    let review = ConversationAddress::parse("review").unwrap();
+    let (_, history) = rebuild_history(&events, &review);
+
+    assert_eq!(
+        history,
+        vec![
+            CanonicalMessage::user_text("inspect"),
+            CanonicalMessage::assistant(vec![MessageBlock::ToolUse(ToolUse {
+                id: "toolu_read".to_string(),
+                name: "read_file".to_string(),
+                args: json!({"path": "README.md"}),
+            })]),
+            CanonicalMessage::user(vec![MessageBlock::ToolResult(ToolResult {
+                tool_call_id: "toolu_read".to_string(),
+                status: "ok".to_string(),
+                summary: "read README.md".to_string(),
+                model_content: "README contents".to_string(),
+                structured: None,
+                truncated: false,
+            })]),
+        ]
     );
 }
 
@@ -471,10 +695,13 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         },
         kuku::event::StoredEvent {
             id: 2,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
+                conversation: "main".to_string(),
                 text: "old".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
         kuku::event::StoredEvent {
@@ -500,10 +727,13 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         },
         kuku::event::StoredEvent {
             id: 5,
-            payload: EventPayload::UserInput {
+            payload: EventPayload::MessageUser {
                 turn: 2,
                 ts: "2026-05-18T00:00:04Z".to_string(),
+                conversation: "main".to_string(),
                 text: "new".to_string(),
+                from: None,
+                via_tool_call_id: None,
             },
         },
         kuku::event::StoredEvent {
@@ -519,7 +749,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         },
     ];
 
-    let (summary, history) = rebuild_history(&events);
+    let (summary, history) = rebuild_history(&events, &ConversationAddress::MAIN);
     assert_eq!(summary.as_deref(), Some("carry forward"));
     assert_eq!(
         history,
@@ -530,4 +760,176 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
             CanonicalMessage::assistant(vec![MessageBlock::Text("new answer".to_string())]),
         ]
     );
+}
+
+#[test]
+fn prompt_snapshot_preserves_old_agents_content_after_file_changes() {
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: prompt_snapshot(
+                "main",
+                1,
+                vec![
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content:
+                            "<kuku_project_instructions>AGENTS version one</kuku_project_instructions>"
+                                .to_string(),
+                    },
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<input.message>inspect</input.message>".to_string(),
+                    },
+                ],
+                vec![FileSource {
+                    path: "/workspace/AGENTS.md".to_string(),
+                    hash: "sha256:one".to_string(),
+                }],
+            ),
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::ContextSources {
+                turn: 2,
+                ts: "2026-06-09T00:00:01Z".to_string(),
+                request_id: "req_2".to_string(),
+                project_instruction_sources: vec![FileSource {
+                    path: "/workspace/AGENTS.md".to_string(),
+                    hash: "sha256:two".to_string(),
+                }],
+                memory_sources: vec![],
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 3,
+            payload: EventPayload::MessageAssistant {
+                ts: "2026-06-09T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
+                turn: 1,
+                message_id: "m1".to_string(),
+                text: "done".to_string(),
+            },
+        },
+    ];
+
+    let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+
+    assert_eq!(
+        history,
+        vec![CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "done".to_string()
+        )])]
+    );
+}
+
+#[test]
+fn conversation_skill_binding_is_stable() {
+    let skill_registry_v1 = json!({
+        "definitions": {
+            "review": {
+                "name": "review",
+                "description": "Review carefully",
+                "instructions": "Review skill instructions v1.",
+                "source": "project",
+                "hash": "sha256:v1",
+                "source_path": "/skills/review",
+                "allowed_tools": null,
+                "disallowed_tools": null,
+                "max_turns": null,
+                "model": null,
+                "license": null,
+                "compatibility": null,
+                "metadata": null
+            }
+        },
+        "names": ["review"],
+        "hash": "sha256:registry-v1"
+    });
+    let skill_registry_v2 = json!({
+        "definitions": {
+            "review": {
+                "name": "review",
+                "description": "Review carefully",
+                "instructions": "Review skill instructions v2.",
+                "source": "project",
+                "hash": "sha256:v2",
+                "source_path": "/skills/review",
+                "allowed_tools": null,
+                "disallowed_tools": null,
+                "max_turns": null,
+                "model": null,
+                "license": null,
+                "compatibility": null,
+                "metadata": null
+            }
+        },
+        "names": ["review"],
+        "hash": "sha256:registry-v2"
+    });
+    let events = vec![
+        kuku::event::StoredEvent {
+            id: 1,
+            payload: EventPayload::PromptSnapshot {
+                ts: "2026-06-09T00:00:00Z".to_string(),
+                conversation: "main".to_string(),
+                binding_id: "binding:main:review-v1".to_string(),
+                snapshot_id: "snapshot:main:1".to_string(),
+                turn: 1,
+                messages: vec![
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "Review skill instructions v1.".to_string(),
+                    },
+                    kuku::event::types::ContextMessage {
+                        role: "user".to_string(),
+                        content: "<input.message>inspect</input.message>".to_string(),
+                    },
+                ],
+                project_instruction_sources: vec![],
+                memory_sources: vec![],
+                prompt_asset_sources: vec![],
+                skills: skill_registry_v1,
+                bootstrap_loaded: vec!["review".to_string()],
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet-4-6".to_string(),
+                renderer: kuku::context::PromptRendererIdentity {
+                    provider: "anthropic".to_string(),
+                    renderer: "anthropic".to_string(),
+                },
+                tool_registry: Box::new(ToolRegistryProvenance {
+                    hash: "sha256:tools".to_string(),
+                    names: vec![],
+                    tool_count: 0,
+                }),
+                agent_registry: None,
+                skill_registry: Box::new(None),
+                plugin_registry: Box::new(None),
+                capabilities: kuku::context::PromptCapabilityMetadata {
+                    context_budget_tier: "normal".to_string(),
+                    max_context_tokens: Some(200_000),
+                    remaining_input_tokens: Some(180_000),
+                },
+            },
+        },
+        kuku::event::StoredEvent {
+            id: 2,
+            payload: EventPayload::ContextSkills {
+                conversation: "main".to_string(),
+                turn: 2,
+                ts: "2026-06-09T00:00:01Z".to_string(),
+                registry: skill_registry_v2,
+                bootstrap_loaded: vec!["review".to_string()],
+            },
+        },
+    ];
+
+    let snapshot = restore_prompt_snapshot(&events, "main").unwrap();
+    assert_eq!(
+        snapshot[0],
+        CanonicalMessage::user_text("Review skill instructions v1.")
+    );
+
+    let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+    assert!(history.is_empty());
 }

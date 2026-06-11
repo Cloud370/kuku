@@ -5,27 +5,27 @@
 ## Turn flow
 
 ```text
-turn.start
-  -> user.input
+turn.started
+  -> message.user
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
-        no  -> turn.end
+        no  -> turn.completed
 ```
 
 ## Per turn
 
-1. kuku 追加写入 `turn.start` 和 `user.input`。
+1. kuku 追加写入 `turn.started` 和 `message.user`。
 2. 它基于文件和已持久化事件重建模型上下文。
 3. 它将模型响应流式传给 Host，并在完成后追加写入 `model.response`。
-4. 如果响应结束这一轮，kuku 会追加写入 `turn.end`。
+4. 如果响应结束这一轮，kuku 会为当前 conversation 追加写入 `turn.completed`。
 5. 如果响应请求 Tool，kuku 会追加写入 `tool.call`，用 `permission.requested` 记录待处理权限，记录权限决策，执行已允许的 Tool，追加写入 `tool.result`，然后为下一次模型调用重建上下文。
 
 ## Tool execution
 
 彼此独立的 Tool 调用可以并行运行。kuku 在将结果写回事件日志时，会保留模型原始的 `tool.call` 顺序。
 
-Subagent 在子 Session 中使用相同的循环。它们不会创建第二套运行时模型。
+委派出来的 agent conversation 在同一个 Session 账本里使用相同的循环。它们不会创建第二套运行时模型。
 
 ## Permissions inside the loop
 

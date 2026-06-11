@@ -15,7 +15,10 @@ use crate::skill::session::{
     TurnSkillSnapshot,
 };
 
-use super::helpers::{next_turn, now_timestamp, validate_existing_session};
+use super::helpers::{
+    append_interrupted_active_turn, append_message_user_with_sender, append_turn_started,
+    next_turn, now_timestamp, validate_existing_session,
+};
 use super::types::{
     PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState, UiEvent,
 };
@@ -70,10 +73,14 @@ fn synthetic_builder_config() -> crate::config::Config {
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
-        self.start_session().await
+        self.start_session_with_lock(true).await
     }
 
-    async fn start_session(mut self) -> Result<Run> {
+    pub(crate) async fn start_nested(self) -> Result<Run> {
+        self.start_session_with_lock(false).await
+    }
+
+    async fn start_session_with_lock(mut self, acquire_lock: bool) -> Result<Run> {
         self.validate()?;
 
         let kuku_home = match self.captured_kuku_home.take() {
@@ -114,7 +121,11 @@ impl Query {
         validate_session_id(&session_id)?;
 
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        let lock_guard = StartupLockGuard::acquire(lock_path)?;
+        let run_lock_path = if acquire_lock {
+            StartupLockGuard::acquire(lock_path.clone())?.into_path()
+        } else {
+            lock_path.with_extension("nested")
+        };
         let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = EventStore::replay(&events_path)?;
@@ -125,7 +136,8 @@ impl Query {
         } else {
             Some(super::lifecycle::reduce_lifecycle(&existing_events))
         };
-        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id)?;
+        let conversation = self.conversation.clone();
+        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id, &conversation)?;
         let resumed_permission = lifecycle
             .as_ref()
             .and_then(|state| state.pending_permissions.first());
@@ -137,21 +149,40 @@ impl Query {
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| next_turn(&existing_events));
-
         let mut store = EventStore::open(&events_path)?;
         if is_new_session {
             let created_at = now_timestamp()?;
-            store.append(EventPayload::SessionMeta {
+            store.append(EventPayload::SessionCreated {
                 ts: created_at.clone(),
-                schema_version: 1,
+                schema_version: 2,
                 session_id: session_id.clone(),
                 created_at,
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })?;
         }
+        let has_conversation = existing_events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ConversationOpened { conversation, .. }
+                    if conversation == self.conversation.as_str()
+            )
+        });
+        if !has_conversation {
+            store.append(EventPayload::ConversationOpened {
+                ts: now_timestamp()?,
+                conversation: self.conversation.as_str().to_string(),
+            })?;
+            if let Some(binding_id) = self.agent_binding_id.as_ref() {
+                store.append(EventPayload::ConversationBound {
+                    ts: now_timestamp()?,
+                    conversation: self.conversation.as_str().to_string(),
+                    binding_id: binding_id.clone(),
+                })?;
+            }
+        }
 
         let prompts_dir = self.prompts_dir.take();
-        let subagent_registry = self.subagent_registry.clone();
+        let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
         let plugin_registry_opt = if config.plugin.enabled {
@@ -165,15 +196,21 @@ impl Query {
         };
 
         if resumed_permission.is_none() {
-            store.append(EventPayload::TurnStart {
+            append_interrupted_active_turn(
+                &events_path,
+                &existing_events,
+                &conversation,
+                "resume_before_new_turn",
+            )?;
+            append_turn_started(&events_path, &conversation, turn)?;
+            append_message_user_with_sender(
+                &events_path,
+                &conversation,
                 turn,
-                ts: now_timestamp()?,
-            })?;
-            store.append(EventPayload::UserInput {
-                turn,
-                ts: now_timestamp()?,
-                text: self.prompt.clone(),
-            })?;
+                &self.prompt,
+                self.message_from.as_ref(),
+                self.via_tool_call_id.as_deref(),
+            )?;
 
             if let (Ok(session_log_path), Ok(ts)) =
                 (session_log_path(&kuku_home, &session_id), now_timestamp())
@@ -191,14 +228,19 @@ impl Query {
             }
         }
 
+        let previous_skill_snapshot =
+            previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
         let (skill_registry, previous_skill_registry) = if self.disable_skills {
             (None, None)
-        } else if let Some(snapshot) = restore_turn_snapshot(&existing_events, turn) {
+        } else if let Some(snapshot) =
+            restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
+        {
             bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
             (
                 Some(snapshot.registry),
-                previous_snapshot_before_turn(&existing_events, turn)
-                    .map(|snapshot| snapshot.registry),
+                previous_skill_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.registry.clone()),
             )
         } else {
             match build_registry_snapshot(
@@ -207,16 +249,23 @@ impl Query {
                 plugin_registry_opt.as_ref(),
             ) {
                 Ok(registry) => {
+                    let (registry, bootstrap_loaded) =
+                        if let Some(snapshot) = previous_skill_snapshot.as_ref() {
+                            bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
+                            (snapshot.registry.clone(), snapshot.bootstrap_loaded.clone())
+                        } else {
+                            (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
+                        };
                     store.append(EventPayload::ContextSkills {
+                        conversation: conversation.as_str().to_string(),
                         turn,
                         ts: now_timestamp()?,
                         registry: serde_json::to_value(&registry)?,
-                        bootstrap_loaded: bootstrap_loaded_names(bootstrap_skill.as_ref()),
+                        bootstrap_loaded,
                     })?;
                     (
                         Some(registry),
-                        previous_snapshot_before_turn(&existing_events, turn)
-                            .map(|snapshot| snapshot.registry),
+                        previous_skill_snapshot.map(|snapshot| snapshot.registry),
                     )
                 }
                 Err(_) => (None, None),
@@ -286,9 +335,11 @@ impl Query {
         );
 
         let resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        let agent_binding_id = self.agent_binding_id.clone();
 
         let pending = PendingRun {
             session_id: session_id.clone(),
+            conversation: conversation.clone(),
             query: self,
             events_path,
             kuku_home,
@@ -304,11 +355,13 @@ impl Query {
             pending_error: None,
             config,
             prompts_dir,
-            subagent_registry,
+            agent_registry,
             bootstrap_skill,
             skill_registry,
             previous_skill_registry,
             child_session_count: 0,
+            frozen_turn_prefix: super::types::TurnPrefixFreeze::default(),
+            agent_binding_id,
             tool_registry_override,
             catalog,
             cancel_token: cancel_token.clone(),
@@ -340,13 +393,13 @@ impl Query {
             slot_event_tx,
             slot_event_rx,
             cancel_token,
-            lock_path: lock_guard.into_path(),
+            lock_path: run_lock_path,
             deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start_session().await?;
+        let mut run = self.start_session_with_lock(true).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { .. }) => {
@@ -367,7 +420,7 @@ impl Query {
         self,
         choice: super::types::PermissionChoice,
     ) -> Result<RunOutput> {
-        let mut run = self.start_session().await?;
+        let mut run = self.start_session_with_lock(true).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {
@@ -467,11 +520,16 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
 fn reject_interrupted_open_tools(
     lifecycle: Option<&super::lifecycle::LifecycleState>,
     session_id: &str,
+    conversation: &crate::conversation::address::ConversationAddress,
 ) -> Result<()> {
     let Some(lifecycle) = lifecycle else {
         return Ok(());
     };
-    let Some(open_tool) = lifecycle.open_tools.first() else {
+    let Some(open_tool) = lifecycle
+        .open_tools
+        .iter()
+        .find(|open_tool| &open_tool.conversation == conversation)
+    else {
         return Ok(());
     };
 
@@ -573,498 +631,4 @@ fn startup_prune_options(active_path: &std::path::Path) -> crate::log::PruneOpti
 }
 
 #[cfg(test)]
-mod startup_prune_tests {
-    use std::path::Path;
-
-    use crate::config::{
-        Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, UpdateConfig,
-    };
-    use crate::event::{EventPayload, EventStore};
-    use crate::query::types::RunState;
-    use crate::query::Query;
-
-    fn test_config() -> Config {
-        Config {
-            tiers: std::collections::BTreeMap::new(),
-            providers: std::collections::BTreeMap::new(),
-            default_tier: "balanced".to_string(),
-            discovery: DiscoveryConfig::default(),
-            handoff: HandoffConfig::default(),
-            logs: LogsConfig::default(),
-            plugin: PluginConfig::default(),
-            update: UpdateConfig::default(),
-        }
-    }
-
-    fn write_skill(skill_dir: &Path, name: &str, description: &str) {
-        std::fs::create_dir_all(skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            format!(
-                "---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\n{description} body\n"
-            ),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn startup_prune_options_exclude_active_runtime_path() {
-        let active_path = Path::new("/tmp/kuku/logs/runtime/2026-06-06.jsonl");
-
-        let options = super::startup_prune_options(active_path);
-
-        assert!(options.excludes_active_path(active_path));
-    }
-
-    #[tokio::test]
-    async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let config = test_config();
-        let session_id = "resume-skills";
-        let skill_dir = workspace
-            .path()
-            .join(".kuku")
-            .join("skills")
-            .join("resume-skill");
-
-        write_skill(&skill_dir, "resume-skill", "persisted description");
-        let persisted_registry = crate::skill::session::build_registry_snapshot(
-            workspace.path(),
-            &config.discovery,
-            None,
-        )
-        .unwrap();
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
-                .unwrap();
-        let mut store = EventStore::open(&events_path).unwrap();
-        store
-            .append(EventPayload::SessionMeta {
-                ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
-                session_id: session_id.to_string(),
-                created_at: "2026-06-07T00:00:00Z".to_string(),
-                kuku_version: env!("CARGO_PKG_VERSION").to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::TurnStart {
-                turn: 1,
-                ts: "2026-06-07T00:00:01Z".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::UserInput {
-                turn: 1,
-                ts: "2026-06-07T00:00:02Z".to_string(),
-                text: "resume this turn".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ContextSkills {
-                turn: 1,
-                ts: "2026-06-07T00:00:03Z".to_string(),
-                registry: serde_json::to_value(&persisted_registry).unwrap(),
-                bootstrap_loaded: vec![],
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ToolCall {
-                turn: 1,
-                ts: "2026-06-07T00:00:04Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
-                index: 0,
-                tool: "write".to_string(),
-                args: serde_json::json!({ "path": "foo.txt" }),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::PermissionRequested {
-                turn: 1,
-                ts: "2026-06-07T00:00:05Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                tool: "write".to_string(),
-                risk: "modifies_files".to_string(),
-                summary: "write foo.txt".to_string(),
-                candidate: "foo.txt".to_string(),
-                source: "tool_policy".to_string(),
-            })
-            .unwrap();
-
-        write_skill(&skill_dir, "resume-skill", "mutated live description");
-
-        let mut query = Query::new("ignored")
-            .session(session_id)
-            .workspace(workspace.path())
-            .config(config);
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let mut run = query.start().await.unwrap();
-
-        let RunState::WaitingForPermission(ref mut waiting) = run.state else {
-            panic!("expected resumed waiting state, got {:?}", run.state);
-        };
-        let skill_registry = waiting
-            .pending
-            .skill_registry
-            .as_ref()
-            .expect("restored skill snapshot");
-        let skill = skill_registry
-            .get("resume-skill")
-            .expect("persisted skill should exist");
-        assert_eq!(skill.description, "persisted description");
-
-        let use_skill = crate::provider::types::ProviderToolCall {
-            id: "tool_use_skill".to_string(),
-            name: "use_skill".to_string(),
-            args: serde_json::json!({ "skill_name": "resume-skill" }),
-            index: 1,
-        };
-        let result = crate::query::tool_exec::execute_tool_call(&mut waiting.pending, &use_skill)
-            .await
-            .unwrap();
-        assert_eq!(result.status, "ok");
-        assert!(result.model_content.contains("persisted description body"));
-        assert!(!result
-            .model_content
-            .contains("mutated live description body"));
-    }
-
-    #[tokio::test]
-    async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let config = test_config();
-        let session_id = "resume-bootstrap";
-        let skill_dir = workspace
-            .path()
-            .join(".kuku")
-            .join("skills")
-            .join("resume-skill");
-
-        write_skill(&skill_dir, "resume-skill", "resume description");
-        let persisted_registry = crate::skill::session::build_registry_snapshot(
-            workspace.path(),
-            &config.discovery,
-            None,
-        )
-        .unwrap();
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
-                .unwrap();
-        let mut store = EventStore::open(&events_path).unwrap();
-        store
-            .append(EventPayload::SessionMeta {
-                ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
-                session_id: session_id.to_string(),
-                created_at: "2026-06-07T00:00:00Z".to_string(),
-                kuku_version: env!("CARGO_PKG_VERSION").to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::TurnStart {
-                turn: 1,
-                ts: "2026-06-07T00:00:01Z".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::UserInput {
-                turn: 1,
-                ts: "2026-06-07T00:00:02Z".to_string(),
-                text: "resume this turn".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ContextSkills {
-                turn: 1,
-                ts: "2026-06-07T00:00:02Z".to_string(),
-                registry: serde_json::to_value(&persisted_registry).unwrap(),
-                bootstrap_loaded: vec!["resume-skill".to_string()],
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ToolCall {
-                turn: 1,
-                ts: "2026-06-07T00:00:03Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
-                index: 0,
-                tool: "write".to_string(),
-                args: serde_json::json!({ "path": "foo.txt" }),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::PermissionRequested {
-                turn: 1,
-                ts: "2026-06-07T00:00:04Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                tool: "write".to_string(),
-                risk: "modifies_files".to_string(),
-                summary: "write foo.txt".to_string(),
-                candidate: "foo.txt".to_string(),
-                source: "tool_policy".to_string(),
-            })
-            .unwrap();
-
-        let mut query = Query::new("ignored")
-            .session(session_id)
-            .workspace(workspace.path())
-            .config(config)
-            .bootstrap_skill(
-                "bootstrap-skill",
-                "<!-- loaded: /skills/bootstrap-skill -->\n\nbootstrap body".to_string(),
-            );
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let run = query.start().await.unwrap();
-
-        let RunState::WaitingForPermission(ref waiting) = run.state else {
-            panic!("expected resumed waiting state");
-        };
-        let bootstrap_skill = waiting
-            .pending
-            .bootstrap_skill
-            .as_ref()
-            .expect("restored bootstrap skill");
-        assert_eq!(waiting.pending.turn, 1);
-        assert_eq!(bootstrap_skill.name.as_deref(), Some("resume-skill"));
-        assert!(bootstrap_skill.body.contains("resume description body"));
-        assert!(!bootstrap_skill.body.contains("bootstrap body"));
-    }
-
-    #[tokio::test]
-    async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let config = test_config();
-        let session_id = "resume-bootstrap-body";
-        let skill_dir = workspace
-            .path()
-            .join(".kuku")
-            .join("skills")
-            .join("resume-skill");
-
-        write_skill(&skill_dir, "resume-skill", "resume description");
-        let persisted_registry = crate::skill::session::build_registry_snapshot(
-            workspace.path(),
-            &config.discovery,
-            None,
-        )
-        .unwrap();
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
-                .unwrap();
-        let mut store = EventStore::open(&events_path).unwrap();
-        store
-            .append(EventPayload::SessionMeta {
-                ts: "2026-06-07T00:00:00Z".to_string(),
-                schema_version: 1,
-                session_id: session_id.to_string(),
-                created_at: "2026-06-07T00:00:00Z".to_string(),
-                kuku_version: env!("CARGO_PKG_VERSION").to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::TurnStart {
-                turn: 1,
-                ts: "2026-06-07T00:00:01Z".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::UserInput {
-                turn: 1,
-                ts: "2026-06-07T00:00:02Z".to_string(),
-                text: "resume this turn".to_string(),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ContextSkills {
-                turn: 1,
-                ts: "2026-06-07T00:00:03Z".to_string(),
-                registry: serde_json::to_value(&persisted_registry).unwrap(),
-                bootstrap_loaded: vec!["resume-skill".to_string()],
-            })
-            .unwrap();
-        store
-            .append(EventPayload::ToolCall {
-                turn: 1,
-                ts: "2026-06-07T00:00:04Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
-                index: 0,
-                tool: "write".to_string(),
-                args: serde_json::json!({ "path": "foo.txt" }),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::PermissionRequested {
-                turn: 1,
-                ts: "2026-06-07T00:00:05Z".to_string(),
-                tool_call_id: "tool_1".to_string(),
-                tool: "write".to_string(),
-                risk: "modifies_files".to_string(),
-                summary: "write foo.txt".to_string(),
-                candidate: "foo.txt".to_string(),
-                source: "tool_policy".to_string(),
-            })
-            .unwrap();
-
-        let mut query = Query::new("ignored")
-            .session(session_id)
-            .workspace(workspace.path())
-            .config(config);
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let run = query.start().await.unwrap();
-
-        let RunState::WaitingForPermission(ref waiting) = run.state else {
-            panic!("expected resumed waiting state");
-        };
-        let bootstrap_skill = waiting
-            .pending
-            .bootstrap_skill
-            .as_ref()
-            .expect("restored bootstrap skill");
-        assert_eq!(bootstrap_skill.name.as_deref(), Some("resume-skill"));
-        assert!(bootstrap_skill.body.contains("resume description body"));
-    }
-
-    #[tokio::test]
-    async fn fresh_turn_persists_named_bootstrap_skill_loads() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let config = test_config();
-        let skill_dir = workspace
-            .path()
-            .join(".kuku")
-            .join("skills")
-            .join("bootstrap-skill");
-
-        write_skill(&skill_dir, "bootstrap-skill", "bootstrap description");
-
-        let mut query = Query::new("bootstrap this turn")
-            .workspace(workspace.path())
-            .config(config)
-            .bootstrap_skill(
-                "bootstrap-skill",
-                "<!-- loaded: /skills/bootstrap-skill -->\n\nbootstrap body".to_string(),
-            );
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let run = query.start().await.unwrap();
-        let session_id = run.session_id().to_string();
-        drop(run);
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), &session_id)
-                .unwrap();
-        let events = EventStore::replay(&events_path).unwrap();
-        let context_skills = events
-            .iter()
-            .find_map(|event| match &event.payload {
-                EventPayload::ContextSkills {
-                    bootstrap_loaded, ..
-                } => Some(bootstrap_loaded.clone()),
-                _ => None,
-            })
-            .expect("context.skills event");
-
-        assert_eq!(context_skills, vec!["bootstrap-skill".to_string()]);
-        assert_eq!(
-            crate::skill::session::loaded_skill_names(&events),
-            vec!["bootstrap-skill".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn fresh_turn_excludes_package_skills_when_plugins_are_disabled() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let mut config = test_config();
-        config.plugin.enabled = false;
-
-        let package_root = workspace
-            .path()
-            .join(".kuku")
-            .join("packages")
-            .join("pkg-with-skill");
-        std::fs::create_dir_all(package_root.join("skills").join("packaged-skill")).unwrap();
-        std::fs::write(
-            package_root.join("kuku.toml"),
-            "[package]\nname = \"pkg-with-skill\"\nversion = \"1.0.0\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            package_root
-                .join("skills")
-                .join("packaged-skill")
-                .join("SKILL.md"),
-            "---\nname: packaged-skill\ndescription: From package\n---\n\n# Packaged\n\npackage skill body\n",
-        )
-        .unwrap();
-
-        let mut query = Query::new("show skills")
-            .workspace(workspace.path())
-            .config(config);
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let run = query.start().await.unwrap();
-        let session_id = run.session_id().to_string();
-        drop(run);
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), &session_id)
-                .unwrap();
-        let events = EventStore::replay(&events_path).unwrap();
-        let registry: crate::skill::registry::SkillRegistry = events
-            .iter()
-            .find_map(|event| match &event.payload {
-                EventPayload::ContextSkills { registry, .. } => Some(
-                    serde_json::from_value::<crate::skill::registry::SkillRegistry>(
-                        registry.clone(),
-                    )
-                    .unwrap(),
-                ),
-                _ => None,
-            })
-            .expect("context.skills event");
-
-        assert!(registry.get("packaged-skill").is_none());
-    }
-
-    #[tokio::test]
-    async fn locked_session_does_not_write_new_turn_events() {
-        let workspace = tempfile::tempdir().unwrap();
-        let kuku_home = tempfile::tempdir().unwrap();
-        let session_id = "locked-session";
-        let lock_path =
-            crate::session::session_lock_path(kuku_home.path(), workspace.path(), session_id);
-        let lock_content = format!("{}\n2026-06-07T00:00:00Z\n", std::process::id());
-        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-        std::fs::write(&lock_path, lock_content).unwrap();
-
-        let mut query = Query::new("should not persist")
-            .session(session_id)
-            .workspace(workspace.path())
-            .config(test_config());
-        query.captured_kuku_home = Some(kuku_home.path().to_path_buf());
-
-        let error = query.start().await.unwrap_err();
-        assert!(matches!(error, crate::error::Error::SessionLocked { .. }));
-
-        let events_path =
-            crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
-                .unwrap();
-        let events = EventStore::replay(&events_path).unwrap();
-        assert!(
-            events.is_empty(),
-            "locked session start wrote events before failing"
-        );
-    }
-}
+mod startup_prune_tests;

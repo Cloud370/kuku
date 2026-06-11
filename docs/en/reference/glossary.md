@@ -24,7 +24,7 @@
 
 | Term | Meaning |
 |---|---|
-| `Agent` | A named subagent that runs in a child session |
+| `Agent` | A contact card that owns delegated conversation threads |
 | `Skill` | A packaged instruction set loaded into the current session |
 | `package` | A bundle of hooks, skills, and related assets |
 | `hook` | An external process triggered by runtime lifecycle events |

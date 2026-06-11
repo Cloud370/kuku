@@ -104,7 +104,7 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
             MessageBlock::Text(text) => text_parts.push(text.clone()),
             MessageBlock::ToolResult(result) => {
                 if !text_parts.is_empty() {
-                    messages.push(json!({"role": "user", "content": text_parts.join("\n")}));
+                    messages.push(json!({"role": "user", "content": text_parts.join("\n\n")}));
                     text_parts.clear();
                 }
                 messages.push(json!({
@@ -118,7 +118,7 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
     }
 
     if !text_parts.is_empty() {
-        messages.push(json!({"role": "user", "content": text_parts.join("\n")}));
+        messages.push(json!({"role": "user", "content": text_parts.join("\n\n")}));
     }
 
     messages
@@ -228,6 +228,7 @@ pub(crate) async fn stream(
     let eof_parser = Arc::clone(&parser);
     Ok(stream_sse_events(
         response,
+        |_| {},
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))

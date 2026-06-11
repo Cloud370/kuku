@@ -157,9 +157,51 @@ async fn invalid_workspace_returns_error() {
     assert_eq!(body["code"], "invalid_request");
 }
 
+#[tokio::test]
+async fn invalid_conversation_returns_error() {
+    let mock = mock_provider::start_mock_provider().await;
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
+
+    let client = wreq::Client::new();
+    let resp = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "hello",
+            "workspace": server.workspace.path().to_str().unwrap(),
+            "conversation": "main/api",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["code"], "invalid_request");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_waiting_for_permission_stops_run() {
     let mock = mock_provider::start_mock_provider().await;
+    mock.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .header("request-id", "req_tool")
+            .header("connection", "close")
+            .body(mock_provider::anthropic_sse_response(serde_json::json!({
+                "id": "msg_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Need approval."},
+                    {"type": "tool_use", "id": "toolu_cancel_wait", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print cancelled marker"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 6}
+            })));
+    });
     let final_mock = mock.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
@@ -175,25 +217,6 @@ async fn cancel_while_waiting_for_permission_stops_run() {
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Should not continue after cancel."}],
                 "stop_reason": "end_turn",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-    mock.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains("cancel permission wait");
-        then.status(200)
-            .header("request-id", "req_tool")
-            .header("connection", "close")
-            .body(mock_provider::anthropic_sse_response(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cancel_wait", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print cancelled marker"}}
-                ],
-                "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
             })));
     });
@@ -218,7 +241,6 @@ async fn cancel_while_waiting_for_permission_stops_run() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
-
     let mut stream = resp.bytes_stream();
     let mut stream_buf = Vec::new();
     let run_start = next_event_of_type(&mut stream, &mut stream_buf, "run_start").await;
@@ -241,4 +263,98 @@ async fn cancel_while_waiting_for_permission_stops_run() {
     let terminal = next_terminal_event(&mut stream, &mut stream_buf).await;
     assert_eq!(terminal["type"], "cancelled");
     final_mock.assert_hits(0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_can_target_new_non_main_conversation() {
+    let mock = mock_provider::start_mock_provider().await;
+    mock_provider::mock_text_response(&mock, "Hello review!");
+
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
+
+    let client = wreq::Client::new();
+    let resp = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "hello review",
+            "workspace": server.workspace.path().to_str().unwrap(),
+            "conversation": "review",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    let lines = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(lines
+        .iter()
+        .any(|value| value["type"] == "done" && value["conversation"] == "review"));
+
+    let sessions =
+        kuku::session::list_sessions(server.home.path(), Some(server.workspace.path())).unwrap();
+    let session_id = sessions.first().unwrap().session_id.clone();
+    let events_path = kuku::session::session_events_path(
+        server.home.path(),
+        server.workspace.path(),
+        &session_id,
+    )
+    .unwrap();
+    let events = kuku::event::EventStore::replay(&events_path).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.payload, kuku::event::EventPayload::ConversationOpened { conversation, .. } if conversation == "review")));
+    assert!(events.iter().any(|event| matches!(&event.payload, kuku::event::EventPayload::MessageUser { conversation, text, .. } if conversation == "review" && text == "hello review")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_can_target_existing_non_main_conversation() {
+    let mock = mock_provider::start_mock_provider().await;
+    mock_provider::mock_text_response(&mock, "Hello again review!");
+
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config).await;
+    wait_for_server(&server.base_url).await;
+
+    let client = wreq::Client::new();
+    let first = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "first review",
+            "workspace": server.workspace.path().to_str().unwrap(),
+            "conversation": "review",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let _ = first.text().await.unwrap();
+
+    let sessions =
+        kuku::session::list_sessions(server.home.path(), Some(server.workspace.path())).unwrap();
+    let session_id = sessions.first().unwrap().session_id.clone();
+
+    let second = client
+        .post(format!("{}/runs", server.base_url))
+        .json(&serde_json::json!({
+            "prompt": "second review",
+            "workspace": server.workspace.path().to_str().unwrap(),
+            "session_id": session_id,
+            "conversation": "review",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    let body = second.text().await.unwrap();
+    let lines = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(lines
+        .iter()
+        .any(|value| value["type"] == "done" && value["conversation"] == "review"));
 }

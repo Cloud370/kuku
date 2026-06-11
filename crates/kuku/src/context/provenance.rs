@@ -22,9 +22,9 @@ pub struct ToolRegistryProvenance {
     pub tool_count: usize,
 }
 
-/// Snapshot of the subagent registry used for agent catalog rendering.
+/// Snapshot of the agent registry used for agent catalog rendering.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SubagentRegistryProvenance {
+pub struct AgentRegistryProvenance {
     pub hash: String,
     pub names: Vec<String>,
 }
@@ -44,6 +44,19 @@ pub struct PluginRegistryProvenance {
     pub count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PromptRendererIdentity {
+    pub provider: String,
+    pub renderer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PromptCapabilityMetadata {
+    pub context_budget_tier: String,
+    pub max_context_tokens: Option<u32>,
+    pub remaining_input_tokens: Option<u32>,
+}
+
 /// Captured provenance metadata for a provider request, stored in events.jsonl.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
@@ -58,7 +71,7 @@ pub struct RequestProvenance {
     pub history_range: HistoryRange,
     pub tool_registry: ToolRegistryProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_registry: Option<SubagentRegistryProvenance>,
+    pub agent_registry: Option<AgentRegistryProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_registry: Option<SkillRegistryProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,7 +91,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        FileSource, HistoryRange, RequestProvenance, SubagentRegistryProvenance,
+        AgentRegistryProvenance, FileSource, HistoryRange, RequestProvenance,
         ToolRegistryProvenance,
     };
 
@@ -124,7 +137,7 @@ mod tests {
             prompt_asset_sources: prompt_sources.clone(),
             history_range: history_range.clone(),
             tool_registry: tool_registry.clone(),
-            subagent_registry: None,
+            agent_registry: None,
             skill_registry: None,
             plugin_registry: None,
             provider_format: "anthropic".to_string(),
@@ -153,7 +166,7 @@ mod tests {
             prompt_asset_sources: actual_prompt_sources,
             history_range: actual_history_range,
             tool_registry: actual_tool_registry,
-            subagent_registry: actual_subagent_registry,
+            agent_registry: actual_agent_registry,
             skill_registry: _,
             plugin_registry: _,
             provider_format,
@@ -176,7 +189,7 @@ mod tests {
         assert_eq!(actual_prompt_sources, prompt_sources);
         assert_eq!(actual_history_range, history_range);
         assert_eq!(actual_tool_registry, tool_registry);
-        assert_eq!(actual_subagent_registry, None);
+        assert_eq!(actual_agent_registry, None);
         assert_eq!(provider_format, "anthropic");
         assert_eq!(provider, "anthropic");
         assert_eq!(model, "claude-sonnet-4-6");
@@ -191,9 +204,9 @@ mod tests {
     }
 
     #[test]
-    fn provenance_serializes_subagent_registry_when_present() {
-        let subagent = SubagentRegistryProvenance {
-            hash: "sha256-subagent".to_string(),
+    fn provenance_serializes_agent_registry_when_present() {
+        let agent = AgentRegistryProvenance {
+            hash: "sha256-agent".to_string(),
             names: vec!["review".to_string(), "explore".to_string()],
         };
         let provenance = RequestProvenance {
@@ -214,7 +227,7 @@ mod tests {
                 names: vec![],
                 tool_count: 0,
             },
-            subagent_registry: Some(subagent),
+            agent_registry: Some(agent),
             skill_registry: None,
             plugin_registry: None,
             provider_format: "anthropic".to_string(),
@@ -228,12 +241,12 @@ mod tests {
         };
 
         let json = serde_json::to_value(&provenance).unwrap();
-        let sub = &json["subagent_registry"];
-        assert_eq!(sub["hash"], "sha256-subagent");
-        assert_eq!(sub["names"][0], "review");
-        assert_eq!(sub["names"][1], "explore");
+        let agent = &json["agent_registry"];
+        assert_eq!(agent["hash"], "sha256-agent");
+        assert_eq!(agent["names"][0], "review");
+        assert_eq!(agent["names"][1], "explore");
 
-        // When subagent_registry is None, it should be absent from JSON.
+        // When agent_registry is None, it should be absent from JSON.
         let provenance_none = RequestProvenance {
             request_id: "req_2".to_string(),
             tier: "strong".to_string(),
@@ -252,7 +265,7 @@ mod tests {
                 names: vec![],
                 tool_count: 0,
             },
-            subagent_registry: None,
+            agent_registry: None,
             skill_registry: None,
             plugin_registry: None,
             provider_format: "anthropic".to_string(),
@@ -265,6 +278,6 @@ mod tests {
             remaining_input_tokens: None,
         };
         let json_none = serde_json::to_value(&provenance_none).unwrap();
-        assert!(json_none.get("subagent_registry").is_none());
+        assert!(json_none.get("agent_registry").is_none());
     }
 }

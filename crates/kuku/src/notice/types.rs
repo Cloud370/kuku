@@ -1,6 +1,31 @@
+use crate::conversation::address::ConversationAddress;
+use crate::query::PermissionRequest;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    ContextDrift { entries: Vec<ContextDriftEntry> },
+    ContextDrift {
+        entries: Vec<ContextDriftEntry>,
+    },
+    AgentDirectory {
+        directory: String,
+    },
+    OpenConversations {
+        entries: Vec<OpenConversationEntry>,
+    },
+    ConversationInbox {
+        messages: Vec<ConversationInboxMessage>,
+    },
+    LoadedSkills {
+        skills: Vec<String>,
+    },
+    PendingPermission {
+        request: PermissionRequest,
+    },
+    InterruptedTurn {
+        conversation: ConversationAddress,
+        turn: u64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +43,18 @@ pub(crate) struct Notice {
 pub(crate) struct ContextDriftEntry {
     pub(crate) path: String,
     pub(crate) status: ContextDriftStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenConversationEntry {
+    pub(crate) conversation: ConversationAddress,
+    pub(crate) summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConversationInboxMessage {
+    pub(crate) from: Option<ConversationAddress>,
+    pub(crate) text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

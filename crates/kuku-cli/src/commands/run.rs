@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
-use kuku::subagent::registry::SubagentRegistry;
-use kuku::{query, PermissionChoice, UiEvent};
+use kuku::agent::registry::AgentRegistry;
+use kuku::{query, PermissionChoice, ToolEvent, UiEvent};
 
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine, RenderMode, RunMetrics, RunUsageSummary};
@@ -73,6 +73,63 @@ fn noninteractive_permission_choice(
     } else {
         None
     }
+}
+
+fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
+    match event {
+        UiEvent::ToolOutput {
+            id,
+            event: ToolEvent::PermissionRequested { .. },
+        } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
+fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
+    match kind {
+        kuku::query::ToolKind::Agent { conversation, .. } => {
+            Some(conversation.as_str().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn tool_call_line(
+    tool: String,
+    id: String,
+    summary: String,
+    kind: &kuku::query::ToolKind,
+) -> OutputLine {
+    OutputLine::tool_call(tool, id, summary, serde_json::Value::Null)
+        .with_conversation(conversation_for_tool_kind(kind))
+}
+
+fn tool_result_line(
+    id: String,
+    status: String,
+    summary: String,
+    conversation: Option<String>,
+) -> OutputLine {
+    OutputLine::tool_result(id, status, summary, None, false).with_conversation(conversation)
+}
+
+fn permission_ask_line(request: &kuku::query::PermissionRequest) -> OutputLine {
+    OutputLine::permission_ask(
+        request.id.clone(),
+        request.tool.clone(),
+        request.risk.clone(),
+        request.summary.clone(),
+    )
+    .with_conversation(Some(request.conversation.as_str().to_string()))
+}
+
+fn permission_decision_line(
+    request: &kuku::query::PermissionRequest,
+    decision: String,
+    rule: String,
+) -> OutputLine {
+    OutputLine::permission_decision(request.id.clone(), request.tool.clone(), decision, rule)
+        .with_conversation(Some(request.conversation.as_str().to_string()))
 }
 
 struct BootstrapSkillInput {
@@ -179,11 +236,11 @@ fn build_query(
     } else {
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
-        let registry = SubagentRegistry::builder()
+        let registry = AgentRegistry::builder()
             .builtins()
             .build_with_discovery(&workspace, &discovery_config)?
             .build();
-        q = q.subagents(registry);
+        q = q.agents(registry);
     }
     if let Some(ref dir) = args.prompts_dir {
         q = q.prompts_dir(std::path::PathBuf::from(dir));
@@ -366,6 +423,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut text_buffer = String::new();
     let mut was_cancelled = false;
     let mut done_output: Option<kuku::RunOutput> = None;
+    let mut tool_conversations = std::collections::HashMap::<String, String>::new();
 
     loop {
         let event = tokio::select! {
@@ -416,7 +474,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 id,
                 tool,
                 summary,
-                kind: _,
+                kind,
             }) => {
                 close_thinking(
                     &mut in_thinking,
@@ -425,10 +483,12 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     use_stream_json,
                 );
                 if use_stream_json {
+                    if let Some(conversation) = conversation_for_tool_kind(&kind) {
+                        tool_conversations.insert(id.clone(), conversation);
+                    }
                     println!(
                         "{}",
-                        OutputLine::tool_call(tool, id, summary, serde_json::Value::Null,)
-                            .to_json_line()
+                        tool_call_line(tool, id, summary, &kind).to_json_line()
                     );
                 } else {
                     println!("\n{}", display.tool_call(&tool, &summary, &id));
@@ -441,9 +501,10 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             }) => {
                 if use_stream_json {
+                    let conversation = tool_conversations.remove(&id);
                     println!(
                         "{}",
-                        OutputLine::tool_result(id, status, summary, None, false).to_json_line()
+                        tool_result_line(id, status, summary, conversation).to_json_line()
                     );
                 } else {
                     println!("{}", display.tool_result(&status, &summary, &id));
@@ -462,16 +523,7 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = run.decide(&request.id, choice, None).await?;
                     if use_stream_json {
                         if matches!(choice, PermissionChoice::Deny) {
-                            println!(
-                                "{}",
-                                OutputLine::permission_ask(
-                                    request.id.clone(),
-                                    request.tool.clone(),
-                                    request.risk,
-                                    request.summary,
-                                )
-                                .to_json_line()
-                            );
+                            println!("{}", permission_ask_line(&request).to_json_line());
                         }
                         let decision = if matches!(choice, PermissionChoice::Deny) {
                             "deny"
@@ -480,9 +532,8 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         };
                         println!(
                             "{}",
-                            OutputLine::permission_decision(
-                                request.id,
-                                request.tool,
+                            permission_decision_line(
+                                &request,
                                 decision.into(),
                                 "noninteractive".into(),
                             )
@@ -506,6 +557,82 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                         _ => (PermissionChoice::Deny, "user"),
                     };
                     let _ = run.decide(&request.id, decision, None).await?;
+                    let decision_str = if matches!(decision, PermissionChoice::Once) {
+                        "allow"
+                    } else {
+                        "deny"
+                    };
+                    println!(
+                        "{}",
+                        display.permission_decision(decision_str, &request.tool, rule)
+                    );
+                    println!("{}", display.tool_running());
+                }
+            }
+            Some(UiEvent::ToolOutput {
+                id: parent_tool_id,
+                event: ToolEvent::PermissionRequested { request },
+            }) => {
+                let event = UiEvent::ToolOutput {
+                    id: parent_tool_id.clone(),
+                    event: ToolEvent::PermissionRequested {
+                        request: request.clone(),
+                    },
+                };
+                let Some(parent_tool_id) = nested_permission_parent_tool_id(&event) else {
+                    continue;
+                };
+                let parent_tool_id = parent_tool_id.to_string();
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                if let Some(choice) =
+                    noninteractive_permission_choice(args.auto_yes, use_stream_json)
+                {
+                    let _ = run
+                        .decide(&request.id, choice, Some(parent_tool_id.as_str()))
+                        .await?;
+                    if use_stream_json {
+                        if matches!(choice, PermissionChoice::Deny) {
+                            println!("{}", permission_ask_line(&request).to_json_line());
+                        }
+                        let decision = if matches!(choice, PermissionChoice::Deny) {
+                            "deny"
+                        } else {
+                            "allow"
+                        };
+                        println!(
+                            "{}",
+                            permission_decision_line(
+                                &request,
+                                decision.into(),
+                                "noninteractive".into(),
+                            )
+                            .to_json_line()
+                        );
+                    } else {
+                        println!(
+                            "{}",
+                            display.permission_decision("allow", &request.tool, "posture")
+                        );
+                        println!("{}", display.tool_running());
+                    }
+                } else {
+                    let prompt_line = display.permission_ask(&request.tool, &request.summary);
+                    print!("{prompt_line} ");
+                    io::stdout().flush()?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+                    let (decision, rule) = match input.trim() {
+                        "y" | "" => (PermissionChoice::Once, "user"),
+                        _ => (PermissionChoice::Deny, "user"),
+                    };
+                    let _ = run
+                        .decide(&request.id, decision, Some(parent_tool_id.as_str()))
+                        .await?;
                     let decision_str = if matches!(decision, PermissionChoice::Once) {
                         "allow"
                     } else {
@@ -782,186 +909,5 @@ fn slash_command_candidate(input: &str) -> Option<(String, String)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Mutex, OnceLock};
-
-    use super::{
-        build_query, noninteractive_permission_choice, parse_slash_command, slash_command_candidate,
-    };
-    use crate::cli_args::RunArgs;
-    use kuku::PermissionChoice;
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn temp_workspace() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "kuku-cli-run-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    fn test_config_path(dir: &std::path::Path) -> std::path::PathBuf {
-        let path = dir.join("config.toml");
-        std::fs::write(&path, kuku::config::generate_default()).unwrap();
-        path
-    }
-
-    #[test]
-    fn stream_json_without_yes_denies_permission_requests() {
-        assert_eq!(
-            noninteractive_permission_choice(false, true),
-            Some(PermissionChoice::Deny)
-        );
-    }
-
-    #[test]
-    fn yes_auto_allows_permission_requests() {
-        assert_eq!(
-            noninteractive_permission_choice(true, false),
-            Some(PermissionChoice::Once)
-        );
-        assert_eq!(
-            noninteractive_permission_choice(true, true),
-            Some(PermissionChoice::Once)
-        );
-    }
-
-    #[test]
-    fn interactive_without_yes_waits_for_user_input() {
-        assert_eq!(noninteractive_permission_choice(false, false), None);
-    }
-
-    #[test]
-    fn slash_command_with_prompt() {
-        let (name, rest) = parse_slash_command("/tdd implement login");
-        assert_eq!(name, "tdd");
-        assert_eq!(rest, "implement login");
-    }
-
-    #[test]
-    fn slash_command_without_prompt() {
-        let (name, rest) = parse_slash_command("/review");
-        assert_eq!(name, "review");
-        assert_eq!(rest, "");
-    }
-
-    #[test]
-    fn slash_command_with_multiple_words() {
-        let (name, rest) = parse_slash_command("/code-review check auth module");
-        assert_eq!(name, "code-review");
-        assert_eq!(rest, "check auth module");
-    }
-
-    #[test]
-    fn slash_command_trims_leading_whitespace() {
-        let (name, rest) = parse_slash_command("/  tdd implement login");
-        assert_eq!(name, "tdd");
-        assert_eq!(rest, "implement login");
-    }
-
-    #[test]
-    fn slash_command_candidate_rejects_path_like_prompts() {
-        assert!(slash_command_candidate("/tmp/foo").is_none());
-        assert!(slash_command_candidate("/etc/hosts").is_none());
-        assert!(slash_command_candidate("/").is_none());
-    }
-
-    #[test]
-    fn build_query_treats_path_like_prompt_as_plain_text() {
-        let _guard = env_lock().lock().unwrap();
-        let workspace = temp_workspace();
-        let previous_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&workspace).unwrap();
-
-        let args = RunArgs {
-            prompt: vec!["/tmp/foo".to_string()],
-            auto_yes: false,
-            model: None,
-            session: None,
-            cont: false,
-            json: false,
-            stream_json: false,
-            show_thinking: false,
-            raw: false,
-            verbose: false,
-            config: None,
-            prompts_dir: None,
-            no_agents: true,
-            no_skills: false,
-            skill_body: None,
-            bootstrap_skill_name: None,
-        };
-
-        let result = build_query(&args, test_config_path(&workspace)).unwrap();
-
-        std::env::set_current_dir(previous_cwd).unwrap();
-        let _ = std::fs::remove_dir_all(&workspace);
-
-        assert_eq!(result.query.prompt(), "/tmp/foo");
-    }
-
-    #[test]
-    fn slash_command_candidate_accepts_valid_skill_names() {
-        assert_eq!(
-            slash_command_candidate("/review check this"),
-            Some(("review".to_string(), "check this".to_string()))
-        );
-        assert_eq!(
-            slash_command_candidate("/code-review"),
-            Some(("code-review".to_string(), String::new()))
-        );
-    }
-
-    #[test]
-    fn slash_command_surfaces_skill_discovery_errors() {
-        let _guard = env_lock().lock().unwrap();
-        let workspace = temp_workspace();
-        let previous_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&workspace).unwrap();
-
-        let skill_dir = workspace.join(".kuku").join("skills").join("broken-skill");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: other-name\ndescription: broken\n---\n\n# Broken\n",
-        )
-        .unwrap();
-
-        let args = RunArgs {
-            prompt: vec!["/broken-skill do something".to_string()],
-            auto_yes: false,
-            model: None,
-            session: None,
-            cont: false,
-            json: false,
-            stream_json: false,
-            show_thinking: false,
-            raw: false,
-            verbose: false,
-            config: None,
-            prompts_dir: None,
-            no_agents: true,
-            no_skills: false,
-            skill_body: None,
-            bootstrap_skill_name: None,
-        };
-
-        let error = match build_query(&args, test_config_path(&workspace)) {
-            Ok(_) => panic!("expected discovery failure"),
-            Err(error) => error,
-        };
-
-        std::env::set_current_dir(previous_cwd).unwrap();
-        let _ = std::fs::remove_dir_all(&workspace);
-
-        assert!(!error.to_string().is_empty());
-    }
-}
+#[path = "run/tests.rs"]
+mod tests;
