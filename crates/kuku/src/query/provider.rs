@@ -114,8 +114,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 .as_ref()
                 .and_then(|r| r.get(pending.conversation.root_contact().as_str()))
                 .map(|d| d.instructions.clone())
-                .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
                 .or_else(|| pending.query.agent_instructions.clone())
+                .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
                 .unwrap_or_default(),
             response_contract: pending.query.response_contract.clone(),
         },
