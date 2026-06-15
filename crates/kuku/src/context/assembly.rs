@@ -115,7 +115,8 @@ pub fn restore_prompt_snapshot(
     events: &[StoredEvent],
     conversation: &str,
 ) -> Option<Vec<CanonicalMessage>> {
-    let prelude = events.iter().rev().find_map(|ev| match &ev.payload {
+    let filtered = super::revert::filter_rolled_back_events(events);
+    let prelude = filtered.iter().rev().find_map(|ev| match &ev.payload {
         EventPayload::PromptSnapshot {
             conversation: event_conversation,
             messages,
@@ -138,13 +139,13 @@ pub fn restore_prompt_snapshot(
 ///   1. system_prompt (catalog.system.text)
 ///   2. project_policy (blocks["project-policy"] + render_project_context)
 ///   3. agent identity (input.agent_instructions)
-///   4. agent catalog + loaded skills (injected by caller via prelude push)
-///   5. tool_guidance (blocks["tool-guidance"])
-///   6. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
+///   4. tool_guidance (blocks["tool-guidance"])
+///   5. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
+///   6. agent catalog + loaded skills (appended by caller after memory blocks)
 ///
-/// Per-turn runtime_context is built from input.runtime_blocks by wrapping
-/// with the catalog's runtime/context template. The caller injects it into
-/// the current user turn.
+/// Per-turn runtime_context is built from input.runtime_blocks (and
+/// optionally response_contract) by wrapping with the catalog's
+/// runtime/context template. The caller injects it into the current user turn.
 pub fn assemble_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
@@ -237,8 +238,22 @@ pub fn assemble_context(
     };
 
     // ---- Runtime context (per-turn) ----
-    let runtime_context = input
-        .runtime_blocks
+    let runtime_blocks = if let Some(ref contract) = input.response_contract {
+        let mut parts = Vec::new();
+        parts.push(format!(
+            "<kuku_response_contract>\nsurface: {}\nlocale: {}\npreferences: {}\n</kuku_response_contract>",
+            contract.surface,
+            contract.locale,
+            contract.preferences.as_deref().unwrap_or(""),
+        ));
+        if let Some(ref blocks) = input.runtime_blocks {
+            parts.push(blocks.clone());
+        }
+        Some(parts.join("\n"))
+    } else {
+        input.runtime_blocks.clone()
+    };
+    let runtime_context = runtime_blocks
         .filter(|blocks| !blocks.is_empty())
         .map(|blocks| {
             let wrapper = catalog

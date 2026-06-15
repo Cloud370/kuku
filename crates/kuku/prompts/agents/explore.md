@@ -3,6 +3,7 @@ name: explore
 description: Search broadly for patterns, definitions, or references
 tier: light
 tool_profile: read
+tools: [find_files, read_file, search_text, fetch_url, fetch_web]
 max_turns: 10
 ---
 

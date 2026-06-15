@@ -237,8 +237,16 @@ fn build_query(
     } else {
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
+        let catalog = match &args.prompts_dir {
+            Some(dir) => {
+                let dir = std::path::PathBuf::from(dir);
+                kuku::prompt::PromptCatalog::load_from_dir(&dir)
+                    .unwrap_or_else(|_| builtin_prompt_catalog())
+            }
+            None => builtin_prompt_catalog(),
+        };
         let registry = AgentRegistry::builder()
-            .builtins(&builtin_prompt_catalog())
+            .builtins(&catalog)
             .build_with_discovery(&workspace, &discovery_config)?
             .build();
         q = q.agents(registry);

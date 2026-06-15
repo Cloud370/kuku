@@ -166,17 +166,26 @@ fn build_context_drift_notice(
     tier: ContextBudgetTier,
 ) -> Option<Notice> {
     let snapshot = latest_prompt_snapshot(events, conversation)?;
-    let (project_sources, memory_sources) = match snapshot {
+    let (project_sources, memory_sources, asset_sources) = match snapshot {
         EventPayload::PromptSnapshot {
             project_instruction_sources,
             memory_sources,
+            prompt_asset_sources,
             ..
-        } => (project_instruction_sources, memory_sources),
+        } => (
+            project_instruction_sources,
+            memory_sources,
+            prompt_asset_sources,
+        ),
         _ => return None,
     };
 
     let mut entries = Vec::new();
-    for source in project_sources.iter().chain(memory_sources.iter()) {
+    for source in project_sources
+        .iter()
+        .chain(memory_sources.iter())
+        .chain(asset_sources.iter())
+    {
         let path = PathBuf::from(&source.path);
         let label = path
             .strip_prefix(workspace)

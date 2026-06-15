@@ -3,6 +3,7 @@ name: review
 description: Review code or docs for correctness, evidence, and boundary issues
 tier: balanced
 tool_profile: read
+tools: [find_files, read_file, search_text, fetch_url, fetch_web]
 max_turns: 10
 ---
 

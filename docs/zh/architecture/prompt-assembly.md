@@ -34,9 +34,9 @@ Prelude 是可复用上下文的冻结快照。每个 turn 捕获一次，后续
 |---|---|---|
 | 2 | project policy | `blocks/project-policy.md` + 渲染后的项目指令和 model tiers |
 | 3 | agent identity | `input.agent_instructions` |
-| 4 | agent catalog + loaded skills | 由调用方通过 prelude push 注入 |
-| 5 | tool guidance | `blocks/tool-guidance.md` |
-| 6 | memory | `blocks/memory.md` + `memory/global.md` + `memory/project.md`（由 `enable_memory` 控制） |
+| 4 | tool guidance | `blocks/tool-guidance.md` |
+| 5 | memory | `blocks/memory.md` + `memory/global.md` + `memory/project.md`（由 `enable_memory` 控制） |
+| 6 | agent catalog + loaded skills | 在 memory 块之后由调用方追加 |
 
 ### History
 
@@ -60,8 +60,9 @@ inbox、loaded skills、context drift。
 system prompt
 prelude[0]       project_policy
 prelude[1]       agent_identity
-prelude[2]       agent catalog + skills（由调用方注入）
-prelude[3..]     tool_guidance、memory*
+prelude[2]       tool_guidance
+prelude[3..]     memory*
+prelude[4..]     agent catalog + skills（由调用方追加）
 messages[N..]    某个 conversation 的 replayed history
 last user turn   runtime_context + human input
 ```
