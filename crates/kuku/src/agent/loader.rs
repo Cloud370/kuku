@@ -141,9 +141,11 @@ fn extract_str_list(mapping: &serde_yaml::Mapping, key: &str) -> Option<Vec<Stri
 
 fn extract_tool_profile(mapping: &serde_yaml::Mapping) -> Option<ToolProfile> {
     extract_str(mapping, "tool_profile").and_then(|s| match s.as_str() {
-        "Read" => Some(ToolProfile::Read),
-        "ReadWrite" => Some(ToolProfile::ReadWrite),
-        "None" => Some(ToolProfile::None),
+        "read" | "Read" => Some(ToolProfile::Read),
+        "read_write" | "readwrite" | "ReadWrite" | "write" | "Write" => {
+            Some(ToolProfile::ReadWrite)
+        }
+        "none" | "None" => Some(ToolProfile::None),
         _ => None,
     })
 }
@@ -249,8 +251,10 @@ pub fn parse_agent_frontmatter(name: &str, fm: &str, body: &str) -> Option<Agent
             .get("tool_profile")
             .and_then(|v| v.as_str())
             .map(|s| match s {
-                "read_write" => ToolProfile::ReadWrite,
-                "none" => ToolProfile::None,
+                "read_write" | "readwrite" | "ReadWrite" | "write" | "Write" => {
+                    ToolProfile::ReadWrite
+                }
+                "none" | "None" => ToolProfile::None,
                 _ => ToolProfile::Read,
             })
             .unwrap_or(ToolProfile::Read),

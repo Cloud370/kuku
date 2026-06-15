@@ -63,9 +63,9 @@ jq -r 'select(.direction=="request") | .body as $body | {
 
 对 Anthropic-format provider，预期的 cache-control 诊断结果是：
 
-- `top_cache` 是 `null`；kuku 不发送顶层 `cache_control`。
-- `system_type` 是 `array`。
-- cache marker 出现在 provider content blocks 上，例如 system text block、tool schema 和 conversation content block。
+- `top_cache` 是 `{"type": "ephemeral"}`；kuku 使用顶层自动缓存。
+- `system_marker_count`、`tool_marker_count`、`message_marker_count` 均为 0。
+- 没有 per-block cache marker；顶层单个 `cache_control` 触发 Anthropic 自动缓存。
 
 ## 调试 Agent 复用
 

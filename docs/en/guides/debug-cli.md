@@ -63,9 +63,9 @@ jq -r 'select(.direction=="request") | .body as $body | {
 
 For Anthropic-format providers, expected cache-control diagnostics are:
 
-- `top_cache` is `null`; kuku does not send top-level `cache_control`.
-- `system_type` is `array`.
-- Cache markers appear on provider content blocks, such as system text blocks, tool schemas, and conversation content blocks.
+- `top_cache` is `{"type": "ephemeral"}`; kuku uses top-level automatic caching.
+- `system_marker_count`, `tool_marker_count`, and `message_marker_count` are 0.
+- No per-block cache markers; the single top-level `cache_control` triggers Anthropic automatic caching.
 
 ## Debug Agent Reuse
 
