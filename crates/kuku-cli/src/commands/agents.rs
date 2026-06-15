@@ -1,4 +1,5 @@
 use kuku::agent::registry::AgentRegistry;
+use kuku::prompt::builtin_prompt_catalog;
 
 use crate::cli_args::{AgentsArgs, AgentsSubcommand};
 use crate::display::util::truncate;
@@ -11,7 +12,7 @@ fn build_registry() -> Result<AgentRegistry, Box<dyn std::error::Error>> {
         .and_then(|f| f.discovery)
         .unwrap_or_default();
     let registry = AgentRegistry::builder()
-        .builtins()
+        .builtins(&builtin_prompt_catalog())
         .build_with_discovery(&workspace, &discovery_config)?
         .build();
     Ok(registry)

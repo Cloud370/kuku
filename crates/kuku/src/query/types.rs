@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use futures_core::Stream;
 
 use crate::config::Config;
+use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
 use crate::log::LogRecord;
@@ -40,6 +41,8 @@ pub struct Query {
     pub(super) agent_binding_id: Option<String>,
     pub(super) message_from: Option<ConversationAddress>,
     pub(super) via_tool_call_id: Option<String>,
+    pub(crate) response_contract: Option<HostResponseContract>,
+    pub(crate) agent_instructions: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
 }
 
@@ -142,14 +145,6 @@ pub enum ToolEvent {
         code: String,
         message: String,
     },
-}
-
-/// Permission mode for delegated conversations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum PermissionMode {
-    AutoAllow,
-    Interactive,
 }
 
 /// Host-facing runtime event stream.
@@ -514,6 +509,8 @@ impl Query {
             agent_binding_id: None,
             message_from: None,
             via_tool_call_id: None,
+            response_contract: None,
+            agent_instructions: None,
             tool_registry_override: None,
         }
     }
@@ -598,6 +595,12 @@ impl Query {
     /// Set the model alias or provider:model name.
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// Attach a host response contract (surface, locale, preferences) for prompt assembly.
+    pub fn response_contract(mut self, contract: crate::context::HostResponseContract) -> Self {
+        self.response_contract = Some(contract);
         self
     }
 

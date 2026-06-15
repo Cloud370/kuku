@@ -1,9 +1,12 @@
 use kuku::agent::definition::{AgentDefinition, DefinitionSource, ToolProfile};
 use kuku::agent::registry::AgentRegistry;
+use kuku::prompt::builtin_prompt_catalog;
 
 #[test]
 fn builtin_registry_is_loadable_and_queryable() {
-    let registry = AgentRegistry::builder().builtins().build();
+    let registry = AgentRegistry::builder()
+        .builtins(&builtin_prompt_catalog())
+        .build();
     assert_eq!(registry.len(), 2);
 
     let review = registry.get("review").expect("review should exist");
@@ -18,8 +21,12 @@ fn builtin_registry_is_loadable_and_queryable() {
 
 #[test]
 fn registry_hash_is_stable() {
-    let r1 = AgentRegistry::builder().builtins().build();
-    let r2 = AgentRegistry::builder().builtins().build();
+    let r1 = AgentRegistry::builder()
+        .builtins(&builtin_prompt_catalog())
+        .build();
+    let r2 = AgentRegistry::builder()
+        .builtins(&builtin_prompt_catalog())
+        .build();
     assert_eq!(r1.hash(), r2.hash());
     assert_eq!(r1.names(), r2.names());
 }

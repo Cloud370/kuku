@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use kuku::agent::registry::AgentRegistry;
+use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, PermissionChoice, ToolEvent, UiEvent};
 
 use crate::cli_args::RunArgs;
@@ -237,7 +238,7 @@ fn build_query(
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
         let registry = AgentRegistry::builder()
-            .builtins()
+            .builtins(&builtin_prompt_catalog())
             .build_with_discovery(&workspace, &discovery_config)?
             .build();
         q = q.agents(registry);

@@ -1,8 +1,17 @@
 /target/
 .worktrees/
 **/*.rs.bk
+*.bak
 .DS_Store
 .env
 .env.*
 !.env.example
 /research/
+# tmp
+benchmarks/
+benchmarks/__pycache__/
+benchmarks/tests/__pycache__/
+benchmarks/.venv/
+benchmarks/jobs/
+# tmp
+/tools

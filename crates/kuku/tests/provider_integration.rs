@@ -9,6 +9,7 @@ use httpmock::When;
 use kuku::agent::registry::AgentRegistry;
 use kuku::config::ApiKey;
 use kuku::event::{EventPayload, EventStore};
+use kuku::prompt::builtin_prompt_catalog;
 use kuku::query::Run;
 use kuku::{query, Error, Provider, UiEvent};
 
@@ -132,7 +133,6 @@ fn context_conditions(when: When, query_text: &str) -> When {
     when.body_contains(r#""tools""#)
         .body_contains("<kuku_execution_context>")
         .body_contains("<kuku_project_instructions>")
-        .body_contains("<kuku_global_memory>")
         .body_contains("<kuku_tool_guidance>")
         .body_contains(query_text)
         .matches(is_initial_request)
@@ -163,7 +163,11 @@ fn anthro(query_text: &str, server: &MockServer) -> query::Query {
 }
 
 fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
-    anthro(query_text, server).agents(AgentRegistry::builder().builtins().build())
+    anthro(query_text, server).agents(
+        AgentRegistry::builder()
+            .builtins(&builtin_prompt_catalog())
+            .build(),
+    )
 }
 
 fn event_conversation(payload: &EventPayload) -> Option<&str> {

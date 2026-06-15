@@ -1,5 +1,4 @@
 use crate::conversation::address::ConversationAddress;
-use crate::query::PermissionRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
@@ -17,14 +16,6 @@ pub(crate) enum NoticeKind {
     },
     LoadedSkills {
         skills: Vec<String>,
-    },
-    PendingPermission {
-        request: PermissionRequest,
-    },
-    InterruptedTurn {
-        conversation: ConversationAddress,
-        turn: u64,
-        reason: String,
     },
 }
 

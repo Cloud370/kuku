@@ -1,9 +1,14 @@
 use super::definition::AgentDefinition;
 use super::registry::AgentRegistry;
+use crate::prompt::PromptCatalog;
 
-pub fn render_agent_catalog(registry: &AgentRegistry) -> Option<String> {
-    render_agent_directory(registry, 0)
-        .map(|directory| format!("<kuku_agent_catalog>\n{directory}\n</kuku_agent_catalog>"))
+pub fn render_agent_catalog(registry: &AgentRegistry, catalog: &PromptCatalog) -> Option<String> {
+    let tmpl = catalog
+        .blocks
+        .get("agent-catalog")
+        .map(|a| a.text.as_str())
+        .unwrap_or("<kuku_agent_catalog>\n{{agent_list}}\n</kuku_agent_catalog>");
+    render_agent_directory(registry, 0).map(|directory| tmpl.replace("{{agent_list}}", &directory))
 }
 
 pub fn render_agent_directory(

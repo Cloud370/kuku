@@ -6,6 +6,7 @@ use kuku::agent::registry::AgentRegistry;
 use kuku::config::ApiKey;
 use kuku::config::TierConfig;
 use kuku::event::{EventPayload, EventStore};
+use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Provider};
 
 fn request_body(req: &HttpMockRequest) -> Option<serde_json::Value> {
@@ -171,7 +172,11 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
         .base_url(server.base_url())
         .api_key("test-key")
         .config(config)
-        .agents(AgentRegistry::builder().builtins().build())
+        .agents(
+            AgentRegistry::builder()
+                .builtins(&builtin_prompt_catalog())
+                .build(),
+        )
 }
 
 fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, session_id: &str) {

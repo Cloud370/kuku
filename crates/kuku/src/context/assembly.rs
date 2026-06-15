@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
-use crate::prompt::{render_project_context, render_runtime_context, ProjectContextInput};
+use crate::prompt::{render_project_context, ProjectContextInput};
 
 use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
@@ -39,7 +39,14 @@ pub struct ToolSchema {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HostResponseContract {
+    pub surface: String,
+    pub locale: String,
+    pub preferences: Option<String>,
+}
+
 /// All sources needed to assemble a provider request context.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ContextInput {
     pub environment: EnvironmentSource,
     pub project_instructions: Vec<InstructionSource>,
@@ -51,14 +58,18 @@ pub struct ContextInput {
     /// Optional rendered runtime blocks (agent catalog, notices, etc.).
     /// These go into the runtime_context wrapper in the current user turn.
     pub runtime_blocks: Option<String>,
+    pub enable_memory: bool,
+    pub agent_name: String,
+    pub agent_instructions: String,
+    pub response_contract: Option<HostResponseContract>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// Assembled system prompt, prelude messages, history, and tool schemas ready for the provider.
 pub struct ContextAssembly {
     pub system_prompt: String,
-    /// messages[0]: tool_guidance, messages[1]: global_memory,
-    /// messages[2]: project_memory, messages[3]: project_context
+    /// Snapshot prelude messages (layers 2-6): project_policy, identity,
+    /// catalog+skills (injected by caller), tool_guidance, memory*.
     pub prelude_messages: Vec<CanonicalMessage>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
@@ -74,8 +85,7 @@ pub struct ContextAssembly {
 }
 
 impl ContextAssembly {
-    /// Snapshot the clean prelude messages
-    /// (tool_guidance + global_memory + project_memory + project_context)
+    /// Snapshot the clean prelude messages (layers 2-6)
     /// before any turn-specific content is added.
     pub fn snapshot_prelude(&self) -> Vec<ContextMessage> {
         self.prelude_messages
@@ -122,7 +132,19 @@ pub fn restore_prompt_snapshot(
     )
 }
 
-/// Build a complete context assembly with A2b two-layer structure.
+/// Build a complete context assembly with 6-layer snapshot.
+///
+/// Layers:
+///   1. system_prompt (catalog.system.text)
+///   2. project_policy (blocks["project-policy"] + render_project_context)
+///   3. agent identity (input.agent_instructions)
+///   4. agent catalog + loaded skills (injected by caller via prelude push)
+///   5. tool_guidance (blocks["tool-guidance"])
+///   6. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
+///
+/// Per-turn runtime_context is built from input.runtime_blocks by wrapping
+/// with the catalog's runtime/context template. The caller injects it into
+/// the current user turn.
 pub fn assemble_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
@@ -138,17 +160,6 @@ pub fn assemble_context(
             .join("\n\n")
     };
 
-    let global_memory_text = input
-        .global_memory
-        .as_ref()
-        .map(|s| s.content.clone())
-        .unwrap_or_else(|| "No global memory.".to_string());
-    let project_memory_text = input
-        .project_memory
-        .as_ref()
-        .map(|s| s.content.clone())
-        .unwrap_or_else(|| "No project memory.".to_string());
-
     let model_tiers_text = if input.model_tiers.is_empty() {
         "No model tiers configured.".to_string()
     } else {
@@ -160,9 +171,12 @@ pub fn assemble_context(
             .join("\n")
     };
 
-    // Layer 1: project_context (behavior framework) — messages[3]
-    let project_context_text = render_project_context(
-        &catalog.project_context.text,
+    // ---- Layer 2: project_policy ----
+    let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
+        crate::error::Error::PromptRender("missing project-policy template".into())
+    })?;
+    let project_policy_text = render_project_context(
+        &project_policy.text,
         &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
@@ -172,70 +186,128 @@ pub fn assemble_context(
         },
     )?;
 
-    // Memory messages rendered from their own templates
-    let global_memory_rendered = catalog
-        .global_memory
-        .text
-        .replace("{{memory_content}}", &global_memory_text);
-    let project_memory_rendered = catalog
-        .project_memory
-        .text
-        .replace("{{memory_content}}", &project_memory_text);
+    // ---- Layer 3: agent identity ----
+    let identity_text = input.agent_instructions.clone();
 
-    // Layer 2: runtime_context (dynamic catalogs + notices) — injected into current user turn
+    // ---- Layer 4: agent catalog + loaded skills ----
+    // (injected by caller via prelude push during Phase 7)
+
+    // ---- Layer 5: tool-guidance ----
+    let tool_guidance = catalog
+        .blocks
+        .get("tool-guidance")
+        .map(|a| a.text.clone())
+        .unwrap_or_default();
+
+    // ---- Layer 6: memory (optional) ----
+    let memory_guidance = if input.enable_memory {
+        catalog.blocks.get("memory").map(|a| a.text.clone())
+    } else {
+        None
+    };
+
+    let global_memory_text = input
+        .global_memory
+        .as_ref()
+        .map(|s| s.content.clone())
+        .unwrap_or_else(|| "No global memory.".to_string());
+    let project_memory_text = input
+        .project_memory
+        .as_ref()
+        .map(|s| s.content.clone())
+        .unwrap_or_else(|| "No project memory.".to_string());
+
+    let global_rendered = if input.enable_memory {
+        catalog
+            .memory
+            .get("global")
+            .map(|a| a.text.replace("{{memory_content}}", &global_memory_text))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let project_rendered = if input.enable_memory {
+        catalog
+            .memory
+            .get("project")
+            .map(|a| a.text.replace("{{memory_content}}", &project_memory_text))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // ---- Runtime context (per-turn) ----
     let runtime_context = input
         .runtime_blocks
         .filter(|blocks| !blocks.is_empty())
-        .map(|blocks| render_runtime_context(&catalog.runtime_context.text, &blocks))
+        .map(|blocks| {
+            let wrapper = catalog
+                .runtime
+                .get("context")
+                .map(|a| a.text.clone())
+                .unwrap_or_else(|| {
+                    "<kuku_runtime_context>\n{{runtime_blocks}}\n</kuku_runtime_context>"
+                        .to_string()
+                });
+            Ok::<_, crate::error::Error>(wrapper.replace("{{runtime_blocks}}", &blocks))
+        })
         .transpose()?;
 
-    let mut memory_sources = Vec::new();
-    if let Some(global_memory) = input.global_memory.clone() {
-        memory_sources.push(global_memory);
+    // ---- Assemble prelude messages (snapshot layers 2-6) ----
+    let mut prelude = Vec::new();
+    if !project_policy_text.is_empty() {
+        prelude.push(CanonicalMessage::user_text(project_policy_text));
     }
-    if let Some(project_memory) = input.project_memory.clone() {
-        memory_sources.push(project_memory);
+    if !identity_text.is_empty() {
+        prelude.push(CanonicalMessage::user_text(identity_text));
+    }
+    // Layer 4 (catalog + skills) injected by caller via prelude push
+    if !tool_guidance.is_empty() {
+        prelude.push(CanonicalMessage::user_text(tool_guidance));
+    }
+    if let Some(mem) = memory_guidance {
+        if !mem.is_empty() {
+            prelude.push(CanonicalMessage::user_text(mem));
+        }
+    }
+    if !global_rendered.is_empty() {
+        prelude.push(CanonicalMessage::user_text(global_rendered));
+    }
+    if !project_rendered.is_empty() {
+        prelude.push(CanonicalMessage::user_text(project_rendered));
+    }
+
+    // ---- Sources for provenance ----
+    let mut prompt_asset_sources: Vec<FileSource> = vec![FileSource {
+        path: catalog.system.path.clone(),
+        hash: catalog.system.hash.clone(),
+    }];
+    for key in &["project-policy", "tool-guidance", "memory"] {
+        if let Some(a) = catalog.blocks.get(*key) {
+            prompt_asset_sources.push(FileSource {
+                path: a.path.clone(),
+                hash: a.hash.clone(),
+            });
+        }
+    }
+
+    let mut memory_sources = Vec::new();
+    if let Some(gm) = input.global_memory.clone() {
+        memory_sources.push(gm);
+    }
+    if let Some(pm) = input.project_memory.clone() {
+        memory_sources.push(pm);
     }
 
     Ok(ContextAssembly {
         system_prompt: catalog.system.text.clone(),
-        prelude_messages: vec![
-            // [0] tool_guidance — shared across all users/projects
-            CanonicalMessage::user_text(catalog.tool_guidance.text.clone()),
-            // [1] global_memory — shared across projects for same user
-            CanonicalMessage::user_text(global_memory_rendered),
-            // [2] project_memory — project-specific memory
-            CanonicalMessage::user_text(project_memory_rendered),
-            // [3] project_context — workspace/date/models
-            CanonicalMessage::user_text(project_context_text),
-        ],
+        prelude_messages: prelude,
         history: input.history,
         tools: input.tools,
-        prompt_asset_sources: vec![
-            FileSource {
-                path: catalog.system.path.clone(),
-                hash: catalog.system.hash.clone(),
-            },
-            FileSource {
-                path: catalog.project_context.path.clone(),
-                hash: catalog.project_context.hash.clone(),
-            },
-            FileSource {
-                path: catalog.tool_guidance.path.clone(),
-                hash: catalog.tool_guidance.hash.clone(),
-            },
-            FileSource {
-                path: catalog.global_memory.path.clone(),
-                hash: catalog.global_memory.hash.clone(),
-            },
-            FileSource {
-                path: catalog.project_memory.path.clone(),
-                hash: catalog.project_memory.hash.clone(),
-            },
-        ],
+        prompt_asset_sources,
         project_instruction_sources: input.project_instructions,
         memory_sources,
-        runtime_context,
+        runtime_context, // per-turn runtime blocks (consumed by query provider)
         handoff_summary: None,
     })
 }
@@ -267,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn a2b_assembles_four_prelude_messages() {
+    fn assembles_six_layer_prelude_with_memory_enabled() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
@@ -291,46 +363,125 @@ mod tests {
                 }],
                 model_tiers: vec![],
                 runtime_blocks: None,
+                enable_memory: true,
+                agent_name: "main".into(),
+                agent_instructions: String::new(),
+                response_contract: None,
             },
             &builtin_prompt_catalog(),
         )
         .unwrap();
 
-        assert_eq!(assembly.prelude_messages.len(), 4);
+        // With enable_memory=true and empty identity:
+        // [0] project_policy, [1] tool_guidance, [2] memory_guidance,
+        // [3] global_memory, [4] project_memory
+        assert_eq!(assembly.prelude_messages.len(), 5);
 
-        // [0] tool_guidance
+        // [0] project_policy
         let msg0 = match &assembly.prelude_messages[0].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),
             other => panic!("expected text, got {other:?}"),
         };
-        assert!(msg0.contains("<kuku_tool_guidance>"));
+        assert!(msg0.contains("<kuku_project_context>"));
+        assert!(msg0.contains("instr"));
 
-        // [1] global_memory
+        // [1] tool_guidance
         let msg1 = match &assembly.prelude_messages[1].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),
             other => panic!("expected text, got {other:?}"),
         };
-        assert!(msg1.contains("<kuku_global_memory>"));
-        assert!(msg1.contains("mem"));
+        assert!(msg1.contains("<kuku_tool_guidance>"));
 
-        // [2] project_memory
+        // [2] memory_guidance
         let msg2 = match &assembly.prelude_messages[2].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),
             other => panic!("expected text, got {other:?}"),
         };
-        assert!(msg2.contains("<kuku_project_memory>"));
+        assert!(msg2.contains("<kuku_memory_guidance>"));
 
-        // [3] project_context
+        // [3] global_memory
         let msg3 = match &assembly.prelude_messages[3].blocks[..] {
             [MessageBlock::Text(t)] => t.clone(),
             other => panic!("expected text, got {other:?}"),
         };
-        assert!(msg3.contains("<kuku_project_context>"));
-        assert!(msg3.contains("instr"));
+        assert!(msg3.contains("<kuku_global_memory>"));
+        assert!(msg3.contains("mem"));
+
+        // [4] project_memory (no content but template still rendered)
+        let msg4 = match &assembly.prelude_messages[4].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(msg4.contains("<kuku_project_memory>"));
     }
 
     #[test]
-    fn a2b_runtime_context_is_separate_from_prelude() {
+    fn memory_disabled_skips_memory_layers() {
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/ws".into(),
+                    platform: "linux".into(),
+                    current_date: "2026-05-18".into(),
+                },
+                project_instructions: vec![],
+                global_memory: None,
+                project_memory: None,
+                history: vec![],
+                tools: vec![],
+                model_tiers: vec![],
+                runtime_blocks: None,
+                enable_memory: false,
+                agent_name: "main".into(),
+                agent_instructions: String::new(),
+                response_contract: None,
+            },
+            &builtin_prompt_catalog(),
+        )
+        .unwrap();
+
+        // Without memory and empty identity: only project_policy + tool_guidance
+        assert_eq!(assembly.prelude_messages.len(), 2);
+    }
+
+    #[test]
+    fn identity_added_as_prelude_when_provided() {
+        let assembly = assemble_context(
+            ContextInput {
+                environment: EnvironmentSource {
+                    workspace_path: "/ws".into(),
+                    platform: "linux".into(),
+                    current_date: "2026-05-18".into(),
+                },
+                project_instructions: vec![],
+                global_memory: None,
+                project_memory: None,
+                history: vec![],
+                tools: vec![],
+                model_tiers: vec![],
+                runtime_blocks: None,
+                enable_memory: false,
+                agent_name: "review".into(),
+                agent_instructions: "<kuku_identity>code reviewer</kuku_identity>".into(),
+                response_contract: None,
+            },
+            &builtin_prompt_catalog(),
+        )
+        .unwrap();
+
+        // project_policy, identity, tool_guidance = 3 messages
+        assert_eq!(assembly.prelude_messages.len(), 3);
+
+        // [1] should be identity
+        let msg1 = match &assembly.prelude_messages[1].blocks[..] {
+            [MessageBlock::Text(t)] => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert_eq!(msg1, "<kuku_identity>code reviewer</kuku_identity>");
+    }
+
+    #[test]
+    fn runtime_context_not_in_prelude_snapshot() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
@@ -347,6 +498,10 @@ mod tests {
                 runtime_blocks: Some(
                     "<kuku_agent_catalog><agent name=\"r\"/></kuku_agent_catalog>".into(),
                 ),
+                enable_memory: false,
+                agent_name: "main".into(),
+                agent_instructions: String::new(),
+                response_contract: None,
             },
             &builtin_prompt_catalog(),
         )
@@ -365,7 +520,7 @@ mod tests {
             "should wrap in runtime_context template"
         );
 
-        // prelude snapshot must NOT contain runtime_context
+        // prelude snapshot must NOT contain runtime context
         let snapshot = assembly.snapshot_prelude();
         for msg in &snapshot {
             assert!(
@@ -376,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn a2b_no_runtime_context_when_empty_blocks() {
+    fn runtime_context_none_when_empty() {
         let assembly = assemble_context(
             ContextInput {
                 environment: EnvironmentSource {
@@ -391,6 +546,10 @@ mod tests {
                 tools: vec![],
                 model_tiers: vec![],
                 runtime_blocks: None,
+                enable_memory: false,
+                agent_name: "main".into(),
+                agent_instructions: String::new(),
+                response_contract: None,
             },
             &builtin_prompt_catalog(),
         )

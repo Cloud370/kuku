@@ -122,15 +122,19 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             tools: tools.clone(),
             model_tiers: Vec::new(),
             runtime_blocks: None,
+            enable_memory: false,
+            agent_name: "main".into(),
+            agent_instructions: String::new(),
+            response_contract: None,
         },
         &builtin_prompt_catalog(),
     )
     .unwrap();
 
-    assert!(assembly.system_prompt.contains("<kuku_identity>"));
+    assert!(assembly.system_prompt.contains("<kuku_foundation>"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
-    assert!(assembly.system_prompt.contains("<kuku_working_style>"));
-    assert_eq!(assembly.prelude_messages.len(), 4);
+    assert!(assembly.system_prompt.contains("<kuku_shared_style>"));
+    assert_eq!(assembly.prelude_messages.len(), 2);
     assert_eq!(assembly.history, history);
     assert_eq!(assembly.tools, tools);
     assert_eq!(assembly.project_instruction_sources, project_instructions);
@@ -138,10 +142,23 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         assembly.memory_sources,
         vec![global_memory.clone(), project_memory.clone()]
     );
-    assert_eq!(assembly.prompt_asset_sources.len(), 5);
+    assert_eq!(assembly.prompt_asset_sources.len(), 4);
 
-    // [0] tool_guidance
+    // [0] project_policy
     match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_project_context>"));
+            assert!(text.contains("Workspace root: /workspace"));
+            assert!(text.contains("Platform: linux"));
+            assert!(text.contains("Current date: 2026-05-14"));
+            assert!(text.contains("instructions"));
+            assert!(!text.contains("<kuku_current_task>"));
+        }
+        other => panic!("expected project-policy text block, got {other:?}"),
+    }
+
+    // [1] tool_guidance
+    match &assembly.prelude_messages[1].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_tool_guidance>"));
             assert!(
@@ -149,39 +166,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             );
         }
         other => panic!("expected tool-guidance text block, got {other:?}"),
-    }
-
-    // [1] global_memory
-    match &assembly.prelude_messages[1].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_global_memory>"));
-            assert!(text.contains("global"));
-        }
-        other => panic!("expected global-memory text block, got {other:?}"),
-    }
-
-    // [2] project_memory
-    match &assembly.prelude_messages[2].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_project_memory>"));
-            assert!(text.contains("project"));
-        }
-        other => panic!("expected project-memory text block, got {other:?}"),
-    }
-
-    // [3] project_context
-    match &assembly.prelude_messages[3].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_execution_context>"));
-            assert!(text.contains("Workspace root: /workspace"));
-            assert!(text.contains("Platform: linux"));
-            assert!(text.contains("Current date: 2026-05-14"));
-            assert!(text.contains("<kuku_project_instructions>"));
-            assert!(text.contains("instructions"));
-            assert!(!text.contains("<kuku_memory>"));
-            assert!(!text.contains("<kuku_current_task>"));
-        }
-        other => panic!("expected project-context text block, got {other:?}"),
     }
 
     let provenance = RequestProvenance {
@@ -259,45 +243,31 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             tools: Vec::new(),
             model_tiers: Vec::new(),
             runtime_blocks: None,
+            enable_memory: false,
+            agent_name: "main".into(),
+            agent_instructions: String::new(),
+            response_contract: None,
         },
         &builtin_prompt_catalog(),
     )
     .unwrap();
 
-    // [0] tool_guidance
+    // [0] project_policy
     match &assembly.prelude_messages[0].blocks[..] {
+        [MessageBlock::Text(text)] => {
+            assert!(text.contains("<kuku_project_context>"));
+            assert!(text.contains("No project instructions found."));
+            assert!(!text.contains("<kuku_current_task>"));
+        }
+        other => panic!("expected project-policy text block, got {other:?}"),
+    }
+
+    // [1] tool_guidance
+    match &assembly.prelude_messages[1].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_tool_guidance>"));
         }
         other => panic!("expected tool-guidance text block, got {other:?}"),
-    }
-
-    // [1] global_memory with fallback
-    match &assembly.prelude_messages[1].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_global_memory>"));
-            assert!(text.contains("No global memory."));
-        }
-        other => panic!("expected global-memory text block, got {other:?}"),
-    }
-
-    // [2] project_memory with fallback
-    match &assembly.prelude_messages[2].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_project_memory>"));
-            assert!(text.contains("No project memory."));
-        }
-        other => panic!("expected project-memory text block, got {other:?}"),
-    }
-
-    // [3] project_context
-    match &assembly.prelude_messages[3].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_execution_context>"));
-            assert!(text.contains("No project instructions found."));
-            assert!(!text.contains("<kuku_current_task>"));
-        }
-        other => panic!("expected project-context text block, got {other:?}"),
     }
 }
 
@@ -317,6 +287,10 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
             tools: Vec::new(),
             model_tiers: Vec::new(),
             runtime_blocks: None,
+            enable_memory: false,
+            agent_name: "main".into(),
+            agent_instructions: String::new(),
+            response_contract: None,
         },
         &builtin_prompt_catalog(),
     )
@@ -326,7 +300,7 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
         .prelude_messages
         .insert(1, CanonicalMessage::user_text("<kuku_system_notice>\n- Context drift: /workspace/AGENTS.md changed (sha256:old -> sha256:new)\n</kuku_system_notice>"));
 
-    assert_eq!(assembly.prelude_messages.len(), 5);
+    assert_eq!(assembly.prelude_messages.len(), 3);
     match &assembly.prelude_messages[1].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_system_notice>"));
@@ -336,9 +310,9 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
     }
     match &assembly.prelude_messages[2].blocks[..] {
         [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_global_memory>"));
+            assert!(text.contains("<kuku_tool_guidance>"));
         }
-        other => panic!("expected global_memory after drift notice, got {other:?}"),
+        other => panic!("expected tool_guidance after drift notice, got {other:?}"),
     }
 }
 

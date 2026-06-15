@@ -33,7 +33,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         .map(convert_canonical_message)
         .collect::<Vec<_>>();
     if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.handoff_context.text;
+        let template = &request.catalog.runtime["handoff-context"].text;
         let content = template.replace("{{handoff_summary}}", summary);
         messages.push(json!({
             "role": "user",

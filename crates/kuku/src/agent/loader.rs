@@ -209,3 +209,60 @@ fn collect_unknown_metadata(mapping: &serde_yaml::Mapping, known: &[&str]) -> se
         serde_json::Value::Object(map)
     }
 }
+
+/// Split YAML frontmatter (between --- markers) from the body.
+/// Returns (Some(frontmatter_str), body_str) or (None, full_text).
+pub fn split_frontmatter(text: &str) -> (Option<String>, String) {
+    let text = text.trim();
+    if let Some(rest) = text.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let fm = rest[..end].trim().to_string();
+            let body = rest[end + 4..].trim().to_string();
+            return (Some(fm), body);
+        }
+    }
+    (None, text.to_string())
+}
+
+/// Parse agent definition from YAML frontmatter and body.
+pub fn parse_agent_frontmatter(name: &str, fm: &str, body: &str) -> Option<AgentDefinition> {
+    let parsed: serde_yaml::Value = serde_yaml::from_str(fm).ok()?;
+    let map = parsed.as_mapping()?;
+    Some(AgentDefinition {
+        name: map
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(name)
+            .to_string(),
+        description: map
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        instructions: body.to_string(),
+        tier: map
+            .get("tier")
+            .and_then(|v| v.as_str())
+            .unwrap_or("balanced")
+            .to_string(),
+        tool_profile: map
+            .get("tool_profile")
+            .and_then(|v| v.as_str())
+            .map(|s| match s {
+                "read_write" => ToolProfile::ReadWrite,
+                "none" => ToolProfile::None,
+                _ => ToolProfile::Read,
+            })
+            .unwrap_or(ToolProfile::Read),
+        tools: map.get("tools").and_then(|v| v.as_sequence()).map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        }),
+        max_turns: map.get("max_turns").and_then(|v| v.as_u64()).unwrap_or(10) as u32,
+        source: DefinitionSource::Builtin,
+        hash: String::new(),
+        source_path: None,
+        metadata: serde_json::Value::Null,
+    })
+}

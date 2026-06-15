@@ -194,7 +194,7 @@ async fn call_secondary_llm(
     let user_text = format!("{prompt}\n\n---\n\n{truncated}");
 
     let assembly = crate::context::ContextAssembly {
-        system_prompt: catalog.fetch_web.text.clone(),
+        system_prompt: catalog.tools["fetch-web"].text.clone(),
         prelude_messages: vec![crate::context::CanonicalMessage {
             role: crate::context::Role::User,
             blocks: vec![crate::context::MessageBlock::Text(user_text)],
