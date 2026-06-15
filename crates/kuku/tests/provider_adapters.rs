@@ -341,10 +341,8 @@ fn anthropic_render_body_preserves_layer_order() {
         .as_str()
         .unwrap()
         .contains("You are the agent running inside kuku"));
-    assert_eq!(
-        body["system"][0]["cache_control"],
-        json!({"type": "ephemeral"})
-    );
+    assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+    assert!(body["system"][0].get("cache_control").is_none());
     assert!(body["messages"][0]["content"][0]["text"]
         .as_str()
         .unwrap()
@@ -372,10 +370,7 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
 
     assert_eq!(tool_body["tools"][0]["name"], "find_files");
     assert_eq!(tool_body["tools"][0]["input_schema"]["type"], "object");
-    assert_eq!(
-        tool_body["tools"][0]["cache_control"],
-        json!({"type": "ephemeral"})
-    );
+    assert!(tool_body["tools"][0].get("cache_control").is_none());
 
     let history_body = render_anthropic_body(&ProviderRequest {
         stream: false,
@@ -431,7 +426,7 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
         "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>"
     );
     assert_eq!(current[2]["text"], "raw user input");
-    assert_eq!(current[2]["cache_control"], json!({"type": "ephemeral"}));
+    assert!(current[2].get("cache_control").is_none());
     assert!(current[0].get("cache_control").is_none());
     assert!(current[1].get("cache_control").is_none());
     assert!(!serde_json::to_string(&body)
@@ -440,7 +435,7 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
 }
 
 #[test]
-fn anthropic_render_body_uses_anthropic_block_level_cache_markers() {
+fn anthropic_render_body_uses_top_level_automatic_cache_control() {
     let catalog = test_catalog();
     let body = render_anthropic_body(&ProviderRequest {
         stream: false,
@@ -454,22 +449,14 @@ fn anthropic_render_body_uses_anthropic_block_level_cache_markers() {
         thinking: ResolvedThinking::default(),
     });
 
-    assert!(body.get("cache_control").is_none());
-    assert_eq!(
-        body["system"][0]["cache_control"],
-        json!({"type": "ephemeral"})
-    );
-    assert_eq!(
-        body["messages"].as_array().unwrap().last().unwrap()["content"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["cache_control"],
-        json!({"type": "ephemeral"})
-    );
+    assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+    assert!(body["system"][0].get("cache_control").is_none());
     assert!(body["messages"][0]["content"][0]
         .get("cache_control")
         .is_none());
+    let last_message = body["messages"].as_array().unwrap().last().unwrap();
+    let last_block = last_message["content"].as_array().unwrap().last().unwrap();
+    assert!(last_block.get("cache_control").is_none());
 }
 
 #[test]

@@ -47,17 +47,16 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
             .iter()
             .map(convert_canonical_message),
     );
-    mark_last_content_block_ephemeral(&mut messages);
 
     let mut body = json!({
         "model": request.model,
         "messages": messages,
         "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u32),
         "stream": false,
+        "cache_control": cache_control_ephemeral(),
         "system": [{
             "type": "text",
             "text": request.assembly.system_prompt,
-            "cache_control": cache_control_ephemeral(),
         }],
     });
 
@@ -78,46 +77,24 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         body["output_config"] = json!({ "effort": effort });
     }
     if !request.assembly.tools.is_empty() {
-        let last_tool_index = request.assembly.tools.len() - 1;
         body["tools"] = json!(request
             .assembly
             .tools
             .iter()
-            .enumerate()
-            .map(|(index, schema)| {
-                let mut tool = json!({
+            .map(|schema| {
+                json!({
                     "name": schema.name,
                     "description": schema.description,
                     "input_schema": schema.input_schema,
-                });
-                if index == last_tool_index {
-                    tool["cache_control"] = cache_control_ephemeral();
-                }
-                tool
+                })
             })
             .collect::<Vec<_>>());
     }
-
     body
 }
 
 fn cache_control_ephemeral() -> Value {
     json!({"type": "ephemeral"})
-}
-
-fn mark_last_content_block_ephemeral(messages: &mut [Value]) {
-    for message in messages.iter_mut().rev() {
-        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for block in content.iter_mut().rev() {
-            let Some(object) = block.as_object_mut() else {
-                continue;
-            };
-            object.insert("cache_control".to_string(), cache_control_ephemeral());
-            return;
-        }
-    }
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {
@@ -556,8 +533,8 @@ mod tests {
     fn render_body_includes_cache_control() {
         let catalog = crate::prompt::builtin_prompt_catalog();
         let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
-        assert!(body.get("cache_control").is_none());
-        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["cache_control"]["type"], "ephemeral");
+        assert!(body["system"][0].get("cache_control").is_none());
     }
 
     #[test]
