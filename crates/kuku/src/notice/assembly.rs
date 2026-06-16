@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use sha2::Digest;
@@ -23,11 +22,6 @@ pub(crate) struct NoticeAssemblyInput<'a> {
     pub(crate) agent_registry: Option<&'a AgentRegistry>,
 }
 
-struct TrackedFileSnapshot {
-    path: String,
-    hash: String,
-}
-
 pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notice> {
     let mut notices = Vec::new();
 
@@ -48,17 +42,15 @@ pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notic
         notices.push(notice);
     }
 
-    if let Some(notice) = build_pending_permission_notice(input.events, input.conversation) {
-        notices.push(notice);
-    }
+    // pending_permission and interrupted_turn notices were removed (Phase 8).
+    // Host UI derives these from raw events instead.
 
-    if let Some(notice) = build_interrupted_turn_notice(input.events, input.conversation) {
-        notices.push(notice);
-    }
-
-    if let Some(notice) =
-        build_context_drift_notice(input.workspace, input.events, input.context_budget_tier)
-    {
+    if let Some(notice) = build_context_drift_notice(
+        input.workspace,
+        input.events,
+        input.conversation.as_str(),
+        input.context_budget_tier,
+    ) {
         notices.push(notice);
     }
 
@@ -156,118 +148,45 @@ fn build_loaded_skills_notice(
     }
 }
 
-fn build_pending_permission_notice(
-    events: &[StoredEvent],
-    target: &ConversationAddress,
-) -> Option<Notice> {
-    let request = pending_permission_for_conversation(events, target)?;
-    Some(Notice {
-        kind: NoticeKind::PendingPermission { request },
-        severity: NoticeSeverity::Info,
-    })
-}
-
-fn build_interrupted_turn_notice(
-    events: &[StoredEvent],
-    target: &ConversationAddress,
-) -> Option<Notice> {
-    conversation_events(events, target)
-        .into_iter()
+fn latest_prompt_snapshot<'a>(
+    events: &'a [StoredEvent],
+    conversation: &str,
+) -> Option<&'a EventPayload> {
+    events
+        .iter()
         .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::TurnInterrupted {
-                conversation,
-                turn,
-                reason,
-                ..
-            } if conversation == target.as_str() => Some(Notice {
-                kind: NoticeKind::InterruptedTurn {
-                    conversation: target.clone(),
-                    turn: *turn,
-                    reason: reason.clone(),
-                },
-                severity: NoticeSeverity::Info,
-            }),
-            _ => None,
-        })
-}
-
-fn pending_permission_for_conversation(
-    events: &[StoredEvent],
-    target: &ConversationAddress,
-) -> Option<crate::query::PermissionRequest> {
-    let mut tool_conversations = BTreeMap::<String, ConversationAddress>::new();
-    let mut decisions = std::collections::BTreeSet::<String>::new();
-    let mut results = std::collections::BTreeSet::<String>::new();
-    let mut pending = Vec::<crate::query::PermissionRequest>::new();
-
-    for event in crate::context::revert::filter_rolled_back_events(events) {
-        match &event.payload {
-            EventPayload::ToolCall {
-                conversation: Some(conversation),
-                tool_call_id,
-                ..
-            } => {
-                if let Ok(address) = ConversationAddress::parse(conversation) {
-                    tool_conversations.insert(tool_call_id.clone(), address);
-                }
-            }
-            EventPayload::PermissionRequested {
-                turn,
-                tool_call_id,
-                tool,
-                risk,
-                summary,
-                candidate,
-                source,
-                ..
-            } => {
-                pending.push(crate::query::PermissionRequest {
-                    id: tool_call_id.clone(),
-                    conversation: tool_conversations
-                        .get(tool_call_id)
-                        .cloned()
-                        .unwrap_or(ConversationAddress::MAIN),
-                    turn: *turn,
-                    tool_call_id: tool_call_id.clone(),
-                    tool: tool.clone(),
-                    risk: risk.clone(),
-                    summary: summary.clone(),
-                    candidate: candidate.clone(),
-                    source: source.clone(),
-                });
-            }
-            EventPayload::PermissionAllow { tool_call_id, .. }
-            | EventPayload::PermissionDeny { tool_call_id, .. } => {
-                decisions.insert(tool_call_id.clone());
-            }
-            EventPayload::ToolResult { tool_call_id, .. } => {
-                results.insert(tool_call_id.clone());
-            }
-            _ => {}
-        }
-    }
-
-    pending.into_iter().rev().find(|request| {
-        request.conversation == *target
-            && !decisions.contains(&request.tool_call_id)
-            && !results.contains(&request.tool_call_id)
-    })
+        .find(|e| matches!(&e.payload, EventPayload::PromptSnapshot { conversation: c, .. } if c == conversation))
+        .map(|e| &e.payload)
 }
 
 fn build_context_drift_notice(
     workspace: &Path,
     events: &[StoredEvent],
+    conversation: &str,
     tier: ContextBudgetTier,
 ) -> Option<Notice> {
-    let tracked = rebuild_tracked_file_snapshots(events);
-    if tracked.is_empty() {
-        return None;
-    }
+    let snapshot = latest_prompt_snapshot(events, conversation)?;
+    let (project_sources, memory_sources, asset_sources) = match snapshot {
+        EventPayload::PromptSnapshot {
+            project_instruction_sources,
+            memory_sources,
+            prompt_asset_sources,
+            ..
+        } => (
+            project_instruction_sources,
+            memory_sources,
+            prompt_asset_sources,
+        ),
+        _ => return None,
+    };
 
     let mut entries = Vec::new();
-    for snapshot in tracked.values() {
-        let path = PathBuf::from(&snapshot.path);
+    for source in project_sources
+        .iter()
+        .chain(memory_sources.iter())
+        .chain(asset_sources.iter())
+    {
+        let path = PathBuf::from(&source.path);
         let label = path
             .strip_prefix(workspace)
             .unwrap_or(&path)
@@ -276,7 +195,7 @@ fn build_context_drift_notice(
         match std::fs::read(&path) {
             Ok(current_bytes) => {
                 let current_hash = content_hash_bytes(&current_bytes);
-                if current_hash == snapshot.hash {
+                if current_hash == source.hash {
                     continue;
                 }
                 entries.push(ContextDriftEntry {
@@ -297,7 +216,6 @@ fn build_context_drift_notice(
     if entries.is_empty() {
         return None;
     }
-
     let max = max_context_drift_entries(tier);
     entries.truncate(max);
 
@@ -315,123 +233,6 @@ fn max_context_drift_entries(tier: ContextBudgetTier) -> usize {
     }
 }
 
-fn rebuild_tracked_file_snapshots(events: &[StoredEvent]) -> BTreeMap<String, TrackedFileSnapshot> {
-    let filtered = crate::context::revert::filter_rolled_back_events(events);
-    let mut tracked = BTreeMap::new();
-    let mut saw_context_sources = false;
-
-    for event in filtered {
-        match &event.payload {
-            EventPayload::ContextSources {
-                project_instruction_sources,
-                memory_sources,
-                ..
-            } => {
-                saw_context_sources = true;
-                update_tracked_snapshot_from_context_sources(
-                    &mut tracked,
-                    project_instruction_sources,
-                    memory_sources,
-                );
-            }
-            EventPayload::ToolResult {
-                status,
-                structured: Some(structured),
-                ..
-            } if saw_context_sources && status == "ok" => {
-                update_tracked_snapshot_from_tool_result(&mut tracked, structured);
-            }
-            _ => {}
-        }
-    }
-
-    tracked
-}
-
-fn update_tracked_snapshot_from_context_sources(
-    tracked: &mut BTreeMap<String, TrackedFileSnapshot>,
-    project_instruction_sources: &[crate::context::FileSource],
-    memory_sources: &[crate::context::FileSource],
-) {
-    for source in project_instruction_sources {
-        tracked.insert(
-            source.path.clone(),
-            TrackedFileSnapshot {
-                path: source.path.clone(),
-                hash: source.hash.clone(),
-            },
-        );
-    }
-    for source in memory_sources {
-        tracked.insert(
-            source.path.clone(),
-            TrackedFileSnapshot {
-                path: source.path.clone(),
-                hash: source.hash.clone(),
-            },
-        );
-    }
-}
-
-fn update_tracked_snapshot_from_tool_result(
-    tracked: &mut BTreeMap<String, TrackedFileSnapshot>,
-    structured: &serde_json::Value,
-) {
-    let Some(kind) = structured.get("kind").and_then(serde_json::Value::as_str) else {
-        return;
-    };
-    match kind {
-        "file_content" => {
-            let is_full = structured
-                .get("is_full_file_snapshot")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if !is_full {
-                return;
-            }
-            let Some(path) = structured
-                .get("canonical_path")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            let Some(hash) = structured
-                .get("content_hash")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            tracked.insert(
-                path.to_string(),
-                TrackedFileSnapshot {
-                    path: path.to_string(),
-                    hash: hash.to_string(),
-                },
-            );
-        }
-        "file_edit" | "file_write" | "memory_write" | "forget_memory" => {
-            let Some(path) = structured
-                .get("canonical_path")
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            let Some(existing) = tracked.get_mut(path) else {
-                return;
-            };
-            let Some(hash) = structured
-                .get("content_hash_after")
-                .or_else(|| structured.get("content_hash"))
-                .and_then(serde_json::Value::as_str)
-            else {
-                return;
-            };
-            existing.hash = hash.to_string();
-        }
-        _ => {}
-    }
-}
-
 fn content_hash_bytes(bytes: &[u8]) -> String {
     let digest = sha2::Sha256::digest(bytes);
     format!("sha256:{digest:x}")
@@ -441,9 +242,9 @@ fn content_hash_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::context::provenance::FileSource;
-    use crate::event::{EventPayload, RollbackScope, StoredEvent};
+    use crate::event::{EventPayload, StoredEvent};
     use crate::notice::render::render_notice_body;
-
+    use crate::prompt::builtin_prompt_catalog;
     fn make_entry(index: usize) -> ContextDriftEntry {
         ContextDriftEntry {
             path: format!("file-{index}.md"),
@@ -463,7 +264,8 @@ mod tests {
             kind: NoticeKind::ContextDrift { entries: truncated },
             severity: NoticeSeverity::Info,
         };
-        let rendered = render_notice_body(&notice).expect("should render");
+        let rendered =
+            render_notice_body(&notice, &builtin_prompt_catalog()).expect("should render");
 
         assert!(rendered.contains("Changed tracked files:"));
         assert!(rendered.contains("file-0.md"));
@@ -535,91 +337,74 @@ mod tests {
             agent_registry: None,
         });
 
+        let catalog = builtin_prompt_catalog();
         let rendered = notices
             .iter()
-            .find_map(render_notice_body)
+            .find_map(|n| render_notice_body(n, &catalog))
             .expect("inbox notice should render");
         assert!(rendered.contains("from main: delegated input"));
     }
 
+    fn make_prompt_snapshot(
+        id: u64,
+        conversation: &str,
+        project_sources: Vec<FileSource>,
+        memory_sources: Vec<FileSource>,
+    ) -> StoredEvent {
+        StoredEvent {
+            id,
+            payload: EventPayload::PromptSnapshot {
+                ts: "2026-01-01T00:00:00Z".to_string(),
+                conversation: conversation.to_string(),
+                binding_id: conversation.to_string(),
+                snapshot_id: "snap_1".to_string(),
+                turn: 1,
+                messages: vec![],
+                project_instruction_sources: project_sources,
+                memory_sources,
+                prompt_asset_sources: vec![],
+                skills: serde_json::Value::Null,
+                bootstrap_loaded: vec![],
+                provider: "test".to_string(),
+                model: "test".to_string(),
+                renderer: crate::context::provenance::PromptRendererIdentity {
+                    provider: "test".to_string(),
+                    renderer: "test".to_string(),
+                },
+                tool_registry: Box::new(crate::context::provenance::ToolRegistryProvenance {
+                    hash: "count:0".to_string(),
+                    names: vec![],
+                    tool_count: 0,
+                }),
+                agent_registry: None,
+                skill_registry: Box::new(None),
+                plugin_registry: Box::new(None),
+                capabilities: crate::context::provenance::PromptCapabilityMetadata {
+                    context_budget_tier: "normal".to_string(),
+                    max_context_tokens: None,
+                    remaining_input_tokens: None,
+                },
+            },
+        }
+    }
+
     #[test]
-    fn tracked_files_follow_latest_context_sources_after_rollback_filtering() {
+    fn prompt_snapshot_drift_detected_when_file_changed() {
         let temp = tempfile::tempdir().unwrap();
-        let tracked = temp.path().join("AGENTS.md");
-        std::fs::write(&tracked, "before").unwrap();
+        let file = temp.path().join("AGENTS.md");
+        std::fs::write(&file, "before").unwrap();
 
-        let events = vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::TurnStarted {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    conversation: "main".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 2,
-                payload: EventPayload::ContextSources {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
-                    project_instruction_sources: vec![FileSource {
-                        path: tracked.display().to_string(),
-                        hash: content_hash_bytes(b"before"),
-                    }],
-                    memory_sources: vec![],
-                },
-            },
-            StoredEvent {
-                id: 3,
-                payload: EventPayload::TurnCompleted {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    conversation: "main".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 4,
-                payload: EventPayload::TurnStarted {
-                    turn: 2,
-                    ts: "t2".to_string(),
-                    conversation: "main".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 5,
-                payload: EventPayload::ContextSources {
-                    turn: 2,
-                    ts: "t2".to_string(),
-                    request_id: "req_2".to_string(),
-                    project_instruction_sources: vec![FileSource {
-                        path: tracked.display().to_string(),
-                        hash: content_hash_bytes(b"rolled back"),
-                    }],
-                    memory_sources: vec![],
-                },
-            },
-            StoredEvent {
-                id: 6,
-                payload: EventPayload::TurnCompleted {
-                    turn: 2,
-                    ts: "t2".to_string(),
-                    conversation: "main".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 7,
-                payload: EventPayload::ConversationRollback {
-                    ts: "t3".to_string(),
-                    conversation: "main".to_string(),
-                    to_turn: 2,
-                    to_event_id: 6,
-                    scope: RollbackScope::ConversationOnly,
-                },
-            },
-        ];
+        let events = vec![make_prompt_snapshot(
+            1,
+            "main",
+            vec![FileSource {
+                path: file.display().to_string(),
+                hash: content_hash_bytes(b"before"),
+            }],
+            vec![],
+        )];
 
-        std::fs::write(&tracked, "after").unwrap();
+        std::fs::write(&file, "after").unwrap();
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
@@ -628,56 +413,27 @@ mod tests {
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
         });
-        let rendered = render_notice_body(&notices[0]).unwrap();
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
         assert_eq!(notices.len(), 1);
         assert!(rendered.contains("AGENTS.md"));
-        assert!(!rendered.contains("rolled back"));
     }
 
     #[test]
-    fn latest_context_sources_baseline_wins_over_older_tool_mutation() {
+    fn prompt_snapshot_no_drift_when_hashes_match() {
         let temp = tempfile::tempdir().unwrap();
-        let tracked = temp.path().join("AGENTS.md");
-        std::fs::write(&tracked, "baseline-new").unwrap();
+        let file = temp.path().join("AGENTS.md");
+        std::fs::write(&file, "stable").unwrap();
 
-        let events = vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::ToolResult {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    conversation: None,
-                    tool_call_id: "tool_1".to_string(),
-                    status: "ok".to_string(),
-                    summary: "write".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: Some(serde_json::json!({
-                        "kind": "file_write",
-                        "canonical_path": tracked.display().to_string(),
-                        "content_hash_after": content_hash_bytes(b"old-write")
-                    })),
-                },
-            },
-            StoredEvent {
-                id: 2,
-                payload: EventPayload::ContextSources {
-                    turn: 2,
-                    ts: "t2".to_string(),
-                    request_id: "req_2".to_string(),
-                    project_instruction_sources: vec![FileSource {
-                        path: tracked.display().to_string(),
-                        hash: content_hash_bytes(b"baseline-new"),
-                    }],
-                    memory_sources: vec![],
-                },
-            },
-        ];
+        let events = vec![make_prompt_snapshot(
+            1,
+            "main",
+            vec![FileSource {
+                path: file.display().to_string(),
+                hash: content_hash_bytes(b"stable"),
+            }],
+            vec![],
+        )];
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
@@ -687,71 +443,23 @@ mod tests {
             agent_registry: None,
         });
 
-        assert!(
-            notices.is_empty(),
-            "older tool mutation must not overwrite newer context.sources baseline"
-        );
+        assert!(notices.is_empty(), "no drift when hashes match");
     }
 
     #[test]
-    fn newer_context_sources_preserve_distinct_tool_tracked_files() {
+    fn prompt_snapshot_drift_detects_deleted_file() {
         let temp = tempfile::tempdir().unwrap();
-        let instructions = temp.path().join("AGENTS.md");
-        let read_file = temp.path().join("notes.md");
-        std::fs::write(&instructions, "instructions").unwrap();
-        std::fs::write(&read_file, "changed").unwrap();
+        let file = temp.path().join("deleted.md");
 
-        let events = vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::ContextSources {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
-                    project_instruction_sources: vec![FileSource {
-                        path: instructions.display().to_string(),
-                        hash: content_hash_bytes(b"instructions"),
-                    }],
-                    memory_sources: vec![],
-                },
-            },
-            StoredEvent {
-                id: 2,
-                payload: EventPayload::ToolResult {
-                    turn: 1,
-                    ts: "t2".to_string(),
-                    conversation: None,
-                    tool_call_id: "tool_1".to_string(),
-                    status: "ok".to_string(),
-                    summary: "read".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: Some(serde_json::json!({
-                        "kind": "file_content",
-                        "canonical_path": read_file.display().to_string(),
-                        "content_hash": content_hash_bytes(b"original"),
-                        "is_full_file_snapshot": true
-                    })),
-                },
-            },
-            StoredEvent {
-                id: 3,
-                payload: EventPayload::ContextSources {
-                    turn: 1,
-                    ts: "t3".to_string(),
-                    request_id: "req_2".to_string(),
-                    project_instruction_sources: vec![FileSource {
-                        path: instructions.display().to_string(),
-                        hash: content_hash_bytes(b"instructions"),
-                    }],
-                    memory_sources: vec![],
-                },
-            },
-        ];
+        let events = vec![make_prompt_snapshot(
+            1,
+            "main",
+            vec![FileSource {
+                path: file.display().to_string(),
+                hash: content_hash_bytes(b"existed"),
+            }],
+            vec![],
+        )];
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
@@ -760,55 +468,29 @@ mod tests {
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
         });
-        let rendered = render_notice_body(&notices[0]).unwrap();
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
         assert_eq!(notices.len(), 1);
-        assert!(rendered.contains("notes.md"));
+        assert!(rendered.contains("deleted.md"));
     }
 
     #[test]
-    fn forget_memory_updates_tracked_snapshot_hash() {
+    fn prompt_snapshot_drift_for_memory_source() {
         let temp = tempfile::tempdir().unwrap();
-        let tracked = temp.path().join("memory.md");
-        std::fs::write(&tracked, "after forget").unwrap();
+        let file = temp.path().join("memory.md");
+        std::fs::write(&file, "old memory").unwrap();
 
-        let events = vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::ContextSources {
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
-                    project_instruction_sources: vec![],
-                    memory_sources: vec![FileSource {
-                        path: tracked.display().to_string(),
-                        hash: content_hash_bytes(b"before forget"),
-                    }],
-                },
-            },
-            StoredEvent {
-                id: 2,
-                payload: EventPayload::ToolResult {
-                    turn: 1,
-                    ts: "t2".to_string(),
-                    conversation: None,
-                    tool_call_id: "tool_2".to_string(),
-                    status: "ok".to_string(),
-                    summary: "forget".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: Some(serde_json::json!({
-                        "kind": "forget_memory",
-                        "canonical_path": tracked.display().to_string(),
-                        "content_hash_after": content_hash_bytes(b"after forget")
-                    })),
-                },
-            },
-        ];
+        let events = vec![make_prompt_snapshot(
+            1,
+            "main",
+            vec![],
+            vec![FileSource {
+                path: file.display().to_string(),
+                hash: content_hash_bytes(b"old memory"),
+            }],
+        )];
+
+        std::fs::write(&file, "new memory").unwrap();
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
@@ -817,10 +499,9 @@ mod tests {
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
         });
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
-        assert!(
-            notices.is_empty(),
-            "forget_memory should advance the tracked hash to the post-tool value"
-        );
+        assert_eq!(notices.len(), 1);
+        assert!(rendered.contains("memory.md"));
     }
 }

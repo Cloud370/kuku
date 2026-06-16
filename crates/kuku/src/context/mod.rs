@@ -6,7 +6,7 @@ pub mod revert;
 
 pub use assembly::{
     assemble_context, restore_prompt_snapshot, ContextAssembly, ContextInput, EnvironmentSource,
-    InstructionSource, MemorySource, ToolSchema,
+    HostResponseContract, InstructionSource, MemorySource, ToolSchema,
 };
 pub use message::{CanonicalMessage, MessageBlock, Role, ToolResult, ToolUse};
 pub use provenance::{

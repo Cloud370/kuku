@@ -21,7 +21,7 @@ pub(crate) struct HookInput {
 
 /// Result of executing a single hook, including output, timing, and exit status.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // used only as opaque type; fields consumed by host integration (TBD)
 pub(crate) struct HookExecResult {
     pub output: HookOutput,
     pub exit_code: i32,

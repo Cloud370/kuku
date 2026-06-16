@@ -36,12 +36,6 @@ pub(crate) fn render_project_context(
     Ok(rendered)
 }
 
-/// Render the runtime_context wrapper with dynamic blocks (catalog, notices) inserted.
-pub(crate) fn render_runtime_context(template: &str, blocks: &str) -> Result<String> {
-    let rendered = template.replace("{{runtime_blocks}}", blocks);
-    Ok(rendered)
-}
-
 fn validate_placeholders(template: &str, known: &[&str]) -> Result<()> {
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
@@ -78,16 +72,6 @@ mod tests {
         let rendered = render_project_context(template, &input).unwrap();
         assert!(rendered.contains("/code/kuku/kuku"));
         assert!(rendered.contains("linux"));
-    }
-
-    #[test]
-    fn renders_runtime_context_wrapper() {
-        let template = "<kuku_runtime_context>\n{{runtime_blocks}}\n</kuku_runtime_context>";
-        let rendered =
-            render_runtime_context(template, "<kuku_agent_catalog>...</kuku_agent_catalog>")
-                .unwrap();
-        assert!(rendered.contains("<kuku_agent_catalog>"));
-        assert!(rendered.contains("<kuku_runtime_context>"));
     }
 
     #[test]

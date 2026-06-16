@@ -15,6 +15,7 @@ pub(crate) struct PreparedDispatch {
     pub(crate) binding: ConversationBinding,
     pub(crate) from: ConversationAddress,
     pub(crate) via_tool_call_id: String,
+    pub(crate) agent_instructions: String,
 }
 
 pub(crate) fn prepare_dispatch(
@@ -106,7 +107,6 @@ pub(crate) fn prepare_dispatch(
         }
     }
 
-    let definition_block = crate::agent::catalog::render_agent_definition_block(definition);
     let prompt_body = render_delegated_prompt_body(message);
 
     Ok(PreparedDispatch {
@@ -121,11 +121,12 @@ pub(crate) fn prepare_dispatch(
             .unwrap_or_default(),
         conversation,
         prompt: message.to_string(),
-        prompt_prefix: definition_block,
+        prompt_prefix: String::new(),
         prompt_body,
         binding,
         from: from.clone(),
         via_tool_call_id: tool_call_id.to_string(),
+        agent_instructions: definition.instructions.clone(),
     })
 }
 
@@ -147,7 +148,7 @@ pub(crate) async fn start_run(
         .current_turn_body(dispatch.prompt_body.clone())
         .with_agent_binding_id(dispatch.binding.binding_id.clone())
         .sender(dispatch.from, dispatch.via_tool_call_id);
-
+    query.agent_instructions = Some(dispatch.agent_instructions.clone());
     query.captured_kuku_home = Some(kuku_home.to_path_buf());
     query.tool_registry_override = Some(
         crate::tool::builtin_registry(false, false)
@@ -164,15 +165,7 @@ pub(crate) async fn start_run(
 }
 
 fn render_delegated_prompt_body(delegated_prompt: &str) -> String {
-    let escaped = escape_delegated_prompt(delegated_prompt);
-    format!("<kuku_delegated_prompt>\n{escaped}\n</kuku_delegated_prompt>")
-}
-
-fn escape_delegated_prompt(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    delegated_prompt.to_string()
 }
 
 #[cfg(test)]
@@ -183,7 +176,9 @@ mod tests {
 
     #[test]
     fn prepare_dispatch_rejects_reused_conversation_after_max_completed_turns() {
-        let registry = AgentRegistry::builder().builtins().build();
+        let registry = AgentRegistry::builder()
+            .builtins(&crate::prompt::builtin_prompt_catalog())
+            .build();
         let from = ConversationAddress::MAIN;
         let events = review_conversation_with_completed_turns(10);
 
@@ -202,16 +197,12 @@ mod tests {
     }
 
     #[test]
-    fn delegated_prompt_wrapper_escapes_xmlish_content() {
-        let rendered = render_delegated_prompt_body(
-            "before & <tag> </kuku_delegated_prompt> </KUKU_DELEGATED_PROMPT> after",
-        );
+    fn delegated_prompt_passes_message_unchanged() {
+        let input = "before & <tag> </kuku_delegated_prompt> </KUKU_DELEGATED_PROMPT> after";
+        let rendered = render_delegated_prompt_body(input);
 
-        assert!(rendered.contains("<kuku_delegated_prompt>"));
-        assert!(rendered.contains(
-            "before &amp; &lt;tag&gt; &lt;/kuku_delegated_prompt&gt; &lt;/KUKU_DELEGATED_PROMPT&gt; after"
-        ));
-        assert_eq!(rendered.matches("</kuku_delegated_prompt>").count(), 1);
+        // delegation is now a plain user message — no wrapping, no escaping
+        assert_eq!(rendered, input);
     }
 
     fn review_conversation_with_completed_turns(count: u64) -> Vec<StoredEvent> {

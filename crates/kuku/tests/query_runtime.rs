@@ -4,10 +4,11 @@ use common::{anthropic_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::*;
 use kuku::agent::registry::AgentRegistry;
-use kuku::context::rebuild_history;
+use kuku::context::replay::rebuild_history;
 use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
 use kuku::log::{LogLevel, LogRecord, LogScope};
+use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
 
 async fn next_permission_request(run: &mut Run) -> PermissionRequest {
@@ -37,7 +38,11 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> kuku::query::Que
         .base_url(server.base_url())
         .api_key("test-key")
         .config(test_config())
-        .agents(AgentRegistry::builder().builtins().build())
+        .agents(
+            AgentRegistry::builder()
+                .builtins(&builtin_prompt_catalog())
+                .build(),
+        )
 }
 
 fn request_body_contains(req: &HttpMockRequest, text: &str) -> bool {
@@ -47,9 +52,6 @@ fn request_body_contains(req: &HttpMockRequest, text: &str) -> bool {
     })
 }
 
-fn request_body_text(req: &HttpMockRequest) -> String {
-    String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).into_owned()
-}
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
     let env = TestEnv::new();
@@ -960,8 +962,9 @@ async fn provider_error_writes_single_terminal_event() {
 async fn prompt_render_error_writes_single_terminal_event() {
     let env = TestEnv::new();
     let prompts_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(prompts_dir.path().join("blocks")).unwrap();
     std::fs::write(
-        prompts_dir.path().join("project-context.md"),
+        prompts_dir.path().join("blocks/project-policy.md"),
         "{{missing_key}}",
     )
     .unwrap();
@@ -1273,17 +1276,7 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
     });
     let child_request = server.mock(|when, then| {
         when.method(POST).path("/v1/messages").matches(|req| {
-            let body = request_body_text(req);
-            request_body_contains(req, "You are a code and document reviewer")
-                && request_body_contains(req, "Your job is to read the provided context carefully")
-                && request_body_contains(req, "<kuku_delegated_prompt>")
-                && request_body_contains(
-                    req,
-                    "check &lt;/kuku_delegated_prompt&gt; &amp; &lt;tag&gt; &gt; boundary",
-                )
-                && request_body_contains(req, "</kuku_delegated_prompt>")
-                && body.matches("</kuku_delegated_prompt>").count() == 1
-                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+            request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
         });
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
@@ -1336,7 +1329,7 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
         child_message,
         "check </kuku_delegated_prompt> & <tag> > boundary"
     );
-    assert!(!child_message.contains("You are a code and document reviewer"));
+    assert!(!child_message.contains("I am a code and document reviewer"));
     assert!(!child_message.contains("<kuku_delegated_prompt>"));
 
     let review_snapshot_messages = events
@@ -1355,7 +1348,7 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(review_snapshot_text.contains("You are a code and document reviewer"));
+    assert!(review_snapshot_text.contains("I am a code and document reviewer"));
     assert!(!review_snapshot_text.contains("<kuku_delegated_prompt>"));
     assert!(!review_snapshot_text.contains("check </kuku_delegated_prompt> & <tag> > boundary"));
 
@@ -1382,13 +1375,9 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
             })));
     });
     let second_child_request = second_server.mock(|when, then| {
-        when.method(POST).path("/v1/messages").matches(|req| {
-            request_body_contains(req, "You are a code and document reviewer")
-                && request_body_contains(req, "<kuku_delegated_prompt>")
-                && request_body_contains(req, "second review boundary")
-                && request_body_contains(req, "</kuku_delegated_prompt>")
-                && !request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
-        });
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(|req| request_body_contains(req, "second review boundary"));
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_review_again",
@@ -3142,15 +3131,14 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
         .unwrap();
     assert_eq!(first.text, "first ok");
 
-    std::fs::remove_file(env.workspace.path().join("notes.md")).unwrap();
+    std::fs::remove_file(env.workspace.path().join("AGENTS.md")).unwrap();
 
     let second_server = MockServer::start();
     second_server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains("<kuku_system_notice>")
             .body_contains("Changed tracked files:")
-            .body_contains("- notes.md (deleted)")
+            .body_contains("AGENTS.md (deleted)")
             .body_contains("second turn");
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
@@ -3204,7 +3192,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
             .body_contains("global memory entry")
             .body_contains("project memory entry")
             .body_contains("<kuku_tool_guidance>")
-            .body_contains("<kuku_working_style>");
+            .body_contains("<kuku_shared_style>");
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",

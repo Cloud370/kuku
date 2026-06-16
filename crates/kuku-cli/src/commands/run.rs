@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use kuku::agent::registry::AgentRegistry;
+use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, PermissionChoice, ToolEvent, UiEvent};
 
 use crate::cli_args::RunArgs;
@@ -236,8 +237,16 @@ fn build_query(
     } else {
         let workspace = kuku::session::current_workspace()?;
         let discovery_config = cfg.discovery.clone();
+        let catalog = match &args.prompts_dir {
+            Some(dir) => {
+                let dir = std::path::PathBuf::from(dir);
+                kuku::prompt::PromptCatalog::load_from_dir(&dir)
+                    .map_err(|e| format!("failed to load prompts from {}: {e}", dir.display()))?
+            }
+            None => builtin_prompt_catalog(),
+        };
         let registry = AgentRegistry::builder()
-            .builtins()
+            .builtins(&catalog)
             .build_with_discovery(&workspace, &discovery_config)?
             .build();
         q = q.agents(registry);

@@ -1,6 +1,6 @@
-use std::path::Path;
-
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptAsset {
@@ -12,14 +12,19 @@ pub struct PromptAsset {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptCatalog {
     pub system: PromptAsset,
-    pub project_context: PromptAsset,
-    pub tool_guidance: PromptAsset,
-    pub runtime_context: PromptAsset,
-    pub global_memory: PromptAsset,
-    pub project_memory: PromptAsset,
-    pub fetch_web: PromptAsset,
-    /// Handoff context template with session query guidance and summary placeholder.
-    pub handoff_context: PromptAsset,
+    /// block templates: "project-policy", "tool-guidance", "memory",
+    /// "agent-catalog", "system-notice", "hook-context",
+    /// "notice-agent-directory", "notice-open-conversations",
+    /// "notice-inbox", "notice-loaded-skills", "notice-context-drift"
+    pub blocks: BTreeMap<String, PromptAsset>,
+    /// agent identity files: "main", "review", "explore", + user-defined
+    pub agents: BTreeMap<String, PromptAsset>,
+    /// memory data wrappers: "global", "project"
+    pub memory: BTreeMap<String, PromptAsset>,
+    /// runtime templates: "context", "handoff-context", "handoff-instruction", "notice-context-drift"
+    pub runtime: BTreeMap<String, PromptAsset>,
+    /// tool templates: "fetch-web"
+    pub tools: BTreeMap<String, PromptAsset>,
 }
 
 impl PromptCatalog {
@@ -27,14 +32,12 @@ impl PromptCatalog {
     pub fn load_from_dir(dir: &Path) -> crate::error::Result<PromptCatalog> {
         let builtin = builtin_prompt_catalog();
         Ok(PromptCatalog {
-            system: load_or_fallback(dir, "system.md", builtin.system)?,
-            project_context: load_or_fallback(dir, "project-context.md", builtin.project_context)?,
-            tool_guidance: load_or_fallback(dir, "tool-guidance.md", builtin.tool_guidance)?,
-            runtime_context: load_or_fallback(dir, "runtime-context.md", builtin.runtime_context)?,
-            global_memory: load_or_fallback(dir, "global-memory.md", builtin.global_memory)?,
-            project_memory: load_or_fallback(dir, "project-memory.md", builtin.project_memory)?,
-            fetch_web: load_or_fallback(dir, "fetch-web.md", builtin.fetch_web)?,
-            handoff_context: load_or_fallback(dir, "handoff-context.md", builtin.handoff_context)?,
+            system: load_or_fallback(dir, "system.md", builtin.system.clone())?,
+            blocks: load_subdir_map(dir, "blocks", &builtin.blocks)?,
+            agents: load_subdir_map(dir, "agents", &builtin.agents)?,
+            memory: load_subdir_map(dir, "memory", &builtin.memory)?,
+            runtime: load_subdir_map(dir, "runtime", &builtin.runtime)?,
+            tools: load_subdir_map(dir, "tools", &builtin.tools)?,
         })
     }
 }
@@ -52,62 +55,95 @@ pub fn load_prompt_template(dir: &Path, name: &str) -> crate::error::Result<Stri
 pub fn builtin_handoff_instruction() -> &'static str {
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/prompts/handoff-instruction.md"
+        "/prompts/runtime/handoff-instruction.md"
     ))
 }
 
 pub fn builtin_prompt_catalog() -> PromptCatalog {
+    macro_rules! p {
+        ($subdir:literal, $name:literal) => {
+            asset(
+                concat!("prompts/", $subdir, "/", $name, ".md"),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/prompts/",
+                    $subdir,
+                    "/",
+                    $name,
+                    ".md"
+                )),
+            )
+        };
+    }
     PromptCatalog {
         system: asset(
-            "crates/kuku/prompts/system.md",
+            "prompts/system.md",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/system.md")),
         ),
-        project_context: asset(
-            "crates/kuku/prompts/project-context.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/project-context.md"
-            )),
-        ),
-        tool_guidance: asset(
-            "crates/kuku/prompts/tool-guidance.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/tool-guidance.md"
-            )),
-        ),
-        runtime_context: asset(
-            "crates/kuku/prompts/runtime-context.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/runtime-context.md"
-            )),
-        ),
-        global_memory: asset(
-            "crates/kuku/prompts/global-memory.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/global-memory.md"
-            )),
-        ),
-        project_memory: asset(
-            "crates/kuku/prompts/project-memory.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/project-memory.md"
-            )),
-        ),
-        fetch_web: asset(
-            "crates/kuku/prompts/fetch-web.md",
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/fetch-web.md")),
-        ),
-        handoff_context: asset(
-            "crates/kuku/prompts/handoff-context.md",
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/handoff-context.md"
-            )),
-        ),
+        blocks: {
+            let mut m = BTreeMap::new();
+            m.insert("project-policy".into(), p!("blocks", "project-policy"));
+            m.insert("tool-guidance".into(), p!("blocks", "tool-guidance"));
+            m.insert("memory".into(), p!("blocks", "memory"));
+            m.insert("agent-catalog".into(), p!("blocks", "agent-catalog"));
+            m.insert("system-notice".into(), p!("blocks", "system-notice"));
+            m.insert("hook-context".into(), p!("blocks", "hook-context"));
+            m.insert(
+                "notice-agent-directory".into(),
+                p!("blocks", "notice-agent-directory"),
+            );
+            m.insert(
+                "notice-open-conversations".into(),
+                p!("blocks", "notice-open-conversations"),
+            );
+            m.insert("notice-inbox".into(), p!("blocks", "notice-inbox"));
+            m.insert(
+                "notice-loaded-skills".into(),
+                p!("blocks", "notice-loaded-skills"),
+            );
+            m.insert(
+                "notice-context-drift".into(),
+                p!("blocks", "notice-context-drift"),
+            );
+            m.insert("runtime-notices".into(), p!("blocks", "runtime-notices"));
+            m.insert(
+                "conversation-inbox".into(),
+                p!("blocks", "conversation-inbox"),
+            );
+            m
+        },
+        agents: {
+            let mut m = BTreeMap::new();
+            m.insert("main".into(), p!("agents", "main"));
+            m.insert("review".into(), p!("agents", "review"));
+            m.insert("explore".into(), p!("agents", "explore"));
+            m
+        },
+        memory: {
+            let mut m = BTreeMap::new();
+            m.insert("global".into(), p!("memory", "global"));
+            m.insert("project".into(), p!("memory", "project"));
+            m
+        },
+        runtime: {
+            let mut m = BTreeMap::new();
+            m.insert("context".into(), p!("runtime", "context"));
+            m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
+            m.insert(
+                "handoff-instruction".into(),
+                p!("runtime", "handoff-instruction"),
+            );
+            m.insert(
+                "notice-context-drift".into(),
+                p!("runtime", "notice-context-drift"),
+            );
+            m
+        },
+        tools: {
+            let mut m = BTreeMap::new();
+            m.insert("fetch-web".into(), p!("tools", "fetch-web"));
+            m
+        },
     }
 }
 
@@ -139,6 +175,42 @@ fn load_or_fallback(
     }
 }
 
+fn load_subdir_map(
+    base: &Path,
+    subdir: &str,
+    builtins: &BTreeMap<String, PromptAsset>,
+) -> crate::error::Result<BTreeMap<String, PromptAsset>> {
+    let dir = base.join(subdir);
+    let mut map = builtins.clone();
+    if dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let text = std::fs::read_to_string(&path).map_err(|e| {
+                            crate::error::Error::PromptRender(format!(
+                                "failed to read {}: {e}",
+                                path.display()
+                            ))
+                        })?;
+                        let hash = format!("sha256:{:x}", Sha256::digest(text.as_bytes()));
+                        map.insert(
+                            stem.to_string(),
+                            PromptAsset {
+                                path: path.to_string_lossy().to_string(),
+                                text,
+                                hash,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{builtin_prompt_catalog, PromptCatalog};
@@ -148,24 +220,32 @@ mod tests {
         let catalog = builtin_prompt_catalog();
 
         assert!(catalog.system.path.ends_with("system.md"));
-        assert!(catalog.project_context.path.ends_with("project-context.md"));
-        assert!(catalog.tool_guidance.path.ends_with("tool-guidance.md"));
-        assert!(catalog.runtime_context.path.ends_with("runtime-context.md"));
-        assert!(catalog.global_memory.path.ends_with("global-memory.md"));
-        assert!(catalog.project_memory.path.ends_with("project-memory.md"));
+        assert!(catalog.blocks["project-policy"]
+            .path
+            .ends_with("project-policy.md"));
+        assert!(catalog.blocks["tool-guidance"]
+            .path
+            .ends_with("tool-guidance.md"));
+        assert!(catalog.runtime["context"].path.ends_with("context.md"));
+        assert!(catalog.memory["global"].path.ends_with("global.md"));
+        assert!(catalog.memory["project"].path.ends_with("project.md"));
         assert!(!catalog.system.text.trim().is_empty());
-        assert!(!catalog.project_context.text.trim().is_empty());
-        assert!(!catalog.tool_guidance.text.trim().is_empty());
-        assert!(!catalog.global_memory.text.trim().is_empty());
-        assert!(!catalog.project_memory.text.trim().is_empty());
-        assert!(catalog.fetch_web.path.ends_with("fetch-web.md"));
-        assert!(!catalog.fetch_web.text.trim().is_empty());
-        assert!(catalog.handoff_context.path.ends_with("handoff-context.md"));
-        assert!(!catalog.handoff_context.text.trim().is_empty());
-        assert!(catalog.handoff_context.text.contains("{{handoff_summary}}"));
+        assert!(!catalog.blocks["project-policy"].text.trim().is_empty());
+        assert!(!catalog.blocks["tool-guidance"].text.trim().is_empty());
+        assert!(!catalog.memory["global"].text.trim().is_empty());
+        assert!(!catalog.memory["project"].text.trim().is_empty());
+        assert!(catalog.tools["fetch-web"].path.ends_with("fetch-web.md"));
+        assert!(!catalog.tools["fetch-web"].text.trim().is_empty());
+        assert!(catalog.runtime["handoff-context"]
+            .path
+            .ends_with("handoff-context.md"));
+        assert!(!catalog.runtime["handoff-context"].text.trim().is_empty());
+        assert!(catalog.runtime["handoff-context"]
+            .text
+            .contains("{{handoff_summary}}"));
         assert!(catalog.system.hash.starts_with("sha256:"));
-        assert!(catalog.global_memory.hash.starts_with("sha256:"));
-        assert!(catalog.project_memory.hash.starts_with("sha256:"));
+        assert!(catalog.memory["global"].hash.starts_with("sha256:"));
+        assert!(catalog.memory["project"].hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -176,8 +256,7 @@ mod tests {
 
         let catalog = PromptCatalog::load_from_dir(dir.path()).unwrap();
         assert_eq!(catalog.system.text, custom_system);
-        assert!(catalog
-            .project_context
+        assert!(catalog.blocks["project-policy"]
             .text
             .contains("<kuku_project_context>"));
     }

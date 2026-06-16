@@ -4,7 +4,6 @@ use crate::context::{
     PluginRegistryProvenance, PromptCapabilityMetadata, PromptRendererIdentity, Role,
     SkillRegistryProvenance, ToolRegistryProvenance,
 };
-use crate::conversation::address::ConversationAddress;
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
@@ -54,7 +53,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let (runtime_blocks, _notice_snapshots) = build_runtime_blocks(
+    let (catalog_text, skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
         pending.conversation.as_str(),
         pending.turn,
@@ -63,6 +62,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         pending.previous_skill_registry.as_ref(),
         &resolved_config,
         &existing_events,
+        &catalog,
     )?;
 
     let runtime_blocks = if pending.turn == 1 {
@@ -73,7 +73,12 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     "Plugins loaded: {pkg_names}. \
                      If not relevant to your current task, ignore."
                 );
-                let wrapped = format!("<kuku_system_notice>\n{notice}\n</kuku_system_notice>");
+                let wrapper_tmpl = catalog
+                    .blocks
+                    .get("system-notice")
+                    .map(|a| a.text.as_str())
+                    .unwrap_or("<kuku_system_notice>\n{{notice_body}}\n</kuku_system_notice>");
+                let wrapped = wrapper_tmpl.replace("{{notice_body}}", &notice);
                 Some(match runtime_blocks {
                     Some(existing) => format!("{existing}\n\n{wrapped}"),
                     None => wrapped,
@@ -102,6 +107,17 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             tools: tool::to_tool_schemas(&registry),
             model_tiers,
             runtime_blocks,
+            enable_memory: true,
+            agent_name: pending.conversation.root_contact().as_str().to_string(),
+            agent_instructions: pending
+                .agent_registry
+                .as_ref()
+                .and_then(|r| r.get(pending.conversation.root_contact().as_str()))
+                .map(|d| d.instructions.clone())
+                .or_else(|| pending.query.agent_instructions.clone())
+                .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
+                .unwrap_or_default(),
+            response_contract: pending.query.response_contract.clone(),
         },
         &catalog,
     ) {
@@ -129,6 +145,25 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let is_first_request = frozen.is_none();
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
+    }
+
+    // Layer 4: inject agent catalog + loaded skills into snapshot prelude (first turn only;
+    // subsequent turns reuse the frozen snapshot)
+    if is_first_request {
+        if let Some(catalog_text) = catalog_text {
+            if !catalog_text.is_empty() {
+                assembly
+                    .prelude_messages
+                    .push(CanonicalMessage::user_text(catalog_text));
+            }
+        }
+        if let Some(skills_text) = skills_text {
+            if !skills_text.is_empty() {
+                assembly
+                    .prelude_messages
+                    .push(CanonicalMessage::user_text(skills_text));
+            }
+        }
     }
 
     if let Some(prefix) = pending
@@ -169,7 +204,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             pending.handoff_triggered = true;
             pending.handoff_keep_turns = handoff_config.keep_turns;
             Some(if let Some(dir) = &pending.prompts_dir {
-                load_prompt_template(dir, "handoff-instruction")
+                load_prompt_template(dir, "runtime/handoff-instruction")
                     .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
             } else {
                 builtin_handoff_instruction().to_string()
@@ -186,12 +221,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .bootstrap_skill
             .as_ref()
             .map(|skill| skill.body.as_str()),
+        &catalog,
     );
     let mut current_turn_prefix = pending
         .frozen_turn_prefix
         .freeze_or_reuse(dynamic_turn_prefix);
     if let Some(instruction) = handoff_instruction {
-        current_turn_prefix = append_handoff_instruction(current_turn_prefix, &instruction);
+        current_turn_prefix =
+            append_handoff_instruction(current_turn_prefix, &instruction, &catalog);
         pending
             .frozen_turn_prefix
             .replace(current_turn_prefix.clone());
@@ -220,9 +257,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .rev()
             .find(|m| m.role == crate::context::Role::User)
         {
+            let hook_tmpl = catalog
+                .blocks
+                .get("hook-context")
+                .map(|a| a.text.as_str())
+                .unwrap_or("<kuku_hook_context>\n{{hook_text}}\n</kuku_hook_context>");
             insert_current_turn_metadata_block(
                 last_user,
-                format!("<kuku_hook_context>\n{hook_text}\n</kuku_hook_context>"),
+                hook_tmpl.replace("{{hook_text}}", &hook_text),
             );
         }
     }
@@ -657,7 +699,8 @@ fn build_runtime_blocks(
     previous_skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     resolved_config: &crate::provider::types::ResolvedProvider,
     existing_events: &[crate::event::StoredEvent],
-) -> Result<(Option<String>, Vec<crate::event::types::ContextMessage>)> {
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
     let thinking_overhead = resolved_config.think_level.overhead_tokens();
     let context_headroom = compute_context_headroom(
@@ -668,17 +711,12 @@ fn build_runtime_blocks(
         estimated_input,
     );
 
-    let mut parts: Vec<String> = Vec::new();
-    let mut notice_bodies: Vec<String> = Vec::new();
-    let mut notice_snapshots: Vec<crate::event::types::ContextMessage> = Vec::new();
+    // Build agent catalog — this goes into snapshot prelude, not runtime_blocks
+    let catalog_text =
+        agent_registry.and_then(|reg| crate::agent::catalog::render_agent_catalog(reg, catalog));
 
-    if let Some(agent_registry) = agent_registry {
-        if let Some(catalog_text) = crate::agent::catalog::render_agent_catalog(agent_registry) {
-            parts.push(catalog_text);
-        }
-    }
-
-    if let Some(skill_reg) = skill_registry {
+    // Build skill catalog — this goes into snapshot prelude, not runtime_blocks
+    let skills_text = skill_registry.and_then(|skill_reg| {
         let loaded_skill_names =
             crate::skill::session::loaded_skill_names(existing_events, conversation);
         let skill_changes = if turn > 1 {
@@ -688,25 +726,25 @@ fn build_runtime_blocks(
         } else {
             None
         };
-
-        if let Some(catalog_text) = crate::skill::catalog::render_skill_catalog(
+        crate::skill::catalog::render_skill_catalog(
             skill_reg,
             &loaded_skill_names,
             skill_changes.as_ref(),
-        ) {
-            parts.push(catalog_text);
-        }
-    }
+        )
+    });
+
+    // Dynamic notices remain in runtime_blocks (conversations, inbox, drift)
+    let mut notice_bodies: Vec<String> = Vec::new();
 
     if turn > 1 {
-        let conversation =
-            ConversationAddress::parse(conversation).unwrap_or(ConversationAddress::MAIN);
+        let conversation = crate::conversation::address::ConversationAddress::parse(conversation)
+            .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
         let notice_events = existing_events
             .iter()
             .filter(|event| {
                 !matches!(
                     &event.payload,
-                    EventPayload::MessageUser {
+                    crate::event::EventPayload::MessageUser {
                         conversation: event_conversation,
                         from: Some(_),
                         via_tool_call_id: Some(_),
@@ -724,51 +762,46 @@ fn build_runtime_blocks(
             agent_registry,
         });
         for notice in &notices {
-            if let Some(body) = render_notice_body(notice) {
+            if let Some(body) = render_notice_body(notice, catalog) {
                 notice_bodies.push(body);
             }
         }
-        notice_snapshots = notices
-            .iter()
-            .filter_map(|n| {
-                render_notice_body(n).map(|content| crate::event::types::ContextMessage {
-                    role: "user".to_string(),
-                    content,
-                })
-            })
-            .collect();
     }
 
-    if !notice_bodies.is_empty() {
-        let merged = notice_bodies.join("\n\n");
-        parts.push(format!(
-            "<kuku_system_notice>\n{merged}\n</kuku_system_notice>"
-        ));
-    }
-
-    let runtime_blocks = if parts.is_empty() {
+    // Notices are now self-wrapped with <kuku_system_notice> via templates;
+    // just join them without adding an outer wrapper.
+    let runtime_blocks = if notice_bodies.is_empty() {
         None
     } else {
-        Some(parts.join("\n"))
+        Some(notice_bodies.join("\n\n"))
     };
 
-    Ok((runtime_blocks, notice_snapshots))
+    Ok((catalog_text, skills_text, runtime_blocks))
 }
 
 fn assembly_runtime_prefix(
     runtime_context: Option<&str>,
     skill_body: Option<&str>,
+    catalog: &crate::prompt::PromptCatalog,
 ) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
-        parts.push(format!(
-            "<kuku_runtime_notices>{runtime_context}</kuku_runtime_notices>"
-        ));
+        let tmpl = catalog
+            .blocks
+            .get("runtime-notices")
+            .map(|a| a.text.as_str())
+            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
+        parts.push(tmpl.replace("{{runtime_notices_content}}", runtime_context));
     }
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
-        parts.push(format!(
-            "<kuku_conversation_inbox>{skill_body}</kuku_conversation_inbox>"
-        ));
+        let tmpl = catalog
+            .blocks
+            .get("conversation-inbox")
+            .map(|a| a.text.as_str())
+            .unwrap_or(
+                "<kuku_conversation_inbox>{{conversation_inbox_content}}</kuku_conversation_inbox>",
+            );
+        parts.push(tmpl.replace("{{conversation_inbox_content}}", skill_body));
     }
     if parts.is_empty() {
         None
@@ -777,10 +810,28 @@ fn assembly_runtime_prefix(
     }
 }
 
-fn append_handoff_instruction(prefix: Option<String>, instruction: &str) -> Option<String> {
+fn append_handoff_instruction(
+    prefix: Option<String>,
+    instruction: &str,
+    catalog: &crate::prompt::PromptCatalog,
+) -> Option<String> {
     let Some(prefix) = prefix else {
+        let notices_tmpl = catalog
+            .blocks
+            .get("runtime-notices")
+            .map(|a| a.text.as_str())
+            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
+        let inbox_tmpl = catalog
+            .blocks
+            .get("conversation-inbox")
+            .map(|a| a.text.as_str())
+            .unwrap_or(
+                "<kuku_conversation_inbox>{{conversation_inbox_content}}</kuku_conversation_inbox>",
+            );
         return Some(format!(
-            "<kuku_runtime_notices>{instruction}</kuku_runtime_notices>\n<kuku_conversation_inbox></kuku_conversation_inbox>"
+            "{}\n{}",
+            notices_tmpl.replace("{{runtime_notices_content}}", instruction),
+            inbox_tmpl.replace("{{conversation_inbox_content}}", ""),
         ));
     };
 

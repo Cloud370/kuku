@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::Result;
+use crate::prompt::{PromptAsset, PromptCatalog};
 
 use super::definition::{AgentDefinition, DefinitionSource, ToolProfile};
 
@@ -51,9 +52,15 @@ pub struct AgentRegistryBuilder {
 }
 
 impl AgentRegistryBuilder {
-    pub fn builtins(mut self) -> Self {
-        self.add(builtin_review());
-        self.add(builtin_explore());
+    pub fn builtins(mut self, catalog: &PromptCatalog) -> Self {
+        for (name, asset) in &catalog.agents {
+            if name == "main" {
+                continue; // main is not a delegable agent
+            }
+            if let Some(def) = parse_agent_from_asset(name, asset) {
+                self.add(def);
+            }
+        }
         self
     }
 
@@ -93,55 +100,28 @@ impl AgentRegistryBuilder {
     }
 }
 
-fn builtin_review() -> AgentDefinition {
-    let mut definition = AgentDefinition {
-        name: "review".into(),
-        description: "Review code or docs for correctness, evidence, and boundary issues.".into(),
-        instructions: concat!(
-            "You are a code and document reviewer. Your job is to read the provided context carefully ",
-            "and identify issues related to correctness, consistency, and boundary problems.\n\n",
-            "For each finding, cite the specific file path and line number as evidence.\n",
-            "Do not make changes - only report what you find.\n",
-            "If you find no issues, state that clearly.\n",
-            "When you finish, report your findings with specific file paths and line numbers as evidence.\n",
-        )
-        .into(),
-        tier: "balanced".into(),
-        tool_profile: ToolProfile::Read,
-        tools: Some(vec!["find_files".into(), "read_file".into(), "search_text".into()]),
-        max_turns: 10,
-        source: DefinitionSource::Builtin,
-        hash: String::new(),
-        source_path: None,
-        metadata: serde_json::Value::Null,
+fn parse_agent_from_asset(name: &str, asset: &PromptAsset) -> Option<AgentDefinition> {
+    // Parse YAML frontmatter from the asset text
+    // If no frontmatter, use defaults with filename as name
+    let (frontmatter, body) = super::loader::split_frontmatter(&asset.text);
+    let mut def = match frontmatter {
+        Some(fm) => super::loader::parse_agent_frontmatter(name, &fm, &body)?,
+        None => AgentDefinition {
+            name: name.to_string(),
+            description: body.lines().next().unwrap_or("").to_string(),
+            instructions: body.to_string(),
+            tier: "balanced".to_string(),
+            tool_profile: ToolProfile::Read,
+            tools: None,
+            max_turns: 10,
+            source: DefinitionSource::Builtin,
+            hash: String::new(),
+            source_path: Some(asset.path.clone()),
+            metadata: serde_json::Value::Null,
+        },
     };
-    definition.hash = definition.compute_hash();
-    definition
-}
-
-fn builtin_explore() -> AgentDefinition {
-    let mut definition = AgentDefinition {
-        name: "explore".into(),
-        description: "Search broadly for patterns, definitions, or references. Report file/line evidence."
-            .into(),
-        instructions: concat!(
-            "You are a code explorer. Search the codebase broadly for the requested patterns or information.\n",
-            "Use find_files to locate relevant files, search_text to find patterns, and read_file to verify findings.\n",
-            "Report what you find with file paths and line numbers.\n",
-            "Be thorough but efficient - cover the search area without getting lost in details.\n",
-        )
-        .into(),
-        tier: "light".into(),
-        tool_profile: ToolProfile::Read,
-        tools: Some(vec!["find_files".into(), "read_file".into(), "search_text".into()]),
-        max_turns: 10,
-        source: DefinitionSource::Builtin,
-        hash: String::new(),
-        source_path: None,
-        metadata: serde_json::Value::Null,
-    };
-    definition.hash = definition.compute_hash();
-    definition
+    def.hash = def.compute_hash();
+    Some(def)
 }
 
 fn compute_registry_hash(defs: &BTreeMap<String, AgentDefinition>, names: &[String]) -> String {

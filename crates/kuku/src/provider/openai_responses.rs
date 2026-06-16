@@ -106,7 +106,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         input_items.extend(convert_to_input_items(message));
     }
     if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.handoff_context.text;
+        let template = &request.catalog.runtime["handoff-context"].text;
         let content = template.replace("{{handoff_summary}}", summary);
         input_items.push(json!({
             "role": "user",

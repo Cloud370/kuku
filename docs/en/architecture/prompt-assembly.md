@@ -21,57 +21,75 @@ Prompt assembly is conversation-scoped, not based on separate delegated session 
 
 ## Layers
 
-### System prompt
+### System prompt (`catalog.system.text`)
 
-The stable runtime contract. It carries identity, hard rules, and working style. It does not carry workspace-specific state.
+The stable runtime contract. It carries identity, hard rules, and working style.
+It does not carry workspace-specific state.
 
-### Prelude messages
+### Prelude messages (snapshot layers 2–6)
 
-The first prelude messages carry reusable context:
+The prelude is a frozen snapshot of reusable context. It is captured once per turn
+and restored from `PromptSnapshot` events on later turns. Layers:
 
-| Position | Content |
-|---|---|
-| `messages[0]` | tool guidance |
-| `messages[1]` | global `Memory` |
-| `messages[2]` | project `Memory` |
-| `messages[3]` | project context |
-
-Project context includes project instructions, execution context, and available model tiers.
+| Layer | Content | Template |
+|---|---|---|
+| 2 | project policy | `blocks/project-policy.md` + rendered project instructions and model tiers |
+| 3 | agent identity | `input.agent_instructions` |
+| 4 | tool guidance | `blocks/tool-guidance.md` |
+| 5 | memory | `blocks/memory.md` + `memory/global.md` + `memory/project.md` (gated by `enable_memory`) |
+| 6 | agent catalog + loaded skills | appended after memory blocks by caller |
 
 ### History
 
-Conversation history is rebuilt from `events.jsonl` for the active conversation address, after filtering rolled-back events and applying the current handoff boundary.
+Conversation history is rebuilt from `events.jsonl` for the active conversation address,
+after filtering rolled-back events and applying the current handoff boundary.
 
-### Runtime context
+### Per-turn content
 
-Dynamic data for the current turn goes into the last user message before the human input. This includes:
+Dynamic data for the current turn is injected into the last user message before the
+human input. This is NOT part of the frozen snapshot:
 
-- agent directory notices for `main`
-- open conversation notices
-- inbox notices
-- loaded-skill notices
-- pending-permission notices
-- interrupted-turn notices
-- context-drift notices
+- runtime context (agent catalog, notices, skill catalog) wrapped in `runtime/context.md`
+- response contract (surface, locale, preferences) for the main conversation
+
+Notice types that appear in runtime context: agent directory, open conversations,
+inbox, loaded skills, context drift.
 
 ## Assembly Order
 
 ```text
 system prompt
-messages[0]    tool_guidance
-messages[1]    global_memory
-messages[2]    project_memory
-messages[3]    project_context
-messages[4..]  replayed history for one conversation
-last user turn runtime_context + human input
+prelude[0]       project_policy
+prelude[1]       agent_identity
+prelude[2]       tool_guidance
+prelude[3..]     memory*
+prelude[4..]     agent catalog + skills (appended by caller)
+messages[N..]    replayed history for one conversation
+last user turn   runtime_context + human input
 ```
 
 ## Cache Behavior
 
-Stable content stays in the prelude so provider-side prompt caching can reuse it across turns and conversations. Dynamic runtime data stays in the last user message so it can change without invalidating the whole prefix.
+Stable content stays in the prelude so provider-side prompt caching can reuse it
+across turns and conversations. Dynamic runtime data stays in the last user message
+so it can change without invalidating the whole prefix.
 
 ## Asset Ownership
 
-Prompt text lives in `crates/kuku/prompts/`. The `prompt/` module owns asset loading and rendering. The `context/` and `conversation/` modules decide how one conversation's history, rollback state, and notices become a request.
+Prompt text lives in `crates/kuku/prompts/` organized by category:
 
-See [Module Contracts](module-contracts.md) for ownership boundaries. For reader-facing behavior, see [Sessions](../how-it-works/sessions.md) and [Agents and Skills](../how-it-works/agents-and-skills.md).
+| Directory | Contents |
+|---|---|
+| `blocks/` | reusable template blocks (project-policy, tool-guidance, memory, notices) |
+| `agents/` | agent definitions with YAML frontmatter |
+| `memory/` | global and project memory templates |
+| `runtime/` | runtime context, handoff context and instruction wrappers |
+| `tools/` | tool-specific system prompts |
+
+The `prompt/` module owns asset loading and rendering. The `context/` and
+`conversation/` modules decide how one conversation's history, rollback state,
+and notices become a request.
+
+See [Module Contracts](module-contracts.md) for ownership boundaries. For
+reader-facing behavior, see [Sessions](../how-it-works/sessions.md) and
+[Agents and Skills](../how-it-works/agents-and-skills.md).
