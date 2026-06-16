@@ -308,8 +308,12 @@ impl Query {
         let (slot_event_tx, slot_event_rx) =
             tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
         let catalog = if let Some(dir) = &prompts_dir {
-            crate::prompt::PromptCatalog::load_from_dir(dir)
-                .unwrap_or_else(|_| crate::prompt::builtin_prompt_catalog())
+            crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
+                crate::error::Error::PromptRender(format!(
+                    "failed to load prompts from {}: {e}",
+                    dir.display()
+                ))
+            })?
         } else {
             crate::prompt::builtin_prompt_catalog()
         };

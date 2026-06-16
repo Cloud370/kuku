@@ -241,7 +241,7 @@ fn build_query(
             Some(dir) => {
                 let dir = std::path::PathBuf::from(dir);
                 kuku::prompt::PromptCatalog::load_from_dir(&dir)
-                    .unwrap_or_else(|_| builtin_prompt_catalog())
+                    .map_err(|e| format!("failed to load prompts from {}: {e}", dir.display()))?
             }
             None => builtin_prompt_catalog(),
         };
