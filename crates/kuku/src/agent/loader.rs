@@ -139,15 +139,19 @@ fn extract_str_list(mapping: &serde_yaml::Mapping, key: &str) -> Option<Vec<Stri
         })
 }
 
-fn extract_tool_profile(mapping: &serde_yaml::Mapping) -> Option<ToolProfile> {
-    extract_str(mapping, "tool_profile").and_then(|s| match s.as_str() {
+fn parse_tool_profile_str(s: &str) -> Option<ToolProfile> {
+    match s {
         "read" | "Read" => Some(ToolProfile::Read),
         "read_write" | "readwrite" | "ReadWrite" | "write" | "Write" => {
             Some(ToolProfile::ReadWrite)
         }
         "none" | "None" => Some(ToolProfile::None),
         _ => None,
-    })
+    }
+}
+
+fn extract_tool_profile(mapping: &serde_yaml::Mapping) -> Option<ToolProfile> {
+    extract_str(mapping, "tool_profile").and_then(|s| parse_tool_profile_str(&s))
 }
 
 const WRITE_TOOLS: &[&str] = &[
@@ -250,13 +254,7 @@ pub fn parse_agent_frontmatter(name: &str, fm: &str, body: &str) -> Option<Agent
         tool_profile: map
             .get("tool_profile")
             .and_then(|v| v.as_str())
-            .map(|s| match s {
-                "read_write" | "readwrite" | "ReadWrite" | "write" | "Write" => {
-                    ToolProfile::ReadWrite
-                }
-                "none" | "None" => ToolProfile::None,
-                _ => ToolProfile::Read,
-            })
+            .and_then(parse_tool_profile_str)
             .unwrap_or(ToolProfile::Read),
         tools: map.get("tools").and_then(|v| v.as_sequence()).map(|seq| {
             seq.iter()

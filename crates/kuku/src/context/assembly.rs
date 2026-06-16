@@ -190,17 +190,14 @@ pub fn assemble_context(
     // ---- Layer 3: agent identity ----
     let identity_text = input.agent_instructions.clone();
 
-    // ---- Layer 4: agent catalog + loaded skills ----
-    // (injected by caller via prelude push during Phase 7)
-
-    // ---- Layer 5: tool-guidance ----
+    // ---- Layer 4: tool-guidance ----
     let tool_guidance = catalog
         .blocks
         .get("tool-guidance")
         .map(|a| a.text.clone())
         .unwrap_or_default();
 
-    // ---- Layer 6: memory (optional) ----
+    // ---- Layer 5: memory (optional) ----
     let memory_guidance = if input.enable_memory {
         catalog.blocks.get("memory").map(|a| a.text.clone())
     } else {
@@ -276,7 +273,6 @@ pub fn assemble_context(
     if !identity_text.is_empty() {
         prelude.push(CanonicalMessage::user_text(identity_text));
     }
-    // Layer 4 (catalog + skills) injected by caller via prelude push
     if !tool_guidance.is_empty() {
         prelude.push(CanonicalMessage::user_text(tool_guidance));
     }
@@ -291,6 +287,8 @@ pub fn assemble_context(
     if !project_rendered.is_empty() {
         prelude.push(CanonicalMessage::user_text(project_rendered));
     }
+    // Layer 6 (agent catalog + loaded skills) is appended by the caller after
+    // this prelude is built, immediately following the memory blocks above.
 
     // ---- Sources for provenance ----
     let mut prompt_asset_sources: Vec<FileSource> = vec![FileSource {
