@@ -40,13 +40,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: apps/web/.nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - name: Build WebUI
         working-directory: apps/web
-        run: npm install && npm run build
+        run: npm ci && npm run build
 
       - uses: dtolnay/rust-toolchain@stable
         with:
