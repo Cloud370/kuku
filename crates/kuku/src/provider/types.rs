@@ -1,5 +1,4 @@
-use std::fmt;
-
+use crate::config::SecretString;
 use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
 use crate::prompt::PromptCatalog;
@@ -36,32 +35,6 @@ impl ProviderKind {
             ProviderKind::OpenAiCompatible => "openai-compatible",
             ProviderKind::OpenAiResponses => "openai-responses",
         }
-    }
-}
-
-/// Wrapper that redacts the value in Debug/Display.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct SecretString(String);
-
-impl SecretString {
-    pub(crate) fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub(crate) fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SecretString(<redacted>)")
-    }
-}
-
-impl fmt::Display for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
     }
 }
 

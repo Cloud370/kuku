@@ -37,7 +37,7 @@ purpose = "quick tasks"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key-anthropic"
+credential = { source = "direct_value", value = "test-key-anthropic" }
 
 [handoff]
 enabled = true
@@ -185,7 +185,7 @@ fn set_value_rejects_unknown_dot_path() {
 // ── show_redacted tests ──
 
 #[test]
-fn show_redacted_masks_plaintext_api_key() {
+fn show_redacted_masks_direct_credential() {
     let config = r#"
 default_model = "balanced"
 
@@ -216,7 +216,7 @@ purpose = "quick tasks"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-secret123"
+credential = { source = "direct_value", value = "sk-ant-secret123" }
 "#;
     let dir = temp_config(config);
     let path = dir.path().join("config.toml");
@@ -260,13 +260,14 @@ purpose = "quick tasks"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "$_KUKU_TEST_SHOW_KEY"
+credential = { source = "environment_reference", value = "_KUKU_TEST_SHOW_KEY" }
 "#;
     let dir = temp_config(config);
     let path = dir.path().join("config.toml");
 
     let output = show_redacted(&path).unwrap();
-    assert!(output.contains("$_KUKU_TEST_SHOW_KEY"));
+    assert!(output.contains("environment_reference"));
+    assert!(output.contains("_KUKU_TEST_SHOW_KEY"));
     std::env::remove_var("_KUKU_TEST_SHOW_KEY");
 }
 
@@ -325,7 +326,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 "#;
     let file: ConfigFile = toml::from_str(toml).unwrap();
     let disc = file.discovery.unwrap_or_default();
@@ -356,7 +357,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [discovery]
 auto_discover = false
@@ -416,7 +417,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 "#;
 
 #[test]
@@ -528,7 +529,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [update]
 source = "mirror"
@@ -567,7 +568,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 "#;
     let file: ConfigFile = toml::from_str(input).unwrap();
     assert!(file.update.is_none());
@@ -601,7 +602,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [update]
 source = "mirror"
@@ -638,7 +639,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [handoff]
 enabled = true
@@ -687,7 +688,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 "#;
     let (patched, changed) = config_patch_defaults(input).unwrap();
     assert!(changed);
@@ -722,7 +723,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [handoff]
 enabled = true
@@ -763,7 +764,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [handoff]
 enabled = true
@@ -810,7 +811,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 "#;
     let (patched, _) = config_patch_defaults(input).unwrap();
     assert!(patched.contains("# My custom config"));
@@ -839,7 +840,7 @@ think = "off"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key"
+credential = { source = "direct_value", value = "test-key" }
 
 [handoff]
 enabled = false
@@ -939,7 +940,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "test-key-anthropic"
+credential = { source = "direct_value", value = "test-key-anthropic" }
 "#,
     );
     let path = dir.path().join("config.toml");

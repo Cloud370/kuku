@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
-        load_and_patch_config, load_config, ApiKey, Config, ProviderConfig, ProviderFormat,
-        ResolvedThinking, ThinkLevel, TierConfig,
+        load_and_patch_config, load_config, Config, ProviderConfig, ProviderFormat,
+        ResolvedThinking, SecretString, StoredCredential, ThinkLevel, TierConfig,
     };
 }
 
@@ -37,7 +37,7 @@ mod provider {
 
 mod common;
 
-use config::{load_config, ApiKey, Config, ThinkLevel};
+use config::{load_config, Config, StoredCredential, ThinkLevel};
 use provider::config::{resolve_config, ResolveConfigInput};
 
 fn config_from_toml(toml: &str) -> Config {
@@ -77,7 +77,7 @@ max_output_tokens = 32000
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#
 }
 
@@ -126,7 +126,7 @@ model = "claude-sonnet-4-6"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#,
     )
     .unwrap();
@@ -160,7 +160,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#,
     )
     .unwrap();
@@ -170,7 +170,7 @@ api_key = "sk-ant-123"
 }
 
 #[test]
-fn api_key_env_ref_resolves() {
+fn credential_environment_reference_is_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -191,16 +191,18 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "$TEST_API_KEY_VAR"
+credential = { source = "environment_reference", value = "TEST_API_KEY_VAR" }
 "#,
     )
     .unwrap();
     let file = load_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
-    let api_key = &cfg.provider("anthropic").unwrap().api_key;
-    match api_key {
-        ApiKey::Env(name) => assert_eq!(name, "TEST_API_KEY_VAR"),
-        other => panic!("expected Env, got {other:?}"),
+    let credential = &cfg.provider("anthropic").unwrap().credential;
+    match credential {
+        StoredCredential::EnvironmentReference(name) => {
+            assert_eq!("TEST_API_KEY_VAR", name)
+        }
+        other => panic!("expected EnvironmentReference, got {other:?}"),
     }
 }
 
@@ -227,7 +229,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "anthropic"
 base_url = "$TEST_BASE_URL_VAR"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#,
     )
     .unwrap();
@@ -270,7 +272,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "anthropic"
 base_url = "$MISSING_BASE_URL_VAR"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#,
     )
     .unwrap();
@@ -313,7 +315,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "$TEST_PROVIDER_FORMAT"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-123"
+credential = { source = "direct_value", value = "sk-ant-123" }
 "#,
     )
     .unwrap();
@@ -363,7 +365,7 @@ model = "claude-haiku-4-5-20251001"
 [provider.anthropic]
 format = "$TEST_PROVIDER_FORMAT"
 base_url = "$TEST_BASE_URL_VAR"
-api_key = "$TEST_API_KEY_VAR"
+credential = { source = "environment_reference", value = "TEST_API_KEY_VAR" }
 "#,
     )
     .unwrap();
@@ -418,7 +420,7 @@ model = "test"
 [provider.custom]
 format = "grpc"
 base_url = "https://custom.api"
-api_key = "key"
+credential = { source = "direct_value", value = "key" }
 "#,
     )
     .unwrap();
@@ -453,7 +455,7 @@ model = "test"
 }
 
 #[test]
-fn redacted_display_never_leaks_api_keys() {
+fn redacted_display_never_leaks_credentials() {
     let cfg = config_from_toml(minimal_valid_toml());
     let display = cfg.redacted_display();
     assert!(!display.contains("sk-ant-123"));

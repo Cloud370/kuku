@@ -3,8 +3,8 @@ mod common;
 use common::{anthropic_sse_response, test_config, TestEnv};
 use httpmock::prelude::*;
 use kuku::agent::registry::AgentRegistry;
-use kuku::config::ApiKey;
 use kuku::config::TierConfig;
+use kuku::config::{SecretString, StoredCredential};
 use kuku::event::{EventPayload, EventStore};
 use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Provider};
@@ -164,7 +164,7 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
         .get_mut("anthropic")
         .expect("test config has anthropic provider");
     provider.base_url = server.base_url();
-    provider.api_key = ApiKey::Plaintext("test-key".to_string());
+    provider.credential = StoredCredential::DirectValue(SecretString::new("test-key"));
 
     query(query_text)
         .provider(Provider::Anthropic)

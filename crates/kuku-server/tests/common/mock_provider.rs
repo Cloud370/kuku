@@ -27,8 +27,8 @@ pub use kuku::test_support::anthropic_sse_response;
 
 pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
-        UpdateConfig,
+        Config, DiscoveryConfig, HandoffConfig, ProviderConfig, SecretString, StoredCredential,
+        ThinkLevel, TierConfig, UpdateConfig,
     };
     use std::collections::BTreeMap;
 
@@ -38,7 +38,7 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
         ProviderConfig {
             format: kuku::config::ProviderFormat::Anthropic,
             base_url: format!("http://127.0.0.1:{mock_port}"),
-            api_key: ApiKey::Plaintext("test-key".to_string()),
+            credential: StoredCredential::DirectValue(SecretString::new("test-key")),
         },
     );
 

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+use super::secret::StoredCredential;
+
 // ── Provider format (moved from provider/ to break reverse dependency) ──
 
 /// Wire format selector for provider API protocol.
@@ -110,10 +112,11 @@ pub struct ModelEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderEntry {
     pub format: ProviderFormat,
     pub base_url: String,
-    pub api_key: String,
+    pub credential: StoredCredential,
 }
 
 // ── Validated / resolved config ──
@@ -254,13 +257,7 @@ pub struct TierConfig {
 pub struct ProviderConfig {
     pub format: ProviderFormat,
     pub base_url: String,
-    pub api_key: ApiKey,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ApiKey {
-    Env(String),
-    Plaintext(String),
+    pub credential: StoredCredential,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,9 +389,13 @@ impl Config {
             out.push_str(&format!("[provider.{name}]\n"));
             out.push_str(&format!("format = \"{}\"\n", provider.format.as_str()));
             out.push_str(&format!("base_url = \"{}\"\n", provider.base_url));
-            match &provider.api_key {
-                ApiKey::Plaintext(_) => out.push_str("api_key = \"<redacted>\"\n"),
-                ApiKey::Env(env) => out.push_str(&format!("api_key = \"${env}\"\n")),
+            match &provider.credential {
+                StoredCredential::DirectValue(_) => out.push_str(
+                    "credential = { source = \"direct_value\", value = \"<redacted>\" }\n",
+                ),
+                StoredCredential::EnvironmentReference(name) => out.push_str(&format!(
+                    "credential = {{ source = \"environment_reference\", value = \"{name}\" }}\n"
+                )),
             }
             out.push('\n');
         }

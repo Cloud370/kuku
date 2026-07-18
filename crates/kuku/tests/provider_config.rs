@@ -1,7 +1,8 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
-        ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig, UpdateConfig,
+        Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
+        ProviderFormat, ResolvedThinking, SecretString, StoredCredential, ThinkLevel, TierConfig,
+        UpdateConfig,
     };
 }
 
@@ -39,7 +40,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use config::{ApiKey, Config, ProviderConfig, ThinkLevel, TierConfig};
+use config::{Config, ProviderConfig, SecretString, StoredCredential, ThinkLevel, TierConfig};
 use kuku::Error;
 use provider::config::{resolve_config, ResolveConfigInput};
 use provider::types::{Provider, ProviderKind};
@@ -64,7 +65,7 @@ fn default_config() -> Config {
         ProviderConfig {
             format: config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
-            api_key: ApiKey::Plaintext("sk-ant-config".to_string()),
+            credential: StoredCredential::DirectValue(SecretString::new("sk-ant-config")),
         },
     );
 
@@ -88,7 +89,7 @@ fn builder_values_override_config_values() {
         provider: Some(Provider::Anthropic),
         model: Some("claude-opus-4-7".to_string()),
         base_url: Some("https://builder.example".to_string()),
-        api_key: Some("builder-key".to_string()),
+        api_key: Some(SecretString::new("builder-key")),
         config: Some(cfg),
         ..Default::default()
     })
@@ -148,7 +149,7 @@ fn explicit_tier_selects_different_tier() {
         ProviderConfig {
             format: config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
-            api_key: ApiKey::Plaintext("sk-ant-config".to_string()),
+            credential: StoredCredential::DirectValue(SecretString::new("sk-ant-config")),
         },
     );
 
@@ -204,7 +205,7 @@ fn builder_values_override_all_config_tier_settings() {
         provider: Some(Provider::Anthropic),
         model: Some("claude-opus-4-7".to_string()),
         base_url: Some("https://custom-gateway.example".to_string()),
-        api_key: Some("builder-key".to_string()),
+        api_key: Some(SecretString::new("builder-key")),
         config: Some(cfg),
         ..Default::default()
     })

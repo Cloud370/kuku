@@ -1,6 +1,7 @@
 use super::*;
+use crate::config::SecretString;
 use crate::event::{EventPayload, EventStore};
-use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
+use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider};
 use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
 
 fn test_config() -> crate::config::Config {

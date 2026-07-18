@@ -392,7 +392,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
+    use crate::config::SecretString;
+    use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider};
     use crate::query::types::{CumulativeUsage, ExecSlot, PendingRun, Query, ResolvedRuntime};
     use crate::skill::definition::{SkillDefinition, SkillSource};
     use crate::tool::ToolDefinition;

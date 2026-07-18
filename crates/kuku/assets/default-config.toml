@@ -48,17 +48,17 @@ purpose = "quick simple tasks, summaries"
 # Define API endpoints and credentials. Tiers reference providers by name.
 #
 # format: protocol adapter — "anthropic", "openai-chat", or "openai-responses"
-# api_key: your API key, or "$ENV_VAR_NAME" to read from environment variable
+# credential: tagged direct value or environment variable reference
 
 [provider.anthropic]
 format = "anthropic"
 base_url = "https://api.anthropic.com"
-api_key = "$ANTHROPIC_API_KEY"
+credential = { source = "environment_reference", value = "ANTHROPIC_API_KEY" }
 
 [provider.openai]
 format = "openai-responses"
 base_url = "https://api.openai.com"
-api_key = "$OPENAI_API_KEY"
+credential = { source = "environment_reference", value = "OPENAI_API_KEY" }
 
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 # Auto-scan for skills/ and agents/ subdirectories in:

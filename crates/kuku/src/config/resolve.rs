@@ -4,7 +4,8 @@ use std::str::FromStr;
 
 use crate::error::{Error, Result};
 
-use super::types::{ApiKey, Config, ConfigFile, ProviderConfig, ThinkLevel, TierConfig};
+use super::secret::StoredCredential;
+use super::types::{Config, ConfigFile, ProviderConfig, ThinkLevel, TierConfig};
 
 // ── Load ──
 
@@ -77,7 +78,7 @@ fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
 }
 
 fn should_resolve_env_ref(path: &str, value: &str) -> bool {
-    value.starts_with('$') && !path.ends_with("api_key")
+    value.starts_with('$') && !path.ends_with(".credential.value")
 }
 
 fn display_path(path: &str) -> &str {
@@ -119,18 +120,12 @@ impl ConfigFile {
 
         let mut providers = BTreeMap::new();
         for (name, entry) in &self.provider {
-            let api_key_raw = entry.api_key.trim();
-            let api_key = if let Some(env_name) = api_key_raw.strip_prefix('$') {
-                ApiKey::Env(env_name.to_string())
-            } else {
-                ApiKey::Plaintext(api_key_raw.to_string())
-            };
             providers.insert(
                 name.clone(),
                 ProviderConfig {
                     format: entry.format,
                     base_url: entry.base_url.trim().to_string(),
-                    api_key,
+                    credential: entry.credential.clone(),
                 },
             );
         }
@@ -245,18 +240,18 @@ impl ConfigFile {
                     "provider '{name}': base_url is required"
                 )));
             }
-            let api_key = entry.api_key.trim();
-            if api_key.is_empty() {
-                return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': api_key is required"
-                )));
-            }
-            if let Some(env_name) = api_key.strip_prefix('$') {
-                if env_name.is_empty() {
+            match &entry.credential {
+                StoredCredential::DirectValue(value) if value.expose().trim().is_empty() => {
                     return Err(Error::ConfigLoad(format!(
-                        "provider '{name}': api_key '$' prefix must be followed by an env var name"
+                        "provider '{name}': direct credential value is required"
                     )));
                 }
+                StoredCredential::EnvironmentReference(name) if name.trim().is_empty() => {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': credential environment reference is required"
+                    )));
+                }
+                StoredCredential::DirectValue(_) | StoredCredential::EnvironmentReference(_) => {}
             }
         }
         Ok(())
@@ -281,23 +276,9 @@ impl ConfigFile {
     }
 }
 
-// ── ApiKey ──
-
-impl ApiKey {
-    /// Resolve the actual key value. Returns error if an env var ref points to a missing variable.
-    pub fn resolve(&self) -> Result<String> {
-        match self {
-            ApiKey::Env(name) => std::env::var(name).map_err(|_| {
-                Error::ConfigLoad(format!("env var '{name}' referenced by api_key is not set"))
-            }),
-            ApiKey::Plaintext(key) => Ok(key.clone()),
-        }
-    }
-}
-
 /// Load a config file, validate it, and return a redacted display string.
 ///
-/// Env-var references (`$FOO`) are shown as-is. Plaintext keys are masked.
+/// Environment references are shown by name. Direct credentials are masked.
 pub fn show_redacted(path: &Path) -> Result<String> {
     let config_file = load_config(path)?;
     let config = config_file.resolve()?;

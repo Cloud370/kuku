@@ -1,13 +1,15 @@
 mod mutate;
 mod resolve;
+mod secret;
 pub(crate) mod types;
 
 pub use mutate::{config_patch_defaults, generate_default, load_and_patch_config, set_value};
 pub use resolve::{load_config, show_redacted};
+pub use secret::{SecretString, StoredCredential};
 pub use types::{
-    ApiKey, Config, ConfigFile, DiscoveryConfig, HandoffConfig, LogsConfig, ModelEntry,
-    PluginConfig, ProviderConfig, ProviderEntry, ProviderFormat, ResolvedThinking, ThinkLevel,
-    TierConfig, TierInfo, UpdateConfig,
+    Config, ConfigFile, DiscoveryConfig, HandoffConfig, LogsConfig, ModelEntry, PluginConfig,
+    ProviderConfig, ProviderEntry, ProviderFormat, ResolvedThinking, ThinkLevel, TierConfig,
+    TierInfo, UpdateConfig,
 };
 
 #[cfg(test)]

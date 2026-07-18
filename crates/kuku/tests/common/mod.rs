@@ -201,7 +201,8 @@ impl Drop for TestEnv {
 #[allow(dead_code)]
 pub fn test_config() -> kuku::config::Config {
     use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
+        Config, DiscoveryConfig, HandoffConfig, ProviderConfig, SecretString, StoredCredential,
+        ThinkLevel, TierConfig,
     };
     use std::collections::BTreeMap;
 
@@ -224,7 +225,7 @@ pub fn test_config() -> kuku::config::Config {
         ProviderConfig {
             format: kuku::config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
-            api_key: ApiKey::Plaintext("unused".to_string()),
+            credential: StoredCredential::DirectValue(SecretString::new("unused")),
         },
     );
     providers.insert(
@@ -232,7 +233,7 @@ pub fn test_config() -> kuku::config::Config {
         ProviderConfig {
             format: kuku::config::ProviderFormat::OpenAiChat,
             base_url: "https://api.openai.com/v1".to_string(),
-            api_key: ApiKey::Plaintext("unused".to_string()),
+            credential: StoredCredential::DirectValue(SecretString::new("unused")),
         },
     );
 

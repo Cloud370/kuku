@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_core::Stream;
 
-use crate::config::Config;
+use crate::config::{Config, SecretString};
 use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
@@ -26,7 +26,7 @@ pub struct Query {
     pub(super) config_path: Option<PathBuf>,
     pub(super) config_obj: Option<Config>,
     pub(super) base_url: Option<String>,
-    pub(super) api_key: Option<String>,
+    pub(super) api_key: Option<SecretString>,
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
@@ -612,7 +612,7 @@ impl Query {
 
     /// Set the API key directly, bypassing config resolution.
     pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
+        self.api_key = Some(SecretString::new(api_key));
         self
     }
 
