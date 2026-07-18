@@ -241,7 +241,7 @@ impl ConfigFile {
                 )));
             }
             match &entry.credential {
-                StoredCredential::DirectValue(value) if value.expose().trim().is_empty() => {
+                StoredCredential::DirectValue(value) if value.is_blank() => {
                     return Err(Error::ConfigLoad(format!(
                         "provider '{name}': direct credential value is required"
                     )));

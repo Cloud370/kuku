@@ -18,6 +18,10 @@ impl SecretString {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
 }
 
 impl fmt::Debug for SecretString {
@@ -73,5 +77,17 @@ impl StoredCredential {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_predicate_uses_trim_whitespace_semantics() {
+        assert!(SecretString::new("").is_blank());
+        assert!(SecretString::new(" \t\n\r").is_blank());
+        assert!(!SecretString::new(" direct-value ").is_blank());
     }
 }
