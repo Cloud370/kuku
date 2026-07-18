@@ -1,4 +1,4 @@
-use super::*;
+use super::{EventPayload, RollbackScope, StoredEvent};
 
 #[test]
 fn handoff_round_trip() {
