@@ -28,10 +28,19 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 getrandom = { workspace = true }
+typed-path = { workspace = true }
+cap-std = { workspace = true }
+fslock = { workspace = true }
 arc-swap = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }
 home = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 kuku = { workspace = true, features = ["test_support"] }
