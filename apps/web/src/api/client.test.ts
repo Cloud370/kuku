@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebApiError, webApi } from "./client";
+import { ContractDecodeError } from "./decode";
 
 const revision = "a".repeat(64);
 const taskId = "tsk_000000000000000000000001";
@@ -248,5 +249,34 @@ describe("webApi", () => {
         traceId: "trace_fixture",
       });
     }
+  });
+
+  it("decodes and rejects malformed non-2xx API errors", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          api_version: 1,
+          code: "unknown_code",
+          message: "Invalid error fixture",
+          trace_id: "trace_fixture",
+          details: null,
+        },
+        400,
+      ),
+    );
+    await expect(webApi.tasks.get(taskId)).rejects.toBeInstanceOf(ContractDecodeError);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          api_version: 1,
+          code: "task_busy",
+          message: "Missing details fixture",
+          trace_id: "trace_fixture",
+        },
+        409,
+      ),
+    );
+    await expect(webApi.tasks.get(taskId)).rejects.toBeInstanceOf(ContractDecodeError);
   });
 });

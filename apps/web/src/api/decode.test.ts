@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ContractDecodeError, decodeTaskStreamEvent } from "./decode";
+import { ContractDecodeError, decodeApiError, decodeTaskStreamEvent } from "./decode";
 
 function validStreamEvent(): Record<string, unknown> {
   return {
@@ -13,6 +13,16 @@ function validStreamEvent(): Record<string, unknown> {
       changes: [],
       timeline_window: null,
     },
+  };
+}
+
+function validApiError(): Record<string, unknown> {
+  return {
+    api_version: 1,
+    code: "task_busy",
+    message: "Task already has an active run",
+    trace_id: "trace_fixture",
+    details: null,
   };
 }
 
@@ -53,5 +63,27 @@ describe("decodeTaskStreamEvent", () => {
     value.event = { type: "changes_applied", changes: [] };
 
     expect(() => decodeTaskStreamEvent(value)).toThrow(ContractDecodeError);
+  });
+});
+
+describe("decodeApiError", () => {
+  it("returns a schema-valid typed API error", () => {
+    const value = validApiError();
+
+    expect(decodeApiError(value)).toEqual(value);
+  });
+
+  it("rejects an unknown API error code", () => {
+    const value = validApiError();
+    value.code = "unknown_code";
+
+    expect(() => decodeApiError(value)).toThrow(ContractDecodeError);
+  });
+
+  it("rejects a missing required nullable details key", () => {
+    const value = validApiError();
+    delete value.details;
+
+    expect(() => decodeApiError(value)).toThrow(ContractDecodeError);
   });
 });

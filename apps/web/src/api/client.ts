@@ -53,6 +53,37 @@ import type {
   WorkspacePage,
   WorkspaceSummary,
 } from "./generated";
+import { decodeApiError } from "./decode";
+
+export async function get<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`GET ${path}: ${String(res.status)}`);
+  return res.json() as Promise<T>;
+}
+
+export async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST ${path}: ${String(res.status)}`);
+  return res.json() as Promise<T>;
+}
+
+export function postStream(
+  path: string,
+  body: unknown,
+): Promise<ReadableStream<Uint8Array>> {
+  return fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => {
+    if (!r.ok || !r.body) throw new Error(`POST ${path}: ${String(r.status)}`);
+    return r.body;
+  });
+}
 
 const API_ROOT = "/api/v1";
 const CREDENTIAL_STORAGE_KEY = "kuku.web.credential";
@@ -89,18 +120,6 @@ export class WebApiError extends Error {
   }
 }
 
-function isApiError(value: unknown): value is ApiError {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.api_version === 1 &&
-    typeof candidate.code === "string" &&
-    typeof candidate.message === "string" &&
-    typeof candidate.trace_id === "string" &&
-    "details" in candidate
-  );
-}
-
 async function throwResponseError(response: Response): Promise<never> {
   let value: unknown;
   try {
@@ -108,10 +127,7 @@ async function throwResponseError(response: Response): Promise<never> {
   } catch {
     throw new Error(`HTTP ${String(response.status)} returned a non-JSON error`);
   }
-  if (isApiError(value)) {
-    throw new WebApiError(response.status, value);
-  }
-  throw new Error(`HTTP ${String(response.status)} returned an invalid API error`);
+  throw new WebApiError(response.status, decodeApiError(value));
 }
 
 function requestHeaders(hasBody: boolean, accept: string): Headers {
