@@ -1,4 +1,8 @@
-use super::*;
+use super::{make_cancelled_run, make_test_pending, test_execution_scope};
+use crate::event::{EventPayload, EventStore};
+use crate::query::types::{
+    ExecSlot, PendingStep, Run, RunState, SlotEvent, StreamingChunkState, ToolKind, UiEvent,
+};
 
 #[tokio::test]
 async fn cancel_when_idle_produces_turn_end() {

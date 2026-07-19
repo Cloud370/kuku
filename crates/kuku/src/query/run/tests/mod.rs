@@ -1,8 +1,8 @@
-use super::*;
+use super::{PendingPermission, PermissionRequest, QueuedToolCall, Run, RunState};
 use crate::config::SecretString;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider};
-use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
+use crate::query::types::{CumulativeUsage, PendingRun, ResolvedRuntime};
 
 fn test_config() -> crate::config::Config {
     crate::config::Config {
