@@ -1,5 +1,3 @@
-import { get } from "./client";
-
 export interface SessionSummary {
   session_id: string;
   workspace: string;
@@ -24,16 +22,14 @@ export type EventsResponse =
     };
 
 export function fetchSessions(
-  workspace?: string,
+  _workspace?: string,
 ): Promise<{ ok: boolean; sessions: SessionSummary[] }> {
-  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  return get(`/sessions${qs}`);
+  return Promise.reject(new Error("legacy Session API removed"));
 }
 
 export function fetchSessionEvents(
-  sessionId: string,
-  workspace: string,
+  _sessionId: string,
+  _workspace: string,
 ): Promise<EventsResponse> {
-  const qs = `?workspace=${encodeURIComponent(workspace)}`;
-  return get(`/sessions/${sessionId}/events${qs}`);
+  return Promise.reject(new Error("legacy Session API removed"));
 }
