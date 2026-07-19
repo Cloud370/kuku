@@ -5,12 +5,12 @@ use kuku::event::{
     MemoryContextFact, MemoryKind, MessageRole, ObservationFact, ObservationKind,
     ObservationRetention, ObservedRange, ProviderFact, RequestCause, RequestId, RequestScope,
     RequestSnapshot, RevisionToken, RunId, SkillContextFact, SkillLoadFact, SkillLoadOrigin,
-    SourceFact, SourceScope, TaskId, ThinkingConfig, ToolResultStatus, TurnId, WorkspaceId,
-    WorkspaceRelativePath, JSON_SAFE_INTEGER_MAX, MAX_WORKSPACE_RELATIVE_PATH_BYTES,
+    SourceFact, SourceScope, TaskId, Temperature, ThinkingConfig, ToolResultStatus, TurnId,
+    WorkspaceId, WorkspaceRelativePath, JSON_SAFE_INTEGER_MAX, MAX_WORKSPACE_RELATIVE_PATH_BYTES,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 fn execution_scope() -> ExecutionScope {
     ExecutionScope {
@@ -53,6 +53,15 @@ fn assert_has_schema<T: JsonSchema>() {
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
+}
+
+fn workspace_path_schema_accepts(schema: &serde_json::Value, value: &str) -> bool {
+    let pattern = schema["pattern"].as_str().unwrap();
+    let max_characters = schema["maxLength"].as_u64().unwrap() as usize;
+    let max_utf8_bytes = schema["x-kuku-max-utf8-bytes"].as_u64().unwrap() as usize;
+    value.chars().count() <= max_characters
+        && value.len() <= max_utf8_bytes
+        && regex::Regex::new(pattern).unwrap().is_match(value)
 }
 
 #[test]
@@ -101,7 +110,7 @@ fn exact_request_preserves_message_content_and_tool_order() {
         parameters: ExactRequestParameters {
             model: "model-a".to_string(),
             max_output_tokens: None,
-            temperature: Some(0.2),
+            temperature: Some(Temperature::try_new(0.2).unwrap()),
             stream: true,
             thinking: ThinkingConfig::Enabled {
                 budget_tokens: Some(1_024),
@@ -348,12 +357,50 @@ fn workspace_relative_path_is_normalized_contained_and_size_bounded() {
     assert!(WorkspaceRelativePath::parse("../secret").is_err());
     assert!(WorkspaceRelativePath::parse("src/../secret").is_err());
     assert!(WorkspaceRelativePath::parse("./src/lib.rs").is_err());
+    assert!(WorkspaceRelativePath::parse("a//b").is_err());
+    assert!(WorkspaceRelativePath::parse("a/").is_err());
     assert!(WorkspaceRelativePath::parse("src\\lib.rs").is_err());
     assert!(WorkspaceRelativePath::parse("C:\\secret").is_err());
 
     let at_limit = "a".repeat(MAX_WORKSPACE_RELATIVE_PATH_BYTES);
     assert!(WorkspaceRelativePath::parse(&at_limit).is_ok());
     assert!(WorkspaceRelativePath::parse(format!("{at_limit}a")).is_err());
+}
+
+#[test]
+fn workspace_relative_path_schema_matches_parser_semantics() {
+    let schema = serde_json::to_value(schemars::schema_for!(WorkspaceRelativePath)).unwrap();
+    assert_eq!(schema["format"], "workspace-relative-path");
+    assert_eq!(
+        schema["x-kuku-max-utf8-bytes"],
+        MAX_WORKSPACE_RELATIVE_PATH_BYTES
+    );
+
+    for valid in ["a", "a/b", ".git/config", ".../file", "路径/文件"] {
+        assert!(WorkspaceRelativePath::parse(valid).is_ok(), "{valid}");
+        assert!(workspace_path_schema_accepts(&schema, valid), "{valid}");
+    }
+
+    for invalid in [
+        "", "/a", "a//b", "a/", ".", "..", "a/.", "a/..", "a\\b", "C:/a",
+    ] {
+        assert!(WorkspaceRelativePath::parse(invalid).is_err(), "{invalid}");
+        assert!(
+            !workspace_path_schema_accepts(&schema, invalid),
+            "{invalid}"
+        );
+    }
+
+    let at_byte_limit = format!(
+        "a{}",
+        "界".repeat((MAX_WORKSPACE_RELATIVE_PATH_BYTES - 1) / 3)
+    );
+    let above_byte_limit = format!("{at_byte_limit}界");
+    assert_eq!(at_byte_limit.len(), MAX_WORKSPACE_RELATIVE_PATH_BYTES);
+    assert!(WorkspaceRelativePath::parse(&at_byte_limit).is_ok());
+    assert!(workspace_path_schema_accepts(&schema, &at_byte_limit));
+    assert!(WorkspaceRelativePath::parse(&above_byte_limit).is_err());
+    assert!(!workspace_path_schema_accepts(&schema, &above_byte_limit));
 }
 
 #[test]
@@ -378,6 +425,28 @@ fn context_metrics_reject_values_above_json_safe_integer_max() {
 
     let range = serde_json::json!({"start_line": 1, "end_line": too_large});
     assert!(serde_json::from_value::<ObservedRange>(range).is_err());
+}
+
+#[test]
+fn exact_request_temperature_is_finite_and_keeps_number_wire_shape() {
+    let temperature = Temperature::try_new(0.2).unwrap();
+    assert_eq!(temperature.get(), 0.2);
+    assert!(serde_json::to_value(temperature).unwrap().is_number());
+    assert_round_trip(&temperature);
+
+    let schema = serde_json::to_value(schemars::schema_for!(Temperature)).unwrap();
+    assert_eq!(schema["type"], "number");
+    assert_eq!(schema["format"], "finite-float32");
+
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(Temperature::try_new(value).is_err());
+        let deserializer = serde::de::value::F32Deserializer::<serde::de::value::Error>::new(value);
+        assert!(Temperature::deserialize(deserializer).is_err());
+    }
+
+    for wire in ["NaN", "Infinity", "-Infinity"] {
+        assert!(serde_json::from_str::<Temperature>(wire).is_err());
+    }
 }
 
 #[test]
@@ -432,6 +501,7 @@ fn every_context_fact_value_has_a_json_schema() {
     assert_has_schema::<ExactContentBlock>();
     assert_has_schema::<ExactMessage>();
     assert_has_schema::<ExactTool>();
+    assert_has_schema::<Temperature>();
     assert_has_schema::<ThinkingConfig>();
     assert_has_schema::<ExactRequestParameters>();
     assert_has_schema::<ExactRequest>();
