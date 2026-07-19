@@ -24,6 +24,11 @@ pub mod util;
 pub mod wire;
 
 pub use error::{Error, Result};
+pub use event::{
+    ConversationId, Cursor, ExecutionScope, InteractionId, RequestId, RequestScope,
+    ReviewSubmissionId, RevisionToken, RunId, StorageExhaustionError, TaskId, TaskRevision,
+    TaskState, TurnId, WorkspaceId,
+};
 pub use provider::types::ProviderFailureKind;
 pub use provider::{Provider, ProviderUsage};
 pub use query::{

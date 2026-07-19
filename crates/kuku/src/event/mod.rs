@@ -3,4 +3,11 @@ pub mod store;
 pub mod types;
 
 pub use store::EventStore;
-pub use types::{EventPayload, RollbackScope, StoredEvent};
+pub use types::{
+    ConversationId, CurrencyCode, Cursor, DecimalCost, EventPayload, ExecutionIdError,
+    ExecutionScope, InteractionId, ProviderFact, ProviderFailureFact, ProviderFailureKind,
+    ProviderUsage, RequestCause, RequestCompleted, RequestFailed, RequestId, RequestScope,
+    RequestStarted, ReviewSubmissionId, RevisionToken, RevisionTokenError, RollbackScope, RunId,
+    RunState, StorageExhaustionError, StoredEvent, TaskId, TaskRevision, TaskState, TurnId,
+    WorkspaceId, JSON_SAFE_INTEGER_MAX,
+};
