@@ -4,6 +4,7 @@ mod codec;
 mod identity;
 mod payload;
 mod request;
+mod review;
 mod stored;
 mod task;
 
@@ -16,6 +17,7 @@ pub use request::{
     CurrencyCode, DecimalCost, ProviderFact, ProviderFailureFact, ProviderFailureKind,
     ProviderUsage, RequestCause, RequestCompleted, RequestFailed, RequestStarted,
 };
+pub use review::{AnnotationSide, ReviewAnnotationFact, ReviewSubmissionRecorded};
 pub use stored::StoredEvent;
 pub use task::{
     Cursor, RevisionToken, RevisionTokenError, RunState, StorageExhaustionError, TaskRevision,
