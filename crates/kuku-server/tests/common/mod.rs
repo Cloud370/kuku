@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+pub mod context_fixtures;
+#[allow(dead_code)]
 pub mod mock_provider;
 #[allow(dead_code)]
 pub mod stream;
