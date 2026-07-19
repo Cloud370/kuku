@@ -6,6 +6,8 @@ use crate::context::provenance::{
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
 };
 
+use super::TaskLedgerRecord;
+
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMessage {
@@ -39,6 +41,7 @@ impl RollbackScope {
 /// All fact events that can be written to and read from a session's events.jsonl.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPayload {
+    TaskLedger(TaskLedgerRecord),
     ContextSources {
         turn: u64,
         ts: String,
@@ -223,6 +226,17 @@ impl Serialize for EventPayload {
     {
         match self {
             Self::Unknown(value) => value.serialize(serializer),
+            Self::TaskLedger(record) => {
+                let encoded = serde_json::to_value(record).map_err(serde::ser::Error::custom)?;
+                let record_type = encoded.get("record_type").cloned().unwrap_or(Value::Null);
+                let content = encoded.get("record").cloned().unwrap_or(Value::Null);
+                let value = serde_json::json!({
+                    "kind": "task.ledger",
+                    "record_type": record_type,
+                    "record": content,
+                });
+                value.serialize(serializer)
+            }
             payload => {
                 let mut value = payload.to_new_json(0).map_err(serde::ser::Error::custom)?;
                 if let Some(object) = value.as_object_mut() {
@@ -234,10 +248,25 @@ impl Serialize for EventPayload {
     }
 }
 
+impl<'de> Deserialize<'de> for EventPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let Some(object) = value.as_object() else {
+            return Ok(Self::Unknown(value));
+        };
+        Self::from_json_object(object)
+            .ok_or_else(|| serde::de::Error::custom("invalid event payload"))
+    }
+}
+
 impl EventPayload {
     /// Returns the stable persisted kind name for this event.
     pub fn kind_name(&self) -> &str {
         match self {
+            Self::TaskLedger(_) => "task.ledger",
             Self::ContextSources { .. } => "context.sources",
             Self::ContextSkills { .. } => "context.skills",
             Self::ModelResponse { .. } => "model.response",

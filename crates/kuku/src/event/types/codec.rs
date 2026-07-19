@@ -7,6 +7,13 @@ impl EventPayload {
         let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
+            "task.ledger" => Some(Self::TaskLedger(
+                serde_json::from_value(serde_json::json!({
+                    "record_type": object.get("record_type")?.clone(),
+                    "record": object.get("record")?.clone(),
+                }))
+                .ok()?,
+            )),
             "context.sources" => Some(Self::ContextSources {
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
@@ -209,6 +216,15 @@ impl EventPayload {
 
     pub(super) fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
         match self {
+            Self::TaskLedger(record) => {
+                let encoded = serde_json::to_value(record)?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "kind": "task.ledger",
+                    "record_type": encoded.get("record_type"),
+                    "record": encoded.get("record"),
+                }))
+            }
             Self::Unknown(value) => Ok(value.clone()),
             Self::SessionCreated {
                 ts,
