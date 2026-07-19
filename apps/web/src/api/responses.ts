@@ -1,9 +1,7 @@
-import { post } from "./client";
-
 export function sendResponse(
-  runId: string,
-  interactionId: string,
-  choice: string,
+  _runId: string,
+  _interactionId: string,
+  _choice: string,
 ): Promise<{ ok: boolean }> {
-  return post(`/runs/${runId}/responses`, { interaction_id: interactionId, choice });
+  return Promise.reject(new Error("legacy Run response API removed"));
 }

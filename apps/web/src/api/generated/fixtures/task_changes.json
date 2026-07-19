@@ -1,0 +1,153 @@
+{
+  "changes": [
+    {
+      "item": {
+        "item": {
+          "file_references": [],
+          "finalized": true,
+          "message_id": "msg_fixture_1",
+          "order_key": 8,
+          "request_ids": [
+            "req_000000000000000000000001"
+          ],
+          "role": "agent",
+          "text": "Ready."
+        },
+        "type": "message"
+      },
+      "type": "message_appended"
+    },
+    {
+      "append_text": " Done.",
+      "finalized": true,
+      "message_id": "msg_fixture_1",
+      "request_ids": [
+        "req_000000000000000000000001"
+      ],
+      "type": "message_patched"
+    },
+    {
+      "activity": {
+        "activity_id": "activity_fixture_1",
+        "detail": null,
+        "file_references": [],
+        "kind": "tool",
+        "order_key": 9,
+        "status": "completed",
+        "title": "Read file"
+      },
+      "type": "activity_upserted"
+    },
+    {
+      "interaction": {
+        "choices": [
+          {
+            "choice_id": "continue",
+            "label": "Continue"
+          }
+        ],
+        "interaction_id": "int_000000000000000000000001",
+        "order_key": 10,
+        "prompt": "Continue?",
+        "selected_choice_id": null,
+        "status": "pending"
+      },
+      "type": "interaction_upserted"
+    },
+    {
+      "active_run": null,
+      "latest_run": null,
+      "task": {
+        "active_run_id": null,
+        "latest_run_id": "run_000000000000000000000001",
+        "state": "completed",
+        "task_id": "tsk_000000000000000000000001",
+        "title": "Fixture task",
+        "updated_at": "2026-07-18T00:00:03Z",
+        "workspace_id": "wsp_000000000000000000000001"
+      },
+      "type": "run_state_changed"
+    },
+    {
+      "loaded_skills": [
+        {
+          "description": "Fixture contract skill",
+          "loaded_by": "you",
+          "name": "Fixture Skill",
+          "skill_id": "fixture-skill"
+        }
+      ],
+      "selected_tier_id": "balanced",
+      "type": "skills_changed"
+    },
+    {
+      "context_summary": null,
+      "type": "context_summary_changed"
+    },
+    {
+      "change": {
+        "submission": {
+          "notes": [
+            {
+              "comment": "Keep this boundary explicit.",
+              "end_line": 1,
+              "excerpt": "pub mod api;",
+              "path": "src/lib.rs",
+              "revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "side": "file",
+              "start_line": 1,
+              "status": "current"
+            }
+          ],
+          "run_id": "run_000000000000000000000001",
+          "submission_id": "rsub_000000000000000000000001",
+          "submitted_at": "2026-07-18T00:00:04Z",
+          "task_id": "tsk_000000000000000000000001",
+          "task_revision": 2
+        },
+        "total_submissions": 1
+      },
+      "type": "review_submissions_changed"
+    }
+  ],
+  "deltas": [
+    {
+      "projection": {
+        "active_run": null,
+        "api_version": 1,
+        "context_summary": null,
+        "cursor": 7,
+        "latest_run": null,
+        "loaded_skills": [],
+        "review_summary": {
+          "latest_submission_id": null,
+          "total_submissions": 0
+        },
+        "selected_tier_id": "balanced",
+        "task": {
+          "active_run_id": null,
+          "latest_run_id": null,
+          "state": "draft",
+          "task_id": "tsk_000000000000000000000001",
+          "title": "New task",
+          "updated_at": "2026-07-18T00:00:00Z",
+          "workspace_id": "wsp_000000000000000000000001"
+        },
+        "task_revision": 0,
+        "timeline": [],
+        "timeline_next_cursor": null
+      },
+      "type": "projection_replaced"
+    },
+    {
+      "changes": [
+        {
+          "context_summary": null,
+          "type": "context_summary_changed"
+        }
+      ],
+      "timeline_window": null,
+      "type": "changes_applied"
+    }
+  ]
+}

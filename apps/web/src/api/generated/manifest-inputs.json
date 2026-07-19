@@ -1,0 +1,12 @@
+[
+  "fixtures/api_error.json",
+  "fixtures/task_projection.json",
+  "fixtures/task_changes.json",
+  "fixtures/task_stream_event.json",
+  "fixtures/platform_status.json",
+  "fixtures/settings_snapshot.json",
+  "fixtures/platform_catalog.json",
+  "fixtures/context_snapshot.json",
+  "fixtures/review_snapshot.json",
+  "schema.json"
+]

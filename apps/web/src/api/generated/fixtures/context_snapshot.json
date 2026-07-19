@@ -1,0 +1,67 @@
+{
+  "api_version": 1,
+  "discoverable": {
+    "agent_count": 0,
+    "catalog_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "skill_count": 0,
+    "tool_count": 0
+  },
+  "exact_request": null,
+  "health": {
+    "context_token_limit": null,
+    "context_tokens_remaining": null,
+    "context_tokens_used": null,
+    "level": "unavailable",
+    "source_drift_count": 0,
+    "summarized": false,
+    "truncated_observation_count": 0
+  },
+  "next_request_base": {
+    "capabilities": [],
+    "conversation": {
+      "delegated_results": [],
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "retained_turns": 0
+    },
+    "delegated_results": [],
+    "instructions": [],
+    "memory": [],
+    "observations": [],
+    "skills": [],
+    "token_estimate": null
+  },
+  "request_history": [],
+  "request_history_truncated": false,
+  "sections": {
+    "agents": [],
+    "capabilities": [],
+    "conversation": {
+      "delegated_results": [],
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "retained_turns": 0
+    },
+    "instructions": [],
+    "memory": [],
+    "observations": [],
+    "skills": []
+  },
+  "selected_request": null,
+  "task_id": "tsk_000000000000000000000001",
+  "task_revision": 0,
+  "usage": {
+    "this_request": null,
+    "this_task": {
+      "cache_creation_input_tokens": null,
+      "cached_input_ratio": null,
+      "cached_input_tokens": null,
+      "cost": null,
+      "elapsed_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "request_count": 0
+    }
+  },
+  "warnings": []
+}

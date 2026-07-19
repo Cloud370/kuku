@@ -4,6 +4,7 @@
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
     "moduleResolution": "bundler",
+    "resolveJsonModule": true,
     "moduleDetection": "force",
     "jsx": "react-jsx",
     "strict": true,

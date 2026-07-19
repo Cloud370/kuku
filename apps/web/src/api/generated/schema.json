@@ -1,0 +1,5011 @@
+{
+  "$defs": {
+    "ActivityKind": {
+      "enum": [
+        "tool",
+        "delegated_agent",
+        "system"
+      ],
+      "type": "string"
+    },
+    "ActivityProjection": {
+      "properties": {
+        "activity_id": {
+          "type": "string"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_references": {
+          "items": {
+            "$ref": "#/$defs/FileReferenceProjection"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/ActivityKind"
+        },
+        "order_key": {
+          "$ref": "#/$defs/Cursor"
+        },
+        "status": {
+          "$ref": "#/$defs/ActivityStatus"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "activity_id",
+        "detail",
+        "file_references",
+        "kind",
+        "order_key",
+        "status",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ActivityStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "AgentCatalogEntry": {
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentSummary"
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "tier_id"
+      ],
+      "type": "object"
+    },
+    "AgentSummary": {
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "name",
+        "description"
+      ],
+      "type": "object"
+    },
+    "AgentThread": {
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentSummary"
+        },
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "conversation_id": {
+          "$ref": "#/$defs/ConversationId"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/MessageProjection"
+          },
+          "type": "array"
+        },
+        "messages_truncated_before": {
+          "type": "boolean"
+        },
+        "result_in_main": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/DelegatedAgentStatus"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "tier": {
+          "$ref": "#/$defs/TierSummary"
+        }
+      },
+      "required": [
+        "api_version",
+        "task_id",
+        "conversation_id",
+        "agent",
+        "tier",
+        "status",
+        "result_in_main",
+        "messages",
+        "messages_truncated_before"
+      ],
+      "type": "object"
+    },
+    "AnnotationBatch": {
+      "properties": {
+        "expected_task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/AnnotationDraft"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "expected_task_revision",
+        "idempotency_key",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "AnnotationDraft": {
+      "properties": {
+        "comment": {
+          "type": "string"
+        },
+        "end_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "side": {
+          "$ref": "#/$defs/AnnotationSide"
+        },
+        "start_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "revision",
+        "side",
+        "start_line",
+        "end_line",
+        "excerpt",
+        "comment"
+      ],
+      "type": "object"
+    },
+    "AnnotationSide": {
+      "description": "Identifies the content side anchored by a review annotation.",
+      "enum": [
+        "file",
+        "old",
+        "new"
+      ],
+      "type": "string"
+    },
+    "AnnotationStatus": {
+      "enum": [
+        "current",
+        "outdated"
+      ],
+      "type": "string"
+    },
+    "ApiError": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "code": {
+          "$ref": "#/$defs/ApiErrorCode"
+        },
+        "details": true,
+        "message": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "api_version",
+        "code",
+        "details",
+        "message",
+        "trace_id"
+      ],
+      "type": "object"
+    },
+    "ApiErrorCode": {
+      "enum": [
+        "invalid_request",
+        "auth_required",
+        "forbidden",
+        "origin_not_allowed",
+        "init_incomplete",
+        "stale_server_revision",
+        "workspace_not_found",
+        "workspace_in_use",
+        "workspace_unavailable",
+        "task_not_found",
+        "request_not_found",
+        "conversation_not_found",
+        "file_not_found",
+        "task_busy",
+        "stale_command",
+        "idempotency_conflict",
+        "run_not_active",
+        "interaction_not_pending",
+        "cursor_ahead",
+        "outdated",
+        "payload_too_large",
+        "unsupported_media_type",
+        "stream_limit",
+        "server_busy",
+        "provider_unavailable",
+        "storage_exhausted",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "ApiVersion": {
+      "const": 1,
+      "type": "integer"
+    },
+    "AuthMode": {
+      "enum": [
+        "loopback_trusted",
+        "bearer"
+      ],
+      "type": "string"
+    },
+    "AuthStatus": {
+      "properties": {
+        "authenticated": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthMode"
+        }
+      },
+      "required": [
+        "authenticated",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "CapabilityFact": {
+      "description": "Capability and its request-time state.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/CapabilityKind",
+          "description": "Capability category."
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState",
+          "description": "Request-time capability state."
+        }
+      },
+      "required": [
+        "kind",
+        "state"
+      ],
+      "type": "object"
+    },
+    "CapabilityKind": {
+      "description": "Server-provided execution capability.",
+      "oneOf": [
+        {
+          "const": "file_read",
+          "description": "Read workspace files.",
+          "type": "string"
+        },
+        {
+          "const": "file_write",
+          "description": "Write workspace files.",
+          "type": "string"
+        },
+        {
+          "const": "command_execution",
+          "description": "Execute workspace commands.",
+          "type": "string"
+        },
+        {
+          "const": "network_access",
+          "description": "Access network resources.",
+          "type": "string"
+        },
+        {
+          "const": "agent_delegation",
+          "description": "Delegate work to an Agent.",
+          "type": "string"
+        },
+        {
+          "const": "skill_discovery",
+          "description": "Discover and load Skills.",
+          "type": "string"
+        },
+        {
+          "const": "memory",
+          "description": "Read or write memory.",
+          "type": "string"
+        }
+      ]
+    },
+    "CapabilityProjection": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/CapabilityKind"
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      },
+      "required": [
+        "kind",
+        "state"
+      ],
+      "type": "object"
+    },
+    "CapabilityState": {
+      "description": "Availability or permission state of a capability.",
+      "oneOf": [
+        {
+          "const": "available",
+          "description": "Capability is available without a new approval.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Capability is unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "requires_approval",
+          "description": "Capability requires user approval.",
+          "type": "string"
+        }
+      ]
+    },
+    "CatalogQuery": {
+      "properties": {
+        "search": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "search"
+      ],
+      "type": "object"
+    },
+    "ChangeEntry": {
+      "properties": {
+        "additions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "deletions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ChangeKind"
+        },
+        "old_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "worktree": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "additions",
+        "binary",
+        "deletions",
+        "kind",
+        "old_path",
+        "path",
+        "revision",
+        "staged",
+        "worktree"
+      ],
+      "type": "object"
+    },
+    "ChangeKind": {
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "untracked",
+        "renamed",
+        "copied",
+        "type_changed",
+        "conflicted"
+      ],
+      "type": "string"
+    },
+    "ChangesAvailability": {
+      "enum": [
+        "available",
+        "not_git_repository",
+        "git_unavailable",
+        "workspace_root_mismatch"
+      ],
+      "type": "string"
+    },
+    "ChangesQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "CheckProjection": {
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "detail",
+        "name",
+        "passed"
+      ],
+      "type": "object"
+    },
+    "CommandAccepted": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        }
+      },
+      "required": [
+        "api_version",
+        "task_id",
+        "task_revision",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "CompleteInitRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "CompletionProjection": {
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/CheckProjection"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/MetricProjection"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "workspace_changes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "checks",
+        "metrics",
+        "summary",
+        "workspace_changes"
+      ],
+      "type": "object"
+    },
+    "ConnectionInfo": {
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "lan_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_url": {
+          "type": "string"
+        },
+        "plaintext": {
+          "type": "boolean"
+        },
+        "preferred_origin": {
+          "type": "string"
+        },
+        "server_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_name",
+        "lan_url",
+        "local_url",
+        "plaintext",
+        "preferred_origin",
+        "server_id"
+      ],
+      "type": "object"
+    },
+    "ContextBreakdown": {
+      "description": "Structured sources and capabilities included in a request context.",
+      "properties": {
+        "capabilities": {
+          "description": "Effective execution capabilities.",
+          "items": {
+            "$ref": "#/$defs/CapabilityFact"
+          },
+          "type": "array"
+        },
+        "conversation": {
+          "$ref": "#/$defs/ConversationContextFact",
+          "description": "Conversation-history composition."
+        },
+        "delegated_results": {
+          "description": "Delegated results included in the request.",
+          "items": {
+            "$ref": "#/$defs/DelegatedResultFact"
+          },
+          "type": "array"
+        },
+        "instructions": {
+          "description": "Included instructions.",
+          "items": {
+            "$ref": "#/$defs/InstructionContextFact"
+          },
+          "type": "array"
+        },
+        "memory": {
+          "description": "Included memory sources.",
+          "items": {
+            "$ref": "#/$defs/MemoryContextFact"
+          },
+          "type": "array"
+        },
+        "observations": {
+          "description": "Workspace observations available to the request.",
+          "items": {
+            "$ref": "#/$defs/ObservationFact"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "description": "Loaded Skills.",
+          "items": {
+            "$ref": "#/$defs/SkillContextFact"
+          },
+          "type": "array"
+        },
+        "token_estimate": {
+          "description": "Server-provided input token estimate when available.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "capabilities",
+        "conversation",
+        "delegated_results",
+        "instructions",
+        "memory",
+        "observations",
+        "skills",
+        "token_estimate"
+      ],
+      "type": "object"
+    },
+    "ContextCatalog": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/AgentCatalogEntry"
+          },
+          "type": "array"
+        },
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillCatalogEntry"
+          },
+          "type": "array"
+        },
+        "tiers": {
+          "items": {
+            "$ref": "#/$defs/TierCatalogEntry"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolCatalogEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "api_version",
+        "revision",
+        "tiers",
+        "skills",
+        "agents",
+        "tools"
+      ],
+      "type": "object"
+    },
+    "ContextHealth": {
+      "properties": {
+        "context_token_limit": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "context_tokens_remaining": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "context_tokens_used": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "level": {
+          "$ref": "#/$defs/ContextHealthLevel"
+        },
+        "source_drift_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summarized": {
+          "type": "boolean"
+        },
+        "truncated_observation_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "context_token_limit",
+        "context_tokens_remaining",
+        "context_tokens_used",
+        "level",
+        "source_drift_count",
+        "summarized",
+        "truncated_observation_count"
+      ],
+      "type": "object"
+    },
+    "ContextHealthLevel": {
+      "enum": [
+        "unavailable",
+        "healthy",
+        "notice",
+        "warning"
+      ],
+      "type": "string"
+    },
+    "ContextSections": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/DelegatedAgentProjection"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CapabilityProjection"
+          },
+          "type": "array"
+        },
+        "conversation": {
+          "$ref": "#/$defs/ConversationContext"
+        },
+        "instructions": {
+          "items": {
+            "$ref": "#/$defs/InstructionContextItem"
+          },
+          "type": "array"
+        },
+        "memory": {
+          "items": {
+            "$ref": "#/$defs/MemoryContextItem"
+          },
+          "type": "array"
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/ObservationContextItem"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillContextItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "skills",
+        "instructions",
+        "memory",
+        "conversation",
+        "observations",
+        "agents",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "ContextSnapshot": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "discoverable": {
+          "$ref": "#/$defs/DiscoverableContext"
+        },
+        "exact_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "health": {
+          "$ref": "#/$defs/ContextHealth"
+        },
+        "next_request_base": {
+          "$ref": "#/$defs/ContextBreakdown"
+        },
+        "request_history": {
+          "items": {
+            "$ref": "#/$defs/RequestSummary"
+          },
+          "type": "array"
+        },
+        "request_history_truncated": {
+          "type": "boolean"
+        },
+        "sections": {
+          "$ref": "#/$defs/ContextSections"
+        },
+        "selected_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "usage": {
+          "$ref": "#/$defs/ContextUsage"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/ContextWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "api_version",
+        "discoverable",
+        "exact_request",
+        "health",
+        "next_request_base",
+        "request_history",
+        "request_history_truncated",
+        "sections",
+        "selected_request",
+        "task_id",
+        "task_revision",
+        "usage",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "ContextSummary": {
+      "properties": {
+        "latest_request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level": {
+          "$ref": "#/$defs/ContextHealthLevel"
+        },
+        "loaded_skill_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "$ref": "#/$defs/UsageSummary"
+        }
+      },
+      "required": [
+        "latest_request_id",
+        "level",
+        "loaded_skill_count",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "ContextUsage": {
+      "properties": {
+        "this_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "this_task": {
+          "$ref": "#/$defs/UsageSummary"
+        }
+      },
+      "required": [
+        "this_request",
+        "this_task"
+      ],
+      "type": "object"
+    },
+    "ContextWarning": {
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ContextWarningCode"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceFact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "request_id",
+        "source",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "ContextWarningCode": {
+      "enum": [
+        "low_headroom",
+        "history_summarized",
+        "observation_truncated",
+        "source_drift",
+        "source_inaccessible"
+      ],
+      "type": "string"
+    },
+    "ConversationContext": {
+      "properties": {
+        "delegated_results": {
+          "items": {
+            "$ref": "#/$defs/ConversationId"
+          },
+          "type": "array"
+        },
+        "handoff_boundaries": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history_summarized": {
+          "type": "boolean"
+        },
+        "retained_turns": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "retained_turns",
+        "handoff_boundaries",
+        "history_summarized",
+        "delegated_results"
+      ],
+      "type": "object"
+    },
+    "ConversationContextFact": {
+      "description": "Conversation history composition included in a request.",
+      "properties": {
+        "delegated_results": {
+          "description": "Delegated conversations whose results entered this history.",
+          "items": {
+            "$ref": "#/$defs/ConversationId"
+          },
+          "type": "array"
+        },
+        "handoff_boundaries": {
+          "description": "Number of handoff boundaries represented in the history.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history_summarized": {
+          "description": "Whether earlier history has been summarized.",
+          "type": "boolean"
+        },
+        "retained_turns": {
+          "description": "Number of retained turns.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "retained_turns",
+        "handoff_boundaries",
+        "history_summarized",
+        "delegated_results"
+      ],
+      "type": "object"
+    },
+    "ConversationId": {
+      "pattern": "^con_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "CreateTaskRequest": {
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CreateTaskResponse": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "projection": {
+          "$ref": "#/$defs/TaskProjection"
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_version",
+        "projection",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "CredentialInput": {
+      "oneOf": [
+        {
+          "properties": {
+            "source": {
+              "const": "direct_value",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "source": {
+              "const": "environment_reference",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialSource": {
+      "enum": [
+        "direct_value",
+        "environment_reference"
+      ],
+      "type": "string"
+    },
+    "CredentialStatus": {
+      "properties": {
+        "environment_reference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "environment_reference",
+        "present",
+        "provider_id",
+        "source"
+      ],
+      "type": "object"
+    },
+    "CurrencyCode": {
+      "enum": [
+        "USD"
+      ],
+      "type": "string"
+    },
+    "Cursor": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "DecimalCost": {
+      "properties": {
+        "currency": {
+          "$ref": "#/$defs/CurrencyCode"
+        },
+        "micros": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "currency",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "DelegatedAgentProjection": {
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentSummary"
+        },
+        "conversation_id": {
+          "$ref": "#/$defs/ConversationId"
+        },
+        "result_in_main": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/DelegatedAgentStatus"
+        },
+        "tier": {
+          "$ref": "#/$defs/TierSummary"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "agent",
+        "tier",
+        "status",
+        "result_in_main"
+      ],
+      "type": "object"
+    },
+    "DelegatedAgentStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "DelegatedResultFact": {
+      "description": "Delegated Agent result included in the main request context.",
+      "properties": {
+        "agent_id": {
+          "description": "Stable Agent catalog identifier.",
+          "type": "string"
+        },
+        "content_hash": {
+          "description": "Hash of the included result content.",
+          "type": "string"
+        },
+        "conversation_id": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Delegated conversation identity."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "agent_id",
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "DiffDocument": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "hunks": {
+          "items": {
+            "$ref": "#/$defs/DiffHunk"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "old_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "api_version",
+        "binary",
+        "hunks",
+        "next_cursor",
+        "old_path",
+        "path",
+        "revision",
+        "truncated",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "DiffHunk": {
+      "properties": {
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          },
+          "type": "array"
+        },
+        "new_lines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_lines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "old_start",
+        "old_lines",
+        "new_start",
+        "new_lines",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "DiffLine": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/DiffLineKind"
+        },
+        "new_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "old_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "new_line",
+        "old_line",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DiffLineKind": {
+      "enum": [
+        "context",
+        "addition",
+        "deletion",
+        "no_newline_marker"
+      ],
+      "type": "string"
+    },
+    "DiffQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit",
+        "path",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "DiscoverableContext": {
+      "properties": {
+        "agent_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "catalog_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "skill_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "catalog_revision",
+        "skill_count",
+        "agent_count",
+        "tool_count"
+      ],
+      "type": "object"
+    },
+    "ExactContentBlock": {
+      "description": "Ordered typed content sent to the provider.",
+      "oneOf": [
+        {
+          "description": "Plain text content.",
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "description": "Exact text sent to the provider.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Model reasoning content retained by the provider protocol.",
+          "properties": {
+            "kind": {
+              "const": "thinking",
+              "type": "string"
+            },
+            "text": {
+              "description": "Exact thinking text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Model-requested tool invocation.",
+          "properties": {
+            "input": {
+              "description": "Exact tool input value."
+            },
+            "kind": {
+              "const": "tool_use",
+              "type": "string"
+            },
+            "name": {
+              "description": "Registered tool name.",
+              "type": "string"
+            },
+            "tool_call_id": {
+              "description": "Provider tool-call identity.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call_id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Result returned for a tool invocation.",
+          "properties": {
+            "content": {
+              "description": "Exact model-visible result content.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "tool_result",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ToolResultStatus",
+              "description": "Tool execution status."
+            },
+            "structured": {
+              "description": "Optional structured result sent to the provider."
+            },
+            "tool_call_id": {
+              "description": "Identity of the matching tool call.",
+              "type": "string"
+            },
+            "truncated": {
+              "description": "Whether the result was truncated before transport.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "tool_call_id",
+            "status",
+            "content",
+            "truncated"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ExactMessage": {
+      "description": "One exact provider message with ordered content blocks.",
+      "properties": {
+        "content": {
+          "description": "Content blocks in provider order.",
+          "items": {
+            "$ref": "#/$defs/ExactContentBlock"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole2",
+          "description": "Message role."
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ExactRequest": {
+      "description": "Ordered exact messages, tools, and allowlisted request parameters.",
+      "properties": {
+        "messages": {
+          "description": "Messages in provider order, including system content.",
+          "items": {
+            "$ref": "#/$defs/ExactMessage"
+          },
+          "type": "array"
+        },
+        "parameters": {
+          "$ref": "#/$defs/ExactRequestParameters",
+          "description": "Non-secret provider parameters."
+        },
+        "tools": {
+          "description": "Tool definitions in provider order.",
+          "items": {
+            "$ref": "#/$defs/ExactTool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages",
+        "tools",
+        "parameters"
+      ],
+      "type": "object"
+    },
+    "ExactRequestParameters": {
+      "description": "Allowlisted non-secret parameters sent with an exact provider request.",
+      "properties": {
+        "max_output_tokens": {
+          "description": "Maximum output tokens when configured.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "Resolved provider model.",
+          "type": "string"
+        },
+        "stream": {
+          "description": "Whether the provider response is streamed.",
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Temperature"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Finite sampling temperature when configured."
+        },
+        "thinking": {
+          "$ref": "#/$defs/ThinkingConfig",
+          "description": "Resolved thinking configuration."
+        }
+      },
+      "required": [
+        "max_output_tokens",
+        "model",
+        "stream",
+        "temperature",
+        "thinking"
+      ],
+      "type": "object"
+    },
+    "ExactTool": {
+      "description": "Exact provider-visible tool definition.",
+      "properties": {
+        "description": {
+          "description": "Tool description sent to the provider.",
+          "type": "string"
+        },
+        "input_schema": {
+          "description": "Tool input JSON Schema."
+        },
+        "name": {
+          "description": "Tool name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema"
+      ],
+      "type": "object"
+    },
+    "ExecutionScope": {
+      "properties": {
+        "conversation_id": {
+          "$ref": "#/$defs/ConversationId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        },
+        "turn_index": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "task_id",
+        "run_id",
+        "turn_id",
+        "conversation_id",
+        "turn_index"
+      ],
+      "type": "object"
+    },
+    "FileContent": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "end_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "next_start_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "start_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total_lines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "api_version",
+        "binary",
+        "end_line",
+        "next_start_line",
+        "path",
+        "revision",
+        "start_line",
+        "text",
+        "total_lines",
+        "truncated",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "FileContentQuery": {
+      "properties": {
+        "end_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "start_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "start_line",
+        "end_line"
+      ],
+      "type": "object"
+    },
+    "FileEntry": {
+      "properties": {
+        "binary": {
+          "type": "boolean"
+        },
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FileKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RevisionToken"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size_bytes": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "binary",
+        "change",
+        "kind",
+        "name",
+        "path",
+        "revision",
+        "size_bytes"
+      ],
+      "type": "object"
+    },
+    "FileKind": {
+      "enum": [
+        "file",
+        "directory"
+      ],
+      "type": "string"
+    },
+    "FilePage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileEntry"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "api_version",
+        "entries",
+        "next_cursor",
+        "revision",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "FileReferenceProjection": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "relative_path",
+        "label"
+      ],
+      "type": "object"
+    },
+    "FileSearchPage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "matches": {
+          "items": {
+            "$ref": "#/$defs/SearchMatch"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "api_version",
+        "matches",
+        "next_cursor",
+        "revision",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "FileSearchQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit",
+        "prefix",
+        "query"
+      ],
+      "type": "object"
+    },
+    "FileTreeQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit",
+        "prefix"
+      ],
+      "type": "object"
+    },
+    "InitPhase": {
+      "enum": [
+        "required",
+        "providers_ready",
+        "default_tier_ready",
+        "workspace_ready",
+        "probe_passed",
+        "complete"
+      ],
+      "type": "string"
+    },
+    "InitStatus": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "default_tier_configured": {
+          "type": "boolean"
+        },
+        "phase": {
+          "$ref": "#/$defs/InitPhase"
+        },
+        "provider_test_passed": {
+          "type": "boolean"
+        },
+        "providers_configured": {
+          "type": "boolean"
+        },
+        "server_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "workspace_registered": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_version",
+        "phase",
+        "server_revision",
+        "providers_configured",
+        "default_tier_configured",
+        "workspace_registered",
+        "provider_test_passed",
+        "complete"
+      ],
+      "type": "object"
+    },
+    "InstructionContextFact": {
+      "description": "Instruction source included in a request context.",
+      "properties": {
+        "content_hash": {
+          "description": "Hash of the exact included content.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/InstructionKind",
+          "description": "Instruction category."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact",
+          "description": "Instruction source."
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "InstructionContextItem": {
+      "properties": {
+        "content_hash": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/InstructionKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "content_hash",
+        "label"
+      ],
+      "type": "object"
+    },
+    "InstructionKind": {
+      "description": "Kind of instruction source included in a request.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Built-in system instruction.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Project instruction.",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "Workspace instruction.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "Agent identity instruction.",
+          "type": "string"
+        }
+      ]
+    },
+    "InteractionChoiceProjection": {
+      "properties": {
+        "choice_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "choice_id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "InteractionId": {
+      "pattern": "^int_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "InteractionProjection": {
+      "properties": {
+        "choices": {
+          "items": {
+            "$ref": "#/$defs/InteractionChoiceProjection"
+          },
+          "type": "array"
+        },
+        "interaction_id": {
+          "$ref": "#/$defs/InteractionId"
+        },
+        "order_key": {
+          "$ref": "#/$defs/Cursor"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "selected_choice_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/InteractionStatus"
+        }
+      },
+      "required": [
+        "choices",
+        "interaction_id",
+        "order_key",
+        "prompt",
+        "selected_choice_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "InteractionResponseRequest": {
+      "properties": {
+        "choice_id": {
+          "type": "string"
+        },
+        "expected_task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "idempotency_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected_task_revision",
+        "idempotency_key",
+        "choice_id"
+      ],
+      "type": "object"
+    },
+    "InteractionStatus": {
+      "enum": [
+        "pending",
+        "resolved",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "ListTasksQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "search": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit",
+        "search",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "LoadedSkillProjection": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "loaded_by": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "skill_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill_id",
+        "name",
+        "description",
+        "loaded_by"
+      ],
+      "type": "object"
+    },
+    "MemoryContextFact": {
+      "description": "Memory source included in a request context.",
+      "properties": {
+        "content_hash": {
+          "description": "Hash of the exact included content.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/MemoryKind",
+          "description": "Memory category."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact",
+          "description": "Memory source."
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "MemoryContextItem": {
+      "properties": {
+        "content_hash": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/MemoryKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "content_hash",
+        "label"
+      ],
+      "type": "object"
+    },
+    "MemoryKind": {
+      "description": "Scope of memory included in a request.",
+      "oneOf": [
+        {
+          "const": "global",
+          "description": "User-global memory.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Project memory.",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageProjection": {
+      "properties": {
+        "file_references": {
+          "items": {
+            "$ref": "#/$defs/FileReferenceProjection"
+          },
+          "type": "array"
+        },
+        "finalized": {
+          "type": "boolean"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "order_key": {
+          "$ref": "#/$defs/Cursor"
+        },
+        "request_ids": {
+          "items": {
+            "$ref": "#/$defs/RequestId"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id",
+        "role",
+        "text",
+        "finalized",
+        "request_ids",
+        "file_references",
+        "order_key"
+      ],
+      "type": "object"
+    },
+    "MessageRole": {
+      "enum": [
+        "user",
+        "agent"
+      ],
+      "type": "string"
+    },
+    "MessageRole2": {
+      "description": "Role of an exact provider message.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Provider system instruction.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "Human or tool-result input.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "Model output.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "Provider-native tool message.",
+          "type": "string"
+        }
+      ]
+    },
+    "MetricProjection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "unit",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ObservationContextItem": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ObservationKind"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "retention": {
+          "$ref": "#/$defs/ObservationRetention"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tool_call_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "relative_path",
+        "request_id",
+        "retention",
+        "summary",
+        "tool_call_id"
+      ],
+      "type": "object"
+    },
+    "ObservationFact": {
+      "description": "Immutable observation recorded for one provider request.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ObservationKind",
+          "description": "Observation category and metadata."
+        },
+        "observed_hash": {
+          "description": "Hash of the observed content when available.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Observed line range when applicable."
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Contained workspace-relative path when applicable."
+        },
+        "retention": {
+          "$ref": "#/$defs/ObservationRetention",
+          "description": "Request-time retention state."
+        },
+        "scope": {
+          "$ref": "#/$defs/RequestScope",
+          "description": "Request that observed the value."
+        },
+        "summary": {
+          "description": "Safe compact description of the observation.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "description": "Tool-call identity that produced the observation.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "observed_hash",
+        "range",
+        "relative_path",
+        "retention",
+        "scope",
+        "summary",
+        "tool_call_id"
+      ],
+      "type": "object"
+    },
+    "ObservationKind": {
+      "description": "Kind and immutable metadata of a workspace observation.",
+      "oneOf": [
+        {
+          "description": "File content was read.",
+          "properties": {
+            "kind": {
+              "const": "file_read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A directory or file listing was observed.",
+          "properties": {
+            "kind": {
+              "const": "file_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Text or path search results were observed.",
+          "properties": {
+            "kind": {
+              "const": "search",
+              "type": "string"
+            },
+            "query": {
+              "description": "Exact search query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Command output was observed.",
+          "properties": {
+            "command": {
+              "description": "Exact command invocation.",
+              "type": "string"
+            },
+            "exit_code": {
+              "description": "Process exit code when available.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "command",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "exit_code",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Result from another named tool was observed.",
+          "properties": {
+            "kind": {
+              "const": "tool",
+              "type": "string"
+            },
+            "name": {
+              "description": "Registered tool name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ObservationRetention": {
+      "description": "Request-time retention state of an observation.",
+      "oneOf": [
+        {
+          "const": "retained",
+          "description": "Full model-visible observation was retained.",
+          "type": "string"
+        },
+        {
+          "const": "summarized",
+          "description": "Observation was replaced by a summary.",
+          "type": "string"
+        },
+        {
+          "const": "truncated",
+          "description": "Observation was truncated.",
+          "type": "string"
+        }
+      ]
+    },
+    "ObservedRange": {
+      "description": "One-based inclusive line range observed in a workspace file.",
+      "properties": {
+        "end_line": {
+          "description": "Last observed line.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_line": {
+          "description": "First observed line.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ],
+      "type": "object"
+    },
+    "PageCursor": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "PlatformCatalog": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/CredentialStatus"
+          },
+          "type": "array"
+        },
+        "default_tier": {
+          "$ref": "#/$defs/TierSummary"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "tiers": {
+          "items": {
+            "$ref": "#/$defs/TierSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "api_version",
+        "revision",
+        "default_tier",
+        "tiers",
+        "credentials"
+      ],
+      "type": "object"
+    },
+    "PlatformStatus": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "auth": {
+          "$ref": "#/$defs/AuthStatus"
+        },
+        "connection": {
+          "$ref": "#/$defs/ConnectionInfo"
+        },
+        "init": {
+          "$ref": "#/$defs/InitStatus"
+        },
+        "ready": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_version",
+        "ready",
+        "auth",
+        "init",
+        "connection"
+      ],
+      "type": "object"
+    },
+    "ProviderDraft": {
+      "properties": {
+        "base_url": {
+          "type": "string"
+        },
+        "credential": {
+          "$ref": "#/$defs/CredentialInput"
+        },
+        "format": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_id",
+        "format",
+        "base_url",
+        "credential"
+      ],
+      "type": "object"
+    },
+    "ProviderFact": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "anthropic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "open_ai_compatible",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "open_ai_responses",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RegisterInitialWorkspaceRequest": {
+      "properties": {
+        "workspace": {
+          "$ref": "#/$defs/RegisterWorkspaceRequest"
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "RegisterWorkspaceRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "label": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RegistrationRootId"
+        }
+      },
+      "required": [
+        "root_id",
+        "relative_path",
+        "label",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "RegistrationRootId": {
+      "pattern": "^root_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "RegistrationRootPage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/RegistrationRootSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "api_version",
+        "items"
+      ],
+      "type": "object"
+    },
+    "RegistrationRootSummary": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "root_id": {
+          "$ref": "#/$defs/RegistrationRootId"
+        }
+      },
+      "required": [
+        "root_id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "RemoveWorkspaceRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "RequestCause": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "user_submission",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tool_continuation",
+              "type": "string"
+            },
+            "parent_request_id": {
+              "$ref": "#/$defs/RequestId"
+            }
+          },
+          "required": [
+            "kind",
+            "parent_request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "kind": {
+              "const": "interaction_resume",
+              "type": "string"
+            },
+            "parent_request_id": {
+              "$ref": "#/$defs/RequestId"
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "parent_request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "delegated_agent",
+              "type": "string"
+            },
+            "parent_request_id": {
+              "$ref": "#/$defs/RequestId"
+            }
+          },
+          "required": [
+            "kind",
+            "parent_request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "review_submission",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RequestId": {
+      "pattern": "^req_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "RequestScope": {
+      "properties": {
+        "execution": {
+          "$ref": "#/$defs/ExecutionScope"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "execution",
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "RequestStatus": {
+      "enum": [
+        "started",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "RequestSummary": {
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/RequestCause"
+        },
+        "conversation_id": {
+          "$ref": "#/$defs/ConversationId"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderFact"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RequestStatus"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        }
+      },
+      "required": [
+        "request_id",
+        "run_id",
+        "turn_id",
+        "conversation_id",
+        "status",
+        "cause",
+        "provider",
+        "model",
+        "started_at"
+      ],
+      "type": "object"
+    },
+    "ReviewSnapshot": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "availability": {
+          "$ref": "#/$defs/ChangesAvailability"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ChangeEntry"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "api_version",
+        "availability",
+        "entries",
+        "next_cursor",
+        "revision",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "ReviewSubmissionId": {
+      "pattern": "^rsub_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "ReviewSubmissionPage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ReviewSubmissionProjection"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "api_version",
+        "items",
+        "next_cursor",
+        "task_id"
+      ],
+      "type": "object"
+    },
+    "ReviewSubmissionProjection": {
+      "properties": {
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/SubmittedReviewNote"
+          },
+          "type": "array"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "submission_id": {
+          "$ref": "#/$defs/ReviewSubmissionId"
+        },
+        "submitted_at": {
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        }
+      },
+      "required": [
+        "submission_id",
+        "task_id",
+        "run_id",
+        "task_revision",
+        "submitted_at",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "ReviewSubmissionQuery": {
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "ReviewSubmissionResult": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "submission": {
+          "$ref": "#/$defs/ReviewSubmissionProjection"
+        }
+      },
+      "required": [
+        "api_version",
+        "submission",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ReviewSubmissionsChanged": {
+      "properties": {
+        "submission": {
+          "$ref": "#/$defs/ReviewSubmissionProjection"
+        },
+        "total_submissions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "submission",
+        "total_submissions"
+      ],
+      "type": "object"
+    },
+    "ReviewSummaryProjection": {
+      "properties": {
+        "latest_submission_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewSubmissionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_submissions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "latest_submission_id",
+        "total_submissions"
+      ],
+      "type": "object"
+    },
+    "RevisionToken": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "RunId": {
+      "pattern": "^run_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "RunProjection": {
+      "properties": {
+        "completion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState"
+        }
+      },
+      "required": [
+        "completion",
+        "finished_at",
+        "run_id",
+        "started_at",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RunState": {
+      "enum": [
+        "queued",
+        "running",
+        "needs_attention",
+        "stopping",
+        "completed",
+        "stopped",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "SearchMatch": {
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/FileEntry"
+        },
+        "path_match_ranges": {
+          "items": {
+            "$ref": "#/$defs/TextRange"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry",
+        "path_match_ranges"
+      ],
+      "type": "object"
+    },
+    "SettingsPatch": {
+      "properties": {
+        "default_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_workspace_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_concurrent_runs": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "default_tier",
+        "default_workspace_id",
+        "max_concurrent_runs"
+      ],
+      "type": "object"
+    },
+    "SettingsSnapshot": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/CredentialStatus"
+          },
+          "type": "array"
+        },
+        "default_tier": {
+          "type": "string"
+        },
+        "default_workspace_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_concurrent_runs": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "server_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        }
+      },
+      "required": [
+        "api_version",
+        "credentials",
+        "default_tier",
+        "default_workspace_id",
+        "max_concurrent_runs",
+        "server_revision"
+      ],
+      "type": "object"
+    },
+    "SkillCatalogEntry": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "skill_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact"
+        }
+      },
+      "required": [
+        "skill_id",
+        "name",
+        "description",
+        "source"
+      ],
+      "type": "object"
+    },
+    "SkillContextFact": {
+      "description": "Skill content included in a request context.",
+      "properties": {
+        "content_hash": {
+          "description": "Hash of the exact loaded Skill content.",
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/SkillLoadOrigin",
+          "description": "Origin that loaded the Skill."
+        },
+        "skill_id": {
+          "description": "Stable catalog Skill identifier.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact",
+          "description": "Skill source."
+        }
+      },
+      "required": [
+        "skill_id",
+        "source",
+        "origin",
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "SkillContextItem": {
+      "properties": {
+        "content_hash": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/SkillLoadOrigin"
+        },
+        "skill_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceFact"
+        }
+      },
+      "required": [
+        "skill_id",
+        "name",
+        "description",
+        "source",
+        "origin",
+        "content_hash"
+      ],
+      "type": "object"
+    },
+    "SkillLoadOrigin": {
+      "description": "Origin responsible for loading a Skill.",
+      "oneOf": [
+        {
+          "const": "you",
+          "description": "Loaded by the user.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "Loaded by an Agent.",
+          "type": "string"
+        },
+        {
+          "const": "bootstrap",
+          "description": "Loaded by workspace bootstrap.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Loaded by project configuration.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceFact": {
+      "description": "Stable identity and optional contained path for a context source.",
+      "properties": {
+        "id": {
+          "description": "Stable source identifier.",
+          "type": "string"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceRelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Contained workspace-relative path when the source is file-backed."
+        },
+        "scope": {
+          "$ref": "#/$defs/SourceScope",
+          "description": "Ownership scope of the source."
+        }
+      },
+      "required": [
+        "id",
+        "relative_path",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "SourceScope": {
+      "description": "Scope that owns or supplied a context source.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Built-in runtime or host source.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "User-level source.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Project-level source.",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "Registered workspace source.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "Agent-specific source.",
+          "type": "string"
+        }
+      ]
+    },
+    "StopRunRequest": {
+      "properties": {
+        "expected_task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "idempotency_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected_task_revision",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "SubmitRunRequest": {
+      "properties": {
+        "expected_task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "skill_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected_task_revision",
+        "idempotency_key",
+        "message",
+        "tier_id",
+        "skill_ids"
+      ],
+      "type": "object"
+    },
+    "SubmitRunResponse": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        }
+      },
+      "required": [
+        "api_version",
+        "task_id",
+        "run_id",
+        "task_revision",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "SubmittedReviewNote": {
+      "properties": {
+        "comment": {
+          "type": "string"
+        },
+        "end_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "side": {
+          "$ref": "#/$defs/AnnotationSide"
+        },
+        "start_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/AnnotationStatus"
+        }
+      },
+      "required": [
+        "path",
+        "revision",
+        "side",
+        "start_line",
+        "end_line",
+        "excerpt",
+        "comment",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TaskChange": {
+      "oneOf": [
+        {
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/TimelineItemProjection"
+            },
+            "type": {
+              "const": "message_appended",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "append_text": {
+              "type": "string"
+            },
+            "finalized": {
+              "type": "boolean"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "request_ids": {
+              "items": {
+                "$ref": "#/$defs/RequestId"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "message_patched",
+              "type": "string"
+            }
+          },
+          "required": [
+            "append_text",
+            "finalized",
+            "message_id",
+            "request_ids",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/ActivityProjection"
+            },
+            "type": {
+              "const": "activity_upserted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "activity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "interaction": {
+              "$ref": "#/$defs/InteractionProjection"
+            },
+            "type": {
+              "const": "interaction_upserted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "interaction"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "active_run": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "latest_run": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "task": {
+              "$ref": "#/$defs/TaskSummary"
+            },
+            "type": {
+              "const": "run_state_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "active_run",
+            "latest_run",
+            "task",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "loaded_skills": {
+              "items": {
+                "$ref": "#/$defs/LoadedSkillProjection"
+              },
+              "type": "array"
+            },
+            "selected_tier_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "skills_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "selected_tier_id",
+            "loaded_skills"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "context_summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ContextSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "context_summary_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "context_summary",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "change": {
+              "$ref": "#/$defs/ReviewSubmissionsChanged"
+            },
+            "type": {
+              "const": "review_submissions_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "change"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskDelta": {
+      "oneOf": [
+        {
+          "properties": {
+            "projection": {
+              "$ref": "#/$defs/TaskProjection"
+            },
+            "type": {
+              "const": "projection_replaced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "projection"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "changes": {
+              "items": {
+                "$ref": "#/$defs/TaskChange"
+              },
+              "type": "array"
+            },
+            "timeline_window": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TimelineWindowDelta"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "changes_applied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "changes",
+            "timeline_window",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskId": {
+      "pattern": "^tsk_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "TaskPage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TaskSummary"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "api_version",
+        "items",
+        "next_cursor"
+      ],
+      "type": "object"
+    },
+    "TaskProjection": {
+      "properties": {
+        "active_run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "context_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursor": {
+          "$ref": "#/$defs/Cursor"
+        },
+        "latest_run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loaded_skills": {
+          "items": {
+            "$ref": "#/$defs/LoadedSkillProjection"
+          },
+          "type": "array"
+        },
+        "review_summary": {
+          "$ref": "#/$defs/ReviewSummaryProjection"
+        },
+        "selected_tier_id": {
+          "type": "string"
+        },
+        "task": {
+          "$ref": "#/$defs/TaskSummary"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/TimelineItemProjection"
+          },
+          "type": "array"
+        },
+        "timeline_next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "active_run",
+        "api_version",
+        "context_summary",
+        "cursor",
+        "latest_run",
+        "loaded_skills",
+        "review_summary",
+        "selected_tier_id",
+        "task",
+        "task_revision",
+        "timeline",
+        "timeline_next_cursor"
+      ],
+      "type": "object"
+    },
+    "TaskRevision": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "TaskState": {
+      "enum": [
+        "draft",
+        "queued",
+        "running",
+        "needs_attention",
+        "stopping",
+        "completed",
+        "stopped",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "TaskStreamEvent": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "cursor": {
+          "$ref": "#/$defs/Cursor"
+        },
+        "event": {
+          "$ref": "#/$defs/TaskDelta"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "task_revision": {
+          "$ref": "#/$defs/TaskRevision"
+        }
+      },
+      "required": [
+        "api_version",
+        "cursor",
+        "task_revision",
+        "task_id",
+        "event"
+      ],
+      "type": "object"
+    },
+    "TaskStreamQuery": {
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "after"
+      ],
+      "type": "object"
+    },
+    "TaskSummary": {
+      "properties": {
+        "active_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState"
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "active_run_id",
+        "latest_run_id",
+        "state",
+        "task_id",
+        "title",
+        "updated_at",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "Temperature": {
+      "format": "finite-float32",
+      "type": "number"
+    },
+    "TestProviderRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier_id",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "TestProviderResult": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reachable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api_version",
+        "message",
+        "model",
+        "provider",
+        "reachable"
+      ],
+      "type": "object"
+    },
+    "TextRange": {
+      "properties": {
+        "end": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "ThinkingConfig": {
+      "description": "Provider thinking configuration preserved in the exact request.",
+      "oneOf": [
+        {
+          "description": "Thinking is disabled.",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Provider-managed adaptive thinking is enabled.",
+          "properties": {
+            "kind": {
+              "const": "adaptive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Thinking is enabled with an optional explicit budget.",
+          "properties": {
+            "budget_tokens": {
+              "description": "Provider thinking-token budget when configured.",
+              "format": "uint64",
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "enabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "budget_tokens",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TierCatalogEntry": {
+      "properties": {
+        "tier": {
+          "$ref": "#/$defs/TierSummary"
+        }
+      },
+      "required": [
+        "tier"
+      ],
+      "type": "object"
+    },
+    "TierDraft": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "think": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "provider_id",
+        "purpose",
+        "think",
+        "tier_id"
+      ],
+      "type": "object"
+    },
+    "TierSummary": {
+      "properties": {
+        "is_default": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "think": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "is_default",
+        "label",
+        "model",
+        "provider",
+        "purpose",
+        "think",
+        "tier_id"
+      ],
+      "type": "object"
+    },
+    "TimelineItemProjection": {
+      "oneOf": [
+        {
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/MessageProjection"
+            },
+            "type": {
+              "const": "message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/ActivityProjection"
+            },
+            "type": {
+              "const": "activity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/InteractionProjection"
+            },
+            "type": {
+              "const": "interaction",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TimelinePage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TimelineItemProjection"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "api_version",
+        "items",
+        "next_cursor",
+        "task_id"
+      ],
+      "type": "object"
+    },
+    "TimelineQuery": {
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "before",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "TimelineWindowDelta": {
+      "properties": {
+        "evicted_items": {
+          "items": {
+            "$ref": "#/$defs/TimelineItemProjection"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "evicted_items",
+        "next_cursor"
+      ],
+      "type": "object"
+    },
+    "ToolCatalogEntry": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_id",
+        "name",
+        "description"
+      ],
+      "type": "object"
+    },
+    "ToolResultStatus": {
+      "description": "Terminal state of a tool result content block.",
+      "oneOf": [
+        {
+          "const": "completed",
+          "description": "Tool execution completed successfully.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Tool execution failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "TurnId": {
+      "pattern": "^trn_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "UpdateDefaultTierRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "tier_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier_id",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "UpdateProvidersRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "providers": {
+          "items": {
+            "$ref": "#/$defs/ProviderDraft"
+          },
+          "type": "array"
+        },
+        "tiers": {
+          "items": {
+            "$ref": "#/$defs/TierDraft"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers",
+        "tiers",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "UpdateSettingsRequest": {
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        },
+        "patch": {
+          "$ref": "#/$defs/SettingsPatch"
+        }
+      },
+      "required": [
+        "expected_revision",
+        "patch"
+      ],
+      "type": "object"
+    },
+    "UsageSummary": {
+      "properties": {
+        "cache_creation_input_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cached_input_ratio": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cached_input_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecimalCost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsed_ms": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "request_count": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cache_creation_input_tokens",
+        "cached_input_ratio",
+        "cached_input_tokens",
+        "cost",
+        "elapsed_ms",
+        "input_tokens",
+        "output_tokens",
+        "request_count"
+      ],
+      "type": "object"
+    },
+    "WorkspaceAvailability": {
+      "enum": [
+        "available",
+        "missing",
+        "inaccessible"
+      ],
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "pattern": "^wsp_[0-9a-f]{24}$",
+      "type": "string"
+    },
+    "WorkspacePage": {
+      "properties": {
+        "api_version": {
+          "$ref": "#/$defs/ApiVersion"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceSummary"
+          },
+          "type": "array"
+        },
+        "server_revision": {
+          "$ref": "#/$defs/RevisionToken"
+        }
+      },
+      "required": [
+        "api_version",
+        "server_revision",
+        "items"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRelativePath": {
+      "format": "workspace-relative-path",
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^(?:[^./\\\\:]|\\.[^./\\\\:]|\\.\\.[^/\\\\:])[^/\\\\:]*(?:/(?:[^./\\\\:]|\\.[^./\\\\:]|\\.\\.[^/\\\\:])[^/\\\\:]*)*$",
+      "type": "string",
+      "x-kuku-max-utf8-bytes": 4096
+    },
+    "WorkspaceSummary": {
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/WorkspaceAvailability"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_default": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "availability",
+        "branch",
+        "is_default",
+        "label",
+        "workspace_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "agent_thread": {
+      "$ref": "#/$defs/AgentThread"
+    },
+    "annotation_batch": {
+      "$ref": "#/$defs/AnnotationBatch"
+    },
+    "api_error": {
+      "$ref": "#/$defs/ApiError"
+    },
+    "catalog_query": {
+      "$ref": "#/$defs/CatalogQuery"
+    },
+    "changes_query": {
+      "$ref": "#/$defs/ChangesQuery"
+    },
+    "command_accepted": {
+      "$ref": "#/$defs/CommandAccepted"
+    },
+    "complete_init": {
+      "$ref": "#/$defs/CompleteInitRequest"
+    },
+    "connection_info": {
+      "$ref": "#/$defs/ConnectionInfo"
+    },
+    "context_snapshot": {
+      "$ref": "#/$defs/ContextSnapshot"
+    },
+    "create_task": {
+      "$ref": "#/$defs/CreateTaskRequest"
+    },
+    "create_task_result": {
+      "$ref": "#/$defs/CreateTaskResponse"
+    },
+    "diff_document": {
+      "$ref": "#/$defs/DiffDocument"
+    },
+    "diff_query": {
+      "$ref": "#/$defs/DiffQuery"
+    },
+    "file_content": {
+      "$ref": "#/$defs/FileContent"
+    },
+    "file_content_query": {
+      "$ref": "#/$defs/FileContentQuery"
+    },
+    "file_page": {
+      "$ref": "#/$defs/FilePage"
+    },
+    "file_search_page": {
+      "$ref": "#/$defs/FileSearchPage"
+    },
+    "file_search_query": {
+      "$ref": "#/$defs/FileSearchQuery"
+    },
+    "file_tree_query": {
+      "$ref": "#/$defs/FileTreeQuery"
+    },
+    "init_status": {
+      "$ref": "#/$defs/InitStatus"
+    },
+    "interaction_response": {
+      "$ref": "#/$defs/InteractionResponseRequest"
+    },
+    "list_tasks": {
+      "$ref": "#/$defs/ListTasksQuery"
+    },
+    "platform_catalog": {
+      "$ref": "#/$defs/PlatformCatalog"
+    },
+    "platform_status": {
+      "$ref": "#/$defs/PlatformStatus"
+    },
+    "register_initial_workspace": {
+      "$ref": "#/$defs/RegisterInitialWorkspaceRequest"
+    },
+    "register_workspace": {
+      "$ref": "#/$defs/RegisterWorkspaceRequest"
+    },
+    "registration_root_page": {
+      "$ref": "#/$defs/RegistrationRootPage"
+    },
+    "remove_workspace": {
+      "$ref": "#/$defs/RemoveWorkspaceRequest"
+    },
+    "review_snapshot": {
+      "$ref": "#/$defs/ReviewSnapshot"
+    },
+    "review_submission_page": {
+      "$ref": "#/$defs/ReviewSubmissionPage"
+    },
+    "review_submission_query": {
+      "$ref": "#/$defs/ReviewSubmissionQuery"
+    },
+    "review_submission_result": {
+      "$ref": "#/$defs/ReviewSubmissionResult"
+    },
+    "settings": {
+      "$ref": "#/$defs/SettingsSnapshot"
+    },
+    "stop_run": {
+      "$ref": "#/$defs/StopRunRequest"
+    },
+    "submit_run": {
+      "$ref": "#/$defs/SubmitRunRequest"
+    },
+    "submit_run_result": {
+      "$ref": "#/$defs/SubmitRunResponse"
+    },
+    "task_page": {
+      "$ref": "#/$defs/TaskPage"
+    },
+    "task_projection": {
+      "$ref": "#/$defs/TaskProjection"
+    },
+    "task_stream_event": {
+      "$ref": "#/$defs/TaskStreamEvent"
+    },
+    "task_stream_query": {
+      "$ref": "#/$defs/TaskStreamQuery"
+    },
+    "test_provider": {
+      "$ref": "#/$defs/TestProviderRequest"
+    },
+    "test_provider_result": {
+      "$ref": "#/$defs/TestProviderResult"
+    },
+    "timeline_page": {
+      "$ref": "#/$defs/TimelinePage"
+    },
+    "timeline_query": {
+      "$ref": "#/$defs/TimelineQuery"
+    },
+    "update_default_tier": {
+      "$ref": "#/$defs/UpdateDefaultTierRequest"
+    },
+    "update_providers": {
+      "$ref": "#/$defs/UpdateProvidersRequest"
+    },
+    "update_settings": {
+      "$ref": "#/$defs/UpdateSettingsRequest"
+    },
+    "workspace_catalog": {
+      "$ref": "#/$defs/ContextCatalog"
+    },
+    "workspace_page": {
+      "$ref": "#/$defs/WorkspacePage"
+    }
+  },
+  "required": [
+    "platform_status",
+    "connection_info",
+    "registration_root_page",
+    "workspace_page",
+    "register_workspace",
+    "remove_workspace",
+    "init_status",
+    "update_providers",
+    "update_default_tier",
+    "register_initial_workspace",
+    "test_provider",
+    "test_provider_result",
+    "complete_init",
+    "settings",
+    "update_settings",
+    "platform_catalog",
+    "workspace_catalog",
+    "catalog_query",
+    "task_page",
+    "list_tasks",
+    "create_task",
+    "create_task_result",
+    "task_projection",
+    "timeline_query",
+    "timeline_page",
+    "submit_run",
+    "submit_run_result",
+    "stop_run",
+    "interaction_response",
+    "command_accepted",
+    "task_stream_query",
+    "task_stream_event",
+    "context_snapshot",
+    "agent_thread",
+    "review_snapshot",
+    "file_tree_query",
+    "file_page",
+    "file_search_query",
+    "file_search_page",
+    "file_content_query",
+    "file_content",
+    "changes_query",
+    "diff_query",
+    "diff_document",
+    "annotation_batch",
+    "review_submission_result",
+    "review_submission_query",
+    "review_submission_page",
+    "api_error"
+  ],
+  "title": "WebApiContract",
+  "type": "object"
+}

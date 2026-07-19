@@ -1,0 +1,7 @@
+{
+  "api_version": 1,
+  "code": "task_busy",
+  "details": null,
+  "message": "task already has an active run",
+  "trace_id": "trace_fixture_task_busy"
+}
