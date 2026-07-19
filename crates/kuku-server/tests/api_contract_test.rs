@@ -73,6 +73,9 @@ fn task_change_fixture_covers_every_change_and_both_outer_deltas() {
         .map(serde_json::from_value::<TaskChange>)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
+    for (change, expected) in decoded.iter().zip(changes) {
+        assert_eq!(serde_json::to_value(change).unwrap(), *expected);
+    }
     let kinds = decoded
         .into_iter()
         .map(|change| serde_json::to_value(change).unwrap()["type"].clone())
