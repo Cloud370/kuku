@@ -168,13 +168,15 @@ fn exported_nullable_properties_are_always_required() {
                     .cloned()
                     .unwrap_or_default();
                 for (name, schema) in properties {
+                    let nullable_type = schema["type"]
+                        .as_array()
+                        .is_some_and(|types| types.iter().any(|value| value == "null"));
                     let nullable =
-                        schema
-                            .get("anyOf")
-                            .and_then(Value::as_array)
-                            .is_some_and(|choices| {
-                                choices.iter().any(|choice| choice["type"] == "null")
-                            });
+                        schema == &Value::Bool(true)
+                            || nullable_type
+                            || schema.get("anyOf").and_then(Value::as_array).is_some_and(
+                                |choices| choices.iter().any(|choice| choice["type"] == "null"),
+                            );
                     if nullable {
                         assert!(
                             required.iter().any(|entry| entry == name),
@@ -195,6 +197,51 @@ fn exported_nullable_properties_are_always_required() {
 
     let schema: Value = serde_json::from_str(&contract_export::render_schema().unwrap()).unwrap();
     inspect(&schema);
+}
+
+#[test]
+fn exported_contract_keeps_representative_nulls_required_and_nullable() {
+    fn accepts_null(property: &Value) -> bool {
+        if property == &Value::Bool(true) {
+            return true;
+        }
+        let nullable_type = property["type"]
+            .as_array()
+            .is_some_and(|types| types.iter().any(|value| value == "null"));
+        nullable_type
+            || property
+                .get("anyOf")
+                .and_then(Value::as_array)
+                .is_some_and(|choices| choices.iter().any(|choice| choice["type"] == "null"))
+    }
+
+    fn assert_required_nullable(definition: &Value, name: &str) {
+        let required = definition["required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|entry| entry == name),
+            "{name} is not required"
+        );
+        assert!(
+            accepts_null(&definition["properties"][name]),
+            "{name} rejects null"
+        );
+    }
+
+    let schema: Value = serde_json::from_str(&contract_export::render_schema().unwrap()).unwrap();
+    let definitions = schema["$defs"].as_object().unwrap();
+    assert_required_nullable(&definitions["TaskProjection"], "active_run");
+    assert_required_nullable(&definitions["ApiError"], "details");
+    assert_required_nullable(&definitions["SettingsPatch"], "default_tier");
+    assert_required_nullable(&definitions["ContextSnapshot"], "selected_request");
+    assert_required_nullable(&definitions["ReviewSnapshot"], "next_cursor");
+
+    let changes_applied = definitions["TaskDelta"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["properties"]["type"]["const"] == "changes_applied")
+        .unwrap();
+    assert_required_nullable(changes_applied, "timeline_window");
 }
 
 #[test]

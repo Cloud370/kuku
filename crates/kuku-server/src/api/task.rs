@@ -13,10 +13,8 @@ pub struct TaskSummary {
     pub title: String,
     pub state: TaskState,
     pub updated_at: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub active_run_id: Option<RunId>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub latest_run_id: Option<RunId>,
 }
@@ -69,7 +67,6 @@ pub struct ActivityProjection {
     pub kind: ActivityKind,
     pub title: String,
     pub status: ActivityStatus,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub detail: Option<String>,
     pub file_references: Vec<FileReferenceProjection>,
@@ -95,7 +92,6 @@ pub struct InteractionProjection {
     pub interaction_id: InteractionId,
     pub prompt: String,
     pub choices: Vec<InteractionChoiceProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub selected_choice_id: Option<String>,
     pub status: InteractionStatus,
@@ -114,7 +110,6 @@ pub enum TimelineItemProjection {
 pub struct CheckProjection {
     pub name: String,
     pub passed: bool,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub detail: Option<String>,
 }
@@ -123,7 +118,6 @@ pub struct CheckProjection {
 pub struct MetricProjection {
     pub name: String,
     pub value: f64,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub unit: Option<String>,
 }
@@ -131,13 +125,10 @@ pub struct MetricProjection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompletionProjection {
     pub summary: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub checks: Option<Vec<CheckProjection>>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub metrics: Option<Vec<MetricProjection>>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub workspace_changes: Option<ReviewSnapshot>,
 }
@@ -147,10 +138,8 @@ pub struct RunProjection {
     pub run_id: RunId,
     pub state: RunState,
     pub started_at: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub finished_at: Option<String>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub completion: Option<CompletionProjection>,
 }
@@ -171,17 +160,13 @@ pub struct TaskProjection {
     pub task: TaskSummary,
     pub selected_tier_id: String,
     pub timeline: Vec<TimelineItemProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub timeline_next_cursor: Option<PageCursor>,
     pub loaded_skills: Vec<LoadedSkillProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub active_run: Option<RunProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub latest_run: Option<RunProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub context_summary: Option<ContextSummary>,
     pub review_summary: ReviewSummaryProjection,
@@ -191,7 +176,6 @@ pub struct TaskProjection {
 pub struct TaskPage {
     pub api_version: ApiVersion,
     pub items: Vec<TaskSummary>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub next_cursor: Option<PageCursor>,
 }
@@ -199,10 +183,8 @@ pub struct TaskPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListTasksQuery {
     pub workspace_id: WorkspaceId,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub search: Option<String>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub cursor: Option<PageCursor>,
     pub limit: u16,
@@ -210,7 +192,6 @@ pub struct ListTasksQuery {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TimelineQuery {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub before: Option<PageCursor>,
     pub limit: u16,
@@ -221,14 +202,12 @@ pub struct TimelinePage {
     pub api_version: ApiVersion,
     pub task_id: TaskId,
     pub items: Vec<TimelineItemProjection>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub next_cursor: Option<PageCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TimelineWindowDelta {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub next_cursor: Option<PageCursor>,
     pub evicted_items: Vec<TimelineItemProjection>,
@@ -242,7 +221,6 @@ pub enum TaskDelta {
     },
     ChangesApplied {
         changes: Vec<TaskChange>,
-        #[schemars(required)]
         #[serde(deserialize_with = "required_nullable")]
         timeline_window: Option<TimelineWindowDelta>,
     },
@@ -258,7 +236,6 @@ pub enum TaskChange {
         message_id: String,
         append_text: String,
         finalized: bool,
-        #[schemars(required)]
         #[serde(deserialize_with = "required_nullable")]
         request_ids: Option<Vec<RequestId>>,
     },
@@ -270,10 +247,8 @@ pub enum TaskChange {
     },
     RunStateChanged {
         task: TaskSummary,
-        #[schemars(required)]
         #[serde(deserialize_with = "required_nullable")]
         active_run: Option<Box<RunProjection>>,
-        #[schemars(required)]
         #[serde(deserialize_with = "required_nullable")]
         latest_run: Option<Box<RunProjection>>,
     },
@@ -282,7 +257,6 @@ pub enum TaskChange {
         loaded_skills: Vec<LoadedSkillProjection>,
     },
     ContextSummaryChanged {
-        #[schemars(required)]
         #[serde(deserialize_with = "required_nullable")]
         context_summary: Option<ContextSummary>,
     },
@@ -302,7 +276,6 @@ pub struct TaskStreamEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskStreamQuery {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub after: Option<Cursor>,
 }

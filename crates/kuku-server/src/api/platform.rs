@@ -88,7 +88,6 @@ pub struct ConnectionInfo {
     pub display_name: String,
     pub preferred_origin: String,
     pub local_url: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub lan_url: Option<String>,
     pub plaintext: bool,
@@ -119,7 +118,6 @@ pub struct WorkspaceSummary {
     pub label: String,
     pub is_default: bool,
     pub availability: WorkspaceAvailability,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub branch: Option<String>,
 }
@@ -186,10 +184,8 @@ pub enum CredentialSource {
 pub struct CredentialStatus {
     pub provider_id: String,
     pub present: bool,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub source: Option<CredentialSource>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub environment_reference: Option<String>,
 }
@@ -208,7 +204,6 @@ pub struct TierDraft {
     pub provider_id: String,
     pub model: String,
     pub purpose: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub think: Option<String>,
 }
@@ -243,7 +238,6 @@ pub struct TestProviderResult {
     pub reachable: bool,
     pub provider: String,
     pub model: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub message: Option<String>,
 }
@@ -280,7 +274,6 @@ pub struct SettingsSnapshot {
     pub server_revision: RevisionToken,
     pub default_tier: String,
     pub credentials: Vec<CredentialStatus>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub default_workspace_id: Option<WorkspaceId>,
     pub max_concurrent_runs: u8,
@@ -288,13 +281,10 @@ pub struct SettingsSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsPatch {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub default_tier: Option<String>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub default_workspace_id: Option<WorkspaceId>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub max_concurrent_runs: Option<u8>,
 }

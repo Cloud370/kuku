@@ -41,7 +41,6 @@ pub struct ApiError {
     pub code: ApiErrorCode,
     pub message: String,
     pub trace_id: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub details: Option<serde_json::Value>,
 }

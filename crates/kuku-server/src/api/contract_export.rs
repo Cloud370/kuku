@@ -156,12 +156,20 @@ fn require_nullable_properties(value: &mut serde_json::Value) {
 }
 
 fn schema_accepts_null(schema: &serde_json::Value) -> bool {
-    schema
-        .get("anyOf")
+    if schema == &serde_json::Value::Bool(true) {
+        return true;
+    }
+    let nullable_type = schema
+        .get("type")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|choices| {
-            choices.iter().any(|choice| {
-                choice.get("type").and_then(serde_json::Value::as_str) == Some("null")
+        .is_some_and(|types| types.iter().any(|value| value.as_str() == Some("null")));
+    nullable_type
+        || schema
+            .get("anyOf")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|choices| {
+                choices.iter().any(|choice| {
+                    choice.get("type").and_then(serde_json::Value::as_str) == Some("null")
+                })
             })
-        })
 }

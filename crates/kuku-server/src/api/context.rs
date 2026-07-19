@@ -15,7 +15,6 @@ pub struct TierSummary {
     pub purpose: String,
     pub provider: String,
     pub model: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub think: Option<String>,
     pub is_default: bool,
@@ -71,7 +70,6 @@ pub struct ObservationContextItem {
     pub request_id: RequestId,
     pub tool_call_id: String,
     pub kind: ObservationKind,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub relative_path: Option<WorkspaceRelativePath>,
     pub retention: ObservationRetention,
@@ -116,35 +114,32 @@ pub struct DiscoverableContext {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UsageSummary {
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub input_tokens: Option<u64>,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub output_tokens: Option<u64>,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub cached_input_tokens: Option<u64>,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub cache_creation_input_tokens: Option<u64>,
     #[serde(deserialize_with = "json_safe_u64")]
     #[schemars(range(max = 9_007_199_254_740_991_u64))]
     pub request_count: u64,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub elapsed_ms: Option<u64>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub cost: Option<DecimalCost>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub cached_input_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ContextUsage {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub this_request: Option<UsageSummary>,
     pub this_task: UsageSummary,
@@ -162,13 +157,13 @@ pub enum ContextHealthLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ContextHealth {
     pub level: ContextHealthLevel,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub context_tokens_used: Option<u64>,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub context_token_limit: Option<u64>,
-    #[schemars(required, range(max = 9_007_199_254_740_991_u64))]
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     #[serde(deserialize_with = "required_nullable_json_safe_u64")]
     pub context_tokens_remaining: Option<u64>,
     pub summarized: bool,
@@ -194,10 +189,8 @@ pub enum ContextWarningCode {
 pub struct ContextWarning {
     pub code: ContextWarningCode,
     pub summary: String,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub request_id: Option<RequestId>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub source: Option<SourceFact>,
 }
@@ -228,7 +221,6 @@ pub struct ContextSnapshot {
     pub api_version: ApiVersion,
     pub task_id: TaskId,
     pub task_revision: TaskRevision,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub selected_request: Option<RequestSummary>,
     pub request_history: Vec<RequestSummary>,
@@ -239,7 +231,6 @@ pub struct ContextSnapshot {
     pub usage: ContextUsage,
     pub health: ContextHealth,
     pub warnings: Vec<ContextWarning>,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub exact_request: Option<ExactRequest>,
 }
@@ -248,7 +239,6 @@ pub struct ContextSnapshot {
 pub struct ContextSummary {
     pub level: ContextHealthLevel,
     pub loaded_skill_count: u32,
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub latest_request_id: Option<RequestId>,
     pub usage: UsageSummary,
@@ -292,7 +282,6 @@ pub struct ContextCatalog {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CatalogQuery {
-    #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub search: Option<String>,
 }
