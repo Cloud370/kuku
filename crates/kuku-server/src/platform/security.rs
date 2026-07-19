@@ -3,9 +3,11 @@ use std::collections::BTreeSet;
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, VARY, WWW_AUTHENTICATE,
 };
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Uri};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 
 use crate::api::{ApiError, ApiErrorCode};
+
+use super::AuthContext;
 
 const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 const PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
@@ -37,6 +39,26 @@ impl OriginPolicy {
                 "platform-origin",
             )),
             None => Ok(None),
+        }
+    }
+
+    /// Checks an Origin only after the request has authenticated.
+    pub fn check_request<'a>(
+        &self,
+        origin: Option<&'a str>,
+        context: &AuthContext,
+    ) -> Result<Option<&'a str>, ApiError> {
+        if !context.authenticated {
+            return Err(ApiError::new(
+                ApiErrorCode::AuthRequired,
+                "bearer authentication required",
+                "platform-origin",
+            ));
+        }
+        match context.mode {
+            crate::api::AuthMode::LoopbackTrusted | crate::api::AuthMode::Bearer => {
+                self.check(origin)
+            }
         }
     }
 
@@ -73,9 +95,14 @@ impl SecurityHeaders {
         insert_header(headers, CACHE_CONTROL, "no-store");
     }
 
-    /// Adds the RFC bearer challenge to an authentication failure.
-    pub fn apply_auth_challenge(headers: &mut HeaderMap) {
-        insert_header(headers, WWW_AUTHENTICATE, "Bearer");
+    /// Maps an authentication failure to HTTP 401 with its bearer challenge.
+    pub fn apply_auth_failure(headers: &mut HeaderMap, error: &ApiError) -> StatusCode {
+        if error.code() == ApiErrorCode::AuthRequired {
+            insert_header(headers, WWW_AUTHENTICATE, "Bearer");
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::FORBIDDEN
+        }
     }
 }
 

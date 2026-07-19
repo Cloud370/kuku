@@ -3,10 +3,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, VARY, WWW_AUTHENTICATE,
 };
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use kuku_server::api::{ApiErrorCode, AuthMode};
 use kuku_server::platform::{
-    AuthPolicy, BearerTokenSource, BearerTokenStore, OriginPolicy, SecurityHeaders,
+    AuthContext, AuthPolicy, BearerTokenSource, BearerTokenStore, OriginPolicy, SecurityHeaders,
 };
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -105,19 +105,20 @@ fn bearer_auth_is_required_unless_direct_loopback_is_explicitly_trusted() {
     }
 
     for malformed in ["Basic abc", "Bearer", "Bearer wrong", "Bearer  wrong"] {
-        assert_eq!(
-            ApiErrorCode::AuthRequired,
-            store
-                .authorize(
-                    &AuthPolicy {
-                        loopback_trust: true,
-                    },
-                    loopback,
-                    Some(malformed),
-                )
-                .unwrap_err()
-                .code()
-        );
+        let error = store
+            .authorize(
+                &AuthPolicy {
+                    loopback_trust: true,
+                },
+                loopback,
+                Some(malformed),
+            )
+            .unwrap_err();
+        let mut headers = HeaderMap::new();
+        let status = SecurityHeaders::apply_auth_failure(&mut headers, &error);
+        assert_eq!(ApiErrorCode::AuthRequired, error.code());
+        assert_eq!(StatusCode::UNAUTHORIZED, status);
+        assert_eq!("Bearer", headers[WWW_AUTHENTICATE]);
     }
 
     let bearer = store
@@ -147,6 +148,31 @@ fn origin_policy_accepts_only_exact_http_origins() {
     );
     assert_eq!(None, policy.check(None).unwrap());
     assert_eq!(
+        ApiErrorCode::AuthRequired,
+        policy
+            .check_request(
+                None,
+                &AuthContext {
+                    authenticated: false,
+                    mode: AuthMode::Bearer,
+                },
+            )
+            .unwrap_err()
+            .code()
+    );
+    assert_eq!(
+        None,
+        policy
+            .check_request(
+                None,
+                &AuthContext {
+                    authenticated: true,
+                    mode: AuthMode::Bearer,
+                },
+            )
+            .unwrap()
+    );
+    assert_eq!(
         ApiErrorCode::OriginNotAllowed,
         policy
             .check(Some("http://attacker.invalid"))
@@ -169,7 +195,15 @@ fn origin_policy_accepts_only_exact_http_origins() {
 fn security_headers_are_restrictive_and_never_enable_wildcard_cors() {
     let mut headers = HeaderMap::new();
     SecurityHeaders::apply(&mut headers, &["http://localhost:5173".to_owned()]);
-    SecurityHeaders::apply_auth_challenge(&mut headers);
+    let auth_error = kuku_server::api::ApiError::new(
+        ApiErrorCode::AuthRequired,
+        "authentication required",
+        "fixture",
+    );
+    assert_eq!(
+        StatusCode::UNAUTHORIZED,
+        SecurityHeaders::apply_auth_failure(&mut headers, &auth_error)
+    );
 
     assert_eq!("no-store", headers[CACHE_CONTROL]);
     assert_eq!("Origin", headers[VARY]);
