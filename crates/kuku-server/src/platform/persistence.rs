@@ -14,8 +14,14 @@ fn private_file(file: &File) -> io::Result<()> {
 fn temp_path(path: &Path) -> io::Result<PathBuf> {
     let mut random = [0u8; 12];
     getrandom::fill(&mut random).map_err(io::Error::other)?;
-    let suffix = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    Ok(path.with_file_name(format!(".{}.tmp-{suffix}", path.file_name().and_then(|n| n.to_str()).unwrap_or("state"))))
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(path.with_file_name(format!(
+        ".{}.tmp-{suffix}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("state")
+    )))
 }
 
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

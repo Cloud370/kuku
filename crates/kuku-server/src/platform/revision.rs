@@ -63,7 +63,9 @@ pub struct ServerRevisionGuard {
 
 impl std::fmt::Debug for ServerRevisionGuard {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("ServerRevisionGuard").finish_non_exhaustive()
+        formatter
+            .debug_struct("ServerRevisionGuard")
+            .finish_non_exhaustive()
     }
 }
 
@@ -82,7 +84,10 @@ impl ServerRevisionCoordinator {
         Ok(token_for(&accepted))
     }
 
-    pub async fn begin(self: &Arc<Self>, expected: &RevisionToken) -> Result<ServerRevisionGuard, ApiError> {
+    pub async fn begin(
+        self: &Arc<Self>,
+        expected: &RevisionToken,
+    ) -> Result<ServerRevisionGuard, ApiError> {
         let mutation = self.inner.mutation.clone().lock_owned().await;
         let accepted = self.inner.accepted.lock().await;
         let current = token_for(&accepted);
@@ -106,11 +111,18 @@ impl ServerRevisionCoordinator {
 }
 
 impl ServerRevisionGuard {
-    pub async fn finish(self, domain: RevisionDomain, digest: AcceptedDigest) -> Result<RevisionToken, ApiError> {
+    pub async fn finish(
+        self,
+        domain: RevisionDomain,
+        digest: AcceptedDigest,
+    ) -> Result<RevisionToken, ApiError> {
         self.finish_many(vec![(domain, digest)]).await
     }
 
-    pub async fn finish_many(self, digests: Vec<(RevisionDomain, AcceptedDigest)>) -> Result<RevisionToken, ApiError> {
+    pub async fn finish_many(
+        self,
+        digests: Vec<(RevisionDomain, AcceptedDigest)>,
+    ) -> Result<RevisionToken, ApiError> {
         let mut accepted = self.coordinator.accepted.lock().await;
         for (domain, digest) in digests {
             accepted.insert(domain, digest);
@@ -126,8 +138,14 @@ fn token_for(accepted: &BTreeMap<RevisionDomain, AcceptedDigest>) -> RevisionTok
         bytes.extend_from_slice(digest.as_bytes());
     }
     let digest = accepted_digest(&bytes);
-    RevisionToken::parse(digest.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>())
-        .expect("revision digest is always 64 lowercase hexadecimal characters")
+    RevisionToken::parse(
+        digest
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+    )
+    .expect("revision digest is always 64 lowercase hexadecimal characters")
 }
 
 fn stale_revision(current: RevisionToken) -> ApiError {

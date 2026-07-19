@@ -34,7 +34,8 @@ impl ServerInstanceLock {
                 .map_err(InstanceLockError::Io)?;
         }
         let path = kuku_home.join("web.lock");
-        let mut lock = fslock::LockFile::open(&path).map_err(|error| InstanceLockError::Io(io::Error::other(error)))?;
+        let mut lock = fslock::LockFile::open(&path)
+            .map_err(|error| InstanceLockError::Io(io::Error::other(error)))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
