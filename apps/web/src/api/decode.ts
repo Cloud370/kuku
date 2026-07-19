@@ -34,7 +34,7 @@ export class ContractDecodeError extends Error {
   readonly validationErrors: readonly string[];
 
   constructor(validationErrors: readonly string[]) {
-    super("Task stream event does not match the API contract");
+    super("API contract validation failed");
     this.name = "ContractDecodeError";
     this.validationErrors = validationErrors;
   }
