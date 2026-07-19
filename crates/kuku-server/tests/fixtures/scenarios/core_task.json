@@ -1,0 +1,39 @@
+{
+  "name": "core_task",
+  "provider": "deterministic_mock",
+  "events": [
+    {
+      "kind": "provider_response",
+      "text": "I will inspect the workspace before making a change."
+    },
+    {
+      "kind": "tool_call",
+      "name": "read_file",
+      "arguments": {
+        "path": "src/lib.rs"
+      }
+    },
+    {
+      "kind": "interaction",
+      "name": "approval",
+      "payload": {
+        "prompt": "Apply the requested change?"
+      }
+    },
+    {
+      "kind": "delegated_conversation",
+      "conversation_id": "delegated-core-task",
+      "summary": "A deterministic helper reviewed the requested change."
+    },
+    {
+      "kind": "usage",
+      "input_tokens": 13,
+      "output_tokens": 7
+    },
+    {
+      "kind": "provider_response",
+      "text": "The deterministic run completed successfully."
+    }
+  ],
+  "barriers": ["after-tool", "after-run"]
+}
