@@ -149,7 +149,8 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             | EventPayload::TurnInterrupted { .. }
             | EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. }
-            | EventPayload::Unknown(_) => {}
+            | EventPayload::Unknown(_)
+            | EventPayload::TaskLedger(_) => {}
         }
     }
 

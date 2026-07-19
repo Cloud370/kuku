@@ -346,7 +346,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ConversationBound { .. }
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::Unknown(_) => None,
+        | EventPayload::Unknown(_)
+        | EventPayload::TaskLedger(_) => None,
     }
 }
 

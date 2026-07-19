@@ -162,7 +162,8 @@ pub fn reduce_conversations(events: &[StoredEvent]) -> Vec<ConversationState> {
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::MessageUser { .. }
             | EventPayload::MessageAssistant { .. }
-            | EventPayload::Unknown(_) => {}
+            | EventPayload::Unknown(_)
+            | EventPayload::TaskLedger(_) => {}
         }
     }
 
@@ -278,7 +279,8 @@ fn event_conversation(event: &StoredEvent) -> Option<&str> {
         | EventPayload::PermissionRequested { .. }
         | EventPayload::PermissionDeny { .. }
         | EventPayload::Handoff { .. }
-        | EventPayload::Unknown(_) => None,
+        | EventPayload::Unknown(_)
+        | EventPayload::TaskLedger(_) => None,
     }
 }
 

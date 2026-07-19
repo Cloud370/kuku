@@ -93,7 +93,8 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
                 | EventPayload::ContextSources { .. }
                 | EventPayload::ContextSkills { .. }
                 | EventPayload::Handoff { .. }
-                | EventPayload::Unknown(_) => true,
+                | EventPayload::Unknown(_)
+                | EventPayload::TaskLedger(_) => true,
             }
         })
         .collect()
@@ -180,7 +181,8 @@ fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
         | EventPayload::SessionCreated { .. }
-        | EventPayload::Unknown(_) => None,
+        | EventPayload::Unknown(_)
+        | EventPayload::TaskLedger(_) => None,
     }
 }
 

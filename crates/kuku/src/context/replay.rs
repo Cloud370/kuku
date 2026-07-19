@@ -274,7 +274,8 @@ fn rebuild_history_internal(
             | EventPayload::TurnInterrupted { .. }
             | EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. }
-            | EventPayload::Unknown(_) => {}
+            | EventPayload::Unknown(_)
+            | EventPayload::TaskLedger(_) => {}
             _ => {}
         }
     }
@@ -346,7 +347,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::MessageAssistant { .. }
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::Unknown(_) => None,
+        | EventPayload::Unknown(_)
+        | EventPayload::TaskLedger(_) => None,
     }
 }
 
