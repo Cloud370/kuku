@@ -9,6 +9,7 @@ use crate::config::{Config, SecretString};
 use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
+use crate::event::{ExecutionScope, RunId, TaskId, TurnId};
 use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
@@ -18,6 +19,7 @@ use crate::tool::ToolDefinition;
 #[derive(Debug, Clone)]
 pub struct Query {
     pub(super) prompt: String,
+    pub(super) execution_scope: Option<ExecutionScope>,
     pub(super) session_id: Option<String>,
     pub(super) conversation: ConversationAddress,
     pub(super) provider: Option<crate::provider::Provider>,
@@ -55,6 +57,7 @@ pub(crate) struct BootstrapSkill {
 /// Final output from a completed query run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
+    pub(super) execution_scope: ExecutionScope,
     pub session_id: String,
     pub conversation: ConversationAddress,
     pub text: String,
@@ -152,6 +155,7 @@ pub enum ToolEvent {
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // Host events are consumed serially; boxing would break the public API.
 pub enum UiEvent {
     TextDelta {
         text: String,
@@ -206,6 +210,7 @@ pub enum UiEvent {
 /// An active query execution that yields UI events via `next()`.
 #[derive(Debug)]
 pub struct Run {
+    pub(super) execution_scope: ExecutionScope,
     pub(super) session_id: String,
     pub(super) state: RunState,
     pub(crate) slots: std::collections::HashMap<String, ExecSlot>,
@@ -453,6 +458,14 @@ impl RunOutput {
         turn: u64,
     ) -> Self {
         Self {
+            execution_scope: ExecutionScope {
+                workspace_id: crate::event::WorkspaceId::try_new().unwrap(),
+                task_id: TaskId::try_new().unwrap(),
+                run_id: RunId::try_new().unwrap(),
+                turn_id: TurnId::try_new().unwrap(),
+                conversation_id: crate::event::ConversationId::try_new().unwrap(),
+                turn_index: turn,
+            },
             session_id,
             conversation: ConversationAddress::MAIN,
             text,
@@ -479,6 +492,23 @@ impl std::fmt::Debug for StreamingChunkState {
     }
 }
 
+impl RunOutput {
+    /// The Task identity for this execution.
+    pub fn task_id(&self) -> &TaskId {
+        &self.execution_scope.task_id
+    }
+
+    /// The Run identity for this execution.
+    pub fn run_id(&self) -> &RunId {
+        &self.execution_scope.run_id
+    }
+
+    /// The Turn identity for this execution.
+    pub fn turn_id(&self) -> &TurnId {
+        &self.execution_scope.turn_id
+    }
+}
+
 // ---------- Query builder ----------
 
 impl Query {
@@ -486,6 +516,7 @@ impl Query {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
+            execution_scope: None,
             session_id: None,
             conversation: ConversationAddress::MAIN,
             provider: None,
@@ -561,6 +592,12 @@ impl Query {
     /// Set or resume a session by ID.
     pub fn session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Attach the stable product execution identity for this query.
+    pub fn execution_scope(mut self, execution_scope: ExecutionScope) -> Self {
+        self.execution_scope = Some(execution_scope);
         self
     }
 
@@ -682,6 +719,11 @@ impl Query {
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
+
+    /// The product execution identity supplied by the caller, if any.
+    pub fn supplied_execution_scope(&self) -> Option<&ExecutionScope> {
+        self.execution_scope.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -750,6 +792,9 @@ mod tests {
     #[test]
     fn run_output_new_has_zero_counters() {
         let output = RunOutput::new("sid".into(), "text".into(), None, 1);
+        assert!(output.task_id().as_str().starts_with("tsk_"));
+        assert!(output.run_id().as_str().starts_with("run_"));
+        assert!(output.turn_id().as_str().starts_with("trn_"));
         assert_eq!(output.model_request_count, 0);
         assert_eq!(output.thinking_duration_ms, 0);
         assert_eq!(output.tool_summary, ToolSummary::default());

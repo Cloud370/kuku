@@ -149,6 +149,18 @@ impl Query {
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| next_turn(&existing_events));
+        let execution_scope = match self.execution_scope.clone() {
+            Some(scope) => scope,
+            None => crate::event::ExecutionScope {
+                workspace_id: crate::event::WorkspaceId::try_new()?,
+                task_id: crate::event::TaskId::try_new()?,
+                run_id: crate::event::RunId::try_new()?,
+                turn_id: crate::event::TurnId::try_new()?,
+                conversation_id: crate::event::ConversationId::try_new()?,
+                turn_index: turn,
+            },
+        };
+        self.execution_scope = Some(execution_scope.clone());
         let mut store = EventStore::open(&events_path)?;
         if is_new_session {
             let created_at = now_timestamp()?;
@@ -391,6 +403,7 @@ impl Query {
         };
 
         Ok(Run {
+            execution_scope,
             session_id: session_id.clone(),
             state,
             slots: std::collections::HashMap::new(),

@@ -348,6 +348,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             });
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
+                    execution_scope: pending
+                        .query
+                        .execution_scope
+                        .clone()
+                        .expect("execution scope assigned at start"),
                     session_id: pending.session_id.clone(),
                     conversation: conversation.clone(),
                     text: accumulated_text,
@@ -453,6 +458,11 @@ pub(super) async fn advance_pending(
         pending.flush_runtime_logs();
         return Ok(PendingStep::Done(
             super::types::RunOutput {
+                execution_scope: pending
+                    .query
+                    .execution_scope
+                    .clone()
+                    .expect("execution scope assigned at start"),
                 session_id: pending.session_id.clone(),
                 conversation: pending.conversation.clone(),
                 text: String::new(),
