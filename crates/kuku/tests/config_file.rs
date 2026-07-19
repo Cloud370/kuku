@@ -113,7 +113,34 @@ fn full_config_round_trip() {
 }
 
 #[test]
-fn missing_required_tier_is_rejected() {
+fn custom_tier_can_be_the_complete_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "reasoning-max"
+
+[model.reasoning-max]
+provider = "local"
+model = "model-x"
+think = "high"
+purpose = "deep analysis"
+
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "environment_reference", value = "LOCAL_API_KEY" }
+"#,
+    )
+    .unwrap();
+
+    let config = load_config(&path).unwrap().resolve().unwrap();
+    assert_eq!(config.tier_names(), vec!["reasoning-max"]);
+    assert_eq!(config.default_tier(), "reasoning-max");
+}
+
+#[test]
+fn missing_default_tier_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -134,7 +161,7 @@ credential = { source = "direct_value", value = "sk-ant-123" }
     let err = file.resolve().unwrap_err();
     assert!(err
         .to_string()
-        .contains("required tier 'balanced' is missing"));
+        .contains("default_model must reference a configured tier"));
 }
 
 #[test]
@@ -144,6 +171,8 @@ fn invalid_think_level_is_rejected() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -176,6 +205,8 @@ fn credential_environment_reference_is_preserved() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -214,6 +245,8 @@ fn base_url_env_ref_resolves() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -257,6 +290,8 @@ fn missing_base_url_env_ref_is_rejected() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -350,6 +385,8 @@ fn load_and_patch_config_resolves_env_refs_on_runtime_path() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -405,6 +442,8 @@ fn unsupported_format_is_rejected() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "custom"
 model = "test"
@@ -435,6 +474,8 @@ fn tier_referencing_missing_provider_is_rejected() {
     std::fs::write(
         &path,
         r#"
+default_model = "balanced"
+
 [model.strong]
 provider = "nonexistent"
 model = "test"

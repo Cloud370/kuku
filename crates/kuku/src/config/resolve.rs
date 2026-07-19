@@ -133,7 +133,7 @@ impl ConfigFile {
         let default_tier = self
             .default_model
             .clone()
-            .unwrap_or_else(|| "balanced".to_string());
+            .expect("validate_catalog requires default_model");
 
         let discovery = self.discovery.clone().unwrap_or_default();
 
@@ -178,20 +178,25 @@ impl ConfigFile {
     }
 
     pub(crate) fn validate_all(&self) -> Result<()> {
-        self.validate_required_tiers()?;
+        self.validate_catalog()?;
         self.validate_tier_entries()?;
         self.validate_provider_entries()?;
         self.validate_cross_references()
     }
 
-    pub(crate) fn validate_required_tiers(&self) -> Result<()> {
-        const REQUIRED_TIERS: &[&str] = &["strong", "balanced", "light"];
-        for &name in REQUIRED_TIERS {
-            if !self.model.contains_key(name) {
-                return Err(Error::ConfigLoad(format!(
-                    "required tier '{name}' is missing"
-                )));
-            }
+    pub(crate) fn validate_catalog(&self) -> Result<()> {
+        if self.model.is_empty() {
+            return Err(Error::ConfigLoad(
+                "at least one model tier is required".to_string(),
+            ));
+        }
+        let default = self.default_model.as_deref().ok_or_else(|| {
+            Error::ConfigLoad("default_model must reference a configured tier".to_string())
+        })?;
+        if !self.model.contains_key(default) {
+            return Err(Error::ConfigLoad(format!(
+                "default_model '{default}' is not defined in [model]"
+            )));
         }
         Ok(())
     }
@@ -266,7 +271,10 @@ impl ConfigFile {
                 )));
             }
         }
-        let default_tier = self.default_model.as_deref().unwrap_or("balanced");
+        let default_tier = self
+            .default_model
+            .as_deref()
+            .expect("validate_catalog requires default_model");
         if !self.model.contains_key(default_tier) {
             return Err(Error::ConfigLoad(format!(
                 "default_model '{default_tier}' is not defined in [model]"
