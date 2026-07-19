@@ -1,0 +1,25 @@
+{
+  "api_version": 1,
+  "task_revision": 0,
+  "cursor": 7,
+  "task": {
+    "task_id": "tsk_000000000000000000000001",
+    "workspace_id": "wsp_000000000000000000000001",
+    "title": "New task",
+    "state": "draft",
+    "updated_at": "2026-07-18T00:00:00Z",
+    "active_run_id": null,
+    "latest_run_id": null
+  },
+  "selected_tier_id": "balanced",
+  "timeline": [],
+  "timeline_next_cursor": null,
+  "loaded_skills": [],
+  "active_run": null,
+  "latest_run": null,
+  "context_summary": null,
+  "review_summary": {
+    "total_submissions": 0,
+    "latest_submission_id": null
+  }
+}

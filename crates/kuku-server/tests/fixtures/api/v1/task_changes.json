@@ -1,0 +1,20 @@
+{
+  "projection_replaced": {
+    "type": "projection_replaced",
+    "projection": "task_projection.json"
+  },
+  "changes_applied": {
+    "type": "changes_applied",
+    "changes": [
+      "message_appended",
+      "message_patched",
+      "activity_upserted",
+      "interaction_upserted",
+      "run_state_changed",
+      "skills_changed",
+      "context_summary_changed",
+      "review_submissions_changed"
+    ],
+    "timeline_window": null
+  }
+}
