@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "cursor": 8,
+  "task_revision": 0,
+  "task_id": "tsk_000000000000000000000001",
+  "event": {
+    "type": "changes_applied",
+    "changes": [],
+    "timeline_window": null
+  }
+}

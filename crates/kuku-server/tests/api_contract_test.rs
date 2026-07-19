@@ -1,8 +1,9 @@
 use std::fs;
 
 use kuku_server::api::{
-    contract_export, ApiError, ApiErrorCode, ApiVersion, PageCursor, TaskId, TaskProjection,
-    TaskRevision, WebApiContract,
+    contract_export, ApiError, ApiErrorCode, ApiVersion, ContextSnapshot, PageCursor,
+    PlatformCatalog, PlatformStatus, ReviewSnapshot, SettingsSnapshot, TaskChange, TaskDelta,
+    TaskId, TaskProjection, TaskRevision, TaskStreamEvent, UpdateSettingsRequest, WebApiContract,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -60,6 +61,89 @@ fn task_projection_fixture_has_stable_ids_state_and_cursor() {
         serde_json::to_value(projection).unwrap(),
         fixture("task_projection.json")
     );
+}
+
+#[test]
+fn task_change_fixture_covers_every_change_and_both_outer_deltas() {
+    let bundle = fixture("task_changes.json");
+    let changes = bundle["changes"].as_array().unwrap();
+    let decoded = changes
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<TaskChange>)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let kinds = decoded
+        .into_iter()
+        .map(|change| serde_json::to_value(change).unwrap()["type"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            "message_appended",
+            "message_patched",
+            "activity_upserted",
+            "interaction_upserted",
+            "run_state_changed",
+            "skills_changed",
+            "context_summary_changed",
+            "review_submissions_changed",
+        ]
+    );
+
+    let deltas = serde_json::from_value::<Vec<TaskDelta>>(bundle["deltas"].clone()).unwrap();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(serde_json::to_value(deltas).unwrap(), bundle["deltas"]);
+}
+
+#[test]
+fn stream_and_domain_family_fixtures_round_trip() {
+    fn round_trip<T>(name: &str)
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let value = fixture(name);
+        let decoded = serde_json::from_value::<T>(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value, "{name}");
+    }
+
+    round_trip::<TaskStreamEvent>("task_stream_event.json");
+    round_trip::<PlatformStatus>("platform_status.json");
+    round_trip::<SettingsSnapshot>("settings_snapshot.json");
+    round_trip::<PlatformCatalog>("platform_catalog.json");
+    round_trip::<ContextSnapshot>("context_snapshot.json");
+    round_trip::<ReviewSnapshot>("review_snapshot.json");
+}
+
+#[test]
+fn platform_contract_exposes_connection_catalog_and_revision_fields() {
+    let status: PlatformStatus = serde_json::from_value(fixture("platform_status.json")).unwrap();
+    assert_eq!(
+        status.connection.preferred_origin,
+        "http://phone-host:17777/"
+    );
+
+    let settings: SettingsSnapshot =
+        serde_json::from_value(fixture("settings_snapshot.json")).unwrap();
+    assert_eq!(settings.credentials[0].provider_id, "fixture-provider");
+
+    let catalog: PlatformCatalog =
+        serde_json::from_value(fixture("platform_catalog.json")).unwrap();
+    assert_eq!(catalog.default_tier.label, "Balanced");
+    assert_eq!(catalog.credentials[0].provider_id, "fixture-provider");
+
+    let request = serde_json::from_value::<UpdateSettingsRequest>(json!({
+        "expected_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "patch": {
+            "default_tier": null,
+            "default_workspace_id": null,
+            "max_concurrent_runs": null
+        }
+    }))
+    .unwrap();
+    let encoded = serde_json::to_value(request).unwrap();
+    assert!(encoded.get("expected_revision").is_some());
+    assert!(encoded.get("expected_server_revision").is_none());
 }
 
 #[test]
@@ -188,6 +272,12 @@ fn exporter_writes_stable_schema_fixture_inputs() {
         "fixtures/api_error.json",
         "fixtures/task_projection.json",
         "fixtures/task_changes.json",
+        "fixtures/task_stream_event.json",
+        "fixtures/platform_status.json",
+        "fixtures/settings_snapshot.json",
+        "fixtures/platform_catalog.json",
+        "fixtures/context_snapshot.json",
+        "fixtures/review_snapshot.json",
     ] {
         assert_eq!(
             fs::read(first.path().join(relative)).unwrap(),

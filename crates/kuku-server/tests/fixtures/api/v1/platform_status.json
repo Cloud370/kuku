@@ -1,0 +1,26 @@
+{
+  "api_version": 1,
+  "ready": true,
+  "auth": {
+    "authenticated": true,
+    "mode": "bearer"
+  },
+  "init": {
+    "api_version": 1,
+    "phase": "complete",
+    "server_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "providers_configured": true,
+    "default_tier_configured": true,
+    "workspace_registered": true,
+    "provider_test_passed": true,
+    "complete": true
+  },
+  "connection": {
+    "server_id": "server_fixture_1",
+    "display_name": "Fixture Server",
+    "preferred_origin": "http://phone-host:17777/",
+    "local_url": "http://127.0.0.1:17777/",
+    "lan_url": "http://phone-host:17777/",
+    "plaintext": true
+  }
+}

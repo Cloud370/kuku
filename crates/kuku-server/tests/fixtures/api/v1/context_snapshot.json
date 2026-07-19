@@ -1,0 +1,67 @@
+{
+  "api_version": 1,
+  "task_id": "tsk_000000000000000000000001",
+  "task_revision": 0,
+  "selected_request": null,
+  "request_history": [],
+  "request_history_truncated": false,
+  "sections": {
+    "skills": [],
+    "instructions": [],
+    "memory": [],
+    "conversation": {
+      "retained_turns": 0,
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "delegated_results": []
+    },
+    "observations": [],
+    "agents": [],
+    "capabilities": []
+  },
+  "next_request_base": {
+    "skills": [],
+    "instructions": [],
+    "memory": [],
+    "conversation": {
+      "retained_turns": 0,
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "delegated_results": []
+    },
+    "observations": [],
+    "delegated_results": [],
+    "capabilities": [],
+    "token_estimate": null
+  },
+  "discoverable": {
+    "catalog_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "skill_count": 0,
+    "agent_count": 0,
+    "tool_count": 0
+  },
+  "usage": {
+    "this_request": null,
+    "this_task": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cached_input_tokens": null,
+      "cache_creation_input_tokens": null,
+      "request_count": 0,
+      "elapsed_ms": null,
+      "cost": null,
+      "cached_input_ratio": null
+    }
+  },
+  "health": {
+    "level": "unavailable",
+    "context_tokens_used": null,
+    "context_token_limit": null,
+    "context_tokens_remaining": null,
+    "summarized": false,
+    "source_drift_count": 0,
+    "truncated_observation_count": 0
+  },
+  "warnings": [],
+  "exact_request": null
+}

@@ -11,6 +11,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TierSummary {
     pub tier_id: String,
+    pub label: String,
     pub purpose: String,
     pub provider: String,
     pub model: String,

@@ -1,0 +1,32 @@
+{
+  "api_version": 1,
+  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "default_tier": {
+    "tier_id": "balanced",
+    "label": "Balanced",
+    "purpose": "General work",
+    "provider": "fixture-provider",
+    "model": "fixture-model",
+    "think": null,
+    "is_default": true
+  },
+  "tiers": [
+    {
+      "tier_id": "balanced",
+      "label": "Balanced",
+      "purpose": "General work",
+      "provider": "fixture-provider",
+      "model": "fixture-model",
+      "think": null,
+      "is_default": true
+    }
+  ],
+  "credentials": [
+    {
+      "provider_id": "fixture-provider",
+      "present": true,
+      "source": "environment_reference",
+      "environment_reference": "FIXTURE_API_KEY"
+    }
+  ]
+}

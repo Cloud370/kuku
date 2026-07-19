@@ -1,20 +1,144 @@
 {
-  "projection_replaced": {
-    "type": "projection_replaced",
-    "projection": "task_projection.json"
-  },
-  "changes_applied": {
-    "type": "changes_applied",
-    "changes": [
-      "message_appended",
-      "message_patched",
-      "activity_upserted",
-      "interaction_upserted",
-      "run_state_changed",
-      "skills_changed",
-      "context_summary_changed",
-      "review_submissions_changed"
-    ],
-    "timeline_window": null
-  }
+  "changes": [
+    {
+      "type": "message_appended",
+      "item": {
+        "type": "message",
+        "item": {
+          "message_id": "msg_fixture_1",
+          "role": "agent",
+          "text": "Ready.",
+          "finalized": true,
+          "request_ids": ["req_000000000000000000000001"],
+          "file_references": [],
+          "order_key": 8
+        }
+      }
+    },
+    {
+      "type": "message_patched",
+      "message_id": "msg_fixture_1",
+      "append_text": " Done.",
+      "finalized": true,
+      "request_ids": ["req_000000000000000000000001"]
+    },
+    {
+      "type": "activity_upserted",
+      "activity": {
+        "activity_id": "activity_fixture_1",
+        "kind": "tool",
+        "title": "Read file",
+        "status": "completed",
+        "detail": null,
+        "file_references": [],
+        "order_key": 9
+      }
+    },
+    {
+      "type": "interaction_upserted",
+      "interaction": {
+        "interaction_id": "int_000000000000000000000001",
+        "prompt": "Continue?",
+        "choices": [{ "choice_id": "continue", "label": "Continue" }],
+        "selected_choice_id": null,
+        "status": "pending",
+        "order_key": 10
+      }
+    },
+    {
+      "type": "run_state_changed",
+      "task": {
+        "task_id": "tsk_000000000000000000000001",
+        "workspace_id": "wsp_000000000000000000000001",
+        "title": "Fixture task",
+        "state": "completed",
+        "updated_at": "2026-07-18T00:00:03Z",
+        "active_run_id": null,
+        "latest_run_id": "run_000000000000000000000001"
+      },
+      "active_run": null,
+      "latest_run": null
+    },
+    {
+      "type": "skills_changed",
+      "selected_tier_id": "balanced",
+      "loaded_skills": [
+        {
+          "skill_id": "fixture-skill",
+          "name": "Fixture Skill",
+          "description": "Fixture contract skill",
+          "loaded_by": "you"
+        }
+      ]
+    },
+    {
+      "type": "context_summary_changed",
+      "context_summary": null
+    },
+    {
+      "type": "review_submissions_changed",
+      "change": {
+        "submission": {
+          "submission_id": "rsub_000000000000000000000001",
+          "task_id": "tsk_000000000000000000000001",
+          "run_id": "run_000000000000000000000001",
+          "task_revision": 2,
+          "submitted_at": "2026-07-18T00:00:04Z",
+          "notes": [
+            {
+              "path": "src/lib.rs",
+              "revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "side": "file",
+              "start_line": 1,
+              "end_line": 1,
+              "excerpt": "pub mod api;",
+              "comment": "Keep this boundary explicit.",
+              "status": "current"
+            }
+          ]
+        },
+        "total_submissions": 1
+      }
+    }
+  ],
+  "deltas": [
+    {
+      "type": "projection_replaced",
+      "projection": {
+        "api_version": 1,
+        "task_revision": 0,
+        "cursor": 7,
+        "task": {
+          "task_id": "tsk_000000000000000000000001",
+          "workspace_id": "wsp_000000000000000000000001",
+          "title": "New task",
+          "state": "draft",
+          "updated_at": "2026-07-18T00:00:00Z",
+          "active_run_id": null,
+          "latest_run_id": null
+        },
+        "selected_tier_id": "balanced",
+        "timeline": [],
+        "timeline_next_cursor": null,
+        "loaded_skills": [],
+        "active_run": null,
+        "latest_run": null,
+        "context_summary": null,
+        "review_summary": {
+          "total_submissions": 0,
+          "latest_submission_id": null
+        }
+      }
+    },
+    {
+      "type": "changes_applied",
+      "changes": [
+        {
+          "type": "context_summary_changed",
+          "context_summary": null
+        }
+      ],
+      "timeline_window": null
+    }
+  ]
 }

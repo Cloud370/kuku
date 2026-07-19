@@ -23,8 +23,8 @@ pub use context::{
 };
 pub use error::{ApiError, ApiErrorCode};
 pub use platform::{
-    AuthMode, AuthStatus, CompleteInitRequest, ConnectionInfo, CredentialInput, CredentialStatus,
-    InitPhase, InitStatus, PlatformCatalog, PlatformStatus, ProviderDraft,
+    AuthMode, AuthStatus, CompleteInitRequest, ConnectionInfo, CredentialInput, CredentialSource,
+    CredentialStatus, InitPhase, InitStatus, PlatformCatalog, PlatformStatus, ProviderDraft,
     RegisterInitialWorkspaceRequest, RegisterWorkspaceRequest, RegistrationRootId,
     RegistrationRootPage, RegistrationRootSummary, RemoveWorkspaceRequest, SettingsPatch,
     SettingsSnapshot, TestProviderRequest, TestProviderResult, TierDraft, UpdateDefaultTierRequest,

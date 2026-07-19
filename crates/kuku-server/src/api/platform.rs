@@ -86,6 +86,7 @@ pub struct AuthStatus {
 pub struct ConnectionInfo {
     pub server_id: String,
     pub display_name: String,
+    pub preferred_origin: String,
     pub local_url: String,
     #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
@@ -147,12 +148,12 @@ pub struct RegisterWorkspaceRequest {
     pub root_id: RegistrationRootId,
     pub relative_path: String,
     pub label: String,
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RemoveWorkspaceRequest {
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -183,6 +184,7 @@ pub enum CredentialSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CredentialStatus {
+    pub provider_id: String,
     pub present: bool,
     #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
@@ -215,13 +217,13 @@ pub struct TierDraft {
 pub struct UpdateProvidersRequest {
     pub providers: Vec<ProviderDraft>,
     pub tiers: Vec<TierDraft>,
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateDefaultTierRequest {
     pub tier_id: String,
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -232,7 +234,7 @@ pub struct RegisterInitialWorkspaceRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TestProviderRequest {
     pub tier_id: String,
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -248,7 +250,7 @@ pub struct TestProviderResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CompleteInitRequest {
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -277,6 +279,7 @@ pub struct SettingsSnapshot {
     pub api_version: ApiVersion,
     pub server_revision: RevisionToken,
     pub default_tier: String,
+    pub credentials: Vec<CredentialStatus>,
     #[schemars(required)]
     #[serde(deserialize_with = "required_nullable")]
     pub default_workspace_id: Option<WorkspaceId>,
@@ -298,7 +301,7 @@ pub struct SettingsPatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateSettingsRequest {
-    pub expected_server_revision: RevisionToken,
+    pub expected_revision: RevisionToken,
     pub patch: SettingsPatch,
 }
 
@@ -306,7 +309,9 @@ pub struct UpdateSettingsRequest {
 pub struct PlatformCatalog {
     pub api_version: ApiVersion,
     pub revision: RevisionToken,
+    pub default_tier: super::TierSummary,
     pub tiers: Vec<super::TierSummary>,
+    pub credentials: Vec<CredentialStatus>,
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

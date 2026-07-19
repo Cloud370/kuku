@@ -20,6 +20,30 @@ const FIXTURES: &[(&str, &str)] = &[
         "task_changes.json",
         include_str!("../../tests/fixtures/api/v1/task_changes.json"),
     ),
+    (
+        "task_stream_event.json",
+        include_str!("../../tests/fixtures/api/v1/task_stream_event.json"),
+    ),
+    (
+        "platform_status.json",
+        include_str!("../../tests/fixtures/api/v1/platform_status.json"),
+    ),
+    (
+        "settings_snapshot.json",
+        include_str!("../../tests/fixtures/api/v1/settings_snapshot.json"),
+    ),
+    (
+        "platform_catalog.json",
+        include_str!("../../tests/fixtures/api/v1/platform_catalog.json"),
+    ),
+    (
+        "context_snapshot.json",
+        include_str!("../../tests/fixtures/api/v1/context_snapshot.json"),
+    ),
+    (
+        "review_snapshot.json",
+        include_str!("../../tests/fixtures/api/v1/review_snapshot.json"),
+    ),
 ];
 
 #[derive(Debug)]
