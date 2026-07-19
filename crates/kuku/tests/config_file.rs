@@ -165,6 +165,42 @@ credential = { source = "direct_value", value = "sk-ant-123" }
 }
 
 #[test]
+fn empty_catalog_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "default_model = \"default\"\n").unwrap();
+    let error = load_config(&path).unwrap().resolve().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("at least one model tier is required"));
+}
+
+#[test]
+fn unknown_default_tier_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "missing"
+
+[model.default]
+provider = "local"
+model = "model-x"
+
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let error = load_config(&path).unwrap().resolve().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("default_model 'missing' is not defined"));
+}
+
+#[test]
 fn invalid_think_level_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
