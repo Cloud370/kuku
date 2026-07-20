@@ -25,6 +25,47 @@ pub use types::{
     WorkspaceRelativePathError, JSON_SAFE_INTEGER_MAX, MAX_WORKSPACE_RELATIVE_PATH_BYTES,
 };
 
+pub fn next_turn_index(events: &[StoredEvent]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::TurnStarted { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+pub fn task_execution_scope(
+    events: &[StoredEvent],
+    workspace_id: &WorkspaceId,
+    task_id: &TaskId,
+    run_id: &RunId,
+    conversation: &str,
+) -> Result<ExecutionScope, ExecutionIdError> {
+    if let Some(scope) = events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::TurnStarted {
+            execution,
+            conversation: event_conversation,
+            ..
+        } if &execution.run_id == run_id && event_conversation == conversation => {
+            Some(execution.clone())
+        }
+        _ => None,
+    }) {
+        return Ok(scope);
+    }
+    Ok(ExecutionScope {
+        workspace_id: workspace_id.clone(),
+        task_id: task_id.clone(),
+        run_id: run_id.clone(),
+        turn_id: TurnId::try_new()?,
+        conversation_id: ConversationId::for_task_address(task_id, conversation)?,
+        turn_index: next_turn_index(events),
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn test_execution_scope() -> ExecutionScope {
     ExecutionScope {

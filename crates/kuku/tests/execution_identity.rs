@@ -26,6 +26,21 @@ fn malformed_or_wrong_prefix_ids_are_rejected() {
 }
 
 #[test]
+fn task_conversation_identity_is_stable_for_one_address() {
+    let task = TaskId::parse("tsk_0123456789abcdef01234567").unwrap();
+    let other_task = TaskId::parse("tsk_1123456789abcdef01234567").unwrap();
+
+    let first = ConversationId::for_task_address(&task, "main").unwrap();
+    let repeated = ConversationId::for_task_address(&task, "main").unwrap();
+    let nested = ConversationId::for_task_address(&task, "review/api").unwrap();
+    let other_task = ConversationId::for_task_address(&other_task, "main").unwrap();
+
+    assert_eq!(first, repeated);
+    assert_ne!(first, nested);
+    assert_ne!(first, other_task);
+}
+
+#[test]
 fn cursor_and_revision_reject_values_outside_json_safe_range() {
     const MAX: u64 = 9_007_199_254_740_991;
 

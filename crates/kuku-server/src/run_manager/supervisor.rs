@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use kuku::event::{
-    ConversationId, EventPayload, ExecutionScope, InteractionId, MessageRoleFact,
-    ProviderFailureFact, ProviderFailureKind, RequestFailed, RequestId, RequestScope, RunFact,
-    RunId, RunState, TaskEvent, TaskId, TaskLedgerRecord, TurnId,
+    EventPayload, ExecutionScope, InteractionId, MessageRoleFact, ProviderFailureFact,
+    ProviderFailureKind, RequestFailed, RequestId, RequestScope, RunFact, RunId, RunState,
+    TaskEvent, TaskId, TaskLedgerRecord,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
@@ -36,6 +36,16 @@ struct ActiveDriver {
 const PHASE_QUEUED: u8 = 0;
 const PHASE_LAUNCHING: u8 = 1;
 const PHASE_CANCELLED: u8 = 2;
+
+pub(super) fn execution_scope_for_run(
+    events: &[kuku::event::StoredEvent],
+    workspace_id: &kuku::event::WorkspaceId,
+    task_id: &TaskId,
+    run_id: &RunId,
+) -> Result<ExecutionScope, DomainError> {
+    kuku::event::task_execution_scope(events, workspace_id, task_id, run_id, "main")
+        .map_err(|_| DomainError::StorageExhausted)
+}
 
 pub struct RunSupervisor {
     repository: TaskRepository,
@@ -364,15 +374,15 @@ impl RunSupervisor {
                 }
             }
         }
-        let execution_scope = ExecutionScope {
-            workspace_id: projection.task.workspace_id.clone(),
-            task_id: task_id.clone(),
-            run_id: run_id.clone(),
-            turn_id: TurnId::try_new().map_err(|_| DomainError::StorageExhausted)?,
-            conversation_id: ConversationId::try_new()
-                .map_err(|_| DomainError::StorageExhausted)?,
-            turn_index: 1,
-        };
+        let event_store = self.repository.event_store(task_id)?;
+        let execution_scope = execution_scope_for_run(
+            &event_store
+                .read_all()
+                .map_err(|_| DomainError::LedgerCorrupt)?,
+            &projection.task.workspace_id,
+            task_id,
+            run_id,
+        )?;
         Ok(DriverStart {
             task_id: task_id.clone(),
             run_id: run_id.clone(),
@@ -386,7 +396,7 @@ impl RunSupervisor {
                 .collect(),
             agent_message_id: format!("msg_agent_{}", run_id.as_str()),
             execution_scope,
-            event_store: self.repository.event_store(task_id)?,
+            event_store,
         })
     }
 

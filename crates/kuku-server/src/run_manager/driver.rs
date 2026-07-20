@@ -111,6 +111,21 @@ pub struct DriverHandle {
     pub events: mpsc::Receiver<DriverEvent>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingDecision {
+    request_id: String,
+    parent_tool_id: Option<String>,
+}
+
+impl PendingDecision {
+    fn new(request_id: String, parent_tool_id: Option<String>) -> Self {
+        Self {
+            request_id,
+            parent_tool_id,
+        }
+    }
+}
+
 pub trait RunDriverFactory: Send + Sync {
     fn start(
         &self,
@@ -129,6 +144,25 @@ impl KukuDriverFactory {
     }
 }
 
+fn resolve_product_tier(
+    config: &kuku::config::Config,
+    tier_id: &str,
+) -> Result<String, DomainError> {
+    let name = tier_id
+        .strip_prefix("tier:")
+        .filter(|name| !name.is_empty())
+        .ok_or(DomainError::InvalidRequest)?;
+    let name = if name == "default" {
+        config.default_tier()
+    } else {
+        name
+    };
+    config
+        .tier(name)
+        .map(|_| name.to_owned())
+        .ok_or(DomainError::InvalidRequest)
+}
+
 impl RunDriverFactory for KukuDriverFactory {
     fn start(
         &self,
@@ -137,6 +171,7 @@ impl RunDriverFactory for KukuDriverFactory {
         let workspaces = self.workspaces.clone();
         let config = self.config.clone();
         Box::pin(async move {
+            let tier = resolve_product_tier(&config, &start.tier_id)?;
             let capability = workspaces
                 .capability(&start.workspace_id)
                 .map_err(|_| DomainError::WorkspaceNotFound)?;
@@ -148,7 +183,7 @@ impl RunDriverFactory for KukuDriverFactory {
                 )
                 .map_err(|_| DomainError::InvalidRequest)?
                 .config((*config).clone())
-                .tier(start.tier_id.clone());
+                .tier(tier);
             let run = query
                 .start()
                 .await
@@ -174,7 +209,7 @@ async fn run_kuku_driver(
     mut commands: mpsc::Receiver<DriverCommand>,
     events: mpsc::Sender<DriverEvent>,
 ) {
-    let mut pending = HashMap::<InteractionId, String>::new();
+    let mut pending = HashMap::<InteractionId, PendingDecision>::new();
     let mut activities = HashMap::<String, ActivityFact>::new();
     let mut text = TextBuffer::default();
     let delay = tokio::time::sleep(TEXT_BATCH_DELAY);
@@ -185,14 +220,21 @@ async fn run_kuku_driver(
                 match command {
                     Some(DriverCommand::Stop) => run.cancel(),
                     Some(DriverCommand::Resolve { interaction_id, choice_id }) => {
-                        if let Some(request_id) = pending.get(&interaction_id).cloned() {
+                        if let Some(decision) = pending.get(&interaction_id).cloned() {
                             let Some(choice) = permission_choice(&choice_id) else {
                                 let _ = events.send(DriverEvent::Failed(RunFailure {
                                     summary: format!("invalid interaction choice: {choice_id}"),
                                 })).await;
                                 return;
                             };
-                            if let Err(error) = run.decide(&request_id, choice, None).await {
+                            if let Err(error) = run
+                                .decide(
+                                    &decision.request_id,
+                                    choice,
+                                    decision.parent_tool_id.as_deref(),
+                                )
+                                .await
+                            {
                                 let _ = events.send(DriverEvent::Failed(RunFailure {
                                     summary: format!("interaction resolution failed: {error}"),
                                 })).await;
@@ -214,6 +256,22 @@ async fn run_kuku_driver(
             }
             next = run.next() => {
                 match next {
+                    Ok(Some(event)) if permission_metadata(&event).is_some() => {
+                        if !flush_text(&events, &start.agent_message_id, &mut text, false).await {
+                            return;
+                        }
+                        let (request, parent_tool_id) = permission_metadata(&event)
+                            .expect("permission event was matched by the guard");
+                        if !open_permission(
+                            &events,
+                            &start.run_id,
+                            &mut pending,
+                            request.clone(),
+                            parent_tool_id.map(str::to_owned),
+                        ).await {
+                            return;
+                        }
+                    }
                     Ok(Some(kuku::UiEvent::TextDelta { text: delta })) => {
                         let chunks = text.push(tokio::time::Instant::now(), &delta);
                         if !send_text_chunks(&events, &start.agent_message_id, chunks).await {
@@ -221,31 +279,6 @@ async fn run_kuku_driver(
                         }
                         if let Some(deadline) = text.deadline() {
                             delay.as_mut().reset(deadline);
-                        }
-                    }
-                    Ok(Some(kuku::UiEvent::PermissionRequested { request })) => {
-                        if !flush_text(&events, &start.agent_message_id, &mut text, false).await {
-                            return;
-                        }
-                        let interaction_id = match InteractionId::try_new() {
-                            Ok(value) => value,
-                            Err(_) => {
-                                let _ = events.send(DriverEvent::Failed(RunFailure {
-                                    summary: "interaction identity exhausted".to_owned(),
-                                })).await;
-                                return;
-                            }
-                        };
-                        pending.insert(interaction_id.clone(), request.id);
-                        let interaction = InteractionFact {
-                            interaction_id,
-                            run_id: start.run_id.clone(),
-                            prompt: request.summary,
-                            choices: permission_choices(),
-                            selected_choice_id: None,
-                        };
-                        if events.send(DriverEvent::InteractionOpened(interaction)).await.is_err() {
-                            return;
                         }
                     }
                     Ok(Some(kuku::UiEvent::ToolStart { id, tool, summary, kind })) => {
@@ -309,6 +342,51 @@ async fn run_kuku_driver(
             }
         }
     }
+}
+
+fn permission_metadata(event: &kuku::UiEvent) -> Option<(&kuku::PermissionRequest, Option<&str>)> {
+    match event {
+        kuku::UiEvent::PermissionRequested { request } => Some((request, None)),
+        kuku::UiEvent::ToolOutput {
+            id,
+            event: kuku::ToolEvent::PermissionRequested { request },
+        } => Some((request, Some(id))),
+        _ => None,
+    }
+}
+
+async fn open_permission(
+    events: &mpsc::Sender<DriverEvent>,
+    run_id: &RunId,
+    pending: &mut HashMap<InteractionId, PendingDecision>,
+    request: kuku::PermissionRequest,
+    parent_tool_id: Option<String>,
+) -> bool {
+    let interaction_id = match InteractionId::try_new() {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = events
+                .send(DriverEvent::Failed(RunFailure {
+                    summary: "interaction identity exhausted".to_owned(),
+                }))
+                .await;
+            return false;
+        }
+    };
+    pending.insert(
+        interaction_id.clone(),
+        PendingDecision::new(request.id, parent_tool_id),
+    );
+    events
+        .send(DriverEvent::InteractionOpened(InteractionFact {
+            interaction_id,
+            run_id: run_id.clone(),
+            prompt: request.summary,
+            choices: permission_choices(),
+            selected_choice_id: None,
+        }))
+        .await
+        .is_ok()
 }
 
 async fn flush_text(
@@ -455,9 +533,23 @@ fn finished_activity(
 
 #[cfg(test)]
 mod activity_tests {
-    use kuku::event::{ConversationId, RunId};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
 
-    use super::{finished_activity, started_activity, ActivityKindFact, ActivityStatusFact};
+    use kuku::conversation::address::ConversationAddress;
+    use kuku::event::{
+        CommandReceipt, CommandResult, ConversationId, EventPayload, ExecutionScope, RunFact,
+        RunId, RunState, TaskEvent, TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction,
+        TurnId, WorkspaceId,
+    };
+    use tempfile::tempdir;
+
+    use super::{
+        finished_activity, permission_metadata, resolve_product_tier, started_activity,
+        ActivityKindFact, ActivityStatusFact, DriverCommand, DriverStart, KukuDriverFactory,
+        PendingDecision, RunDriverFactory,
+    };
 
     fn run_id() -> RunId {
         RunId::parse("run_0123456789abcdef01234567").unwrap()
@@ -516,5 +608,242 @@ mod activity_tests {
         assert_eq!(activity.status, ActivityStatusFact::Failed);
         assert_eq!(activity.detail.as_deref(), Some("failed"));
         assert_eq!(activity.result_in_main, None);
+    }
+
+    #[test]
+    fn permission_decision_preserves_optional_parent_tool() {
+        let top_level = PendingDecision::new("request-top".to_owned(), None);
+        let nested =
+            PendingDecision::new("request-nested".to_owned(), Some("agent-tool".to_owned()));
+
+        assert_eq!(top_level.request_id, "request-top");
+        assert_eq!(top_level.parent_tool_id, None);
+        assert_eq!(nested.request_id, "request-nested");
+        assert_eq!(nested.parent_tool_id.as_deref(), Some("agent-tool"));
+    }
+
+    fn permission_request(id: &str) -> kuku::PermissionRequest {
+        kuku::PermissionRequest {
+            id: id.to_owned(),
+            conversation: ConversationAddress::MAIN,
+            turn: 1,
+            tool_call_id: "child-tool".to_owned(),
+            tool: "write_file".to_owned(),
+            risk: "write".to_owned(),
+            summary: "Write a file".to_owned(),
+            candidate: "src/lib.rs".to_owned(),
+            source: "policy".to_owned(),
+        }
+    }
+
+    #[test]
+    fn permission_metadata_keeps_nested_tool_parent_only_for_tool_output() {
+        let top = kuku::UiEvent::PermissionRequested {
+            request: permission_request("top"),
+        };
+        let nested = kuku::UiEvent::ToolOutput {
+            id: "parent-agent".to_owned(),
+            event: kuku::ToolEvent::PermissionRequested {
+                request: permission_request("nested"),
+            },
+        };
+
+        let (top_request, top_parent) = permission_metadata(&top).unwrap();
+        let (nested_request, nested_parent) = permission_metadata(&nested).unwrap();
+        assert_eq!(top_request.id, "top");
+        assert_eq!(top_parent, None);
+        assert_eq!(nested_request.id, "nested");
+        assert_eq!(nested_parent, Some("parent-agent"));
+    }
+
+    struct NoWorkspaceUsage;
+
+    impl crate::platform::WorkspaceUsagePort for NoWorkspaceUsage {
+        fn has_durable_tasks<'a>(
+            &'a self,
+            _: &'a WorkspaceId,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, crate::api::ApiError>> + Send + 'a>> {
+            Box::pin(async { Ok(false) })
+        }
+    }
+
+    fn test_config() -> kuku::config::Config {
+        use std::collections::BTreeMap;
+
+        use kuku::config::{
+            Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
+            ProviderFormat, SecretString, StoredCredential, ThinkLevel, TierConfig, UpdateConfig,
+        };
+
+        Config {
+            tiers: BTreeMap::from([(
+                "balanced".to_owned(),
+                TierConfig {
+                    provider: "anthropic".to_owned(),
+                    model: "test-model".to_owned(),
+                    think: ThinkLevel::Off,
+                    context_window: 4096,
+                    max_output_tokens: 1024,
+                    purpose: "balanced".to_owned(),
+                },
+            )]),
+            providers: BTreeMap::from([(
+                "anthropic".to_owned(),
+                ProviderConfig {
+                    format: ProviderFormat::Anthropic,
+                    base_url: "http://127.0.0.1:9".to_owned(),
+                    credential: StoredCredential::DirectValue(SecretString::new("test-key")),
+                },
+            )]),
+            default_tier: "balanced".to_owned(),
+            discovery: DiscoveryConfig::default(),
+            handoff: HandoffConfig::default(),
+            logs: LogsConfig::default(),
+            plugin: PluginConfig::default(),
+            update: UpdateConfig::default(),
+        }
+    }
+
+    fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> kuku::event::EventStore {
+        let mut store = kuku::event::EventStore::open(path).unwrap();
+        let receipt = CommandReceipt::new(
+            "create",
+            "digest",
+            CommandResult::TaskCreated {
+                task_id: scope.task_id.clone(),
+            },
+        )
+        .unwrap();
+        let run = RunFact {
+            run_id: scope.run_id.clone(),
+            task_id: scope.task_id.clone(),
+            state: RunState::Queued,
+            started_at: "2026-07-20T00:00:00Z".to_owned(),
+            finished_at: None,
+            summary: None,
+            warnings: Vec::new(),
+            checks: None,
+            metrics: None,
+            workspace_changes: None,
+        };
+        let transaction = TaskTransaction::try_new(
+            TaskRevision::try_new(0).unwrap(),
+            receipt,
+            vec![
+                TaskEvent::TaskCreated {
+                    task_id: scope.task_id.clone(),
+                    workspace_id: scope.workspace_id.clone(),
+                    title: "Task".to_owned(),
+                    created_at: "2026-07-20T00:00:00Z".to_owned(),
+                },
+                TaskEvent::RunQueued { run },
+            ],
+        )
+        .unwrap();
+        store
+            .append_synced(EventPayload::TaskLedger(TaskLedgerRecord::Control(
+                transaction,
+            )))
+            .unwrap();
+        store
+    }
+
+    async fn factory_fixture(
+        tier_id: &str,
+    ) -> (
+        KukuDriverFactory,
+        DriverStart,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let home = tempdir().unwrap();
+        let allowed = tempdir().unwrap();
+        std::fs::create_dir(allowed.path().join("project")).unwrap();
+        let roots = crate::platform::RegistrationRootRegistry::from_server_config(
+            home.path(),
+            vec![crate::platform::RegistrationRootSpec {
+                label: "Projects".to_owned(),
+                path: allowed.path().to_owned(),
+            }],
+        )
+        .unwrap();
+        let registry = crate::platform::WorkspaceRegistry::open(
+            home.path(),
+            roots,
+            Arc::new(NoWorkspaceUsage),
+            crate::platform::ServerRevisionCoordinator::open(home.path()),
+        )
+        .unwrap();
+        let root_id = registry.registration_roots().list()[0].root_id.clone();
+        let workspace = registry
+            .register(crate::api::RegisterWorkspaceRequest {
+                root_id,
+                relative_path: "project".to_owned(),
+                label: "Project".to_owned(),
+                expected_revision: registry.revision().await.unwrap(),
+            })
+            .await
+            .unwrap();
+        let scope = ExecutionScope {
+            workspace_id: workspace.workspace_id.clone(),
+            task_id: TaskId::parse("tsk_0123456789abcdef01234567").unwrap(),
+            run_id: run_id(),
+            turn_id: TurnId::parse("trn_0123456789abcdef01234567").unwrap(),
+            conversation_id: ConversationId::for_task_address(
+                &TaskId::parse("tsk_0123456789abcdef01234567").unwrap(),
+                "main",
+            )
+            .unwrap(),
+            turn_index: 1,
+        };
+        let store = task_store(&home.path().join("task/events.jsonl"), &scope);
+        let start = DriverStart {
+            task_id: scope.task_id.clone(),
+            run_id: scope.run_id.clone(),
+            workspace_id: scope.workspace_id.clone(),
+            prompt: "inspect".to_owned(),
+            tier_id: tier_id.to_owned(),
+            skill_ids: Vec::new(),
+            agent_message_id: "msg_agent".to_owned(),
+            execution_scope: scope,
+            event_store: store,
+        };
+        (
+            KukuDriverFactory::new(registry, Arc::new(test_config())),
+            start,
+            home,
+            allowed,
+        )
+    }
+
+    #[tokio::test]
+    async fn real_factory_maps_default_product_tier_to_sdk_tier() {
+        let (factory, start, _home, _allowed) = factory_fixture("tier:default").await;
+        let handle = factory.start(start).await.unwrap();
+        handle.commands.send(DriverCommand::Stop).await.unwrap();
+    }
+
+    #[test]
+    fn product_tier_resolution_maps_default_and_named_catalog_ids() {
+        let config = test_config();
+        assert_eq!(
+            resolve_product_tier(&config, "tier:default").unwrap(),
+            "balanced"
+        );
+        assert_eq!(
+            resolve_product_tier(&config, "tier:balanced").unwrap(),
+            "balanced"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_factory_rejects_noncanonical_or_unknown_product_tiers() {
+        for tier_id in ["balanced", "tier:", "tier:missing"] {
+            let (factory, start, _home, _allowed) = factory_fixture(tier_id).await;
+            assert!(matches!(
+                factory.start(start).await,
+                Err(super::DomainError::InvalidRequest)
+            ));
+        }
     }
 }

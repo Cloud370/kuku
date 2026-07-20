@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 pub enum ExecutionIdError {
@@ -134,6 +135,17 @@ execution_id!(InteractionId, "int_");
 execution_id!(ConversationId, "con_");
 execution_id!(WorkspaceId, "wsp_");
 execution_id!(ReviewSubmissionId, "rsub_");
+
+impl ConversationId {
+    pub fn for_task_address(task_id: &TaskId, address: &str) -> Result<Self, ExecutionIdError> {
+        let mut digest = Sha256::new();
+        digest.update(task_id.as_str().as_bytes());
+        digest.update([0]);
+        digest.update(address.as_bytes());
+        let suffix = format!("{:x}", digest.finalize());
+        Self::parse(format!("con_{}", &suffix[..24]))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionScope {

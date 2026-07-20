@@ -187,19 +187,15 @@ fn nested_execution_scope(
     parent: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
 ) -> Result<crate::event::ExecutionScope, crate::event::ExecutionIdError> {
-    use sha2::{Digest, Sha256};
-
-    let mut digest = Sha256::new();
-    digest.update(parent.task_id.as_str().as_bytes());
-    digest.update([0]);
-    digest.update(conversation.as_str().as_bytes());
-    let suffix = format!("{:x}", digest.finalize());
     Ok(crate::event::ExecutionScope {
         workspace_id: parent.workspace_id.clone(),
         task_id: parent.task_id.clone(),
         run_id: parent.run_id.clone(),
         turn_id: crate::event::TurnId::try_new()?,
-        conversation_id: crate::event::ConversationId::parse(format!("con_{}", &suffix[..24]))?,
+        conversation_id: crate::event::ConversationId::for_task_address(
+            &parent.task_id,
+            conversation.as_str(),
+        )?,
         turn_index: parent.turn_index,
     })
 }

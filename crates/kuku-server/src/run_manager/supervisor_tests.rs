@@ -19,6 +19,7 @@ use super::driver::{
 };
 use super::store::{CreateTaskCommand, TaskCommandService};
 use super::submission::SubmitRunCommand;
+use super::supervisor::execution_scope_for_run;
 use super::{DomainError, StopRunCommand, TaskRepository, TaskRuntime};
 
 #[derive(Clone, Default)]
@@ -107,6 +108,71 @@ impl RunDriverFactory for FakeDriverFactory {
 
 fn workspace_id() -> WorkspaceId {
     WorkspaceId::parse("wsp_0123456789abcdef01234567").unwrap()
+}
+
+#[test]
+fn main_execution_scope_is_stable_and_advances_with_sdk_turn_facts() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let task_id = TaskId::parse("tsk_0123456789abcdef01234567").unwrap();
+    let workspace_id = workspace_id();
+    let first_run = RunId::parse("run_0123456789abcdef01234567").unwrap();
+    let second_run = RunId::parse("run_1123456789abcdef01234567").unwrap();
+
+    let first = execution_scope_for_run(&[], &workspace_id, &task_id, &first_run).unwrap();
+    assert_eq!(first.turn_index, 1);
+
+    let mut store = kuku::event::EventStore::open(&path).unwrap();
+    store
+        .append(kuku::event::EventPayload::ConversationOpened {
+            ts: "2026-07-20T00:00:00Z".to_owned(),
+            conversation: "main".to_owned(),
+        })
+        .unwrap();
+    store
+        .append(kuku::event::EventPayload::TurnStarted {
+            execution: first.clone(),
+            ts: "2026-07-20T00:00:01Z".to_owned(),
+            conversation: "main".to_owned(),
+            turn: 1,
+        })
+        .unwrap();
+    store
+        .append(kuku::event::EventPayload::TurnCompleted {
+            execution: first.clone(),
+            ts: "2026-07-20T00:00:02Z".to_owned(),
+            conversation: "main".to_owned(),
+            turn: 1,
+        })
+        .unwrap();
+
+    let second = execution_scope_for_run(
+        &store.read_all().unwrap(),
+        &workspace_id,
+        &task_id,
+        &second_run,
+    )
+    .unwrap();
+    assert_eq!(second.turn_index, 2);
+    assert_eq!(second.conversation_id, first.conversation_id);
+    assert_ne!(second.turn_id, first.turn_id);
+
+    store
+        .append(kuku::event::EventPayload::TurnStarted {
+            execution: second.clone(),
+            ts: "2026-07-20T00:00:03Z".to_owned(),
+            conversation: "main".to_owned(),
+            turn: 2,
+        })
+        .unwrap();
+    let resumed = execution_scope_for_run(
+        &store.read_all().unwrap(),
+        &workspace_id,
+        &task_id,
+        &second_run,
+    )
+    .unwrap();
+    assert_eq!(resumed, second);
 }
 
 fn create(key: &str) -> CreateTaskCommand {

@@ -435,15 +435,7 @@ pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) ->
 }
 
 pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
-    events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::TurnStarted { turn, .. } => Some(*turn),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-        + 1
+    crate::event::next_turn_index(events)
 }
 
 pub(super) fn platform_label() -> &'static str {
