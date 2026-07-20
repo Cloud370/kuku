@@ -368,6 +368,33 @@ fn workspace_relative_path_is_normalized_contained_and_size_bounded() {
 }
 
 #[test]
+fn workspace_relative_path_rejects_portable_windows_aliases_on_every_platform() {
+    for invalid in [
+        "report.txt:secret",
+        "nested/file:stream",
+        "CON",
+        "con.txt",
+        "nested/PrN.log",
+        "AUX",
+        "nul.json",
+        "COM1",
+        "com9.txt",
+        "LPT1",
+        "lpt9.log",
+        "file.",
+        "file ",
+        "nested./file",
+        "nested /file",
+    ] {
+        assert!(WorkspaceRelativePath::parse(invalid).is_err(), "{invalid}");
+    }
+
+    for valid in ["console.txt", "com0", "com10", "lpt0", "lpt10", "auxiliary"] {
+        assert!(WorkspaceRelativePath::parse(valid).is_ok(), "{valid}");
+    }
+}
+
+#[test]
 fn workspace_relative_path_schema_matches_parser_semantics() {
     let schema = serde_json::to_value(schemars::schema_for!(WorkspaceRelativePath)).unwrap();
     assert_eq!(schema["format"], "workspace-relative-path");
@@ -376,7 +403,7 @@ fn workspace_relative_path_schema_matches_parser_semantics() {
         MAX_WORKSPACE_RELATIVE_PATH_BYTES
     );
 
-    for valid in ["a", "a/b", ".git/config", ".../file", "路径/文件"] {
+    for valid in ["a", "a/b", ".git/config", "路径/文件"] {
         assert!(WorkspaceRelativePath::parse(valid).is_ok(), "{valid}");
         assert!(workspace_path_schema_accepts(&schema, valid), "{valid}");
     }

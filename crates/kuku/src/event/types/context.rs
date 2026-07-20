@@ -3,7 +3,6 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::path::{Component, Path};
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -44,39 +43,38 @@ impl WorkspaceRelativePath {
         if value.len() > MAX_WORKSPACE_RELATIVE_PATH_BYTES {
             return Err(WorkspaceRelativePathError::TooLong);
         }
-        if value.contains(['\\', ':']) {
+        if value.contains('\\') {
             return Err(WorkspaceRelativePathError::Invalid);
         }
-
-        let path = Path::new(value);
-        if path.is_absolute() {
+        if value.split('/').any(|segment| {
+            segment.is_empty()
+                || matches!(segment, "." | "..")
+                || segment.contains(':')
+                || segment.ends_with(['.', ' '])
+                || is_windows_device_name(segment)
+        }) {
             return Err(WorkspaceRelativePathError::Invalid);
         }
-
-        let mut normalized = String::new();
-        for component in path.components() {
-            let Component::Normal(segment) = component else {
-                return Err(WorkspaceRelativePathError::Invalid);
-            };
-            let segment = segment
-                .to_str()
-                .ok_or(WorkspaceRelativePathError::Invalid)?;
-            if !normalized.is_empty() {
-                normalized.push('/');
-            }
-            normalized.push_str(segment);
-        }
-
-        if normalized != value {
-            return Err(WorkspaceRelativePathError::Invalid);
-        }
-        Ok(Self(normalized))
+        Ok(Self(value.to_owned()))
     }
 
     /// Returns the canonical wire path.
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn is_windows_device_name(segment: &str) -> bool {
+    let stem = segment
+        .split_once('.')
+        .map_or(segment, |(stem, _)| stem)
+        .trim_end_matches(['.', ' ']);
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|number| number.len() == 1 && matches!(number.as_bytes()[0], b'1'..=b'9'))
 }
 
 impl fmt::Display for WorkspaceRelativePath {

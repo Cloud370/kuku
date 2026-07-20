@@ -7,7 +7,6 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt, ReadDir};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::{OnceCell, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
-use typed_path::{Utf8Component, Utf8UnixPath, Utf8WindowsPath};
 
 use crate::api::{
     ApiError, ApiErrorCode, ApiVersion, RegisterWorkspaceRequest, RegistrationRootId,
@@ -30,7 +29,6 @@ pub use process::{
 const ROOTS_FILE: &str = "registration-roots.json";
 const WORKSPACES_FILE: &str = "workspaces.json";
 const STORAGE_VERSION: u8 = 1;
-const MAX_WORKSPACE_RELATIVE_PATH_BYTES: usize = 4096;
 
 /// Describes one operator-controlled registration root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,23 +299,10 @@ pub struct NormalizedRelativePath(PathBuf);
 impl NormalizedRelativePath {
     /// Parses a canonical nonempty POSIX relative path.
     pub fn parse(value: &str) -> Result<Self, ApiError> {
-        let unix = Utf8UnixPath::new(value);
-        let windows = Utf8WindowsPath::new(value);
-        if value.is_empty()
-            || value.len() > MAX_WORKSPACE_RELATIVE_PATH_BYTES
-            || value.contains('\\')
-            || unix.is_absolute()
-            || unix.normalize().as_str() != value
-            || windows.is_absolute()
-            || windows.components().has_prefix()
-            || !unix.components().all(|component| component.is_normal())
-            || !windows.components().all(|component| component.is_normal())
-        {
-            return Err(invalid_request(
-                "workspace path must be a normalized relative POSIX path",
-            ));
-        }
-        Ok(Self(PathBuf::from(value)))
+        let path = kuku::event::WorkspaceRelativePath::parse(value).map_err(|_| {
+            invalid_request("workspace path must be a normalized relative POSIX path")
+        })?;
+        Ok(Self(PathBuf::from(path.as_str())))
     }
 
     /// Returns the normalized path for capability-relative operations.

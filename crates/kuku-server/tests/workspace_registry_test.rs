@@ -282,6 +282,76 @@ async fn query_capability_never_uses_a_replacement_workspace_root() {
 }
 
 #[tokio::test]
+async fn query_capability_prunes_large_generated_directories_before_budgeting_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let root = allowed.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("visible.txt"), "visible").unwrap();
+    for excluded in [".git", "target", "node_modules"] {
+        let directory = root.join(excluded);
+        std::fs::create_dir(&directory).unwrap();
+        for index in 0..64 {
+            std::fs::write(directory.join(format!("generated-{index}.txt")), "hidden").unwrap();
+        }
+    }
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    let entries = capability.list_entries(".", 4).unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "visible.txt");
+    assert!(!entries.iter().any(|entry| {
+        entry.path.starts_with(".git/")
+            || entry.path.starts_with("target/")
+            || entry.path.starts_with("node_modules/")
+    }));
+}
+
+#[tokio::test]
+async fn query_capability_uses_the_sdk_portable_relative_path_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    std::fs::create_dir(allowed.path().join("project")).unwrap();
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    for invalid in [
+        "file:stream",
+        "CON",
+        "con.txt",
+        "nested/COM9.log",
+        "nested/Lpt1",
+        "file.",
+        "nested /file",
+    ] {
+        assert!(
+            kuku::event::WorkspaceRelativePath::parse(invalid).is_err(),
+            "SDK accepted {invalid}"
+        );
+        assert!(
+            capability.resolve(invalid).is_err(),
+            "server accepted {invalid}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn registry_rejects_lexical_escape_duplicates_and_symlinks() {
     let home = tempfile::tempdir().unwrap();
     let allowed = tempfile::tempdir().unwrap();
