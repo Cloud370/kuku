@@ -52,6 +52,26 @@ pub(crate) fn remember_memory_with_home(
         Ok(path) => path,
         Err(result) => return result,
     };
+    remember_memory_at_path(request, memory_path)
+}
+
+pub(crate) fn remember_memory_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    kuku_home: &Path,
+) -> ToolResultEnvelope {
+    let request = match remember_memory_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let memory_path = capability_memory_path(kuku_home, request.scope, capability.workspace_id());
+    remember_memory_at_path(request, memory_path)
+}
+
+fn remember_memory_at_path(
+    request: MemoryRememberRequest,
+    memory_path: PathBuf,
+) -> ToolResultEnvelope {
     let mut memory = match load_memory_file(&memory_path) {
         Ok(memory) => memory,
         Err(result) => return result,
@@ -90,6 +110,23 @@ pub(crate) fn forget_memory_with_home(
         Ok(path) => path,
         Err(result) => return result,
     };
+    forget_memory_at_path(request, memory_path)
+}
+
+pub(crate) fn forget_memory_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    kuku_home: &Path,
+) -> ToolResultEnvelope {
+    let request = match forget_memory_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let memory_path = capability_memory_path(kuku_home, request.scope, capability.workspace_id());
+    forget_memory_at_path(request, memory_path)
+}
+
+fn forget_memory_at_path(request: MemoryForgetRequest, memory_path: PathBuf) -> ToolResultEnvelope {
     let mut memory = match load_memory_file(&memory_path) {
         Ok(memory) => memory,
         Err(result) => return result,
@@ -221,6 +258,14 @@ fn resolve_memory_path(
         })?,
     };
     Ok(path)
+}
+
+fn capability_memory_path(kuku_home: &Path, scope: MemoryScope, workspace_id: &str) -> PathBuf {
+    match scope {
+        MemoryScope::Global => global_memory_path(kuku_home),
+        MemoryScope::Project => project_memory_path(kuku_home, Path::new(workspace_id))
+            .expect("workspace identities are normalized relative path components"),
+    }
 }
 
 fn load_memory_file(path: &Path) -> Result<MemoryFile, ToolResultEnvelope> {

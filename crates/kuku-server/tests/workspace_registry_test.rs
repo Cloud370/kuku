@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use kuku::{WorkspaceCommandRequest, WorkspaceQueryCapability};
 use kuku_server::api::{
     ApiError, ApiErrorCode, RegisterWorkspaceRequest, RemoveWorkspaceRequest, WorkspaceAvailability,
 };
@@ -156,6 +157,96 @@ async fn opaque_registry_persists_ids_without_exposing_host_roots() {
 }
 
 #[tokio::test]
+async fn query_capability_never_uses_a_replacement_workspace_root() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let root = allowed.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("identity.txt"), "original").unwrap();
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    let displaced = allowed.path().join("displaced");
+    std::fs::rename(&root, &displaced).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("identity.txt"), "replacement").unwrap();
+
+    assert_eq!(
+        capability.read_file("identity.txt", 1024).unwrap(),
+        b"original"
+    );
+    capability
+        .write_file("created.txt", b"capability", 1024)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(displaced.join("created.txt")).unwrap(),
+        "capability"
+    );
+    assert!(!root.join("created.txt").exists());
+    capability
+        .write_file("identity.txt", b"updated", 1024)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(displaced.join("identity.txt")).unwrap(),
+        "updated"
+    );
+    assert!(capability
+        .write_file("identity.txt", b"too large", 1)
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(displaced.join("identity.txt")).unwrap(),
+        "updated"
+    );
+    assert!(!std::fs::read_dir(&displaced)
+        .unwrap()
+        .flatten()
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".kuku-write-")));
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(displaced.join("identity.txt"), displaced.join("leaf-link"))
+            .unwrap();
+        std::os::unix::fs::symlink(&root, displaced.join("parent-link")).unwrap();
+        assert!(capability
+            .write_file("leaf-link", b"outside", 1024)
+            .is_err());
+        assert!(capability
+            .write_file("parent-link/outside.txt", b"outside", 1024)
+            .is_err());
+        assert!(!root.join("outside.txt").exists());
+    }
+    let entries = capability.list_entries(".", 100).unwrap();
+    assert!(entries.iter().any(|entry| entry.path == "identity.txt"));
+    assert!(!entries.iter().any(|entry| entry.path == "replacement"));
+
+    let command = capability
+        .run_command(
+            WorkspaceCommandRequest {
+                command: "printf replacement > command-marker.txt".to_string(),
+                timeout: std::time::Duration::from_secs(5),
+                max_output_bytes: 4096,
+            },
+            None,
+            kuku::WorkspaceCommandCancellation::default(),
+        )
+        .await;
+    if command.is_ok() {
+        assert!(displaced.join("command-marker.txt").exists());
+    }
+    assert!(!root.join("command-marker.txt").exists());
+}
+
+#[tokio::test]
 async fn registry_rejects_lexical_escape_duplicates_and_symlinks() {
     let home = tempfile::tempdir().unwrap();
     let allowed = tempfile::tempdir().unwrap();
@@ -167,6 +258,12 @@ async fn registry_rejects_lexical_escape_duplicates_and_symlinks() {
     let registry = open_registry(home.path(), allowed.path(), usage);
     let workspace = register(&registry, "project", "kuku").await;
     let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    assert!(capability.resolve(&"a".repeat(4096)).is_ok());
+    assert_eq!(
+        ApiErrorCode::InvalidRequest,
+        capability.resolve(&"a".repeat(4097)).unwrap_err().code()
+    );
 
     for invalid in [
         "",

@@ -10,11 +10,17 @@ use crate::tool::ToolResultEnvelope;
 use crate::util::path::is_blocked_relative_path;
 
 use super::common::{
-    glob_match, is_default_excluded_dir, join_bounded_strings, relative_path, resolve_path,
+    capability_relative_path, glob_match, is_default_excluded_dir, join_bounded_strings,
+    relative_path, resolve_path,
 };
 
 const SEARCH_TEXT_MAX_CHARS: usize = 80_000;
+const SEARCH_FILE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SEARCH_LINE_CHARS: usize = 500;
+const MAX_CAPABILITY_MATCHES: usize = 2_048;
+const MAX_CAPABILITY_CONTEXT_LINES: usize = 128;
+const MAX_CAPABILITY_SCAN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CAPABILITY_SCAN_FILES: usize = 4_096;
 
 struct CollectedFile {
     absolute: PathBuf,
@@ -192,6 +198,194 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     });
 
     if truncated || has_more {
+        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
+    } else {
+        ToolResultEnvelope::ok(summary, model_content, structured)
+    }
+}
+
+pub(crate) fn search_text_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+) -> ToolResultEnvelope {
+    const MAX_ENTRIES: usize = 20_000;
+    let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
+        return ToolResultEnvelope::error(
+            "failed: missing pattern",
+            "search_text requires pattern",
+        );
+    };
+    let regex = match Regex::new(pattern) {
+        Ok(regex) => regex,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                "failed: invalid regex",
+                format!("invalid regex: {error}"),
+            )
+        }
+    };
+    let requested = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let path = match capability_relative_path(requested, true) {
+        Ok(path) => path,
+        Err(result) => return result,
+    };
+    let include = args.get("include").and_then(Value::as_str);
+    let view = args.get("view").and_then(Value::as_str).unwrap_or("files");
+    if !matches!(view, "files" | "lines" | "count") {
+        return ToolResultEnvelope::error(
+            format!("failed: invalid view: {view}"),
+            "view must be one of: files, lines, count",
+        );
+    }
+    let offset = args
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(usize::MAX);
+    let requested_limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .try_into()
+        .unwrap_or(usize::MAX);
+    let limit = requested_limit.min(MAX_CAPABILITY_MATCHES);
+    let requested_context = args
+        .get("context")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(usize::MAX);
+    let context = requested_context.min(MAX_CAPABILITY_CONTEXT_LINES);
+    let parameter_truncated = limit != requested_limit || context != requested_context;
+    let mut candidate_paths = if path != "." && capability.file_exists(&path).unwrap_or(false) {
+        vec![path.clone()]
+    } else {
+        match capability.list_entries(&path, MAX_ENTRIES) {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|entry| entry.is_file)
+                .map(|entry| entry.path)
+                .collect(),
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: {error}"),
+                    format!("error reading search path: {requested}"),
+                )
+            }
+        }
+    };
+    candidate_paths.retain(|candidate| {
+        !is_blocked_relative_path(candidate)
+            && !candidate.split('/').any(is_default_excluded_dir)
+            && include.is_none_or(|pattern| glob_match(pattern, candidate))
+    });
+    candidate_paths.sort();
+    let mut matches = Vec::with_capacity(limit.min(MAX_CAPABILITY_MATCHES));
+    let mut file_lines: HashMap<String, Vec<String>> = HashMap::new();
+    let mut skipped_file_count = 0;
+    let mut searched_file_count = 0;
+    let mut total_match_count = 0usize;
+    let mut scanned_bytes = 0usize;
+    let mut scan_truncated = false;
+    for candidate in &candidate_paths {
+        if searched_file_count + skipped_file_count >= MAX_CAPABILITY_SCAN_FILES
+            || scanned_bytes >= MAX_CAPABILITY_SCAN_BYTES
+        {
+            scan_truncated = true;
+            break;
+        }
+        let remaining_bytes = MAX_CAPABILITY_SCAN_BYTES - scanned_bytes;
+        let read_limit = SEARCH_FILE_MAX_BYTES.min(remaining_bytes);
+        let bytes = match capability.read_file(candidate, read_limit) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                if read_limit < SEARCH_FILE_MAX_BYTES {
+                    scan_truncated = true;
+                    break;
+                }
+                skipped_file_count += 1;
+                continue;
+            }
+        };
+        scanned_bytes += bytes.len();
+        let Ok(content) = String::from_utf8(bytes) else {
+            skipped_file_count += 1;
+            continue;
+        };
+        searched_file_count += 1;
+        let needs_context = context > 0 && view == "lines";
+        let mut lines = needs_context.then(Vec::new);
+        let mut selected_in_file = false;
+        for (index, line) in content.lines().enumerate() {
+            if let Some(lines) = lines.as_mut() {
+                lines.push(String::from(line));
+            }
+            if regex.is_match(line) {
+                total_match_count = total_match_count.saturating_add(1);
+                if total_match_count > offset && matches.len() < limit {
+                    matches.push(SearchMatch {
+                        path: candidate.clone(),
+                        line_number: index + 1,
+                        line: trim_search_line(line),
+                    });
+                    selected_in_file = true;
+                }
+            }
+        }
+        if selected_in_file {
+            if let Some(lines) = lines {
+                file_lines.insert(candidate.clone(), lines);
+            }
+        }
+    }
+    let has_more = scan_truncated || total_match_count > offset.saturating_add(limit);
+    let sliced = matches;
+    let model_lines = if view == "lines" && context > 0 {
+        render_lines_with_context(&sliced, &file_lines, context)
+    } else {
+        render_search_lines(view, &sliced)
+    };
+    let (model_content, output_truncated) = join_bounded_strings(
+        &model_lines,
+        SEARCH_TEXT_MAX_CHARS,
+        "(Results are truncated. Use a narrower path/include pattern or view=files/count.)",
+    );
+    let truncated = output_truncated || parameter_truncated || scan_truncated;
+    let file_count = unique_match_file_count(&sliced);
+    let summary = if truncated || has_more || candidate_paths.len() >= MAX_ENTRIES {
+        format!(
+            "Showing {} of {} matches in {} files, view={view}",
+            sliced.len(),
+            total_match_count,
+            file_count
+        )
+    } else {
+        format!(
+            "{} matches in {} files, view={view}",
+            sliced.len(),
+            file_count
+        )
+    };
+    let structured = serde_json::json!({
+        "kind": "search_results",
+        "pattern": pattern,
+        "path": requested,
+        "include": include,
+        "view": view,
+        "match_count": sliced.len(),
+        "total_match_count": total_match_count,
+        "file_count": file_count,
+        "searched_file_count": searched_file_count,
+        "skipped_file_count": skipped_file_count,
+        "scanned_bytes": scanned_bytes,
+        "scan_truncated": scan_truncated,
+        "blocked_file_count": 0,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+    });
+    if truncated || has_more || candidate_paths.len() >= MAX_ENTRIES {
         ToolResultEnvelope::ok_truncated(summary, model_content, structured)
     } else {
         ToolResultEnvelope::ok(summary, model_content, structured)

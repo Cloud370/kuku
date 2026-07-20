@@ -236,6 +236,7 @@ impl Run {
                         args: hook_result.args,
                         summary: display_summary.clone(),
                         workspace: pending.workspace.clone(),
+                        workspace_capability: pending.workspace_capability.clone(),
                         kuku_home: pending.kuku_home.clone(),
                         prior_events: prior_events.clone(),
                         event_tx: self.slot_event_tx.clone(),

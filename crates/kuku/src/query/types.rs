@@ -15,6 +15,8 @@ use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
 
+use super::workspace::{TaskQueryContext, WorkspaceQueryCapability};
+
 /// Builder for configuring and executing a model query.
 #[derive(Debug, Clone)]
 pub struct Query {
@@ -48,52 +50,6 @@ pub struct Query {
     pub(crate) response_contract: Option<HostResponseContract>,
     pub(crate) agent_instructions: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
-}
-
-pub trait WorkspaceQueryCapability: std::fmt::Debug + Send + Sync {
-    fn verify_identity(&self) -> Result<()>;
-
-    #[doc(hidden)]
-    fn execution_root(&self) -> Result<PathBuf>;
-}
-
-#[derive(Clone)]
-pub struct TaskQueryContext {
-    pub(super) execution_scope: ExecutionScope,
-    pub(super) event_store: crate::event::EventStore,
-    pub(super) workspace: Arc<dyn WorkspaceQueryCapability>,
-}
-
-impl std::fmt::Debug for TaskQueryContext {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TaskQueryContext")
-            .field("execution_scope", &self.execution_scope)
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
-}
-
-impl TaskQueryContext {
-    pub fn new(
-        execution_scope: ExecutionScope,
-        event_store: crate::event::EventStore,
-        workspace: Arc<dyn WorkspaceQueryCapability>,
-    ) -> Self {
-        Self {
-            execution_scope,
-            event_store,
-            workspace,
-        }
-    }
-
-    pub(crate) fn for_nested(&self, execution_scope: ExecutionScope) -> Self {
-        Self {
-            execution_scope,
-            event_store: self.event_store.clone(),
-            workspace: self.workspace.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +233,7 @@ pub(crate) struct ExecSlot {
     pub(crate) ordered_with_simple_tools: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
+    pub(crate) command_cancellation: Option<super::WorkspaceCommandCancellation>,
     pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
@@ -348,6 +305,7 @@ pub(super) struct PendingRun {
     pub(super) events_path: PathBuf,
     pub(super) kuku_home: PathBuf,
     pub(super) workspace: PathBuf,
+    pub(super) workspace_capability: Option<Arc<dyn WorkspaceQueryCapability>>,
     pub(super) policy_path: PathBuf,
     pub(super) turn: u64,
     pub(super) request_num: u64,

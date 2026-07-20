@@ -138,6 +138,34 @@ pub(super) fn resolve_write_path(
     })
 }
 
+pub(super) fn capability_relative_path(
+    path: &str,
+    allow_root: bool,
+) -> Result<String, ToolResultEnvelope> {
+    if allow_root && path == "." {
+        return Ok(".".to_string());
+    }
+    let components: Vec<_> = path.split('/').collect();
+    if path.is_empty()
+        || path.len() > 4096
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path.ends_with('/')
+        || components
+            .iter()
+            .any(|component| component.is_empty() || *component == "." || *component == "..")
+        || components
+            .first()
+            .is_some_and(|component| component.contains(':'))
+    {
+        return Err(ToolResultEnvelope::blocked(
+            format!("blocked: path outside workspace: {path}"),
+            format!("path is outside the workspace: {path}"),
+        ));
+    }
+    Ok(path.to_string())
+}
+
 pub(crate) fn normalize_existing_components(path: PathBuf) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {

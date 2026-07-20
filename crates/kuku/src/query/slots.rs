@@ -21,6 +21,7 @@ pub(crate) fn spawn_simple_slot(
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
+    workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     kuku_home: PathBuf,
     prior_events: Vec<StoredEvent>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
@@ -45,20 +46,20 @@ pub(crate) fn spawn_simple_slot(
                 model_content: String::new(),
                 result: None,
             },
-            r = crate::tool::dispatch::dispatch(
-                &tool_name,
-                &args,
-                &workspace,
-                &kuku_home,
-                &prior_events,
-                0,
-                Some(&dispatch_tool_call_id),
-                &config,
-                &catalog,
-                &event_store,
-                &parent_request,
-                request_evidence_recorder.as_ref(),
-            ) => SlotEvent::Done {
+            r = async {
+                match workspace_capability.as_deref() {
+                    Some(capability) => crate::tool::dispatch::dispatch_with_capability(
+                        &tool_name, &args, capability, &workspace, &kuku_home, &prior_events, 0,
+                        Some(&dispatch_tool_call_id), &config, &catalog, &event_store,
+                        &parent_request, request_evidence_recorder.as_ref(),
+                    ).await,
+                    None => crate::tool::dispatch::dispatch(
+                        &tool_name, &args, &workspace, &kuku_home, &prior_events, 0,
+                        Some(&dispatch_tool_call_id), &config, &catalog, &event_store,
+                        &parent_request, request_evidence_recorder.as_ref(),
+                    ).await,
+                }
+            } => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
                 model_content: r.model_content,
@@ -75,6 +76,7 @@ pub(crate) fn spawn_simple_slot(
         ordered_with_simple_tools,
         label: summary,
         cancel,
+        command_cancellation: None,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -227,6 +229,7 @@ pub(crate) fn spawn_agent_slot(
         ordered_with_simple_tools: false,
         label: summary,
         cancel,
+        command_cancellation: None,
         nested_permissions,
     }
 }
@@ -237,10 +240,15 @@ pub(crate) fn spawn_command_slot(
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
+    workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
+    let command_cancellation = workspace_capability
+        .as_ref()
+        .map(|_| crate::query::WorkspaceCommandCancellation::default());
+    let command_cancellation_for_task = command_cancellation.clone();
     let tc_id = tool_call_id.clone();
 
     tokio::spawn(async move {
@@ -264,9 +272,27 @@ pub(crate) fn spawn_command_slot(
             }
         });
 
-        let r =
-            crate::tool::builtin::run_command(&args, &workspace, Some(tool_tx), Some(cancel_cmd))
-                .await;
+        let r = match workspace_capability {
+            Some(capability) => {
+                crate::tool::builtin::run_command_with_capability(
+                    &args,
+                    capability,
+                    Some(tool_tx),
+                    command_cancellation_for_task
+                        .expect("capability command cancellation token must exist"),
+                )
+                .await
+            }
+            None => {
+                crate::tool::builtin::run_command(
+                    &args,
+                    &workspace,
+                    Some(tool_tx),
+                    Some(cancel_cmd),
+                )
+                .await
+            }
+        };
         let _ = forward_handle.await;
         let result = SlotEvent::Done {
             status: r.status,
@@ -284,6 +310,7 @@ pub(crate) fn spawn_command_slot(
         ordered_with_simple_tools: false,
         label: summary,
         cancel,
+        command_cancellation,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -295,6 +322,7 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) args: serde_json::Value,
     pub(crate) summary: String,
     pub(crate) workspace: PathBuf,
+    pub(crate) workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     pub(crate) kuku_home: PathBuf,
     pub(crate) prior_events: Vec<StoredEvent>,
     pub(crate) event_tx: mpsc::Sender<(String, SlotEvent)>,
@@ -313,6 +341,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.args,
             args.summary,
             args.workspace,
+            args.workspace_capability,
             args.event_tx,
         );
         (slot, ToolKind::Command { pid: None })
@@ -324,6 +353,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.args,
             args.summary,
             args.workspace,
+            args.workspace_capability,
             args.kuku_home,
             args.prior_events,
             args.event_tx,

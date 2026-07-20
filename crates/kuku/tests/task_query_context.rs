@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::{future::Future, pin::Pin};
 
 use httpmock::MockServer;
 use kuku::event::{EventPayload, EventStore, ExecutionScope};
@@ -22,6 +23,10 @@ struct TestWorkspaceCapability {
 }
 
 impl WorkspaceQueryCapability for TestWorkspaceCapability {
+    fn workspace_id(&self) -> &str {
+        "wsp_111111111111111111111111"
+    }
+
     fn verify_identity(&self) -> kuku::Result<()> {
         self.valid
             .load(Ordering::SeqCst)
@@ -29,9 +34,87 @@ impl WorkspaceQueryCapability for TestWorkspaceCapability {
             .ok_or_else(|| kuku::Error::WorkspaceUnavailable("workspace identity changed".into()))
     }
 
-    fn execution_root(&self) -> kuku::Result<std::path::PathBuf> {
+    fn file_exists(&self, relative_path: &str) -> kuku::Result<bool> {
         self.verify_identity()?;
-        Ok(self.root.clone())
+        Ok(self.root.join(relative_path).is_file())
+    }
+
+    fn read_file(&self, relative_path: &str, max_bytes: usize) -> kuku::Result<Vec<u8>> {
+        self.verify_identity()?;
+        let bytes = std::fs::read(self.root.join(relative_path))?;
+        if bytes.len() > max_bytes {
+            return Err(kuku::Error::WorkspaceUnavailable(
+                "workspace file exceeds read limit".to_string(),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn write_file(
+        &self,
+        relative_path: &str,
+        contents: &[u8],
+        max_bytes: usize,
+    ) -> kuku::Result<()> {
+        self.verify_identity()?;
+        if contents.len() > max_bytes {
+            return Err(kuku::Error::WorkspaceUnavailable(
+                "workspace write exceeds limit".to_string(),
+            ));
+        }
+        Ok(std::fs::write(self.root.join(relative_path), contents)?)
+    }
+
+    fn list_entries(
+        &self,
+        relative_path: &str,
+        max_entries: usize,
+    ) -> kuku::Result<Vec<kuku::WorkspaceEntry>> {
+        self.verify_identity()?;
+        let root = if relative_path == "." {
+            self.root.clone()
+        } else {
+            self.root.join(relative_path)
+        };
+        let mut pending = vec![root];
+        let mut entries = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory)? {
+                let entry = entry?;
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(&self.root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let file_type = entry.file_type()?;
+                entries.push(kuku::WorkspaceEntry {
+                    path: relative,
+                    is_file: file_type.is_file(),
+                    is_dir: file_type.is_dir(),
+                });
+                if file_type.is_dir() {
+                    pending.push(path);
+                }
+                if entries.len() >= max_entries {
+                    return Ok(entries);
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn run_command<'a>(
+        &'a self,
+        _request: kuku::WorkspaceCommandRequest,
+        _events: Option<tokio::sync::mpsc::Sender<kuku::WorkspaceCommandEvent>>,
+        _cancellation: kuku::WorkspaceCommandCancellation,
+    ) -> Pin<Box<dyn Future<Output = kuku::Result<kuku::WorkspaceCommandOutput>> + Send + 'a>> {
+        Box::pin(async {
+            Err(kuku::Error::WorkspaceUnavailable(
+                "test capability does not run commands".to_string(),
+            ))
+        })
     }
 }
 
@@ -251,6 +334,78 @@ async fn task_query_rejects_task_workspace_or_active_run_mismatch_before_append(
         assert_eq!(error.code(), "invalid_task_context", "{mismatch}");
         assert_eq!(store.read_all().unwrap().len(), before, "{mismatch}");
     }
+}
+
+#[tokio::test]
+async fn task_query_activates_only_explicitly_selected_capability_skills() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    for name in ["focus", "ignored"] {
+        let directory = workspace.path().join(format!(".agent/skills/{name}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} skill\n---\n\n{name} instructions\n"),
+        )
+        .unwrap();
+    }
+    let scope = common::execution_scope();
+    let store = task_store(&home.path().join("events.jsonl"), &scope);
+    let context = TaskQueryContext::new(
+        scope,
+        store.clone(),
+        workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
+    )
+    .with_selected_skills(vec!["skill:project:focus".to_string()]);
+    let mut config: kuku::config::ConfigFile =
+        toml::from_str(kuku::config::generate_default()).unwrap();
+    config.discovery.as_mut().unwrap().auto_discover = false;
+
+    configured_query("hello")
+        .config(config.resolve().unwrap())
+        .kuku_home(home.path())
+        .task_context(context)
+        .start()
+        .await
+        .unwrap();
+
+    let registry = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ContextSkills { registry, .. } => Some(registry),
+            _ => None,
+        })
+        .unwrap();
+    let encoded = registry.to_string();
+    assert!(encoded.contains("focus"));
+    assert!(!encoded.contains("ignored"));
+}
+
+#[tokio::test]
+async fn unavailable_selected_skill_is_rejected_before_query_facts_append() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let scope = common::execution_scope();
+    let store = task_store(&home.path().join("events.jsonl"), &scope);
+    let before = store.read_all().unwrap().len();
+    let context = TaskQueryContext::new(
+        scope,
+        store.clone(),
+        workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
+    )
+    .with_selected_skills(vec!["skill:project:missing".to_string()]);
+
+    let error = configured_query("hello")
+        .kuku_home(home.path())
+        .task_context(context)
+        .start()
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), "invalid_task_context");
+    assert_eq!(store.read_all().unwrap().len(), before);
 }
 
 fn concluding_anthropic_response(text: &str) -> String {

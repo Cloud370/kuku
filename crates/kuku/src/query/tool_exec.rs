@@ -278,21 +278,63 @@ pub(super) async fn execute_tool_call(
 
     let prior_events = pending.event_store.read_all()?;
     let result_event_id = pending.event_store.next_id();
-    let result = crate::tool::dispatch(
-        &tool_call.name,
-        &tool_call.args,
-        &pending.workspace,
-        &pending.kuku_home,
-        &prior_events,
-        result_event_id,
-        Some(&tool_call.id),
-        &pending.config,
-        &pending.catalog,
-        &pending.event_store,
-        parent_request,
-        pending.request_evidence_recorder.as_ref(),
-    )
-    .await;
+    let denied = prior_events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            crate::event::EventPayload::PermissionDeny { tool_call_id, .. }
+                if tool_call_id == &tool_call.id
+        )
+    });
+    let result = if denied {
+        crate::tool::ToolResultEnvelope::blocked(
+            format!(
+                "blocked by permission: {} requires a permission gate",
+                tool_call.name
+            ),
+            format!(
+                "{} was not executed because the permission gate denied this tool call",
+                tool_call.name
+            ),
+        )
+    } else {
+        match pending.workspace_capability.as_deref() {
+            Some(capability) => {
+                crate::tool::dispatch::dispatch_with_capability(
+                    &tool_call.name,
+                    &tool_call.args,
+                    capability,
+                    &pending.workspace,
+                    &pending.kuku_home,
+                    &prior_events,
+                    result_event_id,
+                    Some(&tool_call.id),
+                    &pending.config,
+                    &pending.catalog,
+                    &pending.event_store,
+                    parent_request,
+                    pending.request_evidence_recorder.as_ref(),
+                )
+                .await
+            }
+            None => {
+                crate::tool::dispatch::dispatch(
+                    &tool_call.name,
+                    &tool_call.args,
+                    &pending.workspace,
+                    &pending.kuku_home,
+                    &prior_events,
+                    result_event_id,
+                    Some(&tool_call.id),
+                    &pending.config,
+                    &pending.catalog,
+                    &pending.event_store,
+                    parent_request,
+                    pending.request_evidence_recorder.as_ref(),
+                )
+                .await
+            }
+        }
+    };
     let stored = pending.event_store.append(EventPayload::ToolResult {
         execution: pending.execution_scope().clone(),
         turn: pending.turn,
@@ -629,6 +671,7 @@ mod tests {
             ordered_with_simple_tools: false,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
+            command_cancellation: None,
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
 

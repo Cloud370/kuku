@@ -289,6 +289,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             ordered_with_simple_tools: false,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+            command_cancellation: None,
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

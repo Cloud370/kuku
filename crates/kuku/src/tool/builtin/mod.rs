@@ -1,3 +1,4 @@
+mod capability_command;
 pub(crate) mod common;
 mod edit_file;
 mod fetch_url;
@@ -13,16 +14,18 @@ mod write_file;
 #[cfg(test)]
 mod test_helpers;
 
-pub(crate) use edit_file::edit_file;
+pub(crate) use capability_command::run_command_with_capability;
+pub(crate) use edit_file::{edit_file, edit_file_with_capability};
 pub(crate) use fetch_url::fetch_url;
 pub(crate) use fetch_web::fetch_web;
-pub(crate) use find_files::find_files;
+pub(crate) use find_files::{find_files, find_files_with_capability};
+pub(crate) use memory::{forget_memory_with_capability, remember_memory_with_capability};
 pub(crate) use memory::{forget_memory_with_home, remember_memory_with_home};
 pub(crate) use query_session::query_session_with_store;
-pub(crate) use read_file::read_file;
+pub(crate) use read_file::{read_file, read_file_with_capability};
 pub(crate) use run_command::{run_command, CommandEvent};
-pub(crate) use search_text::search_text;
-pub(crate) use write_file::write_file;
+pub(crate) use search_text::{search_text, search_text_with_capability};
+pub(crate) use write_file::{write_file, write_file_with_capability};
 
 pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {

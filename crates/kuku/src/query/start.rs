@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -11,8 +12,8 @@ use crate::session::{
     validate_session_id,
 };
 use crate::skill::session::{
-    build_registry_snapshot, previous_snapshot_before_turn, restore_turn_snapshot,
-    TurnSkillSnapshot,
+    build_registry_snapshot, build_registry_snapshot_with_capability,
+    previous_snapshot_before_turn, restore_turn_snapshot, TurnSkillSnapshot,
 };
 
 use super::helpers::{
@@ -92,8 +93,14 @@ impl Query {
 
         let workspace = match task_context.as_ref() {
             Some(context) => {
+                if context.workspace.workspace_id() != context.execution_scope.workspace_id.as_str()
+                {
+                    return Err(Error::InvalidTaskContext(
+                        "workspace capability does not match execution scope".to_string(),
+                    ));
+                }
                 context.workspace.verify_identity()?;
-                context.workspace.execution_root()?
+                PathBuf::from(context.execution_scope.workspace_id.as_str())
             }
             None => match self.workspace_path.take() {
                 Some(path) => path,
@@ -184,6 +191,23 @@ impl Query {
             },
         };
         self.execution_scope = Some(execution_scope.clone());
+        let restored_skill_snapshot =
+            restore_turn_snapshot(&existing_events, conversation.as_str(), turn);
+        let capability_skill_registry = if self.disable_skills || restored_skill_snapshot.is_some()
+        {
+            None
+        } else {
+            task_context
+                .as_ref()
+                .map(|context| {
+                    build_registry_snapshot_with_capability(
+                        context.workspace.as_ref(),
+                        &config.discovery,
+                        &context.selected_skills,
+                    )
+                })
+                .transpose()?
+        };
         let mut store = match task_context.as_ref() {
             Some(context) => context.event_store.clone(),
             None => EventStore::open(&events_path)?,
@@ -223,7 +247,9 @@ impl Query {
         let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
-        let plugin_registry_opt = if config.plugin.enabled {
+        let plugin_registry_opt = if task_context.is_some() {
+            None
+        } else if config.plugin.enabled {
             Some(
                 crate::plugin::PluginRegistry::builder()
                     .load_packages(&kuku_home, &workspace)?
@@ -271,9 +297,7 @@ impl Query {
             previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
         let (skill_registry, previous_skill_registry) = if self.disable_skills {
             (None, None)
-        } else if let Some(snapshot) =
-            restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
-        {
+        } else if let Some(snapshot) = restored_skill_snapshot {
             bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
             (
                 Some(snapshot.registry),
@@ -282,11 +306,15 @@ impl Query {
                     .map(|snapshot| snapshot.registry.clone()),
             )
         } else {
-            match build_registry_snapshot(
-                &workspace,
-                &config.discovery,
-                plugin_registry_opt.as_ref(),
-            ) {
+            let discovered = match capability_skill_registry {
+                Some(registry) => Ok(registry),
+                None => build_registry_snapshot(
+                    &workspace,
+                    &config.discovery,
+                    plugin_registry_opt.as_ref(),
+                ),
+            };
+            match discovered {
                 Ok(registry) => {
                     let (registry, bootstrap_loaded) =
                         if let Some(snapshot) = previous_skill_snapshot.as_ref() {
@@ -388,6 +416,9 @@ impl Query {
             events_path: events_path.clone(),
             kuku_home,
             workspace,
+            workspace_capability: task_context
+                .as_ref()
+                .map(|context| context.workspace.clone()),
             policy_path,
             turn,
             request_num: resumed_request_num(&existing_events, turn),

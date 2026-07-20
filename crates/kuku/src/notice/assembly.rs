@@ -187,6 +187,9 @@ fn build_context_drift_notice(
         .chain(asset_sources.iter())
     {
         let path = PathBuf::from(&source.path);
+        if !path.is_absolute() {
+            continue;
+        }
         let label = path
             .strip_prefix(workspace)
             .unwrap_or(&path)

@@ -77,6 +77,9 @@ impl Run {
     pub fn cancel(&mut self) {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
+            if let Some(cancellation) = &slot.command_cancellation {
+                cancellation.cancel();
+            }
         }
         let (event_store, turn) = match std::mem::replace(&mut self.state, RunState::Done(None)) {
             RunState::Pending(mut pending) => {

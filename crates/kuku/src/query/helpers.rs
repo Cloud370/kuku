@@ -452,13 +452,21 @@ pub(super) fn now_timestamp() -> Result<String> {
 
 pub(super) fn load_project_instruction_sources(
     workspace: &std::path::Path,
+    capability: Option<&dyn crate::query::WorkspaceQueryCapability>,
 ) -> Result<Vec<InstructionSource>> {
     let mut sources = Vec::new();
     for (name, kind) in [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")] {
         let path = workspace.join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        let content = match capability {
+            Some(capability) => capability
+                .read_file(name, 1024 * 1024)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+            None => std::fs::read_to_string(&path).ok(),
+        };
+        if let Some(content) = content {
             sources.push(InstructionSource {
-                path: path.display().to_string(),
+                path: capability.map_or_else(|| path.display().to_string(), |_| name.to_string()),
                 kind: kind.to_string(),
                 hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
                 content,
@@ -471,6 +479,7 @@ pub(super) fn load_project_instruction_sources(
 pub(super) fn load_memory_sources(
     kuku_home: &std::path::Path,
     workspace: &std::path::Path,
+    capability: Option<&dyn crate::query::WorkspaceQueryCapability>,
 ) -> Result<(Option<MemorySource>, Option<MemorySource>)> {
     let global_memory = std::fs::read_to_string(global_memory_path(kuku_home))
         .ok()
@@ -480,7 +489,12 @@ pub(super) fn load_memory_sources(
             content,
         });
 
-    let project_path = project_memory_path(kuku_home, workspace)?;
+    let project_path = project_memory_path(
+        kuku_home,
+        capability
+            .map(|capability| std::path::Path::new(capability.workspace_id()))
+            .unwrap_or(workspace),
+    )?;
     let project_memory = std::fs::read_to_string(&project_path)
         .ok()
         .map(|content| MemorySource {

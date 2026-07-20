@@ -5,10 +5,14 @@ use serde_json::Value;
 
 use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
+use crate::util::path::is_blocked_relative_path;
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, require_brief, resolve_write_path, write_atomically,
+    capability_relative_path, content_hash, find_write_snapshot, plural, require_brief,
+    resolve_write_path, write_atomically,
 };
+
+const WRITE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 struct WriteRequest {
     path: String,
@@ -75,6 +79,12 @@ pub(crate) fn write_file(
     }
 
     let raw_text_after = request.content;
+    if raw_text_after.len() > WRITE_FILE_MAX_BYTES {
+        return ToolResultEnvelope::error(
+            "failed: file content exceeds write limit",
+            "write_file content exceeds the 16 MiB limit",
+        );
+    }
     let line_count = raw_text_after.lines().count();
     let bytes_written = raw_text_after.len();
     let content_hash_after = content_hash(raw_text_after.as_bytes());
@@ -102,6 +112,95 @@ pub(crate) fn write_file(
             "kind": "file_write",
             "path": resolved.relative,
             "canonical_path": canonical_path,
+            "line_count": line_count,
+            "bytes_written": bytes_written,
+            "content_hash": content_hash_after,
+            "content_hash_after": content_hash_after,
+            "raw_text_after": raw_text_after,
+            "created": created,
+        }),
+    )
+}
+
+pub(crate) fn write_file_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    prior_events: &[StoredEvent],
+) -> ToolResultEnvelope {
+    let request = match write_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let path = match capability_relative_path(&request.path, false) {
+        Ok(path) => path,
+        Err(result) => return result,
+    };
+    if is_blocked_relative_path(&path) {
+        return ToolResultEnvelope::blocked(
+            format!("blocked: path is not writable: {path}"),
+            format!("path is blocked by write guard: {path}"),
+        );
+    }
+    let identity_path = std::path::PathBuf::from("workspace").join(&path);
+    let created = match capability.file_exists(&path) {
+        Ok(exists) => !exists,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: {error}"),
+                format!("error checking file: {path}"),
+            )
+        }
+    };
+    if !created {
+        let bytes = match capability.read_file(&path, WRITE_FILE_MAX_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: {error}"),
+                    format!("error reading file: {path}"),
+                )
+            }
+        };
+        let current_hash = content_hash(&bytes);
+        let Some(snapshot) = find_write_snapshot(prior_events, &identity_path, true, None) else {
+            return ToolResultEnvelope::error(
+                format!("failed: fully read {path} before overwriting"),
+                format!(
+                    "write_file requires a prior full read_file snapshot before overwriting {}",
+                    path
+                ),
+            );
+        };
+        if snapshot.content_hash != current_hash {
+            return ToolResultEnvelope::error(
+                format!("failed: {path} changed since event {}", snapshot.event_id),
+                format!(
+                    "file changed since it was read; read {} again before overwriting",
+                    path
+                ),
+            );
+        }
+    }
+    let raw_text_after = request.content;
+    let line_count = raw_text_after.lines().count();
+    let bytes_written = raw_text_after.len();
+    let content_hash_after = content_hash(raw_text_after.as_bytes());
+    if let Err(error) =
+        capability.write_file(&path, raw_text_after.as_bytes(), WRITE_FILE_MAX_BYTES)
+    {
+        return ToolResultEnvelope::error(
+            format!("failed: {error}"),
+            format!("error writing file: {path}"),
+        );
+    }
+    let summary = format!("wrote {}, {line_count} line{}", path, plural(line_count));
+    ToolResultEnvelope::ok(
+        summary.clone(),
+        summary,
+        serde_json::json!({
+            "kind": "file_write",
+            "path": path,
+            "canonical_path": identity_path.to_string_lossy(),
             "line_count": line_count,
             "bytes_written": bytes_written,
             "content_hash": content_hash_after,

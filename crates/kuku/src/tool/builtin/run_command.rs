@@ -26,9 +26,9 @@ pub(crate) enum CommandEvent {
     Stderr(String),
 }
 
-struct CommandRequest {
-    command: String,
-    timeout_seconds: u64,
+pub(super) struct CommandRequest {
+    pub(super) command: String,
+    pub(super) timeout_seconds: u64,
     _brief: String,
 }
 
@@ -155,7 +155,7 @@ pub(crate) async fn run_command(
     render_command_result(&request.command, status, stdout, stderr, duration_ms)
 }
 
-fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelope> {
+pub(super) fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelope> {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return Err(ToolResultEnvelope::error(
             "failed: missing command",
@@ -196,7 +196,7 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
     })
 }
 
-fn blocked_command_reason(command: &str) -> Option<&'static str> {
+pub(super) fn blocked_command_reason(command: &str) -> Option<&'static str> {
     let normalized = command
         .to_ascii_lowercase()
         .replace("&&", "\x00")
@@ -358,11 +358,20 @@ fn render_command_result(
     stderr: Vec<u8>,
     duration_ms: u64,
 ) -> ToolResultEnvelope {
+    render_command_parts(command, status.code(), stdout, stderr, duration_ms)
+}
+
+pub(super) fn render_command_parts(
+    command: &str,
+    exit_code: Option<i32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    duration_ms: u64,
+) -> ToolResultEnvelope {
     let stdout = String::from_utf8_lossy(&stdout).into_owned();
     let stderr = String::from_utf8_lossy(&stderr).into_owned();
     let stdout_lines = line_count(&stdout);
     let stderr_lines = line_count(&stderr);
-    let exit_code = status.code();
     let rendered = render_command_output(&stdout, &stderr);
     let (model_content, truncated) = truncate_text(
         rendered,
@@ -399,7 +408,7 @@ fn render_command_result(
     }
 }
 
-fn render_command_timeout_result(
+pub(super) fn render_command_timeout_result(
     command: &str,
     timeout_seconds: u64,
     duration_ms: u64,
@@ -447,7 +456,7 @@ fn render_command_timeout_result(
     }
 }
 
-fn render_command_cancelled_result(
+pub(super) fn render_command_cancelled_result(
     command: &str,
     duration_ms: u64,
     stdout: &[u8],

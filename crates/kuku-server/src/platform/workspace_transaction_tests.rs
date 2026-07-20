@@ -138,6 +138,7 @@ async fn task_query_rejects_a_replaced_registered_workspace_root() {
             "hello",
             scope,
             kuku::event::EventStore::open(home.path().join("events.jsonl")).unwrap(),
+            Vec::new(),
         )
         .unwrap_err();
 

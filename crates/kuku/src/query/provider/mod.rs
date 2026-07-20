@@ -42,9 +42,15 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let existing_events = pending.event_store.read_all()?;
     let (handoff_summary, history) =
         rebuild_history_for_provider(&existing_events, &pending.conversation);
-    let project_instructions = load_project_instruction_sources(&pending.workspace)?;
-    let (global_memory, project_memory) =
-        load_memory_sources(&pending.kuku_home, &pending.workspace)?;
+    let project_instructions = load_project_instruction_sources(
+        &pending.workspace,
+        pending.workspace_capability.as_deref(),
+    )?;
+    let (global_memory, project_memory) = load_memory_sources(
+        &pending.kuku_home,
+        &pending.workspace,
+        pending.workspace_capability.as_deref(),
+    )?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
     let model_tiers = pending.config.tier_infos();

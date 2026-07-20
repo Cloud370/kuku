@@ -19,6 +19,8 @@ use super::{accepted_digest, write_private_atomic, RevisionDomain, ServerRevisio
 
 #[path = "workspace_process.rs"]
 mod process;
+#[path = "workspace_query.rs"]
+mod query_access;
 use process::{FileIdentity, IdentityBoundProcessRoot};
 pub use process::{
     ProcessCancellation, ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput,
@@ -28,6 +30,7 @@ pub use process::{
 const ROOTS_FILE: &str = "registration-roots.json";
 const WORKSPACES_FILE: &str = "workspaces.json";
 const STORAGE_VERSION: u8 = 1;
+const MAX_WORKSPACE_RELATIVE_PATH_BYTES: usize = 4096;
 
 /// Describes one operator-controlled registration root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +175,6 @@ pub struct WorkspaceCapability {
     workspace_id: WorkspaceId,
     root: Arc<Dir>,
     process_root: IdentityBoundProcessRoot,
-    process_path: Arc<PathBuf>,
 }
 
 impl std::fmt::Debug for WorkspaceCapability {
@@ -187,27 +189,6 @@ impl std::fmt::Debug for WorkspaceCapability {
 impl WorkspaceCapability {
     pub fn workspace_id(&self) -> &WorkspaceId {
         &self.workspace_id
-    }
-
-    pub fn query(
-        &self,
-        prompt: impl Into<String>,
-        execution_scope: kuku::ExecutionScope,
-        event_store: kuku::event::EventStore,
-    ) -> Result<kuku::Query, ApiError> {
-        if execution_scope.workspace_id != self.workspace_id {
-            return Err(invalid_request(
-                "execution scope does not belong to this workspace capability",
-            ));
-        }
-        self.process_root.verify_execution_path()?;
-        Ok(
-            kuku::query(prompt).task_context(kuku::TaskQueryContext::new(
-                execution_scope,
-                event_store,
-                Arc::new(self.clone()),
-            )),
-        )
     }
 
     /// Validates a portable workspace-relative POSIX path.
@@ -313,19 +294,6 @@ impl WorkspaceCapability {
     }
 }
 
-impl kuku::WorkspaceQueryCapability for WorkspaceCapability {
-    fn verify_identity(&self) -> kuku::Result<()> {
-        self.process_root.verify_execution_path().map_err(|_| {
-            kuku::Error::WorkspaceUnavailable("workspace identity changed".to_string())
-        })
-    }
-
-    fn execution_root(&self) -> kuku::Result<PathBuf> {
-        self.verify_identity()?;
-        Ok(self.process_path.as_ref().clone())
-    }
-}
-
 /// A validated path relative to a workspace capability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedRelativePath(PathBuf);
@@ -336,6 +304,7 @@ impl NormalizedRelativePath {
         let unix = Utf8UnixPath::new(value);
         let windows = Utf8WindowsPath::new(value);
         if value.is_empty()
+            || value.len() > MAX_WORKSPACE_RELATIVE_PATH_BYTES
             || value.contains('\\')
             || unix.is_absolute()
             || unix.normalize().as_str() != value
@@ -723,7 +692,6 @@ impl WorkspaceRegistry {
                 ),
                 process_path.clone(),
             )?,
-            process_path: Arc::new(process_path),
             root: Arc::new(opened),
         })
     }

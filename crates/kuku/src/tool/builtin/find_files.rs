@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{glob_match, is_default_excluded_dir, join_bounded_strings, relative_path};
+use super::common::{
+    capability_relative_path, glob_match, is_default_excluded_dir, join_bounded_strings,
+    relative_path,
+};
 
 const FIND_FILES_MAX_CHARS: usize = 8_000;
 
@@ -85,6 +88,85 @@ pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
     });
 
     if truncated {
+        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
+    } else {
+        ToolResultEnvelope::ok(summary, model_content, structured)
+    }
+}
+
+pub(crate) fn find_files_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+) -> ToolResultEnvelope {
+    const MAX_ENTRIES: usize = 20_000;
+    let requested = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let path = match capability_relative_path(requested, true) {
+        Ok(path) => path,
+        Err(result) => return result,
+    };
+    let pattern = args.get("pattern").and_then(Value::as_str);
+    let max_depth = args
+        .get("max_depth")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(usize::MAX);
+    let entries = match capability.list_entries(&path, MAX_ENTRIES) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: {error}"),
+                format!("error reading directory: {requested}"),
+            )
+        }
+    };
+    let prefix_depth = if path == "." {
+        0
+    } else {
+        path.matches('/').count() + 1
+    };
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let depth = entry.path.matches('/').count() + usize::from(entry.is_file);
+        if depth.saturating_sub(prefix_depth) > max_depth.saturating_add(usize::from(entry.is_file))
+        {
+            continue;
+        }
+        if entry.path.split('/').any(is_default_excluded_dir) {
+            continue;
+        }
+        if entry.is_file && pattern.is_none_or(|value| glob_match(value, &entry.path)) {
+            files.push(entry.path);
+        } else if entry.is_dir && pattern.is_none() {
+            dirs.push(format!("{}/", entry.path));
+        }
+    }
+    files.sort();
+    dirs.sort();
+    dirs.sort_by_key(|value| value.matches('/').count());
+    files.sort_by_key(|value| value.matches('/').count());
+    dirs.append(&mut files);
+    let entry_count = dirs.len();
+    let (mut model_content, truncated) = join_bounded_strings(
+        &dirs,
+        FIND_FILES_MAX_CHARS,
+        "(Showing shallowest entries first. Use pattern or max_depth to focus.)",
+    );
+    if dirs.is_empty() {
+        model_content.clear();
+    }
+    let summary = if truncated || entry_count >= MAX_ENTRIES {
+        format!("found {entry_count} entries under {requested}, results truncated")
+    } else {
+        format!("found {entry_count} entries under {requested}")
+    };
+    let structured = serde_json::json!({
+        "kind": "file_list",
+        "path": requested,
+        "pattern": pattern,
+        "entry_count": entry_count,
+    });
+    if truncated || entry_count >= MAX_ENTRIES {
         ToolResultEnvelope::ok_truncated(summary, model_content, structured)
     } else {
         ToolResultEnvelope::ok(summary, model_content, structured)

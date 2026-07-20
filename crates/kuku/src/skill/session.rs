@@ -49,6 +49,74 @@ pub(crate) fn build_registry_snapshot(
     Ok(builder.build())
 }
 
+pub(crate) fn build_registry_snapshot_with_capability(
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    _discovery_config: &DiscoveryConfig,
+    selected_skills: &[String],
+) -> crate::error::Result<SkillRegistry> {
+    const MAX_DISCOVERY_ENTRIES: usize = 20_000;
+    let mut builder = SkillRegistry::builder();
+    if selected_skills.is_empty() {
+        return Ok(builder.build());
+    }
+    let selected_names = selected_skills
+        .iter()
+        .map(|id| {
+            let mut components = id.split(':');
+            match (
+                components.next(),
+                components.next(),
+                components.next(),
+                components.next(),
+            ) {
+                (Some("skill"), Some("project"), Some(name), None) if !name.is_empty() => Ok(name),
+                _ => Err(crate::error::Error::InvalidTaskContext(format!(
+                    "selected skill ID is invalid or unsupported: {id}"
+                ))),
+            }
+        })
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    for entry in capability.list_entries(".", MAX_DISCOVERY_ENTRIES)? {
+        let components: Vec<_> = entry.path.split('/').collect();
+        if !entry.is_file
+            || components.len() != 4
+            || !components[0].starts_with('.')
+            || components[1] != "skills"
+            || components[3] != "SKILL.md"
+            || !selected_names.iter().any(|name| *name == components[2])
+        {
+            continue;
+        }
+        let bytes = capability.read_file(&entry.path, 1024 * 1024)?;
+        let content = String::from_utf8(bytes).map_err(|_| {
+            crate::error::Error::InvalidArgument(format!(
+                "skill is not valid UTF-8: {}",
+                entry.path
+            ))
+        })?;
+        let skill_dir = Path::new(components[0])
+            .join(components[1])
+            .join(components[2]);
+        if let Ok(definition) = super::loader::parse_skill(
+            &content,
+            &skill_dir,
+            &crate::skill::definition::SkillSource::Project,
+        ) {
+            builder = builder.with_definition(definition);
+        }
+    }
+    let registry = builder.build();
+    if let Some(missing) = selected_names
+        .iter()
+        .find(|name| registry.get(name).is_none())
+    {
+        return Err(crate::error::Error::InvalidTaskContext(format!(
+            "selected skill is unavailable: skill:project:{missing}"
+        )));
+    }
+    Ok(registry)
+}
+
 pub(crate) fn restore_turn_snapshot(
     events: &[StoredEvent],
     conversation: &str,

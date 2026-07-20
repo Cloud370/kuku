@@ -70,6 +70,66 @@ pub(crate) async fn dispatch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dispatch_with_capability(
+    name: &str,
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    workspace_label: &Path,
+    kuku_home: &Path,
+    prior_events: &[StoredEvent],
+    result_event_id: u64,
+    tool_call_id: Option<&str>,
+    config: &crate::config::Config,
+    catalog: &crate::prompt::PromptCatalog,
+    event_store: &crate::event::EventStore,
+    parent_request: &crate::event::RequestScope,
+    request_evidence_recorder: &dyn crate::query::provider::RequestEvidenceRecorder,
+) -> ToolResultEnvelope {
+    if matches!(
+        name,
+        "edit_file" | "write_file" | "remember_memory" | "forget_memory"
+    ) && has_denied_permission(prior_events, tool_call_id)
+    {
+        return ToolResultEnvelope::blocked(
+            format!("blocked by permission: {name} requires a permission gate"),
+            format!("{name} was not executed because the permission gate denied this tool call"),
+        );
+    }
+    match name {
+        "agent" => ToolResultEnvelope::error(
+            "agent tool must be executed via agent runtime".to_string(),
+            "the agent tool can only be invoked through the normal agent loop".to_string(),
+        ),
+        "read_file" => {
+            builtin::read_file_with_capability(args, capability, prior_events, result_event_id)
+        }
+        "write_file" => builtin::write_file_with_capability(args, capability, prior_events),
+        "edit_file" => builtin::edit_file_with_capability(args, capability, prior_events),
+        "find_files" => builtin::find_files_with_capability(args, capability),
+        "search_text" => builtin::search_text_with_capability(args, capability),
+        "remember_memory" => builtin::remember_memory_with_capability(args, capability, kuku_home),
+        "forget_memory" => builtin::forget_memory_with_capability(args, capability, kuku_home),
+        "fetch_url" => builtin::fetch_url(args, workspace_label).await,
+        "fetch_web" => {
+            builtin::fetch_web(
+                args,
+                workspace_label,
+                config,
+                catalog,
+                parent_request,
+                request_evidence_recorder,
+            )
+            .await
+        }
+        "query_session" => builtin::query_session_with_store(args, event_store),
+        _ => ToolResultEnvelope::error(
+            format!("failed: unknown tool: {name}"),
+            format!("unknown tool: {name}"),
+        ),
+    }
+}
+
 fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {
     let Some(tool_call_id) = tool_call_id else {
         return false;

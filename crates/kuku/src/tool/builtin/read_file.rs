@@ -6,11 +6,12 @@ use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, find_covering_read, join_bounded_strings, optional_positive_usize,
-    read_file_as_utf8, requested_line_count, resolve_path,
+    capability_relative_path, content_hash, find_covering_read, join_bounded_strings,
+    optional_positive_usize, read_file_as_utf8, requested_line_count, resolve_path,
 };
 
 const READ_FILE_MAX_CHARS: usize = 80_000;
+const READ_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 struct ReadRequest {
     path: String,
@@ -112,6 +113,112 @@ pub(crate) fn read_file(
         "cached": false,
     });
 
+    if truncated {
+        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
+    } else {
+        ToolResultEnvelope::ok(summary, model_content, structured)
+    }
+}
+
+pub(crate) fn read_file_with_capability(
+    args: &Value,
+    capability: &dyn crate::query::WorkspaceQueryCapability,
+    prior_events: &[StoredEvent],
+    read_event_id: u64,
+) -> ToolResultEnvelope {
+    let request = match read_request(args) {
+        Ok(request) => request,
+        Err(result) => return result,
+    };
+    let path = match capability_relative_path(&request.path, false) {
+        Ok(path) => path,
+        Err(result) => return result,
+    };
+    if crate::util::path::is_blocked_relative_path(&path) {
+        return ToolResultEnvelope::blocked(
+            format!("blocked: path is not readable: {path}"),
+            format!("path is blocked by read guard: {path}"),
+        );
+    }
+    let bytes = match capability.read_file(&path, READ_FILE_MAX_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: {error}"),
+                format!("error reading file: {path}"),
+            )
+        }
+    };
+    let content = match String::from_utf8(bytes.clone()) {
+        Ok(content) => content,
+        Err(_) => {
+            return ToolResultEnvelope::error(
+                format!("failed: file is not valid UTF-8: {}", request.path),
+                format!("file is not valid UTF-8: {}", request.path),
+            )
+        }
+    };
+    let hash = content_hash(&bytes);
+    let identity_path = std::path::PathBuf::from("workspace").join(&path);
+    let lines = content.split_inclusive('\n').collect::<Vec<_>>();
+    let total_lines = lines.len();
+    let requested_line_count = requested_line_count(request.offset, request.limit, total_lines);
+    let start_index = request.offset.saturating_sub(1).min(total_lines);
+    let end_index = request.limit.map_or(total_lines, |limit| {
+        start_index.saturating_add(limit).min(total_lines)
+    });
+    let (raw_text, model_content, line_count, truncated) =
+        render_read_file_view(&lines, start_index, end_index);
+    let is_full_file_snapshot = request.offset == 1 && line_count == total_lines && !truncated;
+    if requested_line_count > 0 {
+        if let Some(prior) = find_covering_read(
+            prior_events,
+            &identity_path,
+            &hash,
+            request.offset,
+            requested_line_count,
+        ) {
+            return ToolResultEnvelope::ok(
+                format!(
+                    "already read {}; unchanged since event {}",
+                    path, prior.event_id
+                ),
+                model_content,
+                serde_json::json!({
+                    "kind": "file_content",
+                    "path": path,
+                    "canonical_path": identity_path.to_string_lossy(),
+                    "content_hash": hash,
+                    "raw_text": raw_text,
+                    "size_bytes": bytes.len(),
+                    "read_event_id": read_event_id,
+                    "prior_read_event_id": prior.event_id,
+                    "start_line": request.offset,
+                    "line_count": requested_line_count,
+                    "total_lines": total_lines,
+                    "line_numbered": true,
+                    "is_full_file_snapshot": is_full_file_snapshot,
+                    "cached": true,
+                }),
+            );
+        }
+    }
+    let summary = read_summary(&path, request.offset, line_count, total_lines, truncated);
+    let structured = serde_json::json!({
+        "kind": "file_content",
+        "path": path,
+        "canonical_path": identity_path.to_string_lossy(),
+        "content_hash": hash,
+        "raw_text": raw_text,
+        "size_bytes": bytes.len(),
+        "read_event_id": read_event_id,
+        "start_line": request.offset,
+        "line_count": line_count,
+        "total_lines": total_lines,
+        "line_numbered": true,
+        "is_full_file_snapshot": is_full_file_snapshot,
+        "cached": false,
+    });
     if truncated {
         ToolResultEnvelope::ok_truncated(summary, model_content, structured)
     } else {
