@@ -91,13 +91,14 @@ fn build_snapshot(
     assembly: &ContextAssembly,
     current_input: &CanonicalMessage,
 ) -> Result<kuku::event::RequestSnapshot, SnapshotBuildError> {
+    let mut final_assembly = assembly.clone();
+    final_assembly.history.push(current_input.clone());
     RequestSnapshotBuilder::build(SnapshotInput {
         scope: request_scope(seed),
         cause: RequestCause::UserSubmission,
         provider: ProviderFact::Anthropic,
         tier_id: "tier:default",
-        assembly,
-        current_input,
+        assembly: &final_assembly,
         handoff_context_template: None,
         allowlisted_provider_parameters: parameters(),
         breakdown: breakdown(),
@@ -219,7 +220,6 @@ fn snapshot_matches_transport_order_with_handoff_and_current_input_in_history() 
         provider: ProviderFact::Anthropic,
         tier_id: "tier:default",
         assembly: &assembly,
-        current_input: &current_input,
         handoff_context_template: Some("<handoff>{{handoff_summary}}</handoff>"),
         allowlisted_provider_parameters: parameters(),
         breakdown: breakdown(),
@@ -279,6 +279,45 @@ fn snapshot_matches_transport_order_with_handoff_and_current_input_in_history() 
 
     assert_eq!(expected, snapshot.exact);
     assert_eq!(canonical_hash(&expected), snapshot.exact_payload_hash);
+}
+
+#[test]
+fn snapshot_uses_hook_modified_final_history_without_appending_stale_current_input() {
+    let _stale_current_input = CanonicalMessage::user_text("current request");
+    let mut assembly = assembly("system".to_string(), serde_json::json!({"type": "object"}));
+    assembly.history.push(CanonicalMessage::user(vec![
+        MessageBlock::Text("hook context".to_string()),
+        MessageBlock::Text("current request".to_string()),
+    ]));
+
+    let snapshot = RequestSnapshotBuilder::build(SnapshotInput {
+        scope: request_scope("hook modified history"),
+        cause: RequestCause::UserSubmission,
+        provider: ProviderFact::Anthropic,
+        tier_id: "tier:default",
+        assembly: &assembly,
+        handoff_context_template: None,
+        allowlisted_provider_parameters: parameters(),
+        breakdown: breakdown(),
+        catalog_revision: RevisionToken::parse(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap(),
+    })
+    .unwrap();
+
+    assert_eq!(4, snapshot.exact.messages.len());
+    assert_eq!(
+        vec![
+            ExactContentBlock::Text {
+                text: "hook context".to_string(),
+            },
+            ExactContentBlock::Text {
+                text: "current request".to_string(),
+            },
+        ],
+        snapshot.exact.messages[3].content
+    );
 }
 
 #[test]

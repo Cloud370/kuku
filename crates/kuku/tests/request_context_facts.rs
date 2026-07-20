@@ -67,13 +67,16 @@ fn breakdown() -> ContextBreakdown {
 }
 
 fn snapshot(index: u8, cause: RequestCause, assembly: &ContextAssembly) -> RequestSnapshot {
+    let mut final_assembly = assembly.clone();
+    final_assembly
+        .history
+        .push(CanonicalMessage::user_text(format!("input {index}")));
     RequestSnapshotBuilder::build(SnapshotInput {
         scope: request_scope(index),
         cause,
         provider: ProviderFact::Anthropic,
         tier_id: "tier:default",
-        assembly,
-        current_input: &CanonicalMessage::user_text(format!("input {index}")),
+        assembly: &final_assembly,
         handoff_context_template: None,
         allowlisted_provider_parameters: ExactRequestParameters {
             model: "model-a".to_string(),
@@ -209,7 +212,6 @@ async fn oversized_exact_request_never_reaches_provider_transport() {
         provider: ProviderFact::Anthropic,
         tier_id: "tier:default",
         assembly: &oversized,
-        current_input: &CanonicalMessage::user_text("input"),
         handoff_context_template: None,
         allowlisted_provider_parameters: ExactRequestParameters {
             model: "model-a".to_string(),

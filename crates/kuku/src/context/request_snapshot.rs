@@ -23,8 +23,6 @@ pub struct SnapshotInput<'a> {
     pub tier_id: &'a str,
     /// Provider-neutral assembled prompt and tools.
     pub assembly: &'a ContextAssembly,
-    /// Current provider input appended only when assembled history does not already contain it.
-    pub current_input: &'a CanonicalMessage,
     /// Transport's handoff-context template when the assembly carries a handoff summary.
     pub handoff_context_template: Option<&'a str>,
     /// Explicit non-secret request parameters.
@@ -57,7 +55,6 @@ impl RequestSnapshotBuilder {
     pub fn build(input: SnapshotInput<'_>) -> Result<RequestSnapshot, SnapshotBuildError> {
         let exact = exact_request(
             input.assembly,
-            input.current_input,
             input.handoff_context_template,
             input.allowlisted_provider_parameters,
         )?;
@@ -115,7 +112,6 @@ impl RequestIdAccumulator {
 
 fn exact_request(
     assembly: &ContextAssembly,
-    current_input: &CanonicalMessage,
     handoff_context_template: Option<&str>,
     parameters: ExactRequestParameters,
 ) -> Result<ExactRequest, SnapshotBuildError> {
@@ -136,9 +132,6 @@ fn exact_request(
         )));
     }
     messages.extend(assembly.history.iter().map(exact_message));
-    if assembly.history.last() != Some(current_input) {
-        messages.push(exact_message(current_input));
-    }
 
     let tools = assembly
         .tools
