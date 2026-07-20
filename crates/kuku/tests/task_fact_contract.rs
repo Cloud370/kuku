@@ -349,14 +349,18 @@ fn task_event_matrix_covers_terminal_and_review_values() {
         TaskEvent::RunInterrupted { run: interrupted },
         review,
     ] {
-        assert_eq!(
-            event.record_class(),
-            if matches!(event, TaskEvent::ReviewSubmissionReferenced { .. }) {
-                TaskRecordClass::Control
-            } else {
-                TaskRecordClass::Activity
-            }
-        );
+        if matches!(event, TaskEvent::ReviewSubmissionReferenced { .. }) {
+            assert_eq!(event.record_class(), TaskRecordClass::Control);
+            assert!(TaskActivityBatch::try_new(vec![event]).is_err());
+        } else {
+            assert_eq!(event.record_class(), TaskRecordClass::Activity);
+            assert!(TaskTransaction::try_new(
+                TaskRevision::try_new(0).unwrap(),
+                receipt(),
+                vec![event]
+            )
+            .is_err());
+        }
     }
 }
 
