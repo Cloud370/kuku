@@ -23,7 +23,7 @@ const groups: ReadonlyArray<readonly [string, readonly TaskState[]]> = [
 ];
 
 export interface TaskNavigationCommands {
-  createTask: (workspaceId: WorkspaceId) => Promise<CreateTaskResponse>;
+  createTask: (workspaceId: WorkspaceId) => Promise<CreateTaskResponse | undefined>;
   retryPendingCommand: () => Promise<PendingCommandResult>;
   abandonConflictedCommand: () => void;
 }
@@ -58,6 +58,7 @@ export function TaskNavigation({
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadingMore, setLoadingMore] = useState(false);
   const [creating, setCreating] = useState(pendingCommand?.kind === 'create_task');
+  const [dismissedCreateId, setDismissedCreateId] = useState<number | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
   const listGeneration = useRef(0);
 
@@ -129,7 +130,9 @@ export function TaskNavigation({
     [tasks],
   );
   const pendingCreate = pendingCommand?.kind === 'create_task' ? pendingCommand : null;
-  const showingCreation = creating;
+  const pendingCreateId = pendingCreate?.commandId ?? -1;
+  const showingCreation =
+    creating || (pendingCreate !== null && pendingCreateId !== dismissedCreateId);
   const noWorkspaces = workspacesLoaded && workspaces.length === 0;
 
   const loadMore = async (): Promise<void> => {
@@ -151,9 +154,13 @@ export function TaskNavigation({
       setTasks((current) => appendUniqueTasks(current, page.items));
       setNextCursor(page.next_cursor);
     } catch {
-      setPhase('error');
+      if (listGeneration.current === requestedGeneration && workspaceId === requestedWorkspace) {
+        setPhase('error');
+      }
     } finally {
-      setLoadingMore(false);
+      if (listGeneration.current === requestedGeneration && workspaceId === requestedWorkspace) {
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -172,6 +179,7 @@ export function TaskNavigation({
           onChange={(event) => {
             const nextWorkspace = event.currentTarget.value;
             listGeneration.current += 1;
+            setLoadingMore(false);
             setWorkspaceId(nextWorkspace);
             setQuery('');
             setDebouncedQuery('');
@@ -194,6 +202,7 @@ export function TaskNavigation({
           disabled={noWorkspaces}
           className="inline-flex h-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 text-[var(--text-xs)] font-medium text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
           onClick={() => {
+            setDismissedCreateId(null);
             setCreating(true);
           }}
         >
@@ -226,17 +235,19 @@ export function TaskNavigation({
         </p>
       ) : showingCreation && workspaceId !== null ? (
         <NewTaskForm
-          workspaceId={workspaceId}
+          workspaceId={pendingCreate?.body.workspace_id ?? workspaceId}
           pending={pendingCreate}
           createTask={commands.createTask}
           retryPendingCommand={commands.retryPendingCommand}
           abandonConflictedCommand={commands.abandonConflictedCommand}
           onCreated={(createdTaskId) => {
             setCreating(false);
+            setDismissedCreateId(null);
             onSelectTask(createdTaskId);
           }}
           onReviewTasks={() => {
             setCreating(false);
+            setDismissedCreateId(pendingCreateId);
             setRetryVersion((value) => value + 1);
           }}
           onCancel={() => {
@@ -245,7 +256,15 @@ export function TaskNavigation({
         />
       ) : (
         <>
-          <TaskFilter value={query} loading={phase === 'loading'} onChange={setQuery} />
+          <TaskFilter
+            value={query}
+            loading={phase === 'loading'}
+            onChange={(value) => {
+              listGeneration.current += 1;
+              setLoadingMore(false);
+              setQuery(value);
+            }}
+          />
           <div className="min-h-0 flex-1 overflow-y-auto" aria-busy={phase === 'loading'}>
             {phase === 'loading' ? (
               <div

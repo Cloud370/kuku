@@ -34,34 +34,49 @@ import { consumeTaskStream } from './subscription';
 import { prependTimelinePage, returnToRecent, timelineHistoryError } from './timelineHistory';
 
 type WebApi = typeof webApi;
-type CommandStatus = 'pending' | 'conflicted';
+type CommandStatus = 'pending' | 'unknown' | 'conflicted' | 'failed';
+
+class StaleOperationError extends Error {
+  constructor() {
+    super('Operation is no longer current');
+    this.name = 'StaleOperationError';
+  }
+}
+
+interface PendingCommandMeta {
+  commandId: number;
+  controller: AbortController;
+  taskGeneration: number;
+  draftGeneration: number;
+}
 
 export type PendingCommand =
-  | {
+  | (PendingCommandMeta & {
       kind: 'create_task';
       status: CommandStatus;
+      taskId: string | null;
       body: CreateTaskRequest;
-    }
-  | {
+    })
+  | (PendingCommandMeta & {
       kind: 'submit_run';
       status: CommandStatus;
       taskId: string;
       body: SubmitRunRequest;
-    }
-  | {
+    })
+  | (PendingCommandMeta & {
       kind: 'stop_run';
       status: CommandStatus;
       taskId: string;
       runId: RunId;
       body: StopRunRequest;
-    }
-  | {
+    })
+  | (PendingCommandMeta & {
       kind: 'respond';
       status: CommandStatus;
       taskId: string;
       interactionId: InteractionId;
       body: InteractionResponseRequest;
-    };
+    });
 
 export type SubmitRunInput = Pick<SubmitRunRequest, 'message' | 'tier_id' | 'skill_ids'>;
 export type PendingCommandResult =
@@ -81,7 +96,7 @@ export interface WorkbenchStoreState {
   setTaskDeltaObserver(observer: TaskDeltaObserver | null): void;
   loadOlder(): Promise<void>;
   returnToRecent(): void;
-  createTask(workspaceId: string): Promise<CreateTaskResponse>;
+  createTask(workspaceId: string): Promise<CreateTaskResponse | undefined>;
   submitRun(input: SubmitRunInput): Promise<PendingCommandResult>;
   retryPendingCommand(): Promise<PendingCommandResult>;
   abandonConflictedCommand(): void;
@@ -95,6 +110,10 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
   let subscriptionController: AbortController | null = null;
   let observer: TaskDeltaObserver | null = null;
   let stoppedRunId: RunId | null = null;
+  let taskGeneration = 0;
+  let draftGeneration = 0;
+  let commandSequence = 0;
+  let stopCommandPromise: Promise<PendingCommandResult> | null = null;
 
   const store = createStore<WorkbenchStoreState>((set, get) => {
     const acceptFrame = (event: TaskStreamEvent): void => {
@@ -103,11 +122,19 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       observer?.(event.task_id, event.event);
     };
 
-    const recoverProjection = async (taskId: string): Promise<TaskProjection> => {
+    const recoverProjection = async (
+      taskId: string,
+      expectedTaskGeneration = taskGeneration,
+    ): Promise<TaskProjection> => {
       const localDraft = get().snapshot.localDraft;
+      const expectedDraftGeneration = draftGeneration;
       const projection = await api.tasks.get(taskId);
+      if (taskGeneration !== expectedTaskGeneration || get().snapshot.selectedTaskId !== taskId) {
+        return projection;
+      }
       const snapshot = applyProjection(get().snapshot, projection);
-      snapshot.localDraft = localDraft;
+      snapshot.localDraft =
+        draftGeneration === expectedDraftGeneration ? localDraft : get().snapshot.localDraft;
       set({ snapshot });
       return projection;
     };
@@ -116,15 +143,30 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       taskId: string,
       after: number | null,
       controller: AbortController,
+      expectedTaskGeneration: number,
+      isCurrent: () => boolean,
     ): Promise<void> => {
+      if (taskGeneration !== expectedTaskGeneration || !isCurrent()) {
+        throw new StaleOperationError();
+      }
       set({ snapshot: beginTaskSubscription(get().snapshot, taskId) });
-      await consumeTaskStream(taskId, after, controller.signal, acceptFrame, api.tasks.subscribe);
+      await consumeTaskStream(
+        taskId,
+        after,
+        controller.signal,
+        (event) => {
+          if (!isCurrent()) throw new StaleOperationError();
+          acceptFrame(event);
+        },
+        api.tasks.subscribe,
+      );
     };
 
     const handleCommandFailure = async (
       pending: PendingCommand,
       error: unknown,
     ): Promise<never> => {
+      if (!isCurrentCommand(get().pendingCommand, pending)) throw error;
       if (error instanceof WebApiError && error.code === 'idempotency_conflict') {
         set({ pendingCommand: { ...pending, status: 'conflicted' } });
         if (pending.kind === 'create_task') {
@@ -137,48 +179,66 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
             }),
           );
         } else {
-          await ignoreFailure(recoverProjection(pending.taskId));
+          await ignoreFailure(recoverProjection(pending.taskId, pending.taskGeneration));
         }
       } else if (error instanceof WebApiError && isDefinitiveCommandError(error.code)) {
-        set({ pendingCommand: null });
-        if (pending.kind === 'stop_run') stoppedRunId = null;
-        if (pending.kind !== 'create_task') {
-          await ignoreFailure(recoverProjection(pending.taskId));
+        if (pending.kind === 'create_task') {
+          set({ pendingCommand: { ...pending, status: 'failed' } });
+        } else {
+          set({ pendingCommand: null });
+          if (pending.kind === 'stop_run') stoppedRunId = null;
+          await ignoreFailure(recoverProjection(pending.taskId, pending.taskGeneration));
         }
+      } else {
+        set({ pendingCommand: { ...pending, status: 'unknown' } });
       }
       throw error;
     };
 
     const executePendingCommand = async (
       pending: PendingCommand,
-    ): Promise<Exclude<PendingCommandResult, undefined>> => {
+    ): Promise<PendingCommandResult> => {
       try {
         switch (pending.kind) {
           case 'create_task': {
             const result = await api.tasks.create(pending.body);
+            const current = isCurrentCommand(get().pendingCommand, pending);
+            if (!current) return undefined;
+            pending.controller.abort();
+            set({ pendingCommand: null });
+            if (!isCurrentTaskScope(get().snapshot, pending, taskGeneration, draftGeneration)) {
+              return undefined;
+            }
             const selected = beginTaskSubscription(get().snapshot, result.projection.task.task_id);
-            set({
-              snapshot: applyProjection(selected, result.projection),
-              pendingCommand: null,
-            });
+            taskGeneration += 1;
+            if (selected.selectedTaskId !== result.projection.task.task_id) {
+              draftGeneration += 1;
+            }
+            set({ snapshot: applyProjection(selected, result.projection) });
             return result;
           }
           case 'submit_run': {
             const result = await api.tasks.submitRun(pending.taskId, pending.body);
-            const snapshot = get().snapshot;
-            set({
-              snapshot: {
-                ...snapshot,
-                localDraft: { text: '', skillIds: [], tierId: null },
-              },
-              pendingCommand: null,
-            });
+            if (!isCurrentCommand(get().pendingCommand, pending)) return result;
+            set({ pendingCommand: null });
+            if (isCurrentTaskScope(get().snapshot, pending, taskGeneration, draftGeneration)) {
+              draftGeneration += 1;
+              set({
+                snapshot: {
+                  ...get().snapshot,
+                  localDraft: { text: '', skillIds: [], tierId: null },
+                },
+              });
+            }
             return result;
           }
           case 'stop_run': {
             const result = await api.tasks.stopRun(pending.taskId, pending.body);
-            stoppedRunId = pending.runId;
+            if (!isCurrentCommand(get().pendingCommand, pending)) return result;
             set({ pendingCommand: null });
+            if (isCurrentTaskScope(get().snapshot, pending, taskGeneration, draftGeneration)) {
+              stoppedRunId = pending.runId;
+            }
             return result;
           }
           case 'respond': {
@@ -187,7 +247,7 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
               pending.interactionId,
               pending.body,
             );
-            set({ pendingCommand: null });
+            if (isCurrentCommand(get().pendingCommand, pending)) set({ pendingCommand: null });
             return result;
           }
         }
@@ -200,15 +260,20 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       snapshot: createWorkbenchSnapshot(),
       pendingCommand: null,
       setDraft(draft) {
+        draftGeneration += 1;
         set({ snapshot: { ...get().snapshot, localDraft: structuredClone(draft) } });
       },
       async loadTask(taskId) {
         subscriptionController?.abort();
         subscriptionController = null;
         stoppedRunId = null;
+        const previousTaskId = get().snapshot.selectedTaskId;
+        taskGeneration += 1;
+        if (previousTaskId !== taskId) draftGeneration += 1;
+        const expectedTaskGeneration = taskGeneration;
         set({ snapshot: beginTaskSubscription(get().snapshot, taskId) });
         const projection = await api.tasks.get(taskId);
-        if (get().snapshot.selectedTaskId === taskId) {
+        if (get().snapshot.selectedTaskId === taskId && taskGeneration === expectedTaskGeneration) {
           set({ snapshot: applyProjection(get().snapshot, projection) });
         }
         return projection;
@@ -217,7 +282,25 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         subscriptionController?.abort();
         const controller = new AbortController();
         subscriptionController = controller;
-        void runSubscriptionLoop(api, store, taskId, controller, acceptFrame, recoverProjection);
+        const expectedTaskGeneration = taskGeneration;
+        void runSubscriptionLoop(
+          api,
+          store,
+          taskId,
+          controller,
+          expectedTaskGeneration,
+          acceptFrame,
+          recoverProjection,
+          () =>
+            isCurrentSubscription(
+              store.getState().snapshot,
+              taskId,
+              expectedTaskGeneration,
+              controller,
+              subscriptionController,
+              taskGeneration,
+            ),
+        );
         return () => {
           controller.abort();
         };
@@ -228,13 +311,31 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         subscriptionController?.abort();
         const controller = new AbortController();
         subscriptionController = controller;
+        const expectedTaskGeneration = taskGeneration;
         const after = get().snapshot.cursor;
+        const isCurrent = () =>
+          isCurrentSubscription(
+            get().snapshot,
+            taskId,
+            expectedTaskGeneration,
+            controller,
+            subscriptionController,
+            taskGeneration,
+          );
         try {
-          await consumeOnce(taskId, after, controller);
+          await consumeOnce(taskId, after, controller, expectedTaskGeneration, isCurrent);
         } catch (error) {
+          if (!isCurrent()) return;
           if (!isProjectionRecoveryError(error)) throw error;
-          const projection = await recoverProjection(taskId);
-          await consumeOnce(taskId, projection.cursor, controller);
+          const projection = await recoverProjection(taskId, expectedTaskGeneration);
+          if (!isCurrent()) return;
+          await consumeOnce(
+            taskId,
+            projection.cursor,
+            controller,
+            expectedTaskGeneration,
+            isCurrent,
+          );
         }
       },
       acceptFrame,
@@ -304,19 +405,32 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         });
       },
       async createTask(workspaceId) {
+        assertNoPendingCommand(get().pendingCommand);
+        const snapshot = get().snapshot;
         const pending: PendingCommand = {
+          commandId: ++commandSequence,
+          controller: new AbortController(),
+          taskGeneration,
+          draftGeneration,
           kind: 'create_task',
           status: 'pending',
+          taskId: snapshot.selectedTaskId,
           body: { workspace_id: workspaceId, idempotency_key: newIdempotencyKey() },
         };
         set({ pendingCommand: pending });
-        return (await executePendingCommand(pending)) as CreateTaskResponse;
+        return (await executePendingCommand(pending)) as CreateTaskResponse | undefined;
       },
       async submitRun(input) {
+        assertNoPendingCommand(get().pendingCommand);
         const snapshot = get().snapshot;
         const taskId = requireSelectedTask(snapshot);
         const revision = requireProjection(snapshot).task_revision;
+        draftGeneration += 1;
         const pending: PendingCommand = {
+          commandId: ++commandSequence,
+          controller: new AbortController(),
+          taskGeneration,
+          draftGeneration,
           kind: 'submit_run',
           status: 'pending',
           taskId,
@@ -341,22 +455,38 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       },
       retryPendingCommand() {
         const pending = get().pendingCommand;
-        if (pending === null || pending.status === 'conflicted') return Promise.resolve(undefined);
-        return executePendingCommand(pending);
+        if (pending === null || pending.status !== 'unknown') return Promise.resolve(undefined);
+        const retrying = { ...pending, status: 'pending' as const };
+        set({ pendingCommand: retrying });
+        return executePendingCommand(retrying);
       },
       abandonConflictedCommand() {
         const pending = get().pendingCommand;
-        if (pending?.status !== 'conflicted') return;
+        if (
+          pending?.status !== 'unknown' &&
+          pending?.status !== 'conflicted' &&
+          pending?.status !== 'failed'
+        )
+          return;
+        pending.controller.abort();
         if (pending.kind === 'stop_run') stoppedRunId = null;
         set({ pendingCommand: null });
       },
       async stopRun() {
+        if (get().pendingCommand?.kind === 'stop_run' && stopCommandPromise !== null) {
+          return stopCommandPromise;
+        }
+        assertNoPendingCommand(get().pendingCommand);
         const snapshot = get().snapshot;
         const projection = requireProjection(snapshot);
         const runId = projection.active_run?.run_id;
         if (runId === undefined || runId === stoppedRunId) return;
         const taskId = requireSelectedTask(snapshot);
         const pending: PendingCommand = {
+          commandId: ++commandSequence,
+          controller: new AbortController(),
+          taskGeneration,
+          draftGeneration,
           kind: 'stop_run',
           status: 'pending',
           taskId,
@@ -368,12 +498,27 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         };
         stoppedRunId = runId;
         set({ pendingCommand: pending });
-        return executePendingCommand(pending);
+        const commandPromise = executePendingCommand(pending);
+        stopCommandPromise = commandPromise;
+        void commandPromise.then(
+          () => {
+            if (stopCommandPromise === commandPromise) stopCommandPromise = null;
+          },
+          () => {
+            if (stopCommandPromise === commandPromise) stopCommandPromise = null;
+          },
+        );
+        return commandPromise;
       },
       async respond(interactionId, choiceId) {
+        assertNoPendingCommand(get().pendingCommand);
         const snapshot = get().snapshot;
         const taskId = requireSelectedTask(snapshot);
         const pending: PendingCommand = {
+          commandId: ++commandSequence,
+          controller: new AbortController(),
+          taskGeneration,
+          draftGeneration,
           kind: 'respond',
           status: 'pending',
           taskId,
@@ -422,38 +567,58 @@ async function runSubscriptionLoop(
   store: StoreApi<WorkbenchStoreState>,
   taskId: string,
   controller: AbortController,
+  expectedTaskGeneration: number,
   acceptFrame: (event: TaskStreamEvent) => void,
-  recoverProjection: (taskId: string) => Promise<TaskProjection>,
+  recoverProjection: (taskId: string, expectedTaskGeneration?: number) => Promise<TaskProjection>,
+  isCurrent: () => boolean,
 ): Promise<void> {
   let attempt = 0;
-  while (!controller.signal.aborted && store.getState().snapshot.selectedTaskId === taskId) {
+  while (!controller.signal.aborted && isCurrent()) {
     const after = store.getState().snapshot.cursor;
+    if (!isCurrent()) return;
     store.setState({
       snapshot: beginTaskSubscription(store.getState().snapshot, taskId),
     });
     try {
-      await consumeTaskStream(taskId, after, controller.signal, acceptFrame, api.tasks.subscribe);
+      await consumeTaskStream(
+        taskId,
+        after,
+        controller.signal,
+        (event) => {
+          if (!isCurrent()) throw new StaleOperationError();
+          acceptFrame(event);
+        },
+        api.tasks.subscribe,
+      );
+      if (!isCurrent()) return;
       attempt += 1;
     } catch (error) {
-      if (isAbortError(error)) return;
+      if (!isCurrent() || isAbortError(error) || error instanceof StaleOperationError) return;
       if (error instanceof ContractDecodeError) {
-        setConnectionError(store, error);
+        setConnectionError(store, error, isCurrent);
         return;
       }
       if (isProjectionRecoveryError(error)) {
         try {
-          await recoverProjection(taskId);
+          await recoverProjection(taskId, expectedTaskGeneration);
+          if (!isCurrent()) return;
           attempt = 0;
           continue;
         } catch (recoveryError) {
-          if (isAbortError(recoveryError)) return;
-          setConnectionError(store, recoveryError);
+          if (
+            !isCurrent() ||
+            isAbortError(recoveryError) ||
+            recoveryError instanceof StaleOperationError
+          )
+            return;
+          setConnectionError(store, recoveryError, isCurrent);
           return;
         }
       }
       attempt += 1;
     }
 
+    if (!isCurrent()) return;
     const snapshot = store.getState().snapshot;
     store.setState({
       snapshot: {
@@ -481,7 +646,12 @@ function reconnectDelay(attempt: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function setConnectionError(store: StoreApi<WorkbenchStoreState>, error: unknown): void {
+function setConnectionError(
+  store: StoreApi<WorkbenchStoreState>,
+  error: unknown,
+  isCurrent: () => boolean,
+): void {
+  if (!isCurrent()) return;
   const snapshot = store.getState().snapshot;
   store.setState({
     snapshot: {
@@ -509,6 +679,43 @@ function isProjectionRecoveryError(error: unknown): boolean {
   );
 }
 
+function isCurrentCommand(current: PendingCommand | null, pending: PendingCommand): boolean {
+  return current?.commandId === pending.commandId && current.controller === pending.controller;
+}
+
+function isCurrentTaskScope(
+  snapshot: WorkbenchSnapshot,
+  pending: PendingCommand,
+  taskGeneration: number,
+  draftGeneration: number,
+): boolean {
+  return (
+    snapshot.selectedTaskId === pending.taskId &&
+    pending.taskGeneration === taskGeneration &&
+    pending.draftGeneration === draftGeneration
+  );
+}
+
+function isCurrentSubscription(
+  snapshot: WorkbenchSnapshot,
+  taskId: string,
+  expectedTaskGeneration: number,
+  controller: AbortController,
+  activeController: AbortController | null,
+  currentTaskGeneration: number,
+): boolean {
+  return (
+    !controller.signal.aborted &&
+    activeController === controller &&
+    currentTaskGeneration === expectedTaskGeneration &&
+    snapshot.selectedTaskId === taskId
+  );
+}
+
+function assertNoPendingCommand(pending: PendingCommand | null): void {
+  if (pending !== null) throw new Error('A command outcome is already pending');
+}
+
 function isDefinitiveCommandError(code: ApiError['code']): boolean {
   return [
     'stale_command',
@@ -517,6 +724,10 @@ function isDefinitiveCommandError(code: ApiError['code']): boolean {
     'interaction_not_pending',
     'outdated',
     'task_not_found',
+    'workspace_not_found',
+    'workspace_unavailable',
+    'invalid_request',
+    'forbidden',
   ].includes(code);
 }
 

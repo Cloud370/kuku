@@ -25,6 +25,7 @@ import {
 type WebApi = typeof webApi;
 
 const workspaceId = 'wsp_000000000000000000000001';
+const otherWorkspaceId = 'wsp_000000000000000000000002';
 const taskId = 'tsk_000000000000000000000001';
 
 afterEach(() => {
@@ -90,7 +91,7 @@ function setupApi() {
 
 function setupCommands() {
   return {
-    createTask: vi.fn<(workspaceId: string) => Promise<CreateTaskResponse>>(),
+    createTask: vi.fn<(workspaceId: string) => Promise<CreateTaskResponse | undefined>>(),
     retryPendingCommand: vi.fn<() => Promise<PendingCommandResult>>(),
     abandonConflictedCommand: vi.fn<() => void>(),
   } satisfies TaskNavigationCommands;
@@ -109,6 +110,42 @@ function navigationProps(api: WebApi, commands: TaskNavigationCommands): TaskNav
 }
 
 describe('TaskNavigation', () => {
+  it('keeps an unknown create visible and non-cancellable across workspace changes', async () => {
+    const user = userEvent.setup();
+    const { api, list } = setupApi();
+    api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
+      api_version: 1,
+      items: [
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: true,
+          label: 'Workspace A',
+          workspace_id: workspaceId,
+        },
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: false,
+          label: 'Workspace B',
+          workspace_id: otherWorkspaceId,
+        },
+      ],
+      server_revision: 'rev_1',
+    });
+    list.mockResolvedValue(taskPage([]));
+    const pendingCommand = pendingCreate('unknown');
+
+    render(
+      <TaskNavigation {...navigationProps(api, setupCommands())} pendingCommand={pendingCommand} />,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Retry Task creation' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Cancel Task creation' })).toBeDisabled();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), otherWorkspaceId);
+    expect(screen.getByRole('button', { name: 'Retry Task creation' })).toBeVisible();
+  });
+
   it('renders an explicit empty-workspace state instead of loading forever', async () => {
     const { api } = setupApi();
     api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
@@ -175,6 +212,7 @@ describe('TaskNavigation', () => {
     await user.click(screen.getByRole('button', { name: 'Create Task' }));
 
     expect(await screen.findByRole('button', { name: 'Retry Task creation' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Abandon this creation' })).toBeVisible();
     expect(props.onSelectTask).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Retry Task creation' }));
     expect(commands.retryPendingCommand).toHaveBeenCalledTimes(1);
@@ -226,15 +264,73 @@ describe('TaskNavigation', () => {
     });
   });
 
+  it('ignores a stale load-more failure after switching workspace', async () => {
+    const user = userEvent.setup();
+    const { api, list } = setupApi();
+    api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
+      api_version: 1,
+      items: [
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: true,
+          label: 'Workspace A',
+          workspace_id: workspaceId,
+        },
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: false,
+          label: 'Workspace B',
+          workspace_id: otherWorkspaceId,
+        },
+      ],
+      server_revision: 'rev_1',
+    });
+    const oldPage = deferredPage();
+    list.mockImplementation((query) => {
+      if (query.cursor === 'page:next') return oldPage.promise;
+      if (query.workspace_id === otherWorkspaceId) {
+        return Promise.resolve(taskPage([taskForWorkspace('Task B', otherWorkspaceId)]));
+      }
+      return Promise.resolve(taskPage([task('Task A', 'completed')], 'page:next'));
+    });
+
+    render(<TaskNavigation {...navigationProps(api, setupCommands())} />);
+    await screen.findByRole('button', { name: 'Task A' });
+    await user.click(screen.getByRole('button', { name: 'Load more Tasks' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), otherWorkspaceId);
+    expect(await screen.findByRole('button', { name: 'Task B' })).toBeVisible();
+    oldPage.reject(new TypeError('stale A failure'));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(screen.getByRole('button', { name: 'Task B' })).toBeVisible();
+    expect(screen.queryByText('Tasks unavailable')).not.toBeInTheDocument();
+  });
+
+  it('does not select a created Task when the store reports a stale acknowledgement', async () => {
+    const user = userEvent.setup();
+    const { api, list } = setupApi();
+    list.mockResolvedValue(taskPage([]));
+    const commands = setupCommands();
+    commands.createTask.mockResolvedValue(undefined);
+    const props = navigationProps(api, commands);
+
+    render(<TaskNavigation {...props} />);
+    await screen.findByText('No Tasks yet');
+    await user.click(screen.getByRole('button', { name: 'New Task' }));
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    expect(await screen.findByRole('searchbox', { name: 'Search Tasks' })).toBeVisible();
+    expect(props.onSelectTask).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Retry Task creation' })).not.toBeInTheDocument();
+  });
+
   it('closes a conflicted creation to review the reconciled Task list', async () => {
     const user = userEvent.setup();
     const { api, list } = setupApi();
     list.mockResolvedValue(taskPage([task('Reconciled task', 'completed')]));
-    const pendingCommand = {
-      kind: 'create_task',
-      status: 'conflicted',
-      body: { workspace_id: workspaceId, idempotency_key: 'idem-conflicted' },
-    } satisfies PendingCommand;
+    const pendingCommand = pendingCreate('conflicted');
 
     render(
       <TaskNavigation {...navigationProps(api, setupCommands())} pendingCommand={pendingCommand} />,
@@ -249,11 +345,7 @@ describe('TaskNavigation', () => {
 
 describe('NewTaskForm', () => {
   it('shows a reconciliation prompt after create idempotency conflict', () => {
-    const pending = {
-      kind: 'create_task',
-      status: 'conflicted',
-      body: { workspace_id: workspaceId, idempotency_key: 'idem-conflicted' },
-    } satisfies PendingCommand;
+    const pending = pendingCreate('conflicted');
 
     render(
       <NewTaskForm
@@ -273,3 +365,32 @@ describe('NewTaskForm', () => {
     expect(screen.getByRole('button', { name: 'Abandon this creation' })).toBeVisible();
   });
 });
+
+function pendingCreate(
+  status: 'unknown' | 'conflicted' | 'failed',
+): Extract<PendingCommand, { kind: 'create_task' }> {
+  return {
+    commandId: 1,
+    controller: new AbortController(),
+    draftGeneration: 0,
+    kind: 'create_task',
+    status,
+    taskGeneration: 0,
+    taskId: null,
+    body: { workspace_id: workspaceId, idempotency_key: 'idem-pending' },
+  };
+}
+
+function taskForWorkspace(title: string, id: string): TaskSummary {
+  return { ...task(title, 'completed'), workspace_id: id };
+}
+
+function deferredPage() {
+  let resolve: (page: TaskPage) => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<TaskPage>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

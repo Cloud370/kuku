@@ -10,6 +10,7 @@ import type {
   TimelinePage,
 } from '../api/generated';
 import { WebApiError, webApi } from '../api/client';
+import { ContractDecodeError } from '../api/decode';
 
 import { applyProjection, createWorkbenchSnapshot, selectTimelineItems } from './state';
 import { createWorkbenchStore } from './workbenchStore';
@@ -89,7 +90,42 @@ function readySnapshot(value = projection()) {
   return applyProjection(createWorkbenchSnapshot(), value);
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('idempotent Task commands', () => {
+  it('rejects a second create without replacing the pending logical intent', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    const firstRequest = deferred<CreateTaskResponse>();
+    tasks.create
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockRejectedValueOnce(new Error('second request should be rejected locally'));
+
+    const first = store.getState().createTask(workspaceId);
+    const pending = store.getState().pendingCommand;
+    await expect(store.getState().createTask(workspaceId)).rejects.toThrow(
+      'A command outcome is already pending',
+    );
+
+    expect(tasks.create).toHaveBeenCalledTimes(1);
+    expect(store.getState().pendingCommand).toBe(pending);
+    firstRequest.reject(new TypeError('offline'));
+    await expect(first).rejects.toThrow('offline');
+    expect(store.getState().pendingCommand).toMatchObject({
+      kind: 'create_task',
+      status: 'unknown',
+      body: pending?.body,
+    });
+  });
+
   it('retries an unknown submit outcome with the exact logical body', async () => {
     const { api, tasks } = mockApi();
     const store = createWorkbenchStore(api);
@@ -146,6 +182,88 @@ describe('idempotent Task commands', () => {
     expect(firstBody?.idempotency_key).toMatch(/^idem-/);
     expect(result).toEqual(expect.objectContaining({ projection: created }));
     expect(store.getState().snapshot.selectedTaskId).toBe(otherTaskId);
+    expect(store.getState().pendingCommand).toBeNull();
+  });
+
+  it('does not open a created Task over a newer Task selection or draft', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    store.setState({ snapshot: readySnapshot() });
+    const createRequest = deferred<CreateTaskResponse>();
+    tasks.create.mockReturnValue(createRequest.promise);
+    const creating = store.getState().createTask(workspaceId);
+    const taskB = projection(otherTaskId, 9, 5);
+    tasks.get.mockResolvedValue(taskB);
+
+    await store.getState().loadTask(otherTaskId);
+    store.getState().setDraft({ text: 'draft for B', skillIds: [], tierId: 'tier:balanced' });
+    createRequest.resolve(createdResponse(projection('tsk_000000000000000000000003')));
+
+    await expect(creating).resolves.toBeUndefined();
+    expect(store.getState().snapshot.selectedTaskId).toBe(otherTaskId);
+    expect(store.getState().snapshot.localDraft).toEqual({
+      text: 'draft for B',
+      skillIds: [],
+      tierId: 'tier:balanced',
+    });
+    expect(store.getState().pendingCommand).toBeNull();
+  });
+
+  it('does not clear a newer Task draft when an older submit acknowledgement arrives', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    store.setState({ snapshot: readySnapshot() });
+    const submitRequest = deferred<Awaited<ReturnType<WebApi['tasks']['submitRun']>>>();
+    tasks.submitRun.mockReturnValue(submitRequest.promise);
+    const submitting = store
+      .getState()
+      .submitRun({ message: 'draft for A', tier_id: 'tier:balanced', skill_ids: [] });
+    const taskB = projection(otherTaskId, 9, 5);
+    tasks.get.mockResolvedValue(taskB);
+
+    await store.getState().loadTask(otherTaskId);
+    store.getState().setDraft({
+      text: 'new draft for B',
+      skillIds: ['skill:project:review'],
+      tierId: 'tier:deep',
+    });
+    submitRequest.resolve({
+      api_version: 1,
+      replayed: false,
+      run_id: 'run_000000000000000000000001',
+      task_id: taskId,
+      task_revision: 5,
+    });
+    await submitting;
+
+    expect(store.getState().snapshot.selectedTaskId).toBe(otherTaskId);
+    expect(store.getState().snapshot.localDraft).toEqual({
+      text: 'new draft for B',
+      skillIds: ['skill:project:review'],
+      tierId: 'tier:deep',
+    });
+  });
+
+  it('retains a permanent create failure for explicit abandon and recreation', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    const current = readySnapshot();
+    current.localDraft.text = 'keep this draft';
+    store.setState({ snapshot: current });
+    tasks.create.mockRejectedValueOnce(apiError('workspace_not_found'));
+
+    await expect(store.getState().createTask(workspaceId)).rejects.toMatchObject({
+      code: 'workspace_not_found',
+    });
+
+    expect(store.getState().pendingCommand).toMatchObject({
+      kind: 'create_task',
+      status: 'failed',
+    });
+    expect(store.getState().snapshot.localDraft.text).toBe('keep this draft');
+    await expect(store.getState().retryPendingCommand()).resolves.toBeUndefined();
+    expect(tasks.create).toHaveBeenCalledTimes(1);
+    store.getState().abandonConflictedCommand();
     expect(store.getState().pendingCommand).toBeNull();
   });
 
@@ -269,6 +387,29 @@ describe('idempotent Task commands', () => {
 });
 
 describe('projection synchronization', () => {
+  it('ignores a stale subscription error after loading another Task', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    store.setState({ snapshot: readySnapshot() });
+    const oldStream = deferred<Response>();
+    tasks.subscribe.mockReturnValue(oldStream.promise);
+    store.getState().subscribeTask(taskId);
+    await vi.waitFor(() => {
+      expect(tasks.subscribe).toHaveBeenCalled();
+    });
+    tasks.get.mockResolvedValue(projection(otherTaskId, 9, 5));
+
+    await store.getState().loadTask(otherTaskId);
+    oldStream.reject(new ContractDecodeError(['/ stale stream']));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(store.getState().snapshot).toMatchObject({
+      selectedTaskId: otherTaskId,
+      connection: 'ready',
+      lastError: null,
+    });
+  });
+
   it('notifies one observer only after a complete frame commits', () => {
     const { api } = mockApi();
     const store = createWorkbenchStore(api);
@@ -354,3 +495,7 @@ describe('projection synchronization', () => {
     expect(store.getState().snapshot.cursor).toBe(6);
   });
 });
+
+function createdResponse(value: TaskProjection): CreateTaskResponse {
+  return { api_version: 1, projection: value, replayed: false };
+}
