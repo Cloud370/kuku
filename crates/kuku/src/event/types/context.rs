@@ -74,7 +74,10 @@ fn is_windows_device_name(segment: &str) -> bool {
         || upper
             .strip_prefix("COM")
             .or_else(|| upper.strip_prefix("LPT"))
-            .is_some_and(|number| number.len() == 1 && matches!(number.as_bytes()[0], b'1'..=b'9'))
+            .is_some_and(|number| {
+                (number.len() == 1 && matches!(number.as_bytes()[0], b'1'..=b'9'))
+                    || matches!(number, "¹" | "²" | "³")
+            })
 }
 
 impl fmt::Display for WorkspaceRelativePath {
@@ -120,7 +123,7 @@ impl JsonSchema for WorkspaceRelativePath {
                 },
                 {
                     "not": {
-                        "pattern": r"(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[. ]*(?:\.[^/]*)?(?:/|$)"
+                        "pattern": r"(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[. ]*(?:\.[^/]*)?(?:/|$)"
                     }
                 }
             ],
