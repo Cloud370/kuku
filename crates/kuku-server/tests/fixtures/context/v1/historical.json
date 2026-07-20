@@ -1,0 +1,106 @@
+{
+  "api_version": 1,
+  "task_id": "tsk_000000000000000000000001",
+  "task_revision": 2,
+  "selected_request": {
+    "request_id": "req_000000000000000000000001",
+    "run_id": "run_000000000000000000000001",
+    "turn_id": "trn_000000000000000000000001",
+    "conversation_id": "con_000000000000000000000001",
+    "status": "completed",
+    "cause": {"kind": "user_submission"},
+    "provider": {"kind": "anthropic"},
+    "model": "fixture-model",
+    "started_at": "2026-07-21T00:00:00Z"
+  },
+  "request_history": [{
+    "request_id": "req_000000000000000000000001",
+    "run_id": "run_000000000000000000000001",
+    "turn_id": "trn_000000000000000000000001",
+    "conversation_id": "con_000000000000000000000001",
+    "status": "completed",
+    "cause": {"kind": "user_submission"},
+    "provider": {"kind": "anthropic"},
+    "model": "fixture-model",
+    "started_at": "2026-07-21T00:00:00Z"
+  }],
+  "request_history_truncated": false,
+  "sections": {
+    "skills": [],
+    "instructions": [],
+    "memory": [],
+    "conversation": {
+      "retained_turns": 1,
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "delegated_results": []
+    },
+    "observations": [],
+    "agents": [],
+    "capabilities": []
+  },
+  "next_request_base": {
+    "skills": [],
+    "instructions": [],
+    "memory": [],
+    "conversation": {
+      "retained_turns": 1,
+      "handoff_boundaries": 0,
+      "history_summarized": false,
+      "delegated_results": []
+    },
+    "observations": [],
+    "delegated_results": [],
+    "capabilities": [],
+    "token_estimate": 1024
+  },
+  "discoverable": {
+    "catalog_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "skill_count": 0,
+    "agent_count": 0,
+    "tool_count": 0
+  },
+  "usage": {
+    "this_request": {
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cached_input_tokens": null,
+      "cache_creation_input_tokens": null,
+      "request_count": 1,
+      "elapsed_ms": 5,
+      "cost": null,
+      "cached_input_ratio": null
+    },
+    "this_task": {
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cached_input_tokens": null,
+      "cache_creation_input_tokens": null,
+      "request_count": 1,
+      "elapsed_ms": 5,
+      "cost": null,
+      "cached_input_ratio": null
+    }
+  },
+  "health": {
+    "level": "healthy",
+    "context_tokens_used": 1024,
+    "context_token_limit": null,
+    "context_tokens_remaining": null,
+    "summarized": false,
+    "source_drift_count": 0,
+    "truncated_observation_count": 0
+  },
+  "warnings": [],
+  "exact_request": {
+    "messages": [],
+    "tools": [],
+    "parameters": {
+      "model": "fixture-model",
+      "max_output_tokens": null,
+      "temperature": null,
+      "stream": true,
+      "thinking": {"kind": "disabled"}
+    }
+  }
+}

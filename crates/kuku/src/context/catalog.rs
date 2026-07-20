@@ -319,12 +319,12 @@ impl CatalogEntries {
         let skill_entries = skills
             .definitions()
             .into_iter()
-            .map(|definition| skill_entry(&definition, canonical_workspace_root.as_deref()))
+            .map(|definition| skill_entry(definition, canonical_workspace_root.as_deref()))
             .collect::<Result<Vec<_>, _>>()?;
         let agent_entries = agents
             .definitions()
             .into_iter()
-            .map(|definition| agent_entry(&definition, canonical_workspace_root.as_deref()))
+            .map(|definition| agent_entry(definition, canonical_workspace_root.as_deref()))
             .collect::<Result<Vec<_>, _>>()?;
         Self::new_with_source_hashes(
             tiers,

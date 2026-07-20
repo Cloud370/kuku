@@ -10,6 +10,15 @@ pub(crate) trait WorkspaceCatalogProvider: Send + Sync {
     fn for_workspace(&self, workspace_id: &WorkspaceId) -> Result<CatalogEntries, DomainError>;
 }
 
+impl<F> WorkspaceCatalogProvider for F
+where
+    F: Fn(&WorkspaceId) -> Result<CatalogEntries, DomainError> + Send + Sync,
+{
+    fn for_workspace(&self, workspace_id: &WorkspaceId) -> Result<CatalogEntries, DomainError> {
+        self(workspace_id)
+    }
+}
+
 pub(crate) struct CatalogSkillSelectionValidator {
     catalogs: Arc<dyn WorkspaceCatalogProvider>,
 }

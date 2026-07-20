@@ -59,5 +59,6 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 kuku = { workspace = true, features = ["test_support"] }
+tower = "0.5"
 httpmock = "0.7"
 tempfile = "3"

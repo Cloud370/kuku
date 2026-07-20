@@ -11,7 +11,7 @@ pub(crate) enum CurrentObservationState {
 }
 
 /// Provides contained current state for observed workspace paths.
-pub(crate) trait ObservationHashProvider {
+pub(crate) trait ObservationHashProvider: Send + Sync {
     fn current_state(&self, path: &WorkspaceRelativePath) -> CurrentObservationState;
 }
 

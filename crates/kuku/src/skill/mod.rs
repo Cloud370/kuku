@@ -1,5 +1,6 @@
 pub(crate) mod catalog;
 pub mod definition;
+pub mod lifecycle;
 pub(crate) mod loader;
 pub mod registry;
 pub(crate) mod search;

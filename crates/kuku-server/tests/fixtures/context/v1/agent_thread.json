@@ -1,0 +1,23 @@
+{
+  "api_version": 1,
+  "task_id": "tsk_000000000000000000000001",
+  "conversation_id": "con_000000000000000000000002",
+  "agent": {
+    "agent_id": "agent:project:review",
+    "name": "Review Agent",
+    "description": "Reviews project changes"
+  },
+  "tier": {
+    "tier_id": "tier:balanced",
+    "label": "Balanced",
+    "purpose": "General work",
+    "provider": "fixture-provider",
+    "model": "fixture-model",
+    "think": null,
+    "is_default": true
+  },
+  "status": "completed",
+  "result_in_main": true,
+  "messages": [],
+  "messages_truncated_before": false
+}

@@ -1,7 +1,10 @@
 pub mod assembly;
+pub mod catalog;
 mod fact_sink;
 pub mod message;
+pub mod observations;
 pub mod provenance;
+pub mod provider_hook;
 pub mod replay;
 mod request_evidence;
 mod request_snapshot;
@@ -19,6 +22,7 @@ pub use provenance::{
     PromptCapabilityMetadata, PromptRendererIdentity, RequestProvenance, SkillRegistryProvenance,
     ToolRegistryProvenance,
 };
+pub use provider_hook::{begin_provider_request, ProviderHookError};
 pub use replay::rebuild_history;
 pub(crate) use replay::rebuild_history_for_provider;
 pub use request_evidence::{DurableRequestEvidenceRecorder, RequestEvidenceRecorder};
