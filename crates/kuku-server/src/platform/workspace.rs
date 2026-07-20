@@ -525,8 +525,9 @@ impl WorkspaceRegistry {
         self.ensure_revision_registered().await;
         let guard = self.revision.begin(&expected).await?;
         let prepared = self.prepare_default(id).await?;
-        let digest = self.apply_prepared_default(prepared)?;
+        let digest = self.apply_prepared_default(&prepared)?;
         guard.finish(RevisionDomain::Workspace, digest).await?;
+        drop(prepared);
         self.list().await
     }
 
@@ -553,17 +554,39 @@ impl WorkspaceRegistry {
 
     pub(crate) fn apply_prepared_default(
         &self,
-        prepared: PreparedWorkspaceDefault,
+        prepared: &PreparedWorkspaceDefault,
     ) -> Result<super::AcceptedDigest, ApiError> {
-        self.persist(&prepared.next)?;
+        self.persist_prepared_default(prepared)?;
+        Ok(self.install_prepared_default(prepared))
+    }
+
+    pub(crate) fn persist_prepared_default(
+        &self,
+        prepared: &PreparedWorkspaceDefault,
+    ) -> Result<(), ApiError> {
+        self.persist(&prepared.next)
+    }
+
+    pub(crate) fn prepared_default_bytes(
+        &self,
+        prepared: &PreparedWorkspaceDefault,
+    ) -> Result<Vec<u8>, ApiError> {
+        serde_json::to_vec_pretty(&prepared.next)
+            .map_err(|_| internal_error("workspace registry cannot be encoded"))
+    }
+
+    pub(crate) fn install_prepared_default(
+        &self,
+        prepared: &PreparedWorkspaceDefault,
+    ) -> super::AcceptedDigest {
         let digest = self.digest_state(&prepared.next);
         let mut state = self
             .state
             .write()
             .expect("workspace state lock is not poisoned");
-        *state = prepared.next;
+        *state = prepared.next.clone();
         drop(state);
-        Ok(digest)
+        digest
     }
 
     /// Removes only the registry record after checking durable Task usage.
