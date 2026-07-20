@@ -45,6 +45,8 @@ pub enum DomainError {
     PayloadTooLarge,
     RunNotActive,
     ServerBusy,
+    CursorAhead,
+    StreamLimit,
 }
 
 impl std::fmt::Display for DomainError {
@@ -71,6 +73,8 @@ impl std::fmt::Display for DomainError {
             Self::PayloadTooLarge => formatter.write_str("payload too large"),
             Self::RunNotActive => formatter.write_str("run is not active"),
             Self::ServerBusy => formatter.write_str("run queue is full"),
+            Self::CursorAhead => formatter.write_str("requested cursor is ahead of the task"),
+            Self::StreamLimit => formatter.write_str("task stream limit reached"),
         }
     }
 }
@@ -92,6 +96,8 @@ impl DomainError {
             Self::PayloadTooLarge => ApiErrorCode::PayloadTooLarge,
             Self::RunNotActive => ApiErrorCode::RunNotActive,
             Self::ServerBusy => ApiErrorCode::ServerBusy,
+            Self::CursorAhead => ApiErrorCode::CursorAhead,
+            Self::StreamLimit => ApiErrorCode::StreamLimit,
         }
     }
 

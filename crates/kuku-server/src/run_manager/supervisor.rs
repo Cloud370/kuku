@@ -23,6 +23,7 @@ use super::submission::{
     ReviewSubmissionValidator, RunQueueAdmission, RunQueueReservation, SkillSelectionValidator,
     SubmitReviewCommand, SubmitRunCommand,
 };
+use super::subscription::{TaskSubscription, TaskSubscriptionHub};
 use super::{DomainError, TaskCommandService, TaskRepository};
 
 struct ActiveDriver {
@@ -650,6 +651,7 @@ impl RunQueueReservation for SupervisorReservation {
 pub struct TaskRuntime {
     commands: TaskCommandService,
     supervisor: Arc<RunSupervisor>,
+    subscriptions: Arc<TaskSubscriptionHub>,
 }
 
 impl TaskRuntime {
@@ -666,9 +668,11 @@ impl TaskRuntime {
             RunSupervisor::new(repository.clone(), factory, max_concurrent, max_queued)?;
         let commands =
             TaskCommandService::new(repository, workspaces, skills, reviews, supervisor.clone());
+        let subscriptions = TaskSubscriptionHub::attach(commands.repository().clone());
         Ok(Self {
             commands,
             supervisor,
+            subscriptions,
         })
     }
 
@@ -702,9 +706,11 @@ impl TaskRuntime {
             Arc::new(super::submission::TestReviewValidator),
             supervisor.clone(),
         );
+        let subscriptions = TaskSubscriptionHub::attach(commands.repository().clone());
         Ok(Self {
             commands,
             supervisor,
+            subscriptions,
         })
     }
 
@@ -731,6 +737,14 @@ impl TaskRuntime {
 
     pub async fn projection(&self, task_id: &TaskId) -> Result<TaskProjection, DomainError> {
         self.commands.projection(task_id).await
+    }
+
+    pub async fn subscribe(
+        &self,
+        task_id: &TaskId,
+        after: Option<kuku::event::Cursor>,
+    ) -> Result<TaskSubscription, DomainError> {
+        self.subscriptions.subscribe(task_id, after).await
     }
 
     pub async fn list_tasks(

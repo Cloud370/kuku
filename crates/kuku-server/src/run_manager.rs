@@ -13,6 +13,7 @@ pub mod repository;
 mod repository_support;
 pub mod store;
 mod submission;
+pub mod subscription;
 pub mod supervisor;
 
 pub use domain::{DomainError, TaskAggregate};
@@ -35,6 +36,9 @@ mod command_tests;
 
 #[cfg(test)]
 mod publication_tests;
+
+#[cfg(test)]
+mod subscription_tests;
 
 #[cfg(test)]
 mod supervisor_tests;
