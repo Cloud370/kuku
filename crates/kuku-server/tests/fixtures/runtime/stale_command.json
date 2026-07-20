@@ -1,0 +1,7 @@
+{
+  "api_version": 1,
+  "code": "stale_command",
+  "message": "command revision is stale",
+  "trace_id": "trace_runtime_stale_command",
+  "details": null
+}

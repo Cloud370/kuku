@@ -1,0 +1,15 @@
+{
+  "api_version": 1,
+  "items": [
+    {
+      "task_id": "tsk_000000000000000000000001",
+      "workspace_id": "wsp_000000000000000000000001",
+      "title": "New task",
+      "state": "draft",
+      "updated_at": "2026-07-18T00:00:00Z",
+      "active_run_id": null,
+      "latest_run_id": null
+    }
+  ],
+  "next_cursor": null
+}

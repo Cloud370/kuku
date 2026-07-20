@@ -121,6 +121,7 @@ pub struct TaskAggregate {
     revision: TaskRevision,
     cursor: kuku::event::Cursor,
     runs: BTreeMap<RunId, RunEntry>,
+    latest_run_id: Option<RunId>,
     interactions: BTreeMap<InteractionId, InteractionFact>,
     timeline: Vec<TimelineItemProjection>,
     loaded_skills: Vec<LoadedSkillProjection>,
@@ -140,6 +141,7 @@ impl Default for TaskAggregate {
             revision: TaskRevision::try_new(0).expect("zero is valid"),
             cursor: kuku::event::Cursor::try_new(0).expect("zero is valid"),
             runs: BTreeMap::new(),
+            latest_run_id: None,
             interactions: BTreeMap::new(),
             timeline: Vec::new(),
             loaded_skills: Vec::new(),
@@ -480,6 +482,9 @@ impl TaskAggregate {
         }
         self.runs
             .insert(run.run_id.clone(), RunEntry { fact: run.clone() });
+        if previous.is_none() {
+            self.latest_run_id = Some(run.run_id.clone());
+        }
         changes.push(TaskChange::RunStateChanged {
             task: self.summary(),
             active_run: self.active_run_projection().map(Box::new),
@@ -793,9 +798,9 @@ impl TaskAggregate {
     }
 
     fn latest_run_projection(&self) -> Option<RunProjection> {
-        self.runs
-            .values()
-            .last()
+        self.latest_run_id
+            .as_ref()
+            .and_then(|run_id| self.runs.get(run_id))
             .map(|entry| run_projection(&entry.fact))
     }
 }
