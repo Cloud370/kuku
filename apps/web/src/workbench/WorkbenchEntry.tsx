@@ -6,7 +6,7 @@ import type { WorkbenchSnapshot } from './state';
 import { WorkbenchShell } from './components/WorkbenchShell';
 
 export interface WorkbenchEntryProps {
-  chat: ReactNode;
+  chat: (callbacks: WorkbenchChatCallbacks) => ReactNode;
   context: ReactNode;
   onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenContext: () => void;
@@ -18,12 +18,20 @@ export interface WorkbenchEntryProps {
   workspace: WorkspaceSummary | null;
 }
 
+export interface WorkbenchChatCallbacks {
+  onOpenAgentThread: (taskId: string, conversationId: string) => void;
+  onOpenReview: (taskId: string) => void;
+}
+
 export function WorkbenchEntry(props: WorkbenchEntryProps) {
   return (
     <EntryGate
       renderWorkbench={(platformStatus) => (
         <WorkbenchShell
-          chat={props.chat}
+          chat={props.chat({
+            onOpenAgentThread: props.onOpenAgentThread,
+            onOpenReview: props.onOpenReview,
+          })}
           context={props.context}
           onOpenContext={props.onOpenContext}
           onStop={props.onStop}

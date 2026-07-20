@@ -5,25 +5,12 @@ import type { ActivityProjection } from '../../api/generated';
 
 interface ActivityItemProps {
   activity: ActivityProjection;
-  taskId: string;
-  onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenFile: (workspaceId: string, relativePath: string) => void;
 }
 
-function conversationId(activity: ActivityProjection): string | null {
-  const value = activity.conversation_id;
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-export function ActivityItem({
-  activity,
-  taskId,
-  onOpenAgentThread,
-  onOpenFile,
-}: ActivityItemProps) {
+export function ActivityItem({ activity, onOpenFile }: ActivityItemProps) {
   const [expanded, setExpanded] = useState(false);
   const delegated = activity.kind === 'delegated_agent';
-  const agentConversationId = delegated ? conversationId(activity) : null;
   const detailLabel = activity.kind === 'tool' ? 'Tool details' : 'Activity details';
 
   return (
@@ -70,17 +57,6 @@ export function ActivityItem({
         >
           {activity.detail}
         </div>
-      ) : null}
-      {agentConversationId !== null ? (
-        <button
-          className="mt-2 text-xs font-medium text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
-          onClick={() => {
-            onOpenAgentThread(taskId, agentConversationId);
-          }}
-          type="button"
-        >
-          Open delegated Agent thread
-        </button>
       ) : null}
       {activity.file_references.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-2">

@@ -57,30 +57,26 @@ function message(
   };
 }
 
-function activity(
-  kind: ActivityKind,
-  extras: Record<string, unknown> = {},
-): TimelineItemProjection {
+function activity(kind: ActivityKind, id = `activity-${kind}`): TimelineItemProjection {
   const item: ActivityProjection = {
-    activity_id: `activity-${kind}`,
+    activity_id: id,
     detail: 'Server supplied detail',
     file_references: [],
     kind,
     order_key: 2,
     status: 'running',
     title: kind === 'tool' ? 'tool' : 'Delegated Agent',
-    ...extras,
   };
   return { type: 'activity', item };
 }
 
-function interaction(): TimelineItemProjection {
+function interaction(id = 'int_000000000000000000000001'): TimelineItemProjection {
   const item: InteractionProjection = {
     choices: [
       { choice_id: 'allow', label: 'Allow' },
       { choice_id: 'deny', label: 'Deny' },
     ],
-    interaction_id: 'int_000000000000000000000001',
+    interaction_id: id,
     order_key: 3,
     prompt: 'Allow file write?',
     selected_choice_id: null,
@@ -93,7 +89,6 @@ function props(overrides: Partial<ChatTimelineProps> = {}): ChatTimelineProps {
   const taskProjection = projection();
   return {
     loadOlder: vi.fn(),
-    onOpenAgentThread: vi.fn(),
     onOpenFile: vi.fn(),
     onOpenRequestContext: vi.fn(),
     onOpenReview: vi.fn(),
@@ -135,22 +130,20 @@ describe('ChatTimeline', () => {
     expect(onRespond).toHaveBeenCalledWith(taskId, 'int_000000000000000000000001', 'allow');
   });
 
-  it('opens a delegated Agent thread only from a server conversation ID', async () => {
-    const user = userEvent.setup();
-    const onOpenAgentThread = vi.fn();
-    const items = [
-      activity('delegated_agent', {
-        conversation_id: 'con_000000000000000000000001',
-      }),
-    ];
-    render(
-      <ChatTimeline
-        {...props({ onOpenAgentThread, projection: projection(items), timelineItems: items })}
-      />,
-    );
+  it('does not invent a delegated Agent thread action without a canonical identity', () => {
+    const items = [activity('delegated_agent')];
+    render(<ChatTimeline {...props({ projection: projection(items), timelineItems: items })} />);
 
-    await user.click(screen.getByRole('button', { name: 'Open delegated Agent thread' }));
-    expect(onOpenAgentThread).toHaveBeenCalledWith(taskId, 'con_000000000000000000000001');
+    expect(screen.queryByRole('button', { name: 'Open delegated Agent thread' })).toBeNull();
+  });
+
+  it('keeps timeline row IDs distinct across projection kinds', () => {
+    const items = [message('same-id'), activity('tool', 'same-id'), interaction('same-id')];
+    render(<ChatTimeline {...props({ projection: projection(items), timelineItems: items })} />);
+
+    expect(document.querySelector('[data-timeline-id="message:same-id"]')).not.toBeNull();
+    expect(document.querySelector('[data-timeline-id="activity:same-id"]')).not.toBeNull();
+    expect(document.querySelector('[data-timeline-id="interaction:same-id"]')).not.toBeNull();
   });
 
   it('preserves ordered Request IDs and opens historical Context', async () => {

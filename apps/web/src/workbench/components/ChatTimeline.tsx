@@ -8,7 +8,6 @@ import { VirtualTimeline } from './VirtualTimeline';
 
 export interface ChatTimelineProps {
   loadOlder: () => Promise<void> | void;
-  onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenFile: (workspaceId: string, relativePath: string) => void;
   onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
@@ -20,14 +19,13 @@ export interface ChatTimelineProps {
 }
 
 function itemId(item: TimelineItemProjection): string {
-  if (item.type === 'message') return item.item.message_id;
-  if (item.type === 'activity') return item.item.activity_id;
-  return item.item.interaction_id;
+  if (item.type === 'message') return `message:${item.item.message_id}`;
+  if (item.type === 'activity') return `activity:${item.item.activity_id}`;
+  return `interaction:${item.item.interaction_id}`;
 }
 
 export function ChatTimeline({
   loadOlder,
-  onOpenAgentThread,
   onOpenFile,
   onOpenRequestContext,
   onOpenReview,
@@ -101,14 +99,7 @@ export function ChatTimeline({
               );
             }
             if (item.type === 'activity') {
-              return (
-                <ActivityItem
-                  activity={item.item}
-                  onOpenAgentThread={onOpenAgentThread}
-                  onOpenFile={onOpenFile}
-                  taskId={taskId}
-                />
-              );
+              return <ActivityItem activity={item.item} onOpenFile={onOpenFile} />;
             }
             return (
               <InteractionCard interaction={item.item} onRespond={onRespond} taskId={taskId} />

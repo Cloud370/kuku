@@ -34,6 +34,21 @@ describe('SafeMarkdown', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 
+  it('removes raw interactive and SVG elements from untrusted HTML', () => {
+    render(
+      <SafeMarkdown
+        source={
+          '<button>Run</button><input value="unsafe" /><svg><circle /></svg><a href="/safe">Safe</a>'
+        }
+      />,
+    );
+
+    expect(document.querySelector('button')).toBeNull();
+    expect(document.querySelector('input')).toBeNull();
+    expect(document.querySelector('svg')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Safe' })).toHaveAttribute('href', '/safe');
+  });
+
   it('delegates fenced code to the bounded safe code block', () => {
     render(<SafeMarkdown source={'Before\n\n```rust\nfn main() {}\n```\n\nAfter'} />);
 

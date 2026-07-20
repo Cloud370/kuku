@@ -132,7 +132,7 @@ describe('VirtualTimeline', () => {
     );
 
     await waitFor(() => {
-      expect(main.scrollTop).toBe(250);
+      expect(main.scrollTop).toBe(210);
     });
     if (originalRect !== undefined) {
       Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', originalRect);
@@ -140,14 +140,43 @@ describe('VirtualTimeline', () => {
     main.remove();
   });
 
-  it('uses the row estimate when a large prepend moves the anchor beyond overscan', async () => {
+  it('uses the measured anchor position when a large variable-height prepend exceeds overscan', async () => {
+    const originalRect = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'getBoundingClientRect',
+    );
+    const prepended = Array.from({ length: 200 }, (_, index) => ({
+      id: `new-${String(index)}`,
+      text: `New ${String(index)}`,
+    }));
+    const heights = new Map(prepended.map(({ id }, index) => [id, 32 + (index % 7) * 13] as const));
+    const measuredIds = new Set<string>();
+    const main = document.createElement('main');
+    main.setAttribute('aria-label', 'Chat');
+    document.body.append(main);
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      const measurementId = this.dataset.timelineMeasurementId;
+      if (measurementId?.startsWith('new-') === true) measuredIds.add(measurementId);
+      const id = measurementId ?? this.dataset.timelineId ?? '';
+      const height = heights.get(id) ?? 80;
+      const translatedTop = Number(/translateY\((\d+)px\)/.exec(this.style.transform)?.[1] ?? 0);
+      const top = translatedTop - main.scrollTop;
+      return {
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 800,
+        toJSON: () => ({}),
+        top,
+        width: 800,
+        x: 0,
+        y: top,
+      };
+    };
     const initial = Array.from({ length: 10 }, (_, index) => ({
       id: `old-${String(index)}`,
       text: `Old ${String(index)}`,
     }));
-    const main = document.createElement('main');
-    main.setAttribute('aria-label', 'Chat');
-    document.body.append(main);
     const view = render(
       <VirtualTimeline
         gapAfter={false}
@@ -165,13 +194,7 @@ describe('VirtualTimeline', () => {
       <VirtualTimeline
         gapAfter={false}
         getItemId={(item) => item.id}
-        items={[
-          ...Array.from({ length: 200 }, (_, index) => ({
-            id: `new-${String(index)}`,
-            text: `New ${String(index)}`,
-          })),
-          ...initial,
-        ]}
+        items={[...prepended, ...initial]}
         maxMountedRows={10}
         onReturnToRecent={vi.fn()}
         renderItem={(item) => item.text}
@@ -179,8 +202,13 @@ describe('VirtualTimeline', () => {
     );
 
     await waitFor(() => {
-      expect(main.scrollTop).toBe(25 + 200 * 96);
+      const measuredHeight = [...heights.values()].reduce((total, height) => total + height, 0);
+      expect(measuredIds.size).toBe(prepended.length);
+      expect(main.scrollTop).toBe(25 + measuredHeight);
     });
+    if (originalRect !== undefined) {
+      Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', originalRect);
+    }
     main.remove();
   });
 });

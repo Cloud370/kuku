@@ -10,8 +10,36 @@ interface SafeMarkdownProps {
 function safeHtml(token: Token): string {
   const parsed = marked.parser([token], { async: false });
   const sanitized = DOMPurify.sanitize(parsed, {
+    ALLOWED_ATTR: ['href', 'title'],
+    ALLOWED_TAGS: [
+      'a',
+      'blockquote',
+      'br',
+      'code',
+      'del',
+      'em',
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'hr',
+      'li',
+      'ol',
+      'p',
+      'pre',
+      'strong',
+      'table',
+      'tbody',
+      'td',
+      'th',
+      'thead',
+      'tr',
+      'ul',
+    ],
+    ALLOW_DATA_ATTR: false,
     FORBID_ATTR: ['style'],
-    FORBID_TAGS: ['audio', 'form', 'iframe', 'img', 'object', 'script', 'source', 'style', 'video'],
   });
   const documentFragment = new DOMParser().parseFromString(sanitized, 'text/html');
   const links = Array.from(documentFragment.querySelectorAll<HTMLAnchorElement>('a'));
