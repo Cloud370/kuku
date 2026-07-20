@@ -5,9 +5,9 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    InteractionId, ObservationFact, RequestCompleted, RequestFailed, RequestId, RequestSnapshot,
-    RequestStarted, ReviewSubmissionId, ReviewSubmissionRecorded, SkillLoadFact, TaskId,
-    WorkspaceId, WorkspaceRelativePath,
+    ConversationId, InteractionId, ObservationFact, RequestCompleted, RequestFailed, RequestId,
+    RequestSnapshot, RequestStarted, ReviewSubmissionId, ReviewSubmissionRecorded, SkillLoadFact,
+    TaskId, WorkspaceId, WorkspaceRelativePath,
 };
 
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
@@ -39,6 +39,38 @@ where
         value => Ok(value),
     }
 }
+
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+macro_rules! required_nullable_schema {
+    ($name:ident, $value:ty) => {
+        struct $name;
+
+        impl JsonSchema for $name {
+            fn inline_schema() -> bool {
+                true
+            }
+
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                generator.subschema_for::<Option<$value>>()
+            }
+        }
+    };
+}
+
+required_nullable_schema!(RequiredNullableConversationId, ConversationId);
+required_nullable_schema!(RequiredNullableString, String);
+required_nullable_schema!(RequiredNullableBool, bool);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StorageExhaustionError {
@@ -419,6 +451,18 @@ pub struct ActivityFact {
     pub kind: ActivityKindFact,
     pub status: ActivityStatusFact,
     pub detail: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    #[schemars(with = "RequiredNullableConversationId")]
+    pub conversation_id: Option<ConversationId>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    #[schemars(with = "RequiredNullableString")]
+    pub agent: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    #[schemars(with = "RequiredNullableString")]
+    pub tier: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    #[schemars(with = "RequiredNullableBool")]
+    pub result_in_main: Option<bool>,
     pub file_references: Vec<FileReferenceFact>,
 }
 
@@ -551,6 +595,29 @@ impl TaskEvent {
     }
 
     fn validate(&self) -> Result<(), TaskLedgerError> {
+        if let Self::ActivityUpserted { activity } = self {
+            let delegated_identity_complete = activity.conversation_id.is_some()
+                && activity
+                    .agent
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                && activity
+                    .tier
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                && activity.result_in_main.is_some();
+            let delegated_identity_absent = activity.conversation_id.is_none()
+                && activity.agent.is_none()
+                && activity.tier.is_none()
+                && activity.result_in_main.is_none();
+            let valid = match activity.kind {
+                ActivityKindFact::DelegatedAgent => delegated_identity_complete,
+                ActivityKindFact::Tool | ActivityKindFact::System => delegated_identity_absent,
+            };
+            if !valid {
+                return Err(TaskLedgerError::InvalidActivityIdentity);
+            }
+        }
         let expected = match self {
             Self::RunQueued { run } => Some((RunState::Queued, run)),
             Self::RunStarted { run } => Some((RunState::Running, run)),
@@ -644,6 +711,8 @@ pub enum TaskLedgerError {
     ContradictoryRunState,
     #[error("terminal run facts require a summary and active run facts must not have one")]
     InvalidRunCompletion,
+    #[error("delegated activity identity must be complete and exclusive to delegated activities")]
+    InvalidActivityIdentity,
 }
 
 impl CommandReceipt {

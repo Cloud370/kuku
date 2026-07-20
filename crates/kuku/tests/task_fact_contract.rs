@@ -251,6 +251,10 @@ fn task_event_matrix_covers_each_constructible_projection_variant_and_reverse_cl
         title: "work".into(),
         status: ActivityStatusFact::Completed,
         detail: None,
+        conversation_id: None,
+        agent: None,
+        tier: None,
+        result_in_main: None,
         file_references: vec![],
     };
     let controls = vec![
