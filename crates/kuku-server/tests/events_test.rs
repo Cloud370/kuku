@@ -1,7 +1,28 @@
 mod common;
 
 use common::mock_provider;
-use kuku::event::{EventPayload, EventStore};
+use kuku::event::{
+    ConversationId, EventPayload, EventStore, ExecutionScope, RequestId, RequestScope, RunId,
+    TaskId, TurnId, WorkspaceId,
+};
+
+fn execution_scope() -> ExecutionScope {
+    ExecutionScope {
+        workspace_id: WorkspaceId::parse("wsp_111111111111111111111111").unwrap(),
+        task_id: TaskId::parse("tsk_222222222222222222222222").unwrap(),
+        run_id: RunId::parse("run_333333333333333333333333").unwrap(),
+        turn_id: TurnId::parse("trn_444444444444444444444444").unwrap(),
+        conversation_id: ConversationId::parse("con_555555555555555555555555").unwrap(),
+        turn_index: 1,
+    }
+}
+
+fn request_scope() -> RequestScope {
+    RequestScope {
+        execution: execution_scope(),
+        request_id: RequestId::parse("req_666666666666666666666666").unwrap(),
+    }
+}
 
 fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, session_id: &str) {
     let events_path = kuku::session::session_events_path(home, workspace, session_id).unwrap();
@@ -29,6 +50,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: execution_scope(),
             ts: "2026-06-09T00:00:03Z".into(),
             conversation: "main".into(),
             turn: 1,
@@ -39,6 +61,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: execution_scope(),
             ts: "2026-06-09T00:00:04Z".into(),
             conversation: "review".into(),
             turn: 1,
@@ -49,9 +72,9 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            request: request_scope(),
             ts: "2026-06-09T00:00:04.500Z".into(),
             turn: 1,
-            request_id: "req_main".into(),
             text: "main model response".into(),
             thinking: None,
             input_tokens_total: None,
@@ -59,11 +82,11 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::ToolCall {
+            request: request_scope(),
             ts: "2026-06-09T00:00:04.600Z".into(),
             turn: 1,
             conversation: None,
             tool_call_id: "tool_main".into(),
-            request_id: "req_main".into(),
             index: 0,
             tool: "read_file".into(),
             args: serde_json::json!({"path": "README.md"}),
@@ -71,6 +94,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::ToolResult {
+            execution: execution_scope(),
             ts: "2026-06-09T00:00:04.700Z".into(),
             turn: 1,
             conversation: None,
@@ -88,6 +112,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
+            execution: execution_scope(),
             ts: "2026-06-09T00:00:05Z".into(),
             conversation: "review".into(),
             turn: 1,
