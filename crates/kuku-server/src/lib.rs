@@ -1,6 +1,7 @@
 pub mod api;
 pub mod config_watcher;
 pub mod error_mapping;
+pub mod platform;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;

@@ -27,6 +27,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "1"
 arc-swap = "1"
 home = "0.5.12"
+sha2 = "0.10"
+toml = "0.8"
 
 [profile.release]
 strip = true
