@@ -4,32 +4,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use kuku::event::{
-    CommandIntent, CommandReceipt, CommandResult, MessageFact, MessageRoleFact, RunFact, RunState,
-    TaskEvent, TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction,
+    CommandIntent, CommandReceipt, CommandResult, MessageFact, MessageRoleFact,
+    ReviewSubmissionRecorded, ReviewSubmissionReference, RunFact, RunId, RunState, TaskEvent,
+    TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction,
 };
 
 use crate::api::{
     ApiErrorCode, ApiVersion, CommandAccepted, CreateTaskRequest, CreateTaskResponse,
-    ListTasksQuery, PageCursor, SubmitRunResponse, TaskPage, TaskProjection, TimelinePage,
-    TimelineQuery,
+    ListTasksQuery, PageCursor, ReviewSubmissionResult, SubmitRunResponse, TaskPage,
+    TaskProjection, TimelinePage, TimelineQuery,
 };
 use crate::platform::WorkspaceRegistry;
 
 use super::domain::{bounded_timeline_suffix, DomainError, TaskAggregate};
 use super::idempotency::DurableReceipt;
 use super::repository::TaskRepository;
+use super::submission::review_result;
+pub use super::submission::{
+    ReviewSubmissionValidator, RunQueueAdmission, RunQueueReservation, SkillSelectionValidator,
+    SubmitReviewCommand, SubmitRunCommand, ValidatedSkillSelection,
+};
 
 pub type CreateTaskCommand = CreateTaskRequest;
-
-#[derive(Debug, Clone)]
-pub struct SubmitRunCommand {
-    pub task_id: TaskId,
-    pub expected_task_revision: TaskRevision,
-    pub idempotency_key: String,
-    pub message: String,
-    pub tier_id: String,
-    pub skill_ids: Vec<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct StopRunCommand {
@@ -51,6 +47,9 @@ pub struct ResolveInteractionCommand {
 pub struct TaskCommandService {
     repository: TaskRepository,
     workspaces: Option<Arc<WorkspaceRegistry>>,
+    skills: Arc<dyn SkillSelectionValidator>,
+    reviews: Arc<dyn ReviewSubmissionValidator>,
+    queue: Arc<dyn RunQueueAdmission>,
 }
 
 impl std::fmt::Debug for TaskCommandService {
@@ -62,18 +61,59 @@ impl std::fmt::Debug for TaskCommandService {
 }
 
 impl TaskCommandService {
-    pub fn new(repository: TaskRepository, workspaces: Arc<WorkspaceRegistry>) -> Self {
+    pub fn new(
+        repository: TaskRepository,
+        workspaces: Arc<WorkspaceRegistry>,
+        skills: Arc<dyn SkillSelectionValidator>,
+        reviews: Arc<dyn ReviewSubmissionValidator>,
+        queue: Arc<dyn RunQueueAdmission>,
+    ) -> Self {
         Self {
             repository,
             workspaces: Some(workspaces),
+            skills,
+            reviews,
+            queue,
         }
     }
 
     #[cfg(test)]
     pub(super) fn new_unchecked(repository: TaskRepository) -> Self {
+        Self::new_unchecked_with_ports(
+            repository,
+            Arc::new(super::submission::TestSkillValidator),
+            Arc::new(super::submission::TestReviewValidator),
+            Arc::new(super::submission::TestQueue),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_test_ports(
+        repository: TaskRepository,
+        workspaces: Arc<WorkspaceRegistry>,
+    ) -> Self {
+        Self::new(
+            repository,
+            workspaces,
+            Arc::new(super::submission::TestSkillValidator),
+            Arc::new(super::submission::TestReviewValidator),
+            Arc::new(super::submission::TestQueue),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_unchecked_with_ports(
+        repository: TaskRepository,
+        skills: Arc<dyn SkillSelectionValidator>,
+        reviews: Arc<dyn ReviewSubmissionValidator>,
+        queue: Arc<dyn RunQueueAdmission>,
+    ) -> Self {
         Self {
             repository,
             workspaces: None,
+            skills,
+            reviews,
+            queue,
         }
     }
 
@@ -125,7 +165,7 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append_initial(&task_id, TaskLedgerRecord::Control(transaction))?;
-        let aggregate = self.repository.publish(&task_id)?;
+        let aggregate = self.repository.rebuild(&task_id)?;
         Ok(CreateTaskResponse {
             api_version: ApiVersion,
             projection: aggregate.projection()?,
@@ -173,14 +213,21 @@ impl TaskCommandService {
         if aggregate.projection()?.task.state.is_active() {
             return Err(DomainError::TaskBusy);
         }
+        let workspace_id = aggregate
+            .workspace_id()
+            .ok_or(DomainError::TaskNotCreated)?;
+        let validated = self
+            .skills
+            .validate(workspace_id, &command.tier_id, &command.skill_ids)?;
+        let reservation = self.queue.clone().reserve()?;
         let run_id = kuku::event::RunId::try_new().map_err(|_| DomainError::StorageExhausted)?;
         let next_revision = command
             .expected_task_revision
             .checked_next()
             .map_err(|_| DomainError::StorageExhausted)?;
         let receipt = CommandReceipt::new(
-            command.idempotency_key,
-            digest,
+            command.idempotency_key.clone(),
+            digest.clone(),
             CommandResult::RunSubmitted {
                 run_id: run_id.clone(),
             },
@@ -204,10 +251,7 @@ impl TaskCommandService {
                     },
                 },
                 TaskEvent::SkillsChanged {
-                    selection: kuku::event::SkillsChangedFact {
-                        tier_id: command.tier_id,
-                        skill_ids: command.skill_ids,
-                    },
+                    selection: validated.selection,
                 },
                 TaskEvent::RunQueued {
                     run: RunFact {
@@ -225,9 +269,14 @@ impl TaskCommandService {
             ],
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
-        self.repository
-            .append(&command.task_id, TaskLedgerRecord::Control(transaction))?;
-        self.repository.publish(&command.task_id)?;
+        self.append_submission(
+            &command.task_id,
+            &command.idempotency_key,
+            &digest,
+            &run_id,
+            transaction,
+            reservation,
+        )?;
         Ok(SubmitRunResponse {
             api_version: ApiVersion,
             task_id: command.task_id,
@@ -235,6 +284,147 @@ impl TaskCommandService {
             task_revision: next_revision,
             replayed: false,
         })
+    }
+
+    pub async fn submit_review(
+        &self,
+        command: SubmitReviewCommand,
+    ) -> Result<ReviewSubmissionResult, DomainError> {
+        let intent = CommandIntent::SubmitReview {
+            submission_id: command.submission_id.clone(),
+        };
+        let digest = intent_digest_with_payload(
+            Some(&command.task_id),
+            &intent,
+            Some(&command.payload_hash),
+        )?;
+        let _key = self.repository.key_guard(&command.idempotency_key).await;
+        let _task = self.repository.task_guard(&command.task_id).await;
+        if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
+            return self.replay_review(receipt, &command.task_id);
+        }
+        let aggregate = self.repository.rebuild(&command.task_id)?;
+        if aggregate.revision() != command.expected_task_revision {
+            return Err(DomainError::StaleCommand);
+        }
+        if aggregate.projection()?.task.state.is_active() {
+            return Err(DomainError::TaskBusy);
+        }
+        let notes =
+            self.reviews
+                .validate(&command.task_id, &command.submission_id, &command.notes)?;
+        let reservation = self.queue.clone().reserve()?;
+        let run_id = RunId::try_new().map_err(|_| DomainError::StorageExhausted)?;
+        let next_revision = command
+            .expected_task_revision
+            .checked_next()
+            .map_err(|_| DomainError::StorageExhausted)?;
+        let submitted_at = current_timestamp()?;
+        let recorded = ReviewSubmissionRecorded {
+            submission_id: command.submission_id.clone(),
+            task_id: command.task_id.clone(),
+            run_id: run_id.clone(),
+            task_revision: next_revision,
+            submitted_at: submitted_at.clone(),
+            notes,
+        };
+        let reference = ReviewSubmissionReference {
+            submission_id: command.submission_id.clone(),
+            task_id: command.task_id.clone(),
+            run_id: run_id.clone(),
+            task_revision: next_revision,
+            submitted_at: submitted_at.clone(),
+        };
+        let receipt = CommandReceipt::new(
+            command.idempotency_key.clone(),
+            digest.clone(),
+            CommandResult::ReviewSubmitted {
+                submission_id: command.submission_id,
+            },
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        let transaction = TaskTransaction::try_new(
+            next_revision,
+            receipt,
+            vec![
+                TaskEvent::MessageAppended {
+                    message: MessageFact {
+                        message_id: format!("msg_{}", run_id.as_str()),
+                        task_id: command.task_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        role: MessageRoleFact::User,
+                        text: command.message,
+                        finalized: true,
+                        request_ids: Vec::new(),
+                        file_references: Vec::new(),
+                    },
+                },
+                TaskEvent::ReviewSubmissionReferenced {
+                    submission: reference,
+                },
+                TaskEvent::ReviewSubmissionRecorded(recorded.clone()),
+                TaskEvent::RunQueued {
+                    run: RunFact {
+                        run_id: run_id.clone(),
+                        task_id: command.task_id.clone(),
+                        state: RunState::Queued,
+                        started_at: submitted_at,
+                        finished_at: None,
+                        summary: None,
+                        checks: None,
+                        metrics: None,
+                        workspace_changes: None,
+                    },
+                },
+            ],
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        self.append_submission(
+            &command.task_id,
+            &command.idempotency_key,
+            &digest,
+            &run_id,
+            transaction,
+            reservation,
+        )?;
+        Ok(review_result(recorded, false))
+    }
+
+    fn append_submission(
+        &self,
+        task_id: &TaskId,
+        idempotency_key: &str,
+        digest: &str,
+        run_id: &RunId,
+        transaction: TaskTransaction,
+        reservation: Box<dyn RunQueueReservation>,
+    ) -> Result<(), DomainError> {
+        if let Err(error) = self
+            .repository
+            .append(task_id, TaskLedgerRecord::Control(transaction))
+        {
+            if self.repository.receipt(idempotency_key, digest)?.is_some() {
+                reservation.commit(task_id.clone(), run_id.clone());
+            }
+            return Err(error);
+        }
+        reservation.commit(task_id.clone(), run_id.clone());
+        Ok(())
+    }
+
+    fn replay_review(
+        &self,
+        receipt: DurableReceipt,
+        task_id: &TaskId,
+    ) -> Result<ReviewSubmissionResult, DomainError> {
+        if &receipt.task_id != task_id {
+            return Err(DomainError::LedgerCorrupt);
+        }
+        let CommandResult::ReviewSubmitted { submission_id } = receipt.result else {
+            return Err(DomainError::LedgerCorrupt);
+        };
+        let recorded = self.repository.review_submission(task_id, &submission_id)?;
+        Ok(review_result(recorded, true))
     }
 
     pub async fn list_tasks(
@@ -385,7 +575,7 @@ impl TaskCommandService {
             .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(task_id, TaskLedgerRecord::Activity(batch))?;
-        self.repository.publish(task_id)
+        self.repository.rebuild(task_id)
     }
 
     pub async fn stop(&self, command: StopRunCommand) -> Result<CommandAccepted, DomainError> {
@@ -430,7 +620,6 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        self.repository.publish(&command.task_id)?;
         Ok(CommandAccepted {
             api_version: ApiVersion,
             task_id: command.task_id,
@@ -485,7 +674,6 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        self.repository.publish(&command.task_id)?;
         Ok(CommandAccepted {
             api_version: ApiVersion,
             task_id: command.task_id,
@@ -535,13 +723,26 @@ fn replay_accepted(
 }
 
 fn intent_digest(task_id: Option<&TaskId>, intent: &CommandIntent) -> Result<String, DomainError> {
+    intent_digest_with_payload(task_id, intent, None)
+}
+
+fn intent_digest_with_payload(
+    task_id: Option<&TaskId>,
+    intent: &CommandIntent,
+    payload_hash: Option<&str>,
+) -> Result<String, DomainError> {
     #[derive(Serialize)]
     struct DigestInput<'a> {
         task_id: Option<&'a TaskId>,
         intent: &'a CommandIntent,
+        payload_hash: Option<&'a str>,
     }
-    let bytes = serde_json::to_vec(&DigestInput { task_id, intent })
-        .map_err(|_| DomainError::LedgerCorrupt)?;
+    let bytes = serde_json::to_vec(&DigestInput {
+        task_id,
+        intent,
+        payload_hash,
+    })
+    .map_err(|_| DomainError::LedgerCorrupt)?;
     let digest = Sha256::digest(bytes);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }

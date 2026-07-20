@@ -2,17 +2,19 @@ use std::collections::BTreeMap;
 
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, ChangeKindFact, ChangesAvailabilityFact,
-    FileReferenceFact, InteractionFact, InteractionId, MessageFact, MessageRoleFact, RunFact,
-    RunId, RunState, TaskEvent, TaskId, TaskLedgerRecord, TaskRevision, TaskState, WorkspaceId,
+    FileReferenceFact, InteractionFact, InteractionId, MessageFact, MessageRoleFact,
+    ReviewSubmissionRecorded, RunFact, RunId, RunState, TaskEvent, TaskId, TaskLedgerRecord,
+    TaskRevision, TaskState, WorkspaceId,
 };
 
 use crate::api::{
-    ActivityKind, ActivityProjection, ActivityStatus, ApiError, ApiErrorCode, ApiVersion,
-    ChangeEntry, ChangeKind, ChangesAvailability, CheckProjection, CompletionProjection,
-    FileReferenceProjection, InteractionChoiceProjection, InteractionProjection, InteractionStatus,
-    LoadedSkillProjection, MessageProjection, MessageRole, MetricProjection, PageCursor,
-    ReviewSnapshot, ReviewSummaryProjection, RunProjection, TaskChange, TaskProjection,
-    TaskSummary, TimelineItemProjection,
+    ActivityKind, ActivityProjection, ActivityStatus, AnnotationStatus, ApiError, ApiErrorCode,
+    ApiVersion, ChangeEntry, ChangeKind, ChangesAvailability, CheckProjection,
+    CompletionProjection, FileReferenceProjection, InteractionChoiceProjection,
+    InteractionProjection, InteractionStatus, LoadedSkillProjection, MessageProjection,
+    MessageRole, MetricProjection, PageCursor, ReviewSnapshot, ReviewSubmissionProjection,
+    ReviewSubmissionsChanged, ReviewSummaryProjection, RunProjection, SubmittedReviewNote,
+    TaskChange, TaskProjection, TaskSummary, TimelineItemProjection,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub enum DomainError {
     InvalidRequest,
     PayloadTooLarge,
     RunNotActive,
+    ServerBusy,
 }
 
 impl std::fmt::Display for DomainError {
@@ -55,6 +58,7 @@ impl std::fmt::Display for DomainError {
             Self::InvalidRequest => formatter.write_str("invalid request"),
             Self::PayloadTooLarge => formatter.write_str("payload too large"),
             Self::RunNotActive => formatter.write_str("run is not active"),
+            Self::ServerBusy => formatter.write_str("run queue is full"),
         }
     }
 }
@@ -75,6 +79,7 @@ impl DomainError {
             Self::InvalidRequest => ApiErrorCode::InvalidRequest,
             Self::PayloadTooLarge => ApiErrorCode::PayloadTooLarge,
             Self::RunNotActive => ApiErrorCode::RunNotActive,
+            Self::ServerBusy => ApiErrorCode::ServerBusy,
         }
     }
 
@@ -132,6 +137,10 @@ impl TaskAggregate {
         self.task_id.as_ref()
     }
 
+    pub fn workspace_id(&self) -> Option<&WorkspaceId> {
+        self.workspace_id.as_ref()
+    }
+
     pub fn revision(&self) -> TaskRevision {
         self.revision
     }
@@ -152,6 +161,10 @@ impl TaskAggregate {
 
     pub fn set_updated_at(&mut self, updated_at: String) {
         self.updated_at = updated_at;
+    }
+
+    pub fn advance_cursor(&mut self, cursor: kuku::event::Cursor) {
+        self.cursor = cursor;
     }
 
     pub fn apply_record(
@@ -232,8 +245,11 @@ impl TaskAggregate {
                     .insert(interaction.interaction_id.clone(), interaction.clone());
                 self.set_run_state(&interaction.run_id, RunState::NeedsAttention)?;
                 changes.push(self.run_state_change());
+                let projected = interaction_projection(interaction, self.cursor);
+                self.timeline
+                    .push(TimelineItemProjection::Interaction(projected.clone()));
                 changes.push(TaskChange::InteractionUpserted {
-                    interaction: interaction_projection(interaction, self.cursor),
+                    interaction: projected,
                 });
             }
             TaskEvent::InteractionResolved {
@@ -259,8 +275,10 @@ impl TaskAggregate {
                     self.set_run_state(&run_id, RunState::Running)?;
                     changes.push(self.run_state_change());
                 }
+                let projected = interaction_projection(&interaction, self.cursor);
+                self.replace_interaction_timeline(projected.clone());
                 changes.push(TaskChange::InteractionUpserted {
-                    interaction: interaction_projection(&interaction, self.cursor),
+                    interaction: projected,
                 });
             }
             TaskEvent::InteractionCancelled { interaction_id } => {
@@ -272,8 +290,10 @@ impl TaskAggregate {
                     interaction.selected_choice_id = Some("cancelled".to_string());
                     interaction.clone()
                 };
+                let projected = interaction_projection(&interaction, self.cursor);
+                self.replace_interaction_timeline(projected.clone());
                 changes.push(TaskChange::InteractionUpserted {
-                    interaction: interaction_projection(&interaction, self.cursor),
+                    interaction: projected,
                 });
             }
             TaskEvent::MessageAppended { message } => {
@@ -359,7 +379,14 @@ impl TaskAggregate {
                 self.review_total = self.review_total.saturating_add(1);
                 self.latest_submission_id = Some(submission.submission_id.clone());
             }
-            TaskEvent::ReviewSubmissionRecorded(_) => {}
+            TaskEvent::ReviewSubmissionRecorded(recorded) => {
+                changes.push(TaskChange::ReviewSubmissionsChanged {
+                    change: ReviewSubmissionsChanged {
+                        submission: review_submission_projection(recorded),
+                        total_submissions: self.review_total,
+                    },
+                });
+            }
             TaskEvent::RequestSnapshot(_)
             | TaskEvent::RequestStarted(_)
             | TaskEvent::RequestCompleted(_)
@@ -399,6 +426,18 @@ impl TaskAggregate {
             latest_run: self.latest_run_projection().map(Box::new),
         });
         Ok(())
+    }
+
+    fn replace_interaction_timeline(&mut self, interaction: InteractionProjection) {
+        if let Some(TimelineItemProjection::Interaction(current)) = self.timeline.iter_mut().find(
+            |item| {
+                matches!(item, TimelineItemProjection::Interaction(value) if value.interaction_id == interaction.interaction_id)
+            },
+        ) {
+            let mut interaction = interaction;
+            interaction.order_key = current.order_key;
+            *current = interaction;
+        }
     }
 
     fn set_run_state(&mut self, run_id: &RunId, state: RunState) -> Result<(), DomainError> {
@@ -784,6 +823,30 @@ fn interaction_projection(
             InteractionStatus::Pending
         },
         order_key,
+    }
+}
+
+fn review_submission_projection(recorded: &ReviewSubmissionRecorded) -> ReviewSubmissionProjection {
+    ReviewSubmissionProjection {
+        submission_id: recorded.submission_id.clone(),
+        task_id: recorded.task_id.clone(),
+        run_id: recorded.run_id.clone(),
+        task_revision: recorded.task_revision,
+        submitted_at: recorded.submitted_at.clone(),
+        notes: recorded
+            .notes
+            .iter()
+            .map(|note| SubmittedReviewNote {
+                path: note.path.clone(),
+                revision: note.revision.clone(),
+                side: note.side,
+                start_line: note.start_line,
+                end_line: note.end_line,
+                excerpt: note.excerpt.clone(),
+                comment: note.comment.clone(),
+                status: AnnotationStatus::Current,
+            })
+            .collect(),
     }
 }
 

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::SystemTime;
+
+use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 
@@ -13,7 +15,29 @@ use super::types::{EventPayload, StoredEvent};
 struct ReplayScan {
     events: Vec<StoredEvent>,
     last_valid_offset: u64,
+    last_record: Option<RecordTail>,
     needs_truncation: bool,
+}
+
+#[derive(Clone)]
+struct RecordTail {
+    start: u64,
+    end: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume_serial_number: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(not(any(unix, windows)))]
+    created: Option<SystemTime>,
 }
 
 type EventObserver = Arc<dyn Fn(&StoredEvent) + Send + Sync>;
@@ -22,6 +46,8 @@ type EventObserver = Arc<dyn Fn(&StoredEvent) + Send + Sync>;
 struct TailState {
     initialized: bool,
     last_id: u64,
+    identity: Option<FileIdentity>,
+    last_record: Option<RecordTail>,
     modified: Option<SystemTime>,
     valid_offset: u64,
     #[cfg(test)]
@@ -33,6 +59,8 @@ struct SharedStoreState {
     observers: Mutex<Vec<EventObserver>>,
     publication: Mutex<()>,
     tail: Mutex<TailState>,
+    #[cfg(test)]
+    fail_after_write: std::sync::atomic::AtomicBool,
 }
 
 /// Append-only store for reading and writing events to a session's events.jsonl.
@@ -104,22 +132,41 @@ impl EventStore {
             let mut encoded = serde_json::to_vec(&event)?;
             encoded.push(b'\n');
 
-            file.seek(SeekFrom::Start(tail.valid_offset))?;
-            file.set_len(tail.valid_offset)?;
+            let record_start = tail.valid_offset;
+            let record_end = record_start
+                .checked_add(encoded.len() as u64)
+                .ok_or_else(|| {
+                    Error::InvalidEventStream("event stream offset is exhausted".to_owned())
+                })?;
+            let record_digest = Sha256::digest(&encoded).into();
+
+            file.seek(SeekFrom::Start(record_start))?;
+            file.set_len(record_start)?;
             file.write_all(&encoded)?;
             file.flush()?;
             if durable {
                 file.sync_data()?;
             }
 
+            #[cfg(test)]
+            if self
+                .shared
+                .fail_after_write
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("injected post-write failure").into());
+            }
+
+            let metadata = file.metadata()?;
             tail.last_id = event.id;
-            tail.modified = file.metadata()?.modified().ok();
-            tail.valid_offset = tail
-                .valid_offset
-                .checked_add(encoded.len() as u64)
-                .ok_or_else(|| {
-                    Error::InvalidEventStream("event stream offset is exhausted".to_owned())
-                })?;
+            tail.identity = Some(file_identity(&metadata));
+            tail.last_record = Some(RecordTail {
+                start: record_start,
+                end: record_end,
+                digest: record_digest,
+            });
+            tail.modified = metadata.modified().ok();
+            tail.valid_offset = record_end;
             event
         };
 
@@ -147,6 +194,7 @@ impl EventStore {
                 return Ok(ReplayScan {
                     events: Vec::new(),
                     last_valid_offset: 0,
+                    last_record: None,
                     needs_truncation: false,
                 });
             }
@@ -162,6 +210,7 @@ impl EventStore {
         let mut previous_id = previous_id;
         let mut current_offset = offset;
         let mut last_valid_offset = offset;
+        let mut last_record = None;
         let mut line_number = 0;
         let mut buffer = Vec::new();
 
@@ -173,6 +222,7 @@ impl EventStore {
             }
 
             line_number += 1;
+            let line_start = current_offset;
             current_offset += bytes_read as u64;
 
             let has_newline = buffer.ends_with(b"\n");
@@ -182,6 +232,7 @@ impl EventStore {
                 return Ok(ReplayScan {
                     events,
                     last_valid_offset,
+                    last_record,
                     needs_truncation: true,
                 });
             }
@@ -204,12 +255,18 @@ impl EventStore {
 
             previous_id = event.id;
             events.push(event);
+            last_record = Some(RecordTail {
+                start: line_start,
+                end: current_offset,
+                digest: Sha256::digest(&buffer).into(),
+            });
             last_valid_offset = current_offset;
         }
 
         Ok(ReplayScan {
             events,
             last_valid_offset,
+            last_record,
             needs_truncation: false,
         })
     }
@@ -218,8 +275,12 @@ impl EventStore {
         let metadata = file.metadata()?;
         let file_len = metadata.len();
         let modified = metadata.modified().ok();
+        let identity = file_identity(&metadata);
+        let cached_tail_matches = Self::cached_tail_matches(file, tail)?;
         if !tail.initialized
             || file_len < tail.valid_offset
+            || tail.identity.as_ref() != Some(&identity)
+            || !cached_tail_matches
             || (file_len == tail.valid_offset && modified != tail.modified)
         {
             #[cfg(test)]
@@ -233,9 +294,31 @@ impl EventStore {
             let scan = Self::scan_from(file, tail.valid_offset, previous_id)?;
             Self::apply_scan(file, tail, scan, previous_id)?;
         }
+        let metadata = file.metadata()?;
+        let identity = file_identity(&metadata);
+        let modified = metadata.modified().ok();
         tail.initialized = true;
-        tail.modified = file.metadata()?.modified().ok();
+        tail.identity = Some(identity);
+        tail.modified = modified;
         Ok(())
+    }
+
+    fn cached_tail_matches(file: &mut File, tail: &TailState) -> Result<bool> {
+        let Some(record) = &tail.last_record else {
+            return Ok(tail.last_id == 0);
+        };
+        let length = record
+            .end
+            .checked_sub(record.start)
+            .ok_or_else(|| Error::InvalidEventStream("cached event tail is invalid".to_owned()))?;
+        let length = usize::try_from(length)
+            .map_err(|_| Error::InvalidEventStream("cached event tail is too large".to_owned()))?;
+        let mut encoded = vec![0; length];
+        file.seek(SeekFrom::Start(record.start))?;
+        if file.read_exact(&mut encoded).is_err() {
+            return Ok(false);
+        }
+        Ok(<[u8; 32]>::from(Sha256::digest(encoded)) == record.digest)
     }
 
     fn apply_scan(
@@ -248,6 +331,11 @@ impl EventStore {
             file.set_len(scan.last_valid_offset)?;
         }
         tail.last_id = scan.events.last().map_or(previous_id, |event| event.id);
+        if let Some(last_record) = scan.last_record {
+            tail.last_record = Some(last_record);
+        } else if previous_id == 0 {
+            tail.last_record = None;
+        }
         tail.valid_offset = scan.last_valid_offset;
         Ok(())
     }
@@ -297,6 +385,31 @@ fn open_event_file(path: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .open(path)?)
+}
+
+fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        FileIdentity {
+            volume_serial_number: metadata.volume_serial_number(),
+            file_index: metadata.file_index(),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        FileIdentity {
+            created: metadata.created().ok(),
+        }
+    }
 }
 
 fn event_file_lock(path: &Path) -> Result<fslock::LockFile> {
@@ -460,5 +573,50 @@ mod tests {
         }
 
         assert_eq!(store.full_scan_count_for_test(), scans_after_open);
+    }
+
+    #[test]
+    fn same_size_replacement_invalidates_the_cached_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store.append_synced(turn_started(1)).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let replacement = String::from_utf8(original)
+            .unwrap()
+            .replacen("\"id\":1", "\"id\":9", 1);
+        std::fs::write(&path, replacement.as_bytes()).unwrap();
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+
+        let appended = store.append_synced(turn_started(2)).unwrap();
+
+        assert_eq!(appended.id, 10);
+        assert_eq!(
+            EventStore::replay(path)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            vec![9, 10]
+        );
+    }
+
+    #[test]
+    fn a_post_write_failure_keeps_the_cached_tail_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store.append_synced(turn_started(1)).unwrap();
+        store.shared.fail_after_write.store(true, Ordering::SeqCst);
+
+        assert!(store.append_synced(turn_started(2)).is_err());
+        assert_eq!(EventStore::replay(&path).unwrap().len(), 2);
+        let appended = store.append_synced(turn_started(3)).unwrap();
+
+        assert_eq!(appended.id, 3);
+        assert_eq!(EventStore::replay(path).unwrap().len(), 3);
     }
 }

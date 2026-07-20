@@ -150,7 +150,7 @@ async fn workspace_remove_and_create_race_cannot_orphan_a_task() {
         })
         .await
         .unwrap();
-    let service = TaskCommandService::new(repository.clone(), registry.clone());
+    let service = TaskCommandService::new_with_test_ports(repository.clone(), registry.clone());
     let create = service.create_task(CreateTaskCommand {
         workspace_id: workspace.workspace_id.clone(),
         idempotency_key: "workspace-race".to_owned(),
@@ -336,9 +336,9 @@ fn reopening_rejects_duplicate_durable_receipts() {
             ),
         )
         .unwrap();
-    repository
-        .append(
-            &task_id,
+    kuku::event::EventStore::open(repository.events_path(&task_id))
+        .unwrap()
+        .append_synced(kuku::event::EventPayload::TaskLedger(
             kuku::event::TaskLedgerRecord::Control(
                 kuku::event::TaskTransaction::try_new(
                     TaskRevision::try_new(1).unwrap(),
@@ -349,7 +349,7 @@ fn reopening_rejects_duplicate_durable_receipts() {
                 )
                 .unwrap(),
             ),
-        )
+        ))
         .unwrap();
     assert!(matches!(
         TaskRepository::open(dir.path()),
@@ -374,7 +374,6 @@ async fn timeline_cursor_is_immutable_across_append_patch_and_upsert() {
             control_record(1, "many", messages(&task_id, 0..505)),
         )
         .unwrap();
-    repository.publish(&task_id).unwrap();
     let cursor = service
         .projection(&task_id)
         .await
@@ -519,7 +518,6 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
             control_record(1, "long", messages(&task_id, 0..1203)),
         )
         .unwrap();
-    repository.publish(&task_id).unwrap();
     let projection = service.projection(&task_id).await.unwrap();
     assert_eq!(projection.timeline.len(), 500);
     let first = service
@@ -558,7 +556,6 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
             ),
         )
         .unwrap();
-    repository.publish(&task_id).unwrap();
     let projection = service.projection(&task_id).await.unwrap();
     assert_eq!(projection.timeline.len(), 1);
     assert!(serde_json::to_vec(&projection).unwrap().len() <= 16 * 1024 * 1024);
@@ -574,8 +571,8 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
         .unwrap();
     assert!(serde_json::to_vec(&page).unwrap().len() <= 16 * 1024 * 1024);
 
-    repository
-        .append(
+    assert!(matches!(
+        repository.append(
             &task_id,
             control_record(
                 3,
@@ -586,12 +583,169 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
                     &"x".repeat(16 * 1024 * 1024 + 1),
                 )],
             ),
-        )
-        .unwrap();
+        ),
+        Err(super::DomainError::PayloadTooLarge)
+    ));
     assert!(matches!(
         service.projection(&task_id).await,
         Err(super::DomainError::PayloadTooLarge)
     ));
+}
+
+#[tokio::test]
+async fn unknown_publication_outcomes_replay_without_reopening() {
+    let dir = tempdir().unwrap();
+    let repository = TaskRepository::open(dir.path()).unwrap();
+    let service = open_service(repository.clone());
+    repository.fail_next_publication_for_test();
+    let command = CreateTaskCommand {
+        workspace_id: workspace_id(),
+        idempotency_key: "uncertain-create".to_owned(),
+    };
+    assert!(service.create_task(command.clone()).await.is_err());
+    let task_id = repository.task_ids().unwrap()[0].clone();
+    let replay = service.create_task(command).await.unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.projection.task.task_id, task_id);
+
+    repository.fail_next_publication_for_test();
+    let command = submit(
+        task_id,
+        replay.projection.task_revision,
+        "uncertain-submit",
+        "hello",
+    );
+    assert!(service.submit(command.clone()).await.is_err());
+    assert!(service.submit(command).await.unwrap().replayed);
+}
+
+#[test]
+fn timeline_window_uses_the_untrimmed_record_candidate() {
+    let task_id = TaskId::parse("tsk_3123456789abcdef01234567").unwrap();
+    let mut aggregate = super::TaskAggregate::default();
+    let created = control_record(
+        0,
+        "window-create",
+        vec![kuku::event::TaskEvent::TaskCreated {
+            task_id: task_id.clone(),
+            workspace_id: workspace_id(),
+            title: "New task".to_owned(),
+            created_at: "2026-07-20T00:00:00Z".to_owned(),
+        }],
+    );
+    super::projection::reduce_record(
+        &mut aggregate,
+        kuku::event::Cursor::try_new(1).unwrap(),
+        &created,
+    )
+    .unwrap();
+    let one = control_record(1, "window-one", messages(&task_id, 0..1));
+    let delta = super::projection::reduce_record(
+        &mut aggregate,
+        kuku::event::Cursor::try_new(2).unwrap(),
+        &one,
+    )
+    .unwrap();
+    assert!(matches!(delta, crate::api::TaskDelta::ChangesApplied {
+        timeline_window: Some(crate::api::TimelineWindowDelta { ref evicted_items, next_cursor: None }), ..
+    } if evicted_items.is_empty()));
+
+    let many = control_record(2, "window-many", messages(&task_id, 1..601));
+    let delta = super::projection::reduce_record(
+        &mut aggregate,
+        kuku::event::Cursor::try_new(3).unwrap(),
+        &many,
+    )
+    .unwrap();
+    assert!(matches!(delta, crate::api::TaskDelta::ChangesApplied {
+        timeline_window: Some(crate::api::TimelineWindowDelta { ref evicted_items, .. }), ..
+    } if evicted_items.len() == 101
+        && matches!(&evicted_items[0], crate::api::TimelineItemProjection::Message(item) if item.message_id == "msg-0")
+        && matches!(&evicted_items[100], crate::api::TimelineItemProjection::Message(item) if item.message_id == "msg-100")));
+
+    let sdk_only = control_record(
+        3,
+        "window-sdk",
+        vec![kuku::event::TaskEvent::ReviewSubmissionRecorded(
+            kuku::event::ReviewSubmissionRecorded {
+                submission_id: kuku::event::ReviewSubmissionId::parse(
+                    "rsub_0123456789abcdef01234567",
+                )
+                .unwrap(),
+                task_id: task_id.clone(),
+                run_id: kuku::event::RunId::parse("run_3123456789abcdef01234567").unwrap(),
+                task_revision: TaskRevision::try_new(3).unwrap(),
+                submitted_at: "2026-07-20T00:00:00Z".to_owned(),
+                notes: Vec::new(),
+            },
+        )],
+    );
+    let delta = super::projection::reduce_record(
+        &mut aggregate,
+        kuku::event::Cursor::try_new(4).unwrap(),
+        &sdk_only,
+    )
+    .unwrap();
+    assert!(matches!(delta, crate::api::TaskDelta::ChangesApplied {
+        ref changes, timeline_window: None,
+    } if matches!(changes.as_slice(), [crate::api::TaskChange::ReviewSubmissionsChanged { .. }])));
+
+    let patch = kuku::event::TaskLedgerRecord::Activity(
+        kuku::event::TaskActivityBatch::try_new(vec![kuku::event::TaskEvent::MessagePatched {
+            message_id: "msg-600".to_owned(),
+            append_text: " patched".to_owned(),
+            finalized: true,
+            request_ids: None,
+        }])
+        .unwrap(),
+    );
+    let delta = super::projection::reduce_record(
+        &mut aggregate,
+        kuku::event::Cursor::try_new(5).unwrap(),
+        &patch,
+    )
+    .unwrap();
+    assert!(matches!(
+        delta,
+        crate::api::TaskDelta::ChangesApplied {
+            timeline_window: None,
+            ..
+        }
+    ));
+
+    let mut byte_bounded = super::TaskAggregate::default();
+    super::projection::reduce_record(
+        &mut byte_bounded,
+        kuku::event::Cursor::try_new(1).unwrap(),
+        &control_record(
+            0,
+            "byte-create",
+            vec![kuku::event::TaskEvent::TaskCreated {
+                task_id: task_id.clone(),
+                workspace_id: workspace_id(),
+                title: "New task".to_owned(),
+                created_at: "2026-07-20T00:00:00Z".to_owned(),
+            }],
+        ),
+    )
+    .unwrap();
+    let large = "x".repeat(9 * 1024 * 1024);
+    let delta = super::projection::reduce_record(
+        &mut byte_bounded,
+        kuku::event::Cursor::try_new(2).unwrap(),
+        &control_record(
+            1,
+            "byte-window",
+            vec![
+                message(&task_id, "byte-a", &large),
+                message(&task_id, "byte-b", &large),
+            ],
+        ),
+    )
+    .unwrap();
+    assert!(matches!(delta, crate::api::TaskDelta::ChangesApplied {
+        timeline_window: Some(crate::api::TimelineWindowDelta { ref evicted_items, .. }), ..
+    } if matches!(evicted_items.as_slice(), [crate::api::TimelineItemProjection::Message(item)] if item.message_id == "byte-a")));
 }
 
 fn messages(task_id: &TaskId, range: std::ops::Range<usize>) -> Vec<kuku::event::TaskEvent> {
