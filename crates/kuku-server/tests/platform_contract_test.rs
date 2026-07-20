@@ -10,6 +10,8 @@ fn web_home_is_private_and_single_instance() {
     let state = home.path().join("state.json");
     write_private_atomic(&state, br#"{"ok":true}"#).unwrap();
     assert_eq!(std::fs::read(&state).unwrap(), br#"{"ok":true}"#);
+    write_private_atomic(&state, br#"{"ok":false}"#).unwrap();
+    assert_eq!(std::fs::read(&state).unwrap(), br#"{"ok":false}"#);
 
     #[cfg(unix)]
     {
