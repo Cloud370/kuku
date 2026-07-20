@@ -5,6 +5,8 @@ pub mod platform;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;
+#[cfg(feature = "test-scenarios")]
+pub mod testing;
 pub mod wire;
 
 use std::net::SocketAddr;

@@ -9,6 +9,9 @@ homepage = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
 keywords = ["agent", "coding", "terminal", "llm", "cli"]
 
+[features]
+test-scenarios = []
+
 [lib]
 name = "kuku_server"
 path = "src/lib.rs"
