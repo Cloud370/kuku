@@ -56,4 +56,18 @@ impl TaskRepository {
         }
         Ok(aggregate)
     }
+
+    pub fn task_ids(&self) -> Result<Vec<TaskId>, DomainError> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(&self.root).map_err(|_| DomainError::LedgerCorrupt)? {
+            let entry = entry.map_err(|_| DomainError::LedgerCorrupt)?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if let Ok(task_id) = TaskId::parse(name) {
+                ids.push(task_id);
+            }
+        }
+        Ok(ids)
+    }
 }

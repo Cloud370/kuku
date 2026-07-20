@@ -29,6 +29,22 @@ pub struct SubmitRunCommand {
 }
 
 #[derive(Debug, Clone)]
+pub struct StopRunCommand {
+    pub task_id: TaskId,
+    pub expected_task_revision: TaskRevision,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveInteractionCommand {
+    pub task_id: TaskId,
+    pub interaction_id: kuku::event::InteractionId,
+    pub choice_id: String,
+    pub expected_task_revision: TaskRevision,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TaskCommandService {
     repository: TaskRepository,
     gate: Arc<Mutex<()>>,
@@ -174,6 +190,116 @@ impl TaskCommandService {
             digest,
             command.task_id.clone(),
         );
+        self.repository.rebuild(&command.task_id)
+    }
+
+    pub async fn list_tasks(
+        &self,
+        workspace_id: &WorkspaceId,
+        search: Option<&str>,
+    ) -> Result<crate::api::TaskPage, DomainError> {
+        let search = search
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        let mut items = Vec::new();
+        for task_id in self.repository.task_ids()? {
+            let summary = self.repository.rebuild(&task_id)?.summary();
+            if &summary.workspace_id != workspace_id {
+                continue;
+            }
+            if search
+                .as_ref()
+                .is_some_and(|query| !summary.title.to_lowercase().contains(query))
+            {
+                continue;
+            }
+            items.push(summary);
+        }
+        items.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.task_id.cmp(&left.task_id))
+        });
+        items.truncate(100);
+        Ok(crate::api::TaskPage {
+            api_version: crate::api::ApiVersion,
+            items,
+            next_cursor: None,
+        })
+    }
+
+    pub async fn stop(&self, command: StopRunCommand) -> Result<TaskAggregate, DomainError> {
+        let _gate = self.gate.lock().await;
+        let aggregate = self.repository.rebuild(&command.task_id)?;
+        if aggregate.revision() != command.expected_task_revision {
+            return Err(DomainError::StaleCommand);
+        }
+        let active = aggregate
+            .projection()?
+            .active_run
+            .ok_or(DomainError::TaskNotFound)?;
+        let receipt = CommandReceipt::new(
+            command.idempotency_key,
+            format!("stop:{}", command.task_id),
+            CommandResult::Stopped,
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        let record = TaskTransaction::try_new(
+            command
+                .expected_task_revision
+                .checked_next()
+                .map_err(|_| DomainError::StorageExhausted)?,
+            receipt,
+            vec![TaskEvent::RunStopping {
+                run: RunFact {
+                    run_id: active.run_id,
+                    task_id: command.task_id.clone(),
+                    state: RunState::Stopping,
+                    started_at: active.started_at,
+                    finished_at: None,
+                    summary: None,
+                    checks: None,
+                    metrics: None,
+                    workspace_changes: None,
+                },
+            }],
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        self.repository
+            .append(&command.task_id, TaskLedgerRecord::Control(record))?;
+        self.repository.rebuild(&command.task_id)
+    }
+
+    pub async fn resolve_interaction(
+        &self,
+        command: ResolveInteractionCommand,
+    ) -> Result<TaskAggregate, DomainError> {
+        let _gate = self.gate.lock().await;
+        let aggregate = self.repository.rebuild(&command.task_id)?;
+        if aggregate.revision() != command.expected_task_revision {
+            return Err(DomainError::StaleCommand);
+        }
+        let receipt = CommandReceipt::new(
+            command.idempotency_key,
+            format!("resolve:{}:{}", command.interaction_id, command.choice_id),
+            CommandResult::InteractionResolved,
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        let record = TaskTransaction::try_new(
+            command
+                .expected_task_revision
+                .checked_next()
+                .map_err(|_| DomainError::StorageExhausted)?,
+            receipt,
+            vec![TaskEvent::InteractionResolved {
+                interaction_id: command.interaction_id,
+                choice_id: command.choice_id,
+            }],
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        self.repository
+            .append(&command.task_id, TaskLedgerRecord::Control(record))?;
         self.repository.rebuild(&command.task_id)
     }
 

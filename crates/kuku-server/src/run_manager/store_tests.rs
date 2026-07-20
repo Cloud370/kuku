@@ -3,7 +3,7 @@ use tempfile::tempdir;
 use kuku::event::WorkspaceId;
 
 use super::repository::TaskRepository;
-use super::store::SubmitRunCommand;
+use super::store::{StopRunCommand, SubmitRunCommand};
 use super::store::{CreateTaskCommand, TaskCommandService};
 
 fn workspace_id() -> WorkspaceId {
@@ -80,4 +80,25 @@ async fn submit_is_revision_serialized_and_duplicate_replays() {
         service.submit(busy).await,
         Err(super::DomainError::TaskBusy)
     ));
+}
+
+#[tokio::test]
+async fn list_searches_titles_and_stop_advances_revision() {
+    let dir = tempdir().unwrap();
+    let service = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
+    let task = service.create_task(CreateTaskCommand {
+        workspace_id: workspace_id(), idempotency_key: "create-list".into(), title: "Needle title".into(),
+    }).await.unwrap();
+    let page = service.list_tasks(&workspace_id(), Some(" needle ")).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    let queued = service.submit(SubmitRunCommand {
+        task_id: task.task_id().unwrap().clone(), expected_task_revision: task.revision(),
+        idempotency_key: "submit-list".into(), message: "hello".into(),
+        tier_id: "tier:default".into(), skill_ids: Vec::new(),
+    }).await.unwrap();
+    let stopped = service.stop(StopRunCommand {
+        task_id: task.task_id().unwrap().clone(), expected_task_revision: queued.revision(),
+        idempotency_key: "stop-list".into(),
+    }).await.unwrap();
+    assert_eq!(stopped.summary().state, kuku::event::TaskState::Stopping);
 }
