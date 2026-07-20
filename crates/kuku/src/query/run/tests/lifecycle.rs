@@ -1,4 +1,4 @@
-use super::{make_cancelled_run, make_test_pending, test_execution_scope};
+use super::{make_cancelled_run, make_test_pending, test_execution_scope, test_request_scope};
 use crate::event::{EventPayload, EventStore};
 use crate::query::types::{
     ExecSlot, PendingStep, Run, RunState, SlotEvent, StreamingChunkState, ToolKind, UiEvent,
@@ -21,6 +21,7 @@ async fn cancel_when_idle_produces_turn_end() {
             .unwrap();
         store
             .append(EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-20T00:00:00Z".to_string(),
                 conversation: "main".to_string(),
@@ -169,7 +170,8 @@ async fn completion_flush_failure_does_not_block_done() {
     let state = StreamingChunkState {
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
-        request_id: "req_1".to_string(),
+        request: test_request_scope(),
+        request_started: std::time::Instant::now(),
         stream: Box::pin(tokio_stream::empty()),
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
@@ -201,10 +203,13 @@ async fn completion_persists_runtime_model_usage_log() {
     );
     pending.runtime_log_writer = crate::log::BufferedLogWriter::with_flush_every(&log_path, 1);
 
+    let request = test_request_scope();
+    let request_id = request.request_id.to_string();
     let state = StreamingChunkState {
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
-        request_id: "req_7".to_string(),
+        request,
+        request_started: std::time::Instant::now(),
         stream: Box::pin(tokio_stream::empty()),
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
@@ -229,7 +234,7 @@ async fn completion_persists_runtime_model_usage_log() {
     assert!(matches!(step, Ok(PendingStep::Done(output, _, 1)) if output.text == "complete"));
     let log = std::fs::read_to_string(&log_path).expect("runtime log should be written");
     assert!(log.contains("\"kind\":\"runtime.model_usage\""));
-    assert!(log.contains("\"request_id\":\"req_7\""));
+    assert!(log.contains(&format!("\"request_id\":\"{request_id}\"")));
     assert!(log.contains("\"cache_read_input_tokens\":900"));
     assert!(log.contains("\"cache_hit_rate\":"));
 }
@@ -254,6 +259,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     let mut store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-05-20T00:00:00Z".to_string(),
             conversation: "main".to_string(),
@@ -265,7 +271,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             ts: "2026-05-20T00:00:01Z".to_string(),
             conversation: None,
             tool_call_id: "tool_cancelled".to_string(),
-            request_id: "req_1".to_string(),
+            request: crate::event::test_request_scope("req_1".to_string()),
             index: 0,
             tool: "run_command".to_string(),
             args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
@@ -325,12 +331,13 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     ));
     let events = EventStore::replay(&events_path).unwrap();
     assert!(events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
-            if tool_call_id == "tool_cancelled"
-                && status == "ok"
-                && summary == "finished after cancellation"
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    tool_call_id, status, summary, .. }
+                if tool_call_id == "tool_cancelled"
+                    && status == "ok"
+                    && summary == "finished after cancellation"
+        )));
 }
 
 #[tokio::test]
@@ -350,6 +357,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .unwrap();
         store
             .append(EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-20T00:00:00Z".to_string(),
                 conversation: "main".to_string(),
@@ -357,6 +365,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .unwrap();
         store
             .append(EventPayload::MessageUser {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-20T00:00:01Z".to_string(),
                 conversation: "main".to_string(),
@@ -369,7 +378,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .append(EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-20T00:00:02Z".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 text: "partial".to_string(),
                 thinking: None,
                 input_tokens_total: None,
@@ -377,6 +386,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .unwrap();
         store
             .append(EventPayload::TurnCompleted {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-20T00:00:03Z".to_string(),
                 conversation: "main".to_string(),

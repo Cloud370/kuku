@@ -194,14 +194,16 @@ async fn cancel_waiting_permission_writes_cancelled_result_without_deny() {
     assert!(matches!(event, Some(UiEvent::Cancelled { turn: 1 })));
     let events = EventStore::replay(&events_path).unwrap();
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolResult { ref tool_call_id, ref status, ref structured, .. }
-            if tool_call_id == "tool_cancel"
-                && status == "cancelled"
-                && structured == &Some(serde_json::json!({"kind": "cancelled"}))
-    )));
+            event.payload,
+            EventPayload::ToolResult {
+    ref tool_call_id, ref status, ref structured, .. }
+                if tool_call_id == "tool_cancel"
+                    && status == "cancelled"
+                    && structured == &Some(serde_json::json!({"kind": "cancelled"}))
+        )));
     assert!(!events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "tool_cancel"
-    )));
+            event.payload,
+            EventPayload::PermissionDeny {
+    ref tool_call_id, .. } if tool_call_id == "tool_cancel"
+        )));
 }

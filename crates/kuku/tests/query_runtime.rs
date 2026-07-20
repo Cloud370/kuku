@@ -6,7 +6,7 @@ use httpmock::prelude::*;
 use kuku::agent::registry::AgentRegistry;
 use kuku::context::replay::rebuild_history;
 use kuku::conversation::address::ConversationAddress;
-use kuku::event::{EventPayload, EventStore};
+use kuku::event::{EventPayload, EventStore, RequestCause, TaskEvent, TaskLedgerRecord};
 use kuku::log::{LogLevel, LogRecord, LogScope};
 use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
@@ -98,6 +98,7 @@ async fn start_creates_session_events_under_kuku_home() {
 
     match &events[2].payload {
         EventPayload::TurnStarted {
+            execution: _,
             conversation,
             turn,
             ts,
@@ -111,6 +112,7 @@ async fn start_creates_session_events_under_kuku_home() {
 
     match &events[3].payload {
         EventPayload::MessageUser {
+            execution: _,
             conversation,
             turn,
             text,
@@ -168,6 +170,7 @@ async fn conversation_rollback_is_scoped() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:02Z".to_string(),
             conversation: "main".to_string(),
             turn: 1,
@@ -178,6 +181,7 @@ async fn conversation_rollback_is_scoped() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:03Z".to_string(),
             conversation: "review".to_string(),
             turn: 1,
@@ -188,6 +192,7 @@ async fn conversation_rollback_is_scoped() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:04Z".to_string(),
             conversation: "review".to_string(),
             turn: 2,
@@ -207,6 +212,7 @@ async fn conversation_rollback_is_scoped() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:06Z".to_string(),
             conversation: "main".to_string(),
             turn: 2,
@@ -289,6 +295,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
         .await
         .unwrap();
     let session_id = run.session_id().to_string();
+    let run_id = run.run_id().to_string();
 
     let session_log_path = env
         .home
@@ -306,7 +313,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
         record.kind == "session.turn_start"
             && record.scope == LogScope::Session
             && record.session_id.as_deref() == Some(session_id.as_str())
-            && record.run_id.as_deref() == Some(session_id.as_str())
+            && record.run_id.as_deref() == Some(run_id.as_str())
             && record.turn == Some(1)
     }));
 
@@ -445,6 +452,7 @@ async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_f
         .unwrap();
 
     let session_id = run.session_id().to_string();
+    let run_id = run.run_id().to_string();
     let log_dir = env.home.path().join("logs").join("runtime");
     assert!(matches!(
         run.next().await.unwrap(),
@@ -461,7 +469,7 @@ async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_f
             assert_eq!(record.level, LogLevel::Info);
             assert_eq!(record.scope, LogScope::Runtime);
             assert_eq!(record.session_id.as_deref(), Some(session_id.as_str()));
-            assert_eq!(record.run_id.as_deref(), Some(session_id.as_str()));
+            assert_eq!(record.run_id.as_deref(), Some(run_id.as_str()));
             assert!(
                 !log_dir.exists() || std::fs::read_dir(&log_dir).unwrap().next().is_none(),
                 "info log should be host-visible before disk flush"
@@ -691,16 +699,19 @@ fn assert_single_terminal_kind(
         .iter()
         .filter(|event| match &event.payload {
             EventPayload::TurnCompleted {
+                execution: _,
                 conversation,
                 turn: event_turn,
                 ..
             }
             | EventPayload::TurnCancelled {
+                execution: _,
                 conversation,
                 turn: event_turn,
                 ..
             }
             | EventPayload::TurnInterrupted {
+                execution: _,
                 conversation,
                 turn: event_turn,
                 ..
@@ -844,6 +855,7 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
     }
     match &events[7].payload {
         EventPayload::MessageUser {
+            execution: _,
             conversation,
             turn,
             text,
@@ -881,6 +893,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:02Z".to_string(),
             conversation: "main".to_string(),
             turn: 1,
@@ -888,6 +901,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "2026-06-09T00:00:03Z".to_string(),
             conversation: "main".to_string(),
             turn: 1,
@@ -924,9 +938,10 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         ]
     );
     assert!(matches!(
-        &events[4].payload,
-        EventPayload::TurnInterrupted { conversation, turn: 1, .. } if conversation == "main"
-    ));
+            &events[4].payload,
+            EventPayload::TurnInterrupted {
+    conversation, turn: 1, .. } if conversation == "main"
+        ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -980,9 +995,9 @@ async fn prompt_render_error_writes_single_terminal_event() {
     let session_entries = list_event_files(env.home.path());
     assert_eq!(session_entries.len(), 1);
     let events = EventStore::replay(&session_entries[0]).unwrap();
-    assert!(events
+    assert!(!events
         .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelError { turn: 1, .. })));
+        .any(|event| matches!(event.payload, EventPayload::ModelError { .. })));
     assert_single_terminal_kind(&events, 1, "turn.interrupted");
 }
 
@@ -1316,11 +1331,52 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
     child_request.assert();
 
     let events = EventStore::replay(env.events_path("s_agent_contact_card")).unwrap();
+    let mut request_starts = events.iter().filter_map(|event| match &event.payload {
+        EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)) => {
+            batch.events().iter().find_map(|event| match event {
+                TaskEvent::RequestStarted(started) => Some(started),
+                _ => None,
+            })
+        }
+        _ => None,
+    });
+    let delegated_start = request_starts
+        .clone()
+        .find(|started| matches!(started.cause, RequestCause::DelegatedAgent { .. }))
+        .expect("delegated request.started");
+    let RequestCause::DelegatedAgent { parent_request_id } = &delegated_start.cause else {
+        unreachable!();
+    };
+    assert!(request_starts
+        .clone()
+        .any(|started| &started.scope.request_id == parent_request_id));
+    let parent_start = request_starts
+        .find(|started| &started.scope.request_id == parent_request_id)
+        .expect("parent request.started");
+    assert_eq!(
+        parent_start.scope.execution.task_id,
+        delegated_start.scope.execution.task_id
+    );
+    assert_eq!(
+        parent_start.scope.execution.run_id,
+        delegated_start.scope.execution.run_id
+    );
+    assert_ne!(
+        parent_start.scope.execution.turn_id,
+        delegated_start.scope.execution.turn_id
+    );
+    assert_ne!(
+        parent_start.scope.execution.conversation_id,
+        delegated_start.scope.execution.conversation_id
+    );
     let child_message = events
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::MessageUser {
-                conversation, text, ..
+                execution: _,
+                conversation,
+                text,
+                ..
             } if conversation == "review" => Some(text),
             _ => None,
         })
@@ -1526,12 +1582,13 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
     reserved.cancel();
     let reserved_events = EventStore::replay(env.events_path("s_agent_reserved")).unwrap();
     assert!(reserved_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
-            if tool_call_id == "toolu_reserved"
-                && status == "error"
-                && summary.contains("reserved conversation address 'main'")
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    tool_call_id, status, summary, .. }
+                if tool_call_id == "toolu_reserved"
+                    && status == "error"
+                    && summary.contains("reserved conversation address 'main'")
+        )));
     assert_eq!(
         reserved_events
             .iter()
@@ -1584,12 +1641,13 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
     invalid.cancel();
     let invalid_events = EventStore::replay(env.events_path("s_agent_invalid")).unwrap();
     assert!(invalid_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
-            if tool_call_id == "toolu_invalid"
-                && status == "error"
-                && summary.contains("invalid slash placement")
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    tool_call_id, status, summary, .. }
+                if tool_call_id == "toolu_invalid"
+                    && status == "error"
+                    && summary.contains("invalid slash placement")
+        )));
     assert!(!invalid_events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ConversationOpened { ref conversation, .. } if conversation == "review//api"
@@ -1636,12 +1694,13 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
     unknown.cancel();
     let unknown_events = EventStore::replay(env.events_path("s_agent_unknown")).unwrap();
     assert!(unknown_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
-            if tool_call_id == "toolu_unknown"
-                && status == "error"
-                && summary.contains("unknown agent contact: unknown")
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    tool_call_id, status, summary, .. }
+                if tool_call_id == "toolu_unknown"
+                    && status == "error"
+                    && summary.contains("unknown agent contact: unknown")
+        )));
     assert!(!unknown_events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ConversationOpened { ref conversation, .. } if conversation == "unknown"
@@ -1728,9 +1787,10 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
         .iter()
         .filter(|event| {
             matches!(
-                event.payload,
-                EventPayload::MessageUser { ref conversation, .. } if conversation == "review"
-            )
+                            event.payload,
+                            EventPayload::MessageUser {
+            ref conversation, .. } if conversation == "review"
+                        )
         })
         .count();
 
@@ -1777,7 +1837,8 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
     let after_conflict = EventStore::replay(env.events_path("s_agent_tier_conflict")).unwrap();
     assert!(after_conflict.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+        EventPayload::ToolResult {
+tool_call_id, status, summary, .. }
             if tool_call_id == "toolu_conflict"
                 && status == "error"
                 && summary.contains("cannot set tier when continuing existing conversation review")
@@ -1806,9 +1867,10 @@ async fn agent_tool_rejects_reserved_main_and_tier_conflict() {
         after_conflict
             .iter()
             .filter(|event| matches!(
-                event.payload,
-                EventPayload::MessageUser { ref conversation, .. } if conversation == "review"
-            ))
+                            event.payload,
+                            EventPayload::MessageUser {
+            ref conversation, .. } if conversation == "review"
+                        ))
             .count(),
         review_messages_before
     );
@@ -1867,13 +1929,15 @@ async fn run_emits_permission_requested_for_gated_tool() {
     let permission_pos = events
         .iter()
         .position(|event| {
-            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_cmd")
+            matches!(event.payload, EventPayload::PermissionRequested {
+ref tool_call_id, .. } if tool_call_id == "toolu_cmd")
         })
         .expect("permission.requested event");
 
     assert!(tool_call_pos < permission_pos);
     match &events[permission_pos].payload {
         EventPayload::PermissionRequested {
+            execution: _,
             turn,
             tool_call_id,
             tool,
@@ -2038,8 +2102,14 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
     }
 
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionAllow { ref scope, .. } if scope == "session")));
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
+    assert!(events.iter().any(
+        |event| matches!(event.payload, EventPayload::PermissionAllow {
+ref scope, .. } if scope == "session")
+    ));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ToolResult {
+ref status, .. } if status == "ok")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2131,6 +2201,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-06-06T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -2138,6 +2209,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-06-06T00:00:02Z".to_string(),
             conversation: "main".to_string(),
@@ -2150,7 +2222,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-06-06T00:00:03Z".to_string(),
-            request_id: "req_1".to_string(),
+            request: common::request_scope("req_1".to_string()),
             text: String::new(),
             thinking: None,
             input_tokens_total: None,
@@ -2162,7 +2234,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             ts: "2026-06-06T00:00:04Z".to_string(),
             conversation: None,
             tool_call_id: "toolu_interrupted".to_string(),
-            request_id: "req_1".to_string(),
+            request: common::request_scope("req_1".to_string()),
             index: 0,
             tool: "run_command".to_string(),
             args: serde_json::json!({"command": "printf side-effect", "timeout": 60, "brief": "side effect"}),
@@ -2189,9 +2261,10 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
 
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     assert!(!events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolResult { ref tool_call_id, .. } if tool_call_id == "toolu_interrupted"
-    )));
+            event.payload,
+            EventPayload::ToolResult {
+    ref tool_call_id, .. } if tool_call_id == "toolu_interrupted"
+        )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2411,11 +2484,15 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
     let request_ids: Vec<&str> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::ModelResponse { request_id, .. } => Some(request_id.as_str()),
+            EventPayload::ModelResponse { request, .. } => Some(request.request_id.as_str()),
             _ => None,
         })
         .collect();
-    assert_eq!(request_ids, vec!["req_1", "req_2"]);
+    assert_eq!(request_ids.len(), 2);
+    assert_ne!(request_ids[0], request_ids[1]);
+    assert!(request_ids
+        .iter()
+        .all(|request_id| request_id.starts_with("req_")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2508,14 +2585,16 @@ async fn pending_permission_resume_allow_executes_original_tool() {
     final_mock.assert_hits(1);
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionAllow { ref tool_call_id, .. } if tool_call_id == "toolu_resume_allow"
-    )));
+            event.payload,
+            EventPayload::PermissionAllow {
+    ref tool_call_id, .. } if tool_call_id == "toolu_resume_allow"
+        )));
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolResult { ref tool_call_id, ref status, .. }
-            if tool_call_id == "toolu_resume_allow" && status == "ok"
-    )));
+            event.payload,
+            EventPayload::ToolResult {
+    ref tool_call_id, ref status, .. }
+                if tool_call_id == "toolu_resume_allow" && status == "ok"
+        )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2601,13 +2680,15 @@ async fn pending_permission_resume_deny_records_real_deny() {
     final_mock.assert_hits(1);
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionDeny { ref tool_call_id, ref source, .. }
-            if tool_call_id == "toolu_resume_deny" && source == "host"
-    )));
+            event.payload,
+            EventPayload::PermissionDeny {
+    ref tool_call_id, ref source, .. }
+                if tool_call_id == "toolu_resume_deny" && source == "host"
+        )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ToolResult { ref tool_call_id, ref status, ref model_content, .. }
+        EventPayload::ToolResult {
+ref tool_call_id, ref status, ref model_content, .. }
             if tool_call_id == "toolu_resume_deny" && status == "blocked" && model_content.contains("permission gate denied")
     )));
 }
@@ -2672,12 +2753,14 @@ async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
 
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     assert!(!events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "toolu_resume_cancel"
-    )));
+            event.payload,
+            EventPayload::PermissionDeny {
+    ref tool_call_id, .. } if tool_call_id == "toolu_resume_cancel"
+        )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ToolResult { ref tool_call_id, ref status, ref structured, .. }
+        EventPayload::ToolResult {
+ref tool_call_id, ref status, ref structured, .. }
             if tool_call_id == "toolu_resume_cancel" && status == "cancelled" && structured == &Some(serde_json::json!({"kind": "cancelled"}))
     )));
 }
@@ -2722,6 +2805,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let mut store = EventStore::open(_env.events_path(session_id)).unwrap();
     store
         .append(EventPayload::PermissionRequested {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-06-06T00:00:00Z".to_string(),
             tool_call_id: "toolu_resume_second".to_string(),
@@ -2775,7 +2859,8 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let requested_second = events
         .iter()
         .filter(|event| {
-            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_resume_second")
+            matches!(event.payload, EventPayload::PermissionRequested {
+ref tool_call_id, .. } if tool_call_id == "toolu_resume_second")
         })
         .count();
     assert_eq!(requested_second, 1);
@@ -2840,6 +2925,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::PermissionRequested {
+                execution: _,
                 tool_call_id,
                 tool,
                 risk,
@@ -2862,7 +2948,10 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. })));
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ToolResult {
+ref status, .. } if status == "blocked")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2921,19 +3010,22 @@ async fn queued_deny_path_emits_permission_requested_before_deny() {
     let request_pos = events
         .iter()
         .position(|event| {
-            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
+            matches!(event.payload, EventPayload::PermissionRequested {
+ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
         })
         .expect("permission.requested event");
     let deny_pos = events
         .iter()
         .position(|event| {
-            matches!(event.payload, EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
+            matches!(event.payload, EventPayload::PermissionDeny {
+ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
         })
         .expect("permission.deny event");
 
     assert!(request_pos < deny_pos);
     match &events[request_pos].payload {
         EventPayload::PermissionRequested {
+            execution: _,
             tool,
             risk,
             candidate,
@@ -2999,8 +3091,14 @@ async fn run_with_permission_choice_allows_gated_tool_and_continues() {
 
     assert_eq!(output.text, "Command was allowed.");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionAllow { ref scope, .. } if scope == "once")));
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
+    assert!(events.iter().any(
+        |event| matches!(event.payload, EventPayload::PermissionAllow {
+ref scope, .. } if scope == "once")
+    ));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ToolResult {
+ref status, .. } if status == "ok")));
 }
 
 #[tokio::test(flavor = "current_thread")]

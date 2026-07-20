@@ -358,12 +358,16 @@ impl Query {
             session_id: session_id.clone(),
             conversation: conversation.clone(),
             query: self,
-            events_path,
+            events_path: events_path.clone(),
             kuku_home,
             workspace,
             policy_path,
             turn,
             request_num: resumed_request_num(&existing_events, turn),
+            previous_request_id: resumed_previous_request_id(&existing_events, turn),
+            request_evidence_recorder: std::sync::Arc::new(
+                super::provider::LifecycleOnlyRecorder::new(events_path.clone()),
+            ),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: resumed_state.queued_tool_calls,
@@ -581,9 +585,7 @@ fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
             ..
         } = &event.payload
         {
-            if *event_turn == turn
-                && !request_ids.iter().any(|id| *id == &request.request_id)
-            {
+            if *event_turn == turn && !request_ids.iter().any(|id| *id == &request.request_id) {
                 request_ids.push(&request.request_id);
             }
         }
@@ -595,18 +597,34 @@ fn resumed_request_num(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
     events
         .iter()
         .filter(|event| match &event.payload {
-            EventPayload::ModelResponse { turn: event_turn, .. }
-            | EventPayload::ModelError { turn: event_turn, .. } => *event_turn == turn,
+            EventPayload::ModelResponse {
+                turn: event_turn, ..
+            }
+            | EventPayload::ModelError {
+                turn: event_turn, ..
+            } => *event_turn == turn,
             _ => false,
         })
         .count() as u64
 }
 
-fn request_num_from_id(request_id: &str) -> u64 {
-    request_id
-        .strip_prefix("req_")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0)
+fn resumed_previous_request_id(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+) -> Option<crate::event::RequestId> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::TaskLedger(crate::event::TaskLedgerRecord::Activity(batch)) => {
+            batch.events().iter().rev().find_map(|event| match event {
+                crate::event::TaskEvent::RequestStarted(started)
+                    if started.scope.execution.turn_index == turn =>
+                {
+                    Some(started.scope.request_id.clone())
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    })
 }
 
 fn maybe_prune_logs_on_startup(

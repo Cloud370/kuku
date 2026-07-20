@@ -201,11 +201,22 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         accumulated_thinking,
         stop_reason,
         tool_calls,
+        provider_request_id,
         usage,
         handoff_detector,
         thinking_duration_ms,
         ..
     } = state;
+    let request_id = request.request_id.as_str().to_string();
+
+    pending
+        .request_evidence_recorder
+        .record_completed(super::provider::request::completed(
+            request.clone(),
+            request_started,
+            provider_request_id,
+            usage.as_ref(),
+        ))?;
 
     if let Some(ref u) = usage {
         pending.cumulative.input_tokens += u.input_tokens.unwrap_or(0);
@@ -545,6 +556,8 @@ pub(super) async fn advance_pending(
                 prompt,
                 tier,
                 &id,
+                &queued.request.execution,
+                &queued.request.request_id,
             ) {
                 Ok(dispatch) => dispatch,
                 Err(error) => {

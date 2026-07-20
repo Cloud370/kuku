@@ -155,24 +155,35 @@ impl Run {
 pub(super) fn record_streaming_provider_error_facts(
     streaming: &StreamingChunkState,
     error: &Error,
-) {
+) -> Result<()> {
     let Error::Provider { kind, message, .. } = error else {
-        return;
+        return Ok(());
     };
-    let _ = append_model_error(
+    streaming.pending.request_evidence_recorder.record_failed(
+        crate::query::provider::request::failed(
+            streaming.request.clone(),
+            streaming.request_started,
+            streaming.provider_request_id.clone(),
+            streaming.usage.as_ref(),
+            *kind,
+            message.clone(),
+        ),
+    )?;
+    append_model_error(
         &streaming.pending.events_path,
         streaming.request.clone(),
         streaming.pending.turn,
         provider_failure_event_kind(*kind),
         message,
-    );
-    let _ = append_turn_interrupted(
+    )?;
+    append_turn_interrupted(
         &streaming.pending.events_path,
         streaming.pending.execution_scope(),
         &streaming.conversation,
         streaming.pending.turn,
         provider_failure_event_kind(*kind),
-    );
+    )?;
+    Ok(())
 }
 
 fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {

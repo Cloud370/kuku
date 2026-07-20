@@ -15,7 +15,9 @@ use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
 mod assembly;
-mod request;
+pub(super) mod request;
+
+pub(crate) use request::{LifecycleOnlyRecorder, RequestEvidenceRecorder};
 
 use assembly::{
     append_current_turn_prefix_once, append_handoff_instruction, assembly_runtime_prefix,
@@ -491,6 +493,26 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
 
+    let cause = match pending.previous_request_id.clone() {
+        Some(parent_request_id) => RequestCause::ToolContinuation { parent_request_id },
+        None => pending
+            .query
+            .initial_request_cause
+            .clone()
+            .unwrap_or(RequestCause::UserSubmission),
+    };
+    let request_started = std::time::Instant::now();
+    pending
+        .request_evidence_recorder
+        .record_before_provider(RequestStarted {
+            scope: request_scope.clone(),
+            cause,
+            provider: request::provider_fact(&resolved_config.kind),
+            model: resolved_config.model.clone(),
+            started_at: now_timestamp()?,
+        })?;
+    pending.previous_request_id = Some(request_id.clone());
+
     let handoff_active = pending.handoff_triggered;
     match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
         Ok(stream) => {
@@ -498,7 +520,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
                 pending,
                 conversation,
-                request_id,
+                request: request_scope,
+                request_started,
                 stream,
                 accumulated_text: String::new(),
                 accumulated_thinking: String::new(),
@@ -557,6 +580,16 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 pending.turn,
                 "context_too_large",
             )?;
+            pending
+                .request_evidence_recorder
+                .record_failed(request::failed(
+                    request_scope,
+                    request_started,
+                    failure.provider_request_id.clone(),
+                    None,
+                    failure.kind,
+                    failure.message.clone(),
+                ))?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,
@@ -583,6 +616,16 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 pending.turn,
                 failure.kind.as_event_kind(),
             )?;
+            pending
+                .request_evidence_recorder
+                .record_failed(request::failed(
+                    request_scope,
+                    request_started,
+                    failure.provider_request_id.clone(),
+                    None,
+                    failure.kind,
+                    failure.message.clone(),
+                ))?;
             Ok(pending_failure_step(
                 pending,
                 lead_events,

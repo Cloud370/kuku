@@ -266,7 +266,14 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 9);
+    assert_eq!(events.len(), 11);
+    assert_eq!(
+        2,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TaskLedger(_)))
+            .count()
+    );
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSources { .. })));
@@ -355,7 +362,8 @@ async fn executes_find_files_and_continues_to_final_response() {
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ToolResult { ref status, ref model_content, .. }
+        EventPayload::ToolResult {
+ref status, ref model_content, .. }
             if status == "ok" && model_content.contains("README.md") && model_content.contains("src/main.rs")
     )));
     assert_eq!(
@@ -474,6 +482,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -481,6 +490,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -491,6 +501,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -504,6 +515,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "review".into(),
             turn: 1,
@@ -511,6 +523,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "review".into(),
             turn: 1,
@@ -521,6 +534,7 @@ async fn agent_directory_notice_lists_open_conversations() {
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
+            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "review".into(),
             turn: 1,
@@ -580,6 +594,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -587,6 +602,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -597,6 +613,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
+            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -610,6 +627,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "review".into(),
             turn: 1,
@@ -629,6 +647,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             ts: "t2".into(),
             conversation: "review".into(),
             turn: 2,
@@ -640,7 +659,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             ts: "t2".into(),
             conversation: Some("review".into()),
             tool_call_id: "toolu_cmd_review".into(),
-            request_id: "req_review_2".into(),
+            request: common::request_scope("req_review_2"),
             index: 0,
             tool: "run_command".into(),
             args: serde_json::json!({"command": "cargo test"}),
@@ -648,6 +667,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::PermissionRequested {
+            execution: common::execution_scope(),
             turn: 2,
             ts: "t2".into(),
             tool_call_id: "toolu_cmd_review".into(),
@@ -660,6 +680,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::TurnInterrupted {
+            execution: common::execution_scope(),
             ts: "t2".into(),
             conversation: "review".into(),
             turn: 2,
@@ -674,6 +695,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: common::execution_scope(),
             ts: "t3".into(),
             conversation: "explore".into(),
             turn: 1,
@@ -1012,6 +1034,7 @@ async fn agent_to_reuses_conversation_address() {
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::MessageUser {
+                execution: _,
                 conversation,
                 from,
                 via_tool_call_id,
@@ -1180,12 +1203,13 @@ async fn agent_to_opens_nested_address_from_root_contact() {
     assert!(bound_index < started_index);
     assert!(started_index < user_index);
     assert!(events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::MessageUser { conversation, from, via_tool_call_id, .. }
-            if conversation == "review/api"
-                && from.as_deref() == Some("main")
-                && via_tool_call_id.as_deref() == Some("toolu_agent_nested")
-    )));
+            &event.payload,
+            EventPayload::MessageUser {
+    conversation, from, via_tool_call_id, .. }
+                if conversation == "review/api"
+                    && from.as_deref() == Some("main")
+                    && via_tool_call_id.as_deref() == Some("toolu_agent_nested")
+        )));
     assert!(!tree_contains_name(env.home.path(), "subs"));
     assert!(!tree_contains_name(
         env.home.path(),
@@ -1322,6 +1346,7 @@ async fn executes_list_skills_and_continues_to_final_response() {
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolResult {
+            execution: _,
             ref status,
             ref model_content,
             ref structured,
@@ -1404,18 +1429,20 @@ async fn executes_read_file_and_search_text() {
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ToolResult { ref status, ref model_content, ref structured, .. }
+        EventPayload::ToolResult {
+ref status, ref model_content, ref structured, .. }
             if status == "ok"
                 && model_content.contains("1\t# Project")
                 && structured.as_ref().is_some_and(|value| value["kind"] == "file_content" && value["read_event_id"].as_u64().is_some())
     )));
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolResult { ref status, ref model_content, ref structured, .. }
-            if status == "ok"
-                && model_content.contains("README.md:2: TODO root")
-                && structured.as_ref().is_some_and(|value| value["kind"] == "search_results")
-    )));
+            event.payload,
+            EventPayload::ToolResult {
+    ref status, ref model_content, ref structured, .. }
+                if status == "ok"
+                    && model_content.contains("README.md:2: TODO root")
+                    && structured.as_ref().is_some_and(|value| value["kind"] == "search_results")
+        )));
     assert_eq!(
         events
             .iter()
@@ -1480,6 +1507,7 @@ async fn each_slot_read_file_persists_its_own_read_event_id() {
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::ToolResult {
+                execution: _,
                 status,
                 structured: Some(structured),
                 ..
@@ -1566,6 +1594,7 @@ async fn read_file_snapshot_allows_following_edit_file() {
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::ToolResult {
+                execution: _,
                 status,
                 structured: Some(structured),
                 ..
@@ -1579,16 +1608,18 @@ async fn read_file_snapshot_allows_following_edit_file() {
     assert_eq!(read_event.1["read_event_id"], read_event.0);
     assert!(read_event.1["read_event_id"].as_u64().unwrap() > 0);
     assert!(events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, structured: Some(structured), .. }
-            if status == "ok" && structured["kind"] == "file_edit"
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    status, structured: Some(structured), .. }
+                if status == "ok" && structured["kind"] == "file_edit"
+        )));
     assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, model_content, .. }
-            if status == "error"
-                && model_content.contains("prior successful read_file snapshot")
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    status, model_content, .. }
+                if status == "error"
+                    && model_content.contains("prior successful read_file snapshot")
+        )));
     assert_eq!(
         std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap(),
         "alpha\ngamma\n"
@@ -1651,16 +1682,18 @@ async fn same_batch_read_file_then_edit_file_succeeds() {
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, structured: Some(structured), .. }
-            if status == "ok" && structured["kind"] == "file_edit"
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    status, structured: Some(structured), .. }
+                if status == "ok" && structured["kind"] == "file_edit"
+        )));
     assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, model_content, .. }
-            if status == "error"
-                && model_content.contains("prior successful read_file snapshot")
-    )));
+            &event.payload,
+            EventPayload::ToolResult {
+    status, model_content, .. }
+                if status == "error"
+                    && model_content.contains("prior successful read_file snapshot")
+        )));
 }
 
 // ---------------------------------------------------------------------------
@@ -1731,14 +1764,16 @@ async fn can_allow_run_command_once_via_run_decide() {
 
     let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionAllow { ref scope, .. }
-            if scope == "session"
-    )));
+            event.payload,
+            EventPayload::PermissionAllow {
+    ref scope, .. }
+                if scope == "session"
+        )));
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolResult { ref status, .. } if status == "ok"
-    )));
+            event.payload,
+            EventPayload::ToolResult {
+    ref status, .. } if status == "ok"
+        )));
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,10 +1891,11 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     assert_eq!(output.text, "Second command completed.");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionAllow { ref scope, .. }
-            if scope == "project"
-    )));
+            event.payload,
+            EventPayload::PermissionAllow {
+    ref scope, .. }
+                if scope == "project"
+        )));
 }
 
 // ---------------------------------------------------------------------------
@@ -1916,13 +1952,15 @@ async fn records_denied_run_command_and_continues() {
             if tool == "run_command" && tool_call_id == "toolu_cmd"
     )));
     assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionDeny { ref tool_call_id, ref tool, .. }
-            if tool_call_id == "toolu_cmd" && tool == "run_command"
-    )));
+            event.payload,
+            EventPayload::PermissionDeny {
+    ref tool_call_id, ref tool, .. }
+                if tool_call_id == "toolu_cmd" && tool == "run_command"
+        )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ToolResult { ref status, ref model_content, .. }
+        EventPayload::ToolResult {
+ref status, ref model_content, .. }
             if status == "blocked"
                 && model_content.contains("run_command was not executed because the permission gate denied this tool call")
     )));
@@ -1961,7 +1999,14 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 9);
+    assert_eq!(events.len(), 11);
+    assert_eq!(
+        2,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TaskLedger(_)))
+            .count()
+    );
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));

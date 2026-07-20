@@ -1,4 +1,4 @@
-use super::{make_test_pending, test_execution_scope};
+use super::{make_test_pending, test_execution_scope, test_request_scope};
 use crate::event::{EventPayload, EventStore};
 use crate::query::types::{PendingStep, Run, RunState, StreamingChunkState, UiEvent};
 
@@ -38,7 +38,8 @@ async fn incomplete_handoff_marker_does_not_leak_to_final_output() {
     let mut streaming = StreamingChunkState {
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
-        request_id: "req_1".to_string(),
+        request: test_request_scope(),
+        request_started: std::time::Instant::now(),
         stream,
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
@@ -114,7 +115,8 @@ async fn cancel_during_streaming_aborts_stream() {
     let mut streaming = StreamingChunkState {
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
-        request_id: "req_1".to_string(),
+        request: test_request_scope(),
+        request_started: std::time::Instant::now(),
         stream,
         accumulated_text: "partial".to_string(),
         accumulated_thinking: String::new(),
@@ -190,7 +192,8 @@ async fn malformed_tool_call_arguments_fail_instead_of_staying_empty_object() {
     let mut streaming = StreamingChunkState {
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
-        request_id: "req_bad_args".to_string(),
+        request: test_request_scope(),
+        request_started: std::time::Instant::now(),
         stream,
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),

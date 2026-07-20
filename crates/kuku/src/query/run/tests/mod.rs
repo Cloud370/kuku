@@ -28,6 +28,10 @@ fn test_execution_scope() -> crate::event::ExecutionScope {
     }
 }
 
+fn test_request_scope() -> crate::event::RequestScope {
+    crate::event::test_request_scope("run-test-request")
+}
+
 fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
@@ -51,6 +55,9 @@ fn make_test_pending(
     dir: &std::path::Path,
     cancel_token: std::sync::Arc<tokio::sync::Notify>,
 ) -> PendingRun {
+    let request_evidence_recorder = std::sync::Arc::new(
+        crate::query::provider::LifecycleOnlyRecorder::new(events_path.clone()),
+    );
     PendingRun {
         session_id: "test".to_string(),
         query: crate::query::types::Query::new("test").execution_scope(test_execution_scope()),
@@ -61,6 +68,8 @@ fn make_test_pending(
         policy_path: dir.join("policy.md"),
         turn: 1,
         request_num: 1,
+        previous_request_id: None,
+        request_evidence_recorder,
         cumulative: CumulativeUsage::default(),
         resolved: None,
         queued_tool_calls: std::collections::VecDeque::new(),
@@ -109,6 +118,7 @@ fn make_waiting_run(
     );
     let mut pending = pending;
     pending.queued_tool_calls.push_back(QueuedToolCall {
+        request: test_request_scope(),
         tool_call: ProviderToolCall {
             id: queued_tool_call_id.to_string(),
             name: "run_command".to_string(),
@@ -175,6 +185,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
     );
     pending.resolved = Some(test_resolved_runtime());
     pending.queued_tool_calls.push_back(QueuedToolCall {
+        request: test_request_scope(),
         tool_call: ProviderToolCall {
             id: "tool_queued".to_string(),
             name: "run_command".to_string(),
@@ -236,6 +247,7 @@ fn make_skill_queued_run(
     });
     pending.skill_registry = Some(make_skill_registry());
     pending.queued_tool_calls.push_back(QueuedToolCall {
+        request: test_request_scope(),
         tool_call: ProviderToolCall {
             id: "tool_skill".to_string(),
             name: tool_name.to_string(),

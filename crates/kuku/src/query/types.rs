@@ -9,9 +9,7 @@ use crate::config::{Config, SecretString};
 use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
-use crate::event::{
-    ExecutionScope, RequestCause, RequestId, RequestScope, RunId, TaskId, TurnId,
-};
+use crate::event::{ExecutionScope, RequestCause, RequestId, RequestScope, RunId, TaskId, TurnId};
 use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
@@ -22,6 +20,7 @@ use crate::tool::ToolDefinition;
 pub struct Query {
     pub(super) prompt: String,
     pub(super) execution_scope: Option<ExecutionScope>,
+    pub(super) initial_request_cause: Option<RequestCause>,
     pub(super) session_id: Option<String>,
     pub(super) conversation: ConversationAddress,
     pub(super) provider: Option<crate::provider::Provider>,
@@ -303,6 +302,8 @@ pub(super) struct PendingRun {
     pub(super) policy_path: PathBuf,
     pub(super) turn: u64,
     pub(super) request_num: u64,
+    pub(super) previous_request_id: Option<RequestId>,
+    pub(super) request_evidence_recorder: Arc<dyn super::provider::RequestEvidenceRecorder>,
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
@@ -528,6 +529,7 @@ impl Query {
         Self {
             prompt: prompt.into(),
             execution_scope: None,
+            initial_request_cause: None,
             session_id: None,
             conversation: ConversationAddress::MAIN,
             provider: None,
@@ -609,6 +611,11 @@ impl Query {
     /// Attach the stable product execution identity for this query.
     pub fn execution_scope(mut self, execution_scope: ExecutionScope) -> Self {
         self.execution_scope = Some(execution_scope);
+        self
+    }
+
+    pub(crate) fn request_cause(mut self, cause: RequestCause) -> Self {
+        self.initial_request_cause = Some(cause);
         self
     }
 

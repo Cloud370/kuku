@@ -72,6 +72,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -79,6 +80,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:02Z".to_string(),
             conversation: "main".to_string(),
@@ -102,7 +104,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
             ts: "2026-06-07T00:00:04Z".to_string(),
             conversation: None,
             tool_call_id: "tool_1".to_string(),
-            request_id: "req_1".to_string(),
+            request: crate::event::test_request_scope("req_1".to_string()),
             index: 0,
             tool: "write".to_string(),
             args: serde_json::json!({ "path": "foo.txt" }),
@@ -110,6 +112,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
         .unwrap();
     store
         .append(EventPayload::PermissionRequested {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:05Z".to_string(),
             tool_call_id: "tool_1".to_string(),
@@ -192,6 +195,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -199,6 +203,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:02Z".to_string(),
             conversation: "main".to_string(),
@@ -222,7 +227,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
             ts: "2026-06-07T00:00:03Z".to_string(),
             conversation: None,
             tool_call_id: "tool_1".to_string(),
-            request_id: "req_1".to_string(),
+            request: crate::event::test_request_scope("req_1".to_string()),
             index: 0,
             tool: "write".to_string(),
             args: serde_json::json!({ "path": "foo.txt" }),
@@ -230,6 +235,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
         .unwrap();
     store
         .append(EventPayload::PermissionRequested {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:04Z".to_string(),
             tool_call_id: "tool_1".to_string(),
@@ -299,6 +305,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -306,6 +313,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
         .unwrap();
     store
         .append(EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:02Z".to_string(),
             conversation: "main".to_string(),
@@ -329,7 +337,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
             ts: "2026-06-07T00:00:04Z".to_string(),
             conversation: None,
             tool_call_id: "tool_1".to_string(),
-            request_id: "req_1".to_string(),
+            request: crate::event::test_request_scope("req_1".to_string()),
             index: 0,
             tool: "write".to_string(),
             args: serde_json::json!({ "path": "foo.txt" }),
@@ -337,6 +345,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
         .unwrap();
     store
         .append(EventPayload::PermissionRequested {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-06-07T00:00:05Z".to_string(),
             tool_call_id: "tool_1".to_string(),
