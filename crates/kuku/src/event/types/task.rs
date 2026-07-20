@@ -611,7 +611,9 @@ impl TaskEvent {
                 && activity.tier.is_none()
                 && activity.result_in_main.is_none();
             let valid = match activity.kind {
-                ActivityKindFact::DelegatedAgent => delegated_identity_complete,
+                ActivityKindFact::DelegatedAgent => {
+                    delegated_identity_complete && activity.detail.is_none()
+                }
                 ActivityKindFact::Tool | ActivityKindFact::System => delegated_identity_absent,
             };
             if !valid {
@@ -711,7 +713,7 @@ pub enum TaskLedgerError {
     ContradictoryRunState,
     #[error("terminal run facts require a summary and active run facts must not have one")]
     InvalidRunCompletion,
-    #[error("delegated activity identity must be complete and exclusive to delegated activities")]
+    #[error("delegated activity identity must be complete, structured, and exclusive")]
     InvalidActivityIdentity,
 }
 

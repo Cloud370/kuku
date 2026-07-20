@@ -37,6 +37,10 @@ fn activity_with_detail(id: &str, detail: Option<String>) -> TaskLedgerRecord {
                 kind: ActivityKindFact::System,
                 status: ActivityStatusFact::Completed,
                 detail,
+                conversation_id: None,
+                agent: None,
+                tier: None,
+                result_in_main: None,
                 file_references: Vec::new(),
             },
         }])

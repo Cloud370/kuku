@@ -28,7 +28,7 @@ fn delegated_activity_round_trips_complete_typed_identity() {
         title: "Review changes".to_owned(),
         kind: ActivityKindFact::DelegatedAgent,
         status: ActivityStatusFact::Completed,
-        detail: Some("Reviewed the current changes".to_owned()),
+        detail: None,
         conversation_id: Some(conversation_id()),
         agent: Some("agent:project:review".to_owned()),
         tier: Some("tier:balanced".to_owned()),
@@ -42,7 +42,7 @@ fn delegated_activity_round_trips_complete_typed_identity() {
         "title": "Review changes",
         "kind": "delegated_agent",
         "status": "completed",
-        "detail": "Reviewed the current changes",
+        "detail": null,
         "conversation_id": "con_0123456789abcdef01234567",
         "agent": "agent:project:review",
         "tier": "tier:balanced",
@@ -145,6 +145,26 @@ fn ledger_rejects_missing_or_misplaced_delegated_identity() {
     assert!(
         TaskActivityBatch::try_new(vec![TaskEvent::ActivityUpserted {
             activity: misplaced_identity,
+        }])
+        .is_err()
+    );
+
+    let delegated_detail = ActivityFact {
+        activity_id: "act_delegate_review".to_owned(),
+        run_id: run_id(),
+        title: "Review changes".to_owned(),
+        kind: ActivityKindFact::DelegatedAgent,
+        status: ActivityStatusFact::Completed,
+        detail: Some("agent=review tier=balanced".to_owned()),
+        conversation_id: Some(conversation_id()),
+        agent: Some("agent:project:review".to_owned()),
+        tier: Some("tier:balanced".to_owned()),
+        result_in_main: Some(true),
+        file_references: vec![],
+    };
+    assert!(
+        TaskActivityBatch::try_new(vec![TaskEvent::ActivityUpserted {
+            activity: delegated_detail,
         }])
         .is_err()
     );

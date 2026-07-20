@@ -776,6 +776,10 @@ fn activity_upsert(title: &str) -> kuku::event::TaskEvent {
             kind: kuku::event::ActivityKindFact::Tool,
             status: kuku::event::ActivityStatusFact::Running,
             detail: None,
+            conversation_id: None,
+            agent: None,
+            tier: None,
+            result_in_main: None,
             file_references: Vec::new(),
         },
     }
