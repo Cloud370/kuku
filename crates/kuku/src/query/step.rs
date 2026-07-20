@@ -123,7 +123,7 @@ async fn execute_inline_tool(
     queued: &QueuedToolCall,
     kind: super::types::ToolKind,
 ) -> Result<PendingStep> {
-    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+    let result = execute_tool_call(&mut pending, &queued.request, &queued.tool_call).await?;
 
     if let Some(ref plugin_reg) = pending.plugin_registry {
         let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPostExecute);

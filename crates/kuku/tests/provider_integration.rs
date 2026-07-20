@@ -266,7 +266,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 11);
+    assert_eq!(events.len(), 10);
     assert_eq!(
         2,
         events
@@ -280,6 +280,9 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::PromptSnapshot { .. })));
     assert!(matches!(
         events[events.len() - 2].payload,
         EventPayload::ModelResponse { .. }
@@ -383,7 +386,7 @@ ref status, ref model_content, .. }
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
-async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
+async fn second_turn_request_uses_current_instructions_without_runtime_snapshot() {
     let env = TestEnv::new();
     let first_server = MockServer::start();
     std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
@@ -423,14 +426,11 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
     let second_request = second_server.mock(|when, then| {
         when.method(POST)
             .path("/v1/messages")
-            .body_matches(
-                Regex::new(
-                    r#"(?s).*<kuku_runtime_context>.*<kuku_system_notice>.*</kuku_system_notice>.*</kuku_runtime_context>.*"#,
-                )
-                .unwrap(),
-            )
-            .body_contains("Only unacknowledged drift is reported here.")
-            .body_contains("- AGENTS.md (updated)");
+            .body_contains("version two")
+            .body_contains("next turn")
+            .matches(|request| {
+                !body_contains(request, b"Only unacknowledged drift is reported here.")
+            });
         then.status(200)
             .header("request-id", "req_second")
             .body(anthropic_sse_response(serde_json::json!({
@@ -1999,7 +1999,7 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 11);
+    assert_eq!(events.len(), 10);
     assert_eq!(
         2,
         events
@@ -2010,6 +2010,9 @@ async fn openai_success_returns_text_and_writes_events() {
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::PromptSnapshot { .. })));
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelResponse { ref text, .. } if text == "Hi from GPT!"

@@ -236,6 +236,7 @@ fn handle_search_skills(
 
 pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
+    parent_request: &crate::event::RequestScope,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
     if is_inline_skill_tool(&tool_call.name) && !resolved_tool_available(pending, &tool_call.name) {
@@ -277,14 +278,6 @@ pub(super) async fn execute_tool_call(
 
     let prior_events = EventStore::replay(&pending.events_path)?;
     let result_event_id = EventStore::open(&pending.events_path)?.next_id();
-    let parent_request = crate::event::RequestScope {
-        execution: pending.execution_scope().clone(),
-        request_id: pending.previous_request_id.clone().ok_or_else(|| {
-            crate::error::Error::InvalidEventStream(
-                "tool execution has no parent provider request".to_string(),
-            )
-        })?,
-    };
     let result = crate::tool::dispatch(
         &tool_call.name,
         &tool_call.args,
@@ -296,7 +289,7 @@ pub(super) async fn execute_tool_call(
         &pending.config,
         &pending.catalog,
         &pending.events_path,
-        &parent_request,
+        parent_request,
         pending.request_evidence_recorder.as_ref(),
     )
     .await;
@@ -540,7 +533,13 @@ mod tests {
             index: 0,
         };
 
-        let result = execute_tool_call(&mut pending, &call).await.unwrap();
+        let result = execute_tool_call(
+            &mut pending,
+            &crate::event::test_request_scope("disabled skill"),
+            &call,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.status, "error");
         assert_eq!(result.summary, "failed: unknown tool: use_skill");
@@ -558,7 +557,13 @@ mod tests {
             index: 0,
         };
 
-        let result = execute_tool_call(&mut pending, &call).await.unwrap();
+        let result = execute_tool_call(
+            &mut pending,
+            &crate::event::test_request_scope("use skill"),
+            &call,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.status, "ok");
         assert!(result.truncated);
@@ -589,7 +594,13 @@ mod tests {
                 index: 0,
             };
 
-            let result = execute_tool_call(&mut pending, &call).await.unwrap();
+            let result = execute_tool_call(
+                &mut pending,
+                &crate::event::test_request_scope(tool_name),
+                &call,
+            )
+            .await
+            .unwrap();
 
             assert_eq!(result.status, "ok");
             assert!(result.truncated, "{tool_name} should be truncated");

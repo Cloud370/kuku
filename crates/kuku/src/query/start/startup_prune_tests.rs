@@ -153,9 +153,20 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
         args: serde_json::json!({ "skill_name": "resume-skill" }),
         index: 1,
     };
-    let result = crate::query::tool_exec::execute_tool_call(&mut waiting.pending, &use_skill)
-        .await
-        .unwrap();
+    let parent_request = waiting
+        .pending
+        .queued_tool_calls
+        .front()
+        .expect("resumed permission retains queued request scope")
+        .request
+        .clone();
+    let result = crate::query::tool_exec::execute_tool_call(
+        &mut waiting.pending,
+        &parent_request,
+        &use_skill,
+    )
+    .await
+    .unwrap();
     assert_eq!(result.status, "ok");
     assert!(result.model_content.contains("persisted description body"));
     assert!(!result

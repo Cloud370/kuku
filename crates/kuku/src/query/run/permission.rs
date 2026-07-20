@@ -187,7 +187,7 @@ impl Run {
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
-            let result = execute_tool_call(&mut pending, &tool_call).await?;
+            let result = execute_tool_call(&mut pending, &request, &tool_call).await?;
             let mc = if result.model_content.is_empty() {
                 None
             } else {
