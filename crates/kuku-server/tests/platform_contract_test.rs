@@ -23,6 +23,18 @@ fn web_home_is_private_and_single_instance() {
     }
 
     let first = ServerInstanceLock::acquire(home.path()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(home.path().join("web.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
     assert!(ServerInstanceLock::acquire(home.path()).is_err());
     drop(first);
     assert!(ServerInstanceLock::acquire(home.path()).is_ok());
