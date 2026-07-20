@@ -10,8 +10,8 @@
     "fixtures/task_changes.json": "d0c8a49b6591f6f467a078970c568004259ea850e37f036604926b4fed1dd87e",
     "fixtures/task_projection.json": "3b78cbb8eebdc273b84bd2cc61685b498390d6132aac5fb4a9259be87d32ba13",
     "fixtures/task_stream_event.json": "24cc11490d93d711022f6be991d8450291ecae0d3445f7f5914b2bed2ddf3411",
-    "index.ts": "511dfe29e293a94e21466a519afa0db082690c6ac8ee75c4eef04efc7962aebb",
+    "index.ts": "42679f8e14a2e4b8f50aac2300caf4036b08a2d9db5bff8cae8c8ec9c222c861",
     "manifest-inputs.json": "14357759cce84a9e02407f4b3be79f523e423bc3c1db3dba30cf1133adc1c6ef",
-    "schema.json": "768ad35d36c0e6cb341e01fde525a5af615e0cefdd8c72312e27df501876e4ef"
+    "schema.json": "bb7de26b2205790ae424aab7c142341e3de3d664a59802ddc2bf431f9e8833a7"
   }
 }

@@ -4774,6 +4774,18 @@
       "type": "object"
     },
     "WorkspaceRelativePath": {
+      "allOf": [
+        {
+          "not": {
+            "pattern": "(?:^|/)[^/]*[. ](?:/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[. ]*(?:\\.[^/]*)?(?:/|$)"
+          }
+        }
+      ],
       "format": "workspace-relative-path",
       "maxLength": 4096,
       "minLength": 1,
