@@ -156,6 +156,7 @@ fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> EventStore {
         started_at: "2026-07-20T00:00:00Z".to_string(),
         finished_at: None,
         summary: None,
+        warnings: Vec::new(),
         checks: None,
         metrics: None,
         workspace_changes: None,

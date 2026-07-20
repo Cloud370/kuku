@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, CheckFact, ExecutionScope,
-    InteractionChoiceFact, InteractionFact, InteractionId, MetricFact, RunId, TaskEvent, TaskId,
-    WorkspaceChangesFact, WorkspaceId,
+    InteractionChoiceFact, InteractionFact, InteractionId, MetricFact, RunId, SkillContextFact,
+    TaskEvent, TaskId, WorkspaceChangesFact, WorkspaceId,
 };
 use tokio::sync::mpsc;
 
@@ -62,7 +62,7 @@ pub struct DriverStart {
     pub workspace_id: WorkspaceId,
     pub prompt: String,
     pub tier_id: String,
-    pub skill_ids: Vec<String>,
+    pub selected_skills: Vec<SkillContextFact>,
     pub agent_message_id: String,
     pub execution_scope: ExecutionScope,
     pub event_store: kuku::event::EventStore,
@@ -163,6 +163,51 @@ fn resolve_product_tier(
         .ok_or(DomainError::InvalidRequest)
 }
 
+pub(super) fn selected_skill_facts(
+    store: &kuku::event::EventStore,
+    execution_scope: &ExecutionScope,
+    current_ids: &[String],
+) -> Result<Vec<SkillContextFact>, DomainError> {
+    let current = current_ids.iter().collect::<HashSet<_>>();
+    if current.len() != current_ids.len() {
+        return Err(DomainError::InvalidRequest);
+    }
+    let mut found = HashMap::<String, Vec<SkillContextFact>>::new();
+    for stored in store.read_all().map_err(|_| DomainError::LedgerCorrupt)? {
+        let kuku::event::EventPayload::TaskLedger(record) = stored.payload else {
+            continue;
+        };
+        let events = match &record {
+            kuku::event::TaskLedgerRecord::Control(transaction) => transaction.events(),
+            kuku::event::TaskLedgerRecord::Activity(batch) => batch.events(),
+        };
+        for event in events {
+            let TaskEvent::SkillLoaded(skill) = event else {
+                continue;
+            };
+            if skill.execution != *execution_scope || !current.contains(&skill.skill_id) {
+                continue;
+            }
+            found
+                .entry(skill.skill_id.clone())
+                .or_default()
+                .push(SkillContextFact {
+                    skill_id: skill.skill_id.clone(),
+                    source: skill.source.clone(),
+                    origin: skill.origin,
+                    content_hash: skill.content_hash.clone(),
+                });
+        }
+    }
+    current_ids
+        .iter()
+        .map(|skill_id| match found.remove(skill_id).as_deref() {
+            Some([fact]) => Ok(fact.clone()),
+            _ => Err(DomainError::InvalidRequest),
+        })
+        .collect()
+}
+
 impl RunDriverFactory for KukuDriverFactory {
     fn start(
         &self,
@@ -180,6 +225,7 @@ impl RunDriverFactory for KukuDriverFactory {
                     start.prompt.clone(),
                     start.execution_scope.clone(),
                     start.event_store.clone(),
+                    start.selected_skills.clone(),
                 )
                 .map_err(|_| DomainError::InvalidRequest)?
                 .config((*config).clone())
@@ -532,6 +578,10 @@ fn finished_activity(
 }
 
 #[cfg(test)]
+#[path = "driver_selected_skill_tests.rs"]
+mod selected_skill_tests;
+
+#[cfg(test)]
 mod activity_tests {
     use std::future::Future;
     use std::pin::Pin;
@@ -748,7 +798,7 @@ mod activity_tests {
         store
     }
 
-    async fn factory_fixture(
+    pub(super) async fn factory_fixture(
         tier_id: &str,
     ) -> (
         KukuDriverFactory,
@@ -803,7 +853,7 @@ mod activity_tests {
             workspace_id: scope.workspace_id.clone(),
             prompt: "inspect".to_owned(),
             tier_id: tier_id.to_owned(),
-            skill_ids: Vec::new(),
+            selected_skills: Vec::new(),
             agent_message_id: "msg_agent".to_owned(),
             execution_scope: scope,
             event_store: store,

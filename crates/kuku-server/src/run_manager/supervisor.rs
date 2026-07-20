@@ -359,18 +359,27 @@ impl RunSupervisor {
     fn driver_start(&self, task_id: &TaskId, run_id: &RunId) -> Result<DriverStart, DomainError> {
         let projection = self.repository.rebuild(task_id)?.projection()?;
         let mut prompt = None;
+        let mut current_skill_ids = Vec::new();
         for record in self.repository.replay(task_id)? {
-            let EventPayload::TaskLedger(TaskLedgerRecord::Control(transaction)) = record.payload
-            else {
+            let EventPayload::TaskLedger(record) = record.payload else {
                 continue;
             };
-            for event in transaction.events() {
-                if let TaskEvent::MessageAppended { message } = event {
-                    if message.run_id.as_ref() == Some(run_id)
-                        && message.role == MessageRoleFact::User
+            let events = match &record {
+                TaskLedgerRecord::Control(transaction) => transaction.events(),
+                TaskLedgerRecord::Activity(batch) => batch.events(),
+            };
+            for event in events {
+                match event {
+                    TaskEvent::MessageAppended { message }
+                        if message.run_id.as_ref() == Some(run_id)
+                            && message.role == MessageRoleFact::User =>
                     {
                         prompt = Some(message.text.clone());
                     }
+                    TaskEvent::SkillsChanged { selection } => {
+                        current_skill_ids = selection.skill_ids.clone();
+                    }
+                    _ => {}
                 }
             }
         }
@@ -383,17 +392,18 @@ impl RunSupervisor {
             task_id,
             run_id,
         )?;
+        let selected_skills = super::driver::selected_skill_facts(
+            &event_store,
+            &execution_scope,
+            &current_skill_ids,
+        )?;
         Ok(DriverStart {
             task_id: task_id.clone(),
             run_id: run_id.clone(),
             workspace_id: projection.task.workspace_id,
             prompt: prompt.ok_or(DomainError::LedgerCorrupt)?,
             tier_id: projection.selected_tier_id,
-            skill_ids: projection
-                .loaded_skills
-                .into_iter()
-                .map(|skill| skill.skill_id)
-                .collect(),
+            selected_skills,
             agent_message_id: format!("msg_agent_{}", run_id.as_str()),
             execution_scope,
             event_store,
