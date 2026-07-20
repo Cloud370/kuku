@@ -167,3 +167,26 @@ async fn timeline_cursor_keeps_an_immutable_snapshot_across_appends() {
     assert!(matches!(&page.items[0], crate::api::TimelineItemProjection::Message(value) if value.text == "0"));
     assert!(page.next_cursor.is_none());
 }
+
+#[tokio::test]
+async fn task_list_cursor_is_bound_to_workspace_search_and_limit() {
+    let dir = tempdir().unwrap();
+    let service = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
+    for (key, title) in [("one", "Needle one"), ("two", "Needle two")] {
+        service.create_task(CreateTaskCommand {
+            workspace_id: workspace_id(), idempotency_key: key.into(), title: title.into(),
+        }).await.unwrap();
+    }
+    let first = service.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: Some(" NEEDLE ".into()), cursor: None, limit: 1,
+    }).await.unwrap();
+    assert_eq!(first.items.len(), 1);
+    let cursor = first.next_cursor.unwrap();
+    let second = service.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: Some("needle".into()), cursor: Some(cursor.clone()), limit: 1,
+    }).await.unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert!(matches!(service.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: Some("different".into()), cursor: Some(cursor), limit: 1,
+    }).await, Err(super::DomainError::InvalidRequest)));
+}
