@@ -174,16 +174,16 @@ export function reduceTaskBatch(
   }
   validateProjectionTimeline(projection);
 
-  const touchesTimeline = changes.some(isTimelineChange);
-  if (touchesTimeline !== (timelineWindow !== null)) {
+  const candidate = structuredClone(changes).reduce(reduceTaskChange, structuredClone(projection));
+  const changesTimelineLayout = !timelineLayoutsEqual(projection.timeline, candidate.timeline);
+  if (changesTimelineLayout !== (timelineWindow !== null)) {
     throw new ProjectionGapError(
-      touchesTimeline
+      changesTimelineLayout
         ? 'Timeline change requires a window'
-        : 'Non-timeline batch must not include a window',
+        : 'Timeline window requires a layout change',
     );
   }
 
-  const candidate = structuredClone(changes).reduce(reduceTaskChange, structuredClone(projection));
   let nextHistory = cloneHistory(history);
 
   if (timelineWindow !== null) {
@@ -375,15 +375,6 @@ function upsertTimelineItem(
   return [...withoutCurrent, item].sort(compareTimelineItems);
 }
 
-function isTimelineChange(change: TaskChange): boolean {
-  return (
-    change.type === 'message_appended' ||
-    change.type === 'message_patched' ||
-    change.type === 'activity_upserted' ||
-    change.type === 'interaction_upserted'
-  );
-}
-
 function appendEvictions(
   history: TimelineHistory,
   evictions: TimelineItemProjection[],
@@ -467,6 +458,23 @@ function timelineItemsEqual(
   right: TimelineItemProjection[],
 ): boolean {
   return valuesEqual(left, right);
+}
+
+function timelineLayoutsEqual(
+  left: TimelineItemProjection[],
+  right: TimelineItemProjection[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => {
+      const next = right[index];
+      return (
+        next !== undefined &&
+        timelineItemKey(item) === timelineItemKey(next) &&
+        timelineItemOrder(item) === timelineItemOrder(next)
+      );
+    })
+  );
 }
 
 function valuesEqual(left: unknown, right: unknown): boolean {

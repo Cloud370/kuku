@@ -281,6 +281,67 @@ describe('atomic Task change reduction', () => {
     expect(reduced.projection.task.title).toBe(originalTitle);
   });
 
+  it('accepts a payload-only message patch with a null timeline window', () => {
+    const reduced = reduceTaskBatch(
+      projectionAt(20, 8, [message('msg_existing', 20, 'Ready')]),
+      createWorkbenchSnapshot().timelineHistory,
+      [
+        {
+          type: 'message_patched',
+          message_id: 'msg_existing',
+          append_text: ' now.',
+          finalized: true,
+          request_ids: null,
+        },
+      ],
+      null,
+      8,
+      21,
+    );
+
+    expect(reduced.projection.timeline[0]).toMatchObject({
+      type: 'message',
+      item: { message_id: 'msg_existing', text: 'Ready now.', order_key: 20 },
+    });
+    expect(reduced.timelineHistory.items).toEqual([]);
+  });
+
+  it('accepts same-ID same-order activity and interaction upserts with a null window', () => {
+    const changes = fixtureChanges();
+    const activityChange = changes.find((change) => change.type === 'activity_upserted');
+    const interactionChange = changes.find((change) => change.type === 'interaction_upserted');
+    if (
+      activityChange?.type !== 'activity_upserted' ||
+      interactionChange?.type !== 'interaction_upserted'
+    ) {
+      throw new Error('fixture must contain timeline upserts');
+    }
+    const currentActivity = structuredClone(activityChange.activity);
+    const currentInteraction = structuredClone(interactionChange.interaction);
+    currentActivity.title = 'Pending read';
+    currentActivity.status = 'running';
+    currentInteraction.status = 'pending';
+    const current = projectionAt(20, 8, [
+      { type: 'activity', item: currentActivity },
+      { type: 'interaction', item: currentInteraction },
+    ]);
+
+    const reduced = reduceTaskBatch(
+      current,
+      createWorkbenchSnapshot().timelineHistory,
+      [activityChange, interactionChange],
+      null,
+      8,
+      21,
+    );
+
+    expect(reduced.projection.timeline).toMatchObject([
+      { type: 'activity', item: { title: 'Read file', status: 'completed', order_key: 9 } },
+      { type: 'interaction', item: { status: 'pending', order_key: 10 } },
+    ]);
+    expect(reduced.timelineHistory.items).toEqual([]);
+  });
+
   it('moves the exact chronological prefix into local history on a 500-to-501 transition', () => {
     const timeline = Array.from({ length: 500 }, (_, index) =>
       message(`msg_${String(index)}`, index),
