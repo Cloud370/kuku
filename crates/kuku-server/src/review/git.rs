@@ -8,9 +8,6 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-#[cfg(unix)]
-use cap_std::fs::MetadataExt;
-
 use crate::api::{
     ApiError, ApiErrorCode, ApiVersion, ChangeEntry, ChangeKind, ChangesAvailability, DiffDocument,
     DiffHunk, DiffLine, DiffLineKind, PageCursor, ReviewSnapshot, RevisionToken,
@@ -19,9 +16,11 @@ use crate::platform::{
     ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput, ProcessStream,
     WorkspaceCapability,
 };
-use crate::review::{ReviewLimits, RevisionBudget};
+use crate::review::{ReviewAdmission, ReviewLimits, RevisionBudget};
 
+#[path = "command.rs"]
 mod command;
+#[path = "parser.rs"]
 mod parser;
 use command::git_command;
 use parser::{
@@ -56,14 +55,31 @@ type StableSnapshot = (CapturedState, Vec<ChangeEntry>);
 pub(crate) struct GitReviewService {
     capability: WorkspaceCapability,
     limits: ReviewLimits,
+    admission: Arc<ReviewAdmission>,
     capture_hook: Option<CaptureHook>,
 }
 
 impl GitReviewService {
     pub(crate) fn new(capability: WorkspaceCapability, limits: ReviewLimits) -> Self {
+        let admission = Arc::new(ReviewAdmission::new(&limits));
         Self {
             capability,
             limits,
+            admission,
+            capture_hook: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_admission(
+        capability: WorkspaceCapability,
+        limits: ReviewLimits,
+        admission: Arc<ReviewAdmission>,
+    ) -> Self {
+        Self {
+            capability,
+            limits,
+            admission,
             capture_hook: None,
         }
     }
@@ -74,9 +90,11 @@ impl GitReviewService {
         limits: ReviewLimits,
         capture_hook: CaptureHook,
     ) -> Self {
+        let admission = Arc::new(ReviewAdmission::new(&limits));
         Self {
             capability,
             limits,
+            admission,
             capture_hook: Some(capture_hook),
         }
     }
@@ -86,6 +104,9 @@ impl GitReviewService {
         cursor: Option<&PageCursor>,
         limit: u16,
     ) -> Result<ReviewSnapshot, ApiError> {
+        let _permit = self
+            .admission
+            .try_acquire_git(self.capability.workspace_id())?;
         let limit = self.valid_limit(limit)?;
         let mut budget = RevisionBudget::new(&self.limits);
         let probe = self.probe(&mut budget).await;
@@ -130,6 +151,9 @@ impl GitReviewService {
         cursor: Option<&PageCursor>,
         limit: u16,
     ) -> Result<DiffDocument, ApiError> {
+        let _permit = self
+            .admission
+            .try_acquire_git(self.capability.workspace_id())?;
         let limit = self
             .valid_limit(limit)?
             .min(self.limits.diff_lines as usize);
@@ -290,7 +314,7 @@ impl GitReviewService {
                 if line.is_empty() {
                     continue;
                 }
-                filters.push(configured_filter_name(line)?);
+                filters.push(command::configured_filter_name(line).ok_or_else(invalid_git_output)?);
             }
             filters.sort();
             filters.dedup();
@@ -329,7 +353,7 @@ impl GitReviewService {
             match self.capability.open_file(&relative) {
                 Ok(mut file) => {
                     path_hash.field(b"regular");
-                    path_hash.field(&metadata_mode(
+                    path_hash.field(&command::metadata_mode(
                         &file.metadata().map_err(|_| workspace_unavailable())?,
                     ));
                     let mut buffer = [0_u8; 64 * 1024];
@@ -898,33 +922,6 @@ fn token_for(domain: &[u8], bytes: &[u8]) -> RevisionToken {
     let mut hash = FramedHash::new(domain);
     hash.field(bytes);
     hash.finish()
-}
-
-#[cfg(unix)]
-fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
-    (metadata.mode() as u64).to_be_bytes()
-}
-
-fn configured_filter_name(line: &[u8]) -> Result<String, ApiError> {
-    let text = std::str::from_utf8(line).map_err(|_| invalid_git_output())?;
-    let rest = text
-        .strip_prefix("filter.")
-        .ok_or_else(invalid_git_output)?;
-    let (name, key) = rest.rsplit_once('.').ok_or_else(invalid_git_output)?;
-    if !matches!(key, "clean" | "smudge" | "process" | "required")
-        || name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    {
-        return Err(invalid_git_output());
-    }
-    Ok(name.to_owned())
-}
-
-#[cfg(not(unix))]
-fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
-    u64::from(metadata.permissions().readonly()).to_be_bytes()
 }
 
 fn make_cursor(

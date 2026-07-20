@@ -40,7 +40,19 @@ impl WorkspaceReadService {
         workspaces: Arc<dyn WorkspaceCapabilityProvider>,
         limits: ReviewLimits,
     ) -> Self {
-        let admission = Arc::new(ReviewAdmission::new(&limits));
+        Self::with_admission(
+            workspaces,
+            limits.clone(),
+            Arc::new(ReviewAdmission::new(&limits)),
+        )
+    }
+
+    /// Creates a service using shared Review admission pools.
+    pub fn with_admission(
+        workspaces: Arc<dyn WorkspaceCapabilityProvider>,
+        limits: ReviewLimits,
+        admission: Arc<ReviewAdmission>,
+    ) -> Self {
         Self {
             workspaces,
             limits,
@@ -863,6 +875,7 @@ fn validate_limit(limit: u16) -> Result<(), ApiError> {
 
 fn validate_path(path: &str, limits: &ReviewLimits) -> Result<(), ApiError> {
     if path.is_empty()
+        || path.contains('\0')
         || path.len() > limits.path_bytes
         || path.split('/').count() > limits.path_components
     {

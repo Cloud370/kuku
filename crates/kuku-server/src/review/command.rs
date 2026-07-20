@@ -2,6 +2,9 @@
 
 use crate::platform::RootCommand;
 
+#[cfg(unix)]
+use cap_std::fs::MetadataExt;
+
 const GIT_PREFIX: [&str; 4] = [
     "--no-pager",
     "--literal-pathspecs",
@@ -34,4 +37,29 @@ pub(super) fn git_command(args: &[&str], filters: &[String]) -> RootCommand {
         .env("GIT_CONFIG_GLOBAL", null_config)
         .env("LC_ALL", "C")
         .env("LANG", "C")
+}
+
+#[cfg(unix)]
+pub(super) fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
+    (metadata.mode() as u64).to_be_bytes()
+}
+
+#[cfg(not(unix))]
+pub(super) fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
+    u64::from(metadata.permissions().readonly()).to_be_bytes()
+}
+
+pub(super) fn configured_filter_name(line: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(line).ok()?;
+    let rest = text.strip_prefix("filter.")?;
+    let (name, key) = rest.rsplit_once('.')?;
+    if !matches!(key, "clean" | "smudge" | "process" | "required")
+        || name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        return None;
+    }
+    Some(name.to_owned())
 }
