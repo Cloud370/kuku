@@ -5,6 +5,13 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, oneshot, Mutex as TokioMutex, Semaphore};
 
+pub mod domain;
+
+pub use domain::{DomainError, TaskAggregate};
+
+#[cfg(test)]
+mod domain_tests;
+
 pub struct RunHandle {
     cancel_token: Arc<tokio::sync::Notify>,
     pub workspace: PathBuf,
