@@ -155,15 +155,16 @@ fn cancel_pending_permission_rejects_mismatched_queued_tool() {
 #[test]
 fn cancel_pending_permission_restores_state_when_persistence_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let events_path = dir.path().join("events_dir");
-    std::fs::create_dir(&events_path).unwrap();
+    let events_path = dir.path().join("events.jsonl");
     let mut run = make_waiting_run(
-        events_path,
+        events_path.clone(),
         dir.path(),
         "req_cancel",
         "tool_cancel",
         "tool_cancel",
     );
+    std::fs::remove_file(&events_path).unwrap();
+    std::fs::create_dir(&events_path).unwrap();
 
     let error = run.cancel_pending_permission("req_cancel").unwrap_err();
 
