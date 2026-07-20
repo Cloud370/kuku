@@ -111,10 +111,11 @@ fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
     match kind {
         ToolKind::Simple => json!("simple"),
         ToolKind::Agent {
-            conversation,
-            binding_id,
+            conversation_id,
+            agent,
+            tier,
         } => {
-            json!({"agent": {"conversation": conversation.as_str(), "binding_id": binding_id}})
+            json!({"agent": {"conversation_id": conversation_id, "agent": agent, "tier": tier}})
         }
         ToolKind::Command { pid } => json!({"command": {"pid": pid}}),
     }
@@ -203,14 +204,21 @@ mod tests {
             tool: "agent".into(),
             summary: "code-review".into(),
             kind: ToolKind::Agent {
-                conversation: crate::conversation::address::ConversationAddress::parse("review")
-                    .unwrap(),
-                binding_id: "sha256:abc".into(),
+                conversation_id: crate::event::ConversationId::parse(
+                    "con_aaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .unwrap(),
+                agent: "sha256:abc".into(),
+                tier: "strong".into(),
             },
         })
         .unwrap();
-        assert_eq!(agent["kind"]["agent"]["conversation"], "review");
-        assert_eq!(agent["kind"]["agent"]["binding_id"], "sha256:abc");
+        assert_eq!(
+            agent["kind"]["agent"]["conversation_id"],
+            "con_aaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(agent["kind"]["agent"]["agent"], "sha256:abc");
+        assert_eq!(agent["kind"]["agent"]["tier"], "strong");
     }
 
     #[test]

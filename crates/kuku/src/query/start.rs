@@ -83,14 +83,22 @@ impl Query {
     async fn start_session_with_lock(mut self, acquire_lock: bool) -> Result<Run> {
         self.validate()?;
 
+        let task_context = self.task_context.clone();
+
         let kuku_home = match self.captured_kuku_home.take() {
             Some(path) => path,
             None => kuku_home()?,
         };
 
-        let workspace = match self.workspace_path.take() {
-            Some(path) => path,
-            None => current_workspace()?,
+        let workspace = match task_context.as_ref() {
+            Some(context) => {
+                context.workspace.verify_identity()?;
+                context.workspace.execution_root()?
+            }
+            None => match self.workspace_path.take() {
+                Some(path) => path,
+                None => current_workspace()?,
+            },
         };
 
         let config: Arc<crate::config::Config> = match (self.config_obj.take(), &self.config_path) {
@@ -121,16 +129,28 @@ impl Query {
         validate_session_id(&session_id)?;
 
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        let run_lock_path = if acquire_lock {
+        let run_lock_path = if task_context.is_some() {
+            std::path::PathBuf::new()
+        } else if acquire_lock {
             StartupLockGuard::acquire(lock_path.clone())?.into_path()
         } else {
             lock_path.with_extension("nested")
         };
-        let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
+        let events_path = match task_context.as_ref() {
+            Some(context) => context.event_store.path().to_path_buf(),
+            None => session_events_path(&kuku_home, &workspace, &session_id)?,
+        };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
-        let existing_events = EventStore::replay(&events_path)?;
-        validate_existing_session(&existing_events)?;
-        let is_new_session = existing_events.is_empty();
+        let existing_events = match task_context.as_ref() {
+            Some(context) => context.event_store.replay_events()?,
+            None => EventStore::replay(&events_path)?,
+        };
+        if task_context.is_some() {
+            validate_task_ledger(&existing_events)?;
+        } else {
+            validate_existing_session(&existing_events)?;
+        }
+        let is_new_session = task_context.is_none() && existing_events.is_empty();
         let lifecycle = if is_new_session {
             None
         } else {
@@ -149,19 +169,25 @@ impl Query {
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| next_turn(&existing_events));
-        let execution_scope = match self.execution_scope.clone() {
-            Some(scope) => scope,
-            None => crate::event::ExecutionScope {
-                workspace_id: crate::event::WorkspaceId::try_new()?,
-                task_id: crate::event::TaskId::try_new()?,
-                run_id: crate::event::RunId::try_new()?,
-                turn_id: crate::event::TurnId::try_new()?,
-                conversation_id: crate::event::ConversationId::try_new()?,
-                turn_index: turn,
+        let execution_scope = match task_context.as_ref() {
+            Some(context) => context.execution_scope.clone(),
+            None => match self.execution_scope.clone() {
+                Some(scope) => scope,
+                None => crate::event::ExecutionScope {
+                    workspace_id: crate::event::WorkspaceId::try_new()?,
+                    task_id: crate::event::TaskId::try_new()?,
+                    run_id: crate::event::RunId::try_new()?,
+                    turn_id: crate::event::TurnId::try_new()?,
+                    conversation_id: crate::event::ConversationId::try_new()?,
+                    turn_index: turn,
+                },
             },
         };
         self.execution_scope = Some(execution_scope.clone());
-        let mut store = EventStore::open(&events_path)?;
+        let mut store = match task_context.as_ref() {
+            Some(context) => context.event_store.clone(),
+            None => EventStore::open(&events_path)?,
+        };
         if is_new_session {
             let created_at = now_timestamp()?;
             store.append(EventPayload::SessionCreated {
@@ -365,9 +391,12 @@ impl Query {
             turn,
             request_num: resumed_request_num(&existing_events, turn),
             previous_request_id: resumed_previous_request_id(&existing_events, turn),
-            request_evidence_recorder: std::sync::Arc::new(
-                super::provider::LifecycleOnlyRecorder::new(events_path.clone()),
-            ),
+            request_evidence_recorder: std::sync::Arc::new(match task_context.as_ref() {
+                Some(context) => {
+                    super::provider::LifecycleOnlyRecorder::from_store(context.event_store.clone())
+                }
+                None => super::provider::LifecycleOnlyRecorder::new(events_path.clone()),
+            }),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: resumed_state.queued_tool_calls,
@@ -458,6 +487,18 @@ impl Query {
             }
         }
     }
+}
+
+fn validate_task_ledger(events: &[crate::event::StoredEvent]) -> Result<()> {
+    if events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::SessionCreated { .. }))
+    {
+        return Err(Error::InvalidEventStream(
+            "task ledger must not contain legacy session records".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn bootstrap_loaded_names(

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::event::{
@@ -26,18 +26,30 @@ pub(crate) async fn begin_provider_request<T>(
 
 #[derive(Debug)]
 pub(crate) struct LifecycleOnlyRecorder {
+    event_store: Option<EventStore>,
     events_path: PathBuf,
 }
 
 impl LifecycleOnlyRecorder {
     pub(crate) fn new(events_path: impl Into<PathBuf>) -> Self {
         Self {
+            event_store: None,
             events_path: events_path.into(),
         }
     }
 
+    pub(crate) fn from_store(event_store: EventStore) -> Self {
+        Self {
+            events_path: event_store.path().to_path_buf(),
+            event_store: Some(event_store),
+        }
+    }
+
     fn append(&self, event: TaskEvent) -> Result<()> {
-        append_activity(&self.events_path, event)
+        match self.event_store.as_ref() {
+            Some(event_store) => append_activity(event_store.clone(), event),
+            None => append_activity(EventStore::open(&self.events_path)?, event),
+        }
     }
 }
 
@@ -55,12 +67,11 @@ impl RequestEvidenceRecorder for LifecycleOnlyRecorder {
     }
 }
 
-fn append_activity(events_path: &Path, event: TaskEvent) -> Result<()> {
+fn append_activity(mut event_store: EventStore, event: TaskEvent) -> Result<()> {
     let batch = TaskActivityBatch::try_new(vec![event]).map_err(|error| {
         Error::InvalidEventStream(format!("invalid request lifecycle activity: {error}"))
     })?;
-    EventStore::open(events_path)?
-        .append_synced(EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)))?;
+    event_store.append_synced(EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)))?;
     Ok(())
 }
 

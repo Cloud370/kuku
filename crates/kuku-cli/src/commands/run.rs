@@ -88,9 +88,9 @@ fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
 
 fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
     match kind {
-        kuku::query::ToolKind::Agent { conversation, .. } => {
-            Some(conversation.as_str().to_string())
-        }
+        kuku::query::ToolKind::Agent {
+            conversation_id, ..
+        } => Some(conversation_id.to_string()),
         _ => None,
     }
 }

@@ -109,8 +109,9 @@ fn stream_json_permission_lines_include_request_conversation() {
 #[test]
 fn stream_json_agent_tool_call_includes_conversation() {
     let kind = kuku::query::ToolKind::Agent {
-        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
-        binding_id: "binding_1".to_string(),
+        conversation_id: kuku::ConversationId::parse("con_aaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+        agent: "binding_1".to_string(),
+        tier: "strong".to_string(),
     };
 
     let line = tool_call_line(
@@ -123,9 +124,9 @@ fn stream_json_agent_tool_call_includes_conversation() {
 
     assert_eq!(
         conversation_for_tool_kind(&kind),
-        Some("review".to_string())
+        Some("con_aaaaaaaaaaaaaaaaaaaaaaaa".to_string())
     );
-    assert_eq!(value["conversation"], "review");
+    assert_eq!(value["conversation"], "con_aaaaaaaaaaaaaaaaaaaaaaaa");
 }
 
 #[test]

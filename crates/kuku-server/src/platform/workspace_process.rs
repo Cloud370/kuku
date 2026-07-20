@@ -183,7 +183,6 @@ impl FileIdentity {
 #[derive(Clone)]
 pub(super) struct IdentityBoundProcessRoot {
     directory: Arc<Dir>,
-    #[cfg(not(unix))]
     process_path: Arc<PathBuf>,
     identity: FileIdentity,
 }
@@ -199,7 +198,6 @@ impl IdentityBoundProcessRoot {
         let _ = process_path;
         Ok(Self {
             directory,
-            #[cfg(not(unix))]
             process_path: Arc::new(process_path),
             identity,
         })
@@ -276,7 +274,7 @@ impl IdentityBoundProcessRoot {
         identity_from_ambient_path(Path::new(reported)) == Some(self.identity)
     }
 
-    fn verify(&self) -> Result<(), ApiError> {
+    pub(super) fn verify(&self) -> Result<(), ApiError> {
         let current = FileIdentity::from_metadata(
             &self
                 .directory
@@ -286,7 +284,11 @@ impl IdentityBoundProcessRoot {
         if current != self.identity {
             return Err(unavailable("workspace identity changed"));
         }
-        #[cfg(windows)]
+        Ok(())
+    }
+
+    pub(super) fn verify_execution_path(&self) -> Result<(), ApiError> {
+        self.verify()?;
         if identity_from_ambient_path(&self.process_path) != Some(self.identity) {
             return Err(unavailable("workspace path identity changed"));
         }

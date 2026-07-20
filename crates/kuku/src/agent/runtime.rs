@@ -144,10 +144,9 @@ pub(crate) async fn start_run(
     kuku_home: &Path,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<&Path>,
+    task_context: Option<crate::query::TaskQueryContext>,
 ) -> crate::Result<crate::query::Run> {
     let mut query = crate::query::Query::new(dispatch.prompt.clone())
-        .workspace(workspace.to_path_buf())
-        .session(dispatch.session_id)
         .conversation(dispatch.conversation.as_str())
         .tier(dispatch.binding.tier.clone())
         .config((*config).clone())
@@ -156,11 +155,16 @@ pub(crate) async fn start_run(
         .current_turn_body(dispatch.prompt_body.clone())
         .with_agent_binding_id(dispatch.binding.binding_id.clone())
         .sender(dispatch.from, dispatch.via_tool_call_id);
-    query = query.execution_scope(dispatch.execution).request_cause(
-        crate::event::RequestCause::DelegatedAgent {
-            parent_request_id: dispatch.parent_request_id,
-        },
-    );
+    query = match task_context {
+        Some(context) => query.task_context(context.for_nested(dispatch.execution.clone())),
+        None => query
+            .workspace(workspace.to_path_buf())
+            .session(dispatch.session_id)
+            .execution_scope(dispatch.execution.clone()),
+    };
+    query = query.request_cause(crate::event::RequestCause::DelegatedAgent {
+        parent_request_id: dispatch.parent_request_id,
+    });
     query.agent_instructions = Some(dispatch.agent_instructions.clone());
     query.captured_kuku_home = Some(kuku_home.to_path_buf());
     query.tool_registry_override = Some(

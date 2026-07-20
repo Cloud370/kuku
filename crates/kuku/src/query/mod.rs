@@ -10,8 +10,8 @@ mod tool_exec;
 mod types;
 
 pub use types::{
-    PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent, ToolKind, ToolSummary,
-    UiEvent,
+    PermissionChoice, PermissionRequest, Query, Run, RunOutput, TaskQueryContext, ToolEvent,
+    ToolKind, ToolSummary, UiEvent, WorkspaceQueryCapability,
 };
 
 /// Start building a new query for the given prompt.

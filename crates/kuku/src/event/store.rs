@@ -67,10 +67,17 @@ struct SharedStoreState {
     fail_after_write: std::sync::atomic::AtomicBool,
 }
 
-/// Append-only store for reading and writing events to a session's events.jsonl.
+/// Append-only store for reading and writing one events.jsonl ledger.
+#[derive(Clone)]
 pub struct EventStore {
     path: PathBuf,
     shared: Arc<SharedStoreState>,
+}
+
+impl std::fmt::Debug for EventStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EventStore(<private>)")
+    }
 }
 
 impl EventStore {
@@ -91,6 +98,14 @@ impl EventStore {
         drop(tail);
 
         Ok(Self { path, shared })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn replay_events(&self) -> Result<Vec<StoredEvent>> {
+        Self::replay(&self.path)
     }
 
     pub(crate) fn next_id(&self) -> u64 {

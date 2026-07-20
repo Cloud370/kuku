@@ -89,6 +89,7 @@ pub(crate) fn spawn_agent_slot(
     kuku_home: std::path::PathBuf,
     config: Arc<crate::config::Config>,
     prompts_dir: Option<std::path::PathBuf>,
+    task_context: Option<crate::query::TaskQueryContext>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -99,8 +100,9 @@ pub(crate) fn spawn_agent_slot(
     let cp = nested_permissions.clone();
     let tc_id = tool_call_id.clone();
     let tool_kind = ToolKind::Agent {
-        conversation: dispatch.conversation.clone(),
-        binding_id: dispatch.binding.binding_id.clone(),
+        conversation_id: dispatch.execution.conversation_id.clone(),
+        agent: dispatch.binding.binding_id.clone(),
+        tier: dispatch.binding.tier.clone(),
     };
     let dispatch_for_slot = dispatch.clone();
 
@@ -111,6 +113,7 @@ pub(crate) fn spawn_agent_slot(
             &kuku_home,
             config,
             prompts_dir.as_deref(),
+            task_context,
         )
         .await
         {

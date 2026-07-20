@@ -4,10 +4,12 @@ pub fn serialize_event(event: &UiEvent) -> Option<String> {
     let mut value = kuku::wire::to_wire(event)?;
     match event {
         UiEvent::ToolStart {
-            kind: kuku::query::ToolKind::Agent { conversation, .. },
+            kind: kuku::query::ToolKind::Agent {
+                conversation_id, ..
+            },
             ..
         } => {
-            value["conversation"] = serde_json::Value::String(conversation.as_str().to_string());
+            value["conversation_id"] = serde_json::Value::String(conversation_id.to_string());
         }
         UiEvent::PermissionRequested { request } => {
             value["conversation"] =

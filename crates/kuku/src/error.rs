@@ -27,6 +27,9 @@ pub enum Error {
     #[error("invalid workspace path: {0}")]
     InvalidWorkspacePath(String),
 
+    #[error("workspace unavailable: {0}")]
+    WorkspaceUnavailable(String),
+
     #[error(transparent)]
     ExecutionId(#[from] crate::event::ExecutionIdError),
 
@@ -95,6 +98,7 @@ impl Error {
             | Error::InvalidSessionId(_)
             | Error::InvalidWorkspacePath(_)
             | Error::ExecutionId(_) => "internal",
+            Error::WorkspaceUnavailable(_) => "workspace_unavailable",
             Error::Provider { kind, .. } => match kind {
                 ProviderFailureKind::Authentication => "provider_auth",
                 ProviderFailureKind::RateLimited => "provider_rate_limit",

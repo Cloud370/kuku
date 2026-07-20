@@ -619,9 +619,12 @@ mod tests {
                 crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             ),
             kind: crate::query::ToolKind::Agent {
-                conversation: crate::conversation::address::ConversationAddress::parse("review")
-                    .unwrap(),
-                binding_id: "binding:review".to_string(),
+                conversation_id: crate::event::ConversationId::parse(
+                    "con_aaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .unwrap(),
+                agent: "binding:review".to_string(),
+                tier: "strong".to_string(),
             },
             ordered_with_simple_tools: false,
             label: "read".to_string(),

@@ -33,6 +33,7 @@ use super::types::{PendingRun, PendingStep, ResolvedRuntime, StreamingChunkState
 const MAX_REQUEST_LOOP: u64 = 20;
 
 pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
+    pending.verify_workspace()?;
     ensure_resolved(&mut pending)?;
     pending.request_num += 1;
     check_loop_limit(&pending)?;

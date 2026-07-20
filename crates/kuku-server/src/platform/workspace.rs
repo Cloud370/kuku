@@ -172,6 +172,7 @@ pub struct WorkspaceCapability {
     workspace_id: WorkspaceId,
     root: Arc<Dir>,
     process_root: IdentityBoundProcessRoot,
+    process_path: Arc<PathBuf>,
 }
 
 impl std::fmt::Debug for WorkspaceCapability {
@@ -187,6 +188,28 @@ impl WorkspaceCapability {
     /// Returns the opaque workspace ID associated with this capability.
     pub fn workspace_id(&self) -> &WorkspaceId {
         &self.workspace_id
+    }
+
+    /// Builds a Task query bound to this workspace identity and the supplied Task ledger.
+    pub fn query(
+        &self,
+        prompt: impl Into<String>,
+        execution_scope: kuku::ExecutionScope,
+        event_store: kuku::event::EventStore,
+    ) -> Result<kuku::Query, ApiError> {
+        if execution_scope.workspace_id != self.workspace_id {
+            return Err(invalid_request(
+                "execution scope does not belong to this workspace capability",
+            ));
+        }
+        self.process_root.verify_execution_path()?;
+        Ok(
+            kuku::query(prompt).task_context(kuku::TaskQueryContext::new(
+                execution_scope,
+                event_store,
+                Arc::new(self.clone()),
+            )),
+        )
     }
 
     /// Validates a portable workspace-relative POSIX path.
@@ -289,6 +312,19 @@ impl WorkspaceCapability {
             return None;
         }
         Some(value.to_owned())
+    }
+}
+
+impl kuku::WorkspaceQueryCapability for WorkspaceCapability {
+    fn verify_identity(&self) -> kuku::Result<()> {
+        self.process_root.verify_execution_path().map_err(|_| {
+            kuku::Error::WorkspaceUnavailable("workspace identity changed".to_string())
+        })
+    }
+
+    fn execution_root(&self) -> kuku::Result<PathBuf> {
+        self.verify_identity()?;
+        Ok(self.process_path.as_ref().clone())
     }
 }
 
@@ -678,6 +714,7 @@ impl WorkspaceRegistry {
             .map_err(|_| unavailable("workspace registration root is unavailable"))?;
         let opened = open_workspace_root(&root.root, &record.relative_path)
             .map_err(|_| unavailable("workspace directory is unavailable"))?;
+        let process_path = root.process_path.join(&record.relative_path.0);
         Ok(WorkspaceCapability {
             workspace_id: record.workspace_id.clone(),
             process_root: IdentityBoundProcessRoot::new(
@@ -686,8 +723,9 @@ impl WorkspaceRegistry {
                         .try_clone()
                         .map_err(|_| unavailable("workspace identity cannot be cloned"))?,
                 ),
-                root.process_path.join(&record.relative_path.0),
+                process_path.clone(),
             )?,
+            process_path: Arc::new(process_path),
             root: Arc::new(opened),
         })
     }

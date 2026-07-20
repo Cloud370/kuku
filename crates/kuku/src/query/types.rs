@@ -33,6 +33,7 @@ pub struct Query {
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
+    pub(super) task_context: Option<TaskQueryContext>,
     pub(crate) captured_kuku_home: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) disable_agents: bool,
@@ -47,6 +48,52 @@ pub struct Query {
     pub(crate) response_contract: Option<HostResponseContract>,
     pub(crate) agent_instructions: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+}
+
+pub trait WorkspaceQueryCapability: std::fmt::Debug + Send + Sync {
+    fn verify_identity(&self) -> Result<()>;
+
+    #[doc(hidden)]
+    fn execution_root(&self) -> Result<PathBuf>;
+}
+
+#[derive(Clone)]
+pub struct TaskQueryContext {
+    pub(super) execution_scope: ExecutionScope,
+    pub(super) event_store: crate::event::EventStore,
+    pub(super) workspace: Arc<dyn WorkspaceQueryCapability>,
+}
+
+impl std::fmt::Debug for TaskQueryContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TaskQueryContext")
+            .field("execution_scope", &self.execution_scope)
+            .field("workspace", &self.workspace)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TaskQueryContext {
+    pub fn new(
+        execution_scope: ExecutionScope,
+        event_store: crate::event::EventStore,
+        workspace: Arc<dyn WorkspaceQueryCapability>,
+    ) -> Self {
+        Self {
+            execution_scope,
+            event_store,
+            workspace,
+        }
+    }
+
+    pub(crate) fn for_nested(&self, execution_scope: ExecutionScope) -> Self {
+        Self {
+            execution_scope,
+            event_store: self.event_store.clone(),
+            workspace: self.workspace.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,8 +149,9 @@ pub enum PermissionChoice {
 pub enum ToolKind {
     Simple,
     Agent {
-        conversation: ConversationAddress,
-        binding_id: String,
+        conversation_id: crate::event::ConversationId,
+        agent: String,
+        tier: String,
     },
     Command {
         pid: Option<u32>,
@@ -369,6 +417,13 @@ impl PendingRun {
             .expect("execution scope assigned at start")
     }
 
+    pub(super) fn verify_workspace(&self) -> Result<()> {
+        if let Some(context) = self.query.task_context.as_ref() {
+            context.workspace.verify_identity()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn flush_runtime_logs(&mut self) {
         let _ = self.runtime_log_writer.flush();
     }
@@ -542,6 +597,7 @@ impl Query {
             max_output_tokens: None,
             temperature: None,
             workspace_path: None,
+            task_context: None,
             captured_kuku_home: None,
             prompts_dir: None,
             disable_agents: false,
@@ -611,6 +667,13 @@ impl Query {
     /// Attach the stable product execution identity for this query.
     pub fn execution_scope(mut self, execution_scope: ExecutionScope) -> Self {
         self.execution_scope = Some(execution_scope);
+        self
+    }
+
+    /// Bind a Web Task query to its durable ledger, execution identity, and workspace capability.
+    pub fn task_context(mut self, context: TaskQueryContext) -> Self {
+        self.execution_scope = Some(context.execution_scope.clone());
+        self.task_context = Some(context);
         self
     }
 
@@ -725,6 +788,13 @@ impl Query {
                 ".tier() and .model() are mutually exclusive".to_string(),
             ));
         }
+        if self.task_context.is_some()
+            && (self.session_id.is_some() || self.workspace_path.is_some())
+        {
+            return Err(Error::InvalidArgument(
+                "task context cannot be combined with session or workspace paths".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -760,10 +830,15 @@ mod tests {
             r#"{"command":{"pid":null}}"#
         );
         let agent = ToolKind::Agent {
-            conversation: ConversationAddress::parse("review/api").unwrap(),
-            binding_id: "sha256:abc".into(),
+            conversation_id: crate::event::ConversationId::parse("con_aaaaaaaaaaaaaaaaaaaaaaaa")
+                .unwrap(),
+            agent: "sha256:abc".into(),
+            tier: "strong".into(),
         };
         let agent_json = serde_json::to_string(&agent).unwrap();
+        assert!(agent_json.contains("\"conversation_id\":\"con_aaaaaaaaaaaaaaaaaaaaaaaa\""));
+        assert!(agent_json.contains("\"agent\":\"sha256:abc\""));
+        assert!(agent_json.contains("\"tier\":\"strong\""));
         let back: ToolKind = serde_json::from_str(&agent_json).unwrap();
         assert_eq!(back, agent);
     }

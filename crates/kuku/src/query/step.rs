@@ -465,6 +465,7 @@ pub(super) async fn advance_pending(
     slot_event_tx: tokio::sync::mpsc::Sender<(String, super::types::SlotEvent)>,
     active_slot_count: usize,
 ) -> Result<PendingStep> {
+    pending.verify_workspace()?;
     let is_cancelled = {
         let notified = pending.cancel_token.notified();
         tokio::pin!(notified);
@@ -623,6 +624,7 @@ pub(super) async fn advance_pending(
                 pending.kuku_home.clone(),
                 pending.config.clone(),
                 pending.prompts_dir.clone(),
+                pending.query.task_context.clone(),
                 slot_event_tx,
             );
 
