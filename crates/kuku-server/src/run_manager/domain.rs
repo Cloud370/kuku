@@ -132,6 +132,10 @@ impl TaskAggregate {
         self.cursor
     }
 
+    pub fn timeline_items(&self) -> &[TimelineItemProjection] {
+        &self.timeline
+    }
+
     pub fn apply_record(
         &mut self,
         cursor: kuku::event::Cursor,
@@ -396,6 +400,17 @@ impl TaskAggregate {
         if self.task_id.is_none() {
             return Err(DomainError::TaskNotCreated);
         }
+        let timeline_next_cursor = if self.timeline.len() > 500 {
+            crate::api::PageCursor::try_new(format!(
+                "timeline:{}:500:{}:{}",
+                self.task_id.as_ref().expect("created task has an id"),
+                self.timeline.len(),
+                self.timeline.len() - 500
+            ))
+            .ok()
+        } else {
+            None
+        };
         let timeline = if self.timeline.len() > 500 {
             self.timeline[self.timeline.len() - 500..].to_vec()
         } else {
@@ -412,7 +427,7 @@ impl TaskAggregate {
             task: self.summary(),
             selected_tier_id: self.selected_tier_id.clone(),
             timeline,
-            timeline_next_cursor: None,
+            timeline_next_cursor,
             loaded_skills: self.loaded_skills.clone(),
             active_run: self.active_run_projection(),
             latest_run: self.latest_run_projection(),

@@ -134,3 +134,36 @@ async fn resolve_interaction_is_revision_serialized() {
     }).await.unwrap();
     assert_eq!(resolved.summary().state, kuku::event::TaskState::Running);
 }
+
+#[tokio::test]
+async fn timeline_cursor_keeps_an_immutable_snapshot_across_appends() {
+    let dir = tempdir().unwrap();
+    let repository = TaskRepository::open(dir.path()).unwrap();
+    let service = TaskCommandService::new(repository.clone());
+    let task = service.create_task(CreateTaskCommand {
+        workspace_id: workspace_id(), idempotency_key: "create-timeline".into(), title: "Timeline".into(),
+    }).await.unwrap();
+    let task_id = task.task_id().unwrap().clone();
+    let messages = |range: std::ops::Range<usize>| range.map(|index| kuku::event::TaskEvent::MessageAppended {
+        message: kuku::event::MessageFact {
+            message_id: format!("msg-{index}"), task_id: task_id.clone(), run_id: None,
+            role: kuku::event::MessageRoleFact::Agent, text: index.to_string(), finalized: true,
+            request_ids: Vec::new(), file_references: Vec::new(),
+        },
+    }).collect::<Vec<_>>();
+    let receipt = |key: &str| kuku::event::CommandReceipt::new(
+        key, key, kuku::event::CommandResult::Stopped,
+    ).unwrap();
+    repository.append(&task_id, kuku::event::TaskLedgerRecord::Control(
+        kuku::event::TaskTransaction::try_new(kuku::event::TaskRevision::try_new(1).unwrap(), receipt("many"), messages(0..505)).unwrap(),
+    )).unwrap();
+    let projection = service.projection(&task_id).await.unwrap();
+    let cursor = projection.timeline_next_cursor.unwrap();
+    repository.append(&task_id, kuku::event::TaskLedgerRecord::Control(
+        kuku::event::TaskTransaction::try_new(kuku::event::TaskRevision::try_new(2).unwrap(), receipt("later"), messages(505..515)).unwrap(),
+    )).unwrap();
+    let page = service.timeline(&task_id, crate::api::TimelineQuery { before: Some(cursor), limit: 500 }).await.unwrap();
+    assert_eq!(page.items.len(), 5);
+    assert!(matches!(&page.items[0], crate::api::TimelineItemProjection::Message(value) if value.text == "0"));
+    assert!(page.next_cursor.is_none());
+}

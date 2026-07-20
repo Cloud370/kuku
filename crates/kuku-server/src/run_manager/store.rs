@@ -221,7 +221,6 @@ impl TaskCommandService {
                 .cmp(&left.updated_at)
                 .then_with(|| right.task_id.cmp(&left.task_id))
         });
-        items.truncate(100);
         Ok(crate::api::TaskPage {
             api_version: crate::api::ApiVersion,
             items,
@@ -236,20 +235,23 @@ impl TaskCommandService {
         if query.limit == 0 || query.limit > 100 {
             return Err(DomainError::InvalidRequest);
         }
-        if let Some(cursor) = &query.cursor {
-            let expected = format!("task-list:{}:{}", query.workspace_id, query.search.clone().unwrap_or_default().trim().to_lowercase());
-            if !cursor.as_str().starts_with(&expected) {
-                return Err(DomainError::InvalidRequest);
-            }
-        }
         let mut page = self.list_tasks(&query.workspace_id, query.search.as_deref()).await?;
+        let normalized = query.search.clone().unwrap_or_default().trim().to_lowercase();
+        if let Some(cursor) = &query.cursor {
+            let prefix = format!("task-list:v1:{}:{}:{}:", query.workspace_id, normalized, query.limit);
+            let boundary = cursor.as_str().strip_prefix(&prefix).ok_or(DomainError::InvalidRequest)?;
+            let boundary = TaskId::parse(boundary).map_err(|_| DomainError::InvalidRequest)?;
+            let position = page.items.iter().position(|item| item.task_id == boundary).ok_or(DomainError::InvalidRequest)?;
+            page.items.drain(..=position);
+        }
         let has_more = page.items.len() > query.limit as usize;
         page.items.truncate(query.limit as usize);
         if has_more {
             page.next_cursor = crate::api::PageCursor::try_new(format!(
-                "task-list:{}:{}:{}",
+                "task-list:v1:{}:{}:{}:{}",
                 query.workspace_id,
-                query.search.clone().unwrap_or_default().trim().to_lowercase(),
+                normalized,
+                query.limit,
                 page.items.last().map(|item| item.task_id.as_str()).unwrap_or_default()
             )).ok();
         }
@@ -264,24 +266,27 @@ impl TaskCommandService {
         if query.limit == 0 || query.limit > 500 {
             return Err(DomainError::InvalidRequest);
         }
-        if let Some(cursor) = &query.before {
-            let expected = format!("timeline:{}:{}", task_id, query.limit);
-            if !cursor.as_str().starts_with(&expected) {
-                return Err(DomainError::InvalidRequest);
-            }
-        }
-        let projection = self.projection(task_id).await?;
-        let mut items = projection.timeline;
-        let has_more = items.len() > query.limit as usize;
-        if items.len() > query.limit as usize {
-            items = items[items.len() - query.limit as usize..].to_vec();
-        }
+        let aggregate = self.repository.rebuild(task_id)?;
+        let all = aggregate.timeline_items();
+        let (snapshot_len, end) = if let Some(cursor) = &query.before {
+            let prefix = format!("timeline:{}:{}:", task_id, query.limit);
+            let suffix = cursor.as_str().strip_prefix(&prefix).ok_or(DomainError::InvalidRequest)?;
+            let (snapshot, end) = suffix.split_once(':').ok_or(DomainError::InvalidRequest)?;
+            let snapshot = snapshot.parse::<usize>().map_err(|_| DomainError::InvalidRequest)?;
+            let end = end.parse::<usize>().map_err(|_| DomainError::InvalidRequest)?;
+            if end > snapshot || snapshot > all.len() { return Err(DomainError::InvalidRequest); }
+            (snapshot, end)
+        } else {
+            (all.len(), all.len())
+        };
+        let start = end.saturating_sub(query.limit as usize);
+        let items = all[start..end].to_vec();
         Ok(crate::api::TimelinePage {
             api_version: crate::api::ApiVersion,
             task_id: task_id.clone(),
             items,
-            next_cursor: if has_more {
-                crate::api::PageCursor::try_new(format!("timeline:{}:{}", task_id, query.limit)).ok()
+            next_cursor: if start > 0 {
+                crate::api::PageCursor::try_new(format!("timeline:{}:{}:{}:{}", task_id, query.limit, snapshot_len, start)).ok()
             } else { None },
         })
     }
