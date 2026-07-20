@@ -58,6 +58,7 @@ pub trait ReviewSubmissionValidator: Send + Sync {
 
 pub trait RunQueueAdmission: Send + Sync {
     fn reserve(self: Arc<Self>) -> Result<Box<dyn RunQueueReservation>, DomainError>;
+    fn ensure_admitted(&self, task_id: &TaskId, run_id: &RunId) -> Result<(), DomainError>;
 }
 
 pub trait RunQueueReservation: Send {
@@ -137,6 +138,10 @@ pub(super) struct TestQueue;
 impl RunQueueAdmission for TestQueue {
     fn reserve(self: Arc<Self>) -> Result<Box<dyn RunQueueReservation>, DomainError> {
         Ok(Box::new(TestReservation))
+    }
+
+    fn ensure_admitted(&self, _: &TaskId, _: &RunId) -> Result<(), DomainError> {
+        Ok(())
     }
 }
 

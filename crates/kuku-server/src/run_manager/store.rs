@@ -204,7 +204,9 @@ impl TaskCommandService {
         let _key = self.repository.key_guard(&command.idempotency_key).await;
         let _task = self.repository.task_guard(&command.task_id).await;
         if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
-            return replay_submit(receipt, &command.task_id);
+            let response = replay_submit(receipt, &command.task_id)?;
+            self.ensure_queued_run_admitted(&response.task_id, &response.run_id)?;
+            return Ok(response);
         }
         let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
@@ -420,7 +422,24 @@ impl TaskCommandService {
             return Err(DomainError::LedgerCorrupt);
         };
         let recorded = self.repository.review_submission(task_id, &submission_id)?;
+        self.ensure_queued_run_admitted(task_id, &recorded.run_id)?;
         Ok(review_result(recorded, true))
+    }
+
+    fn ensure_queued_run_admitted(
+        &self,
+        task_id: &TaskId,
+        run_id: &RunId,
+    ) -> Result<(), DomainError> {
+        let state = self
+            .repository
+            .rebuild(task_id)?
+            .run_state(run_id)
+            .ok_or(DomainError::LedgerCorrupt)?;
+        if state == RunState::Queued {
+            self.queue.ensure_admitted(task_id, run_id)?;
+        }
+        Ok(())
     }
 
     pub async fn list_tasks(

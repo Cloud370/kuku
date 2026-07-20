@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::path::{Component, Path, PathBuf};
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use kuku::event::{EventPayload, StoredEvent, TaskId, TaskLedgerRecord};
 use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard};
@@ -12,6 +12,9 @@ use crate::api::{TaskDelta, TaskProjection, TaskSummary};
 
 use super::domain::{DomainError, TaskAggregate};
 use super::idempotency::{DurableReceipt, IdempotencyIndex};
+use super::repository_support::{
+    shared_gate, shared_state, sync_directory, updated_at, valid_task_component,
+};
 
 #[derive(Debug, Default)]
 struct RepositoryIndexes {
@@ -20,7 +23,7 @@ struct RepositoryIndexes {
 }
 
 #[derive(Default)]
-struct RepositoryState {
+pub(super) struct RepositoryState {
     create_gate: Arc<TokioMutex<()>>,
     scan_gate: Mutex<()>,
     task_gates: Mutex<HashMap<TaskId, Weak<TokioMutex<()>>>>,
@@ -33,12 +36,19 @@ struct RepositoryState {
     publication_observers: Mutex<Vec<TaskPublicationObserver>>,
     dirty_tasks: Mutex<HashSet<TaskId>>,
     dirty_keys: Mutex<HashMap<String, TaskId>>,
+    unconfirmed_tasks: Mutex<HashSet<TaskId>>,
     #[cfg(test)]
     fail_next_append: AtomicBool,
     #[cfg(test)]
     fail_next_publication: AtomicBool,
     #[cfg(test)]
     fail_next_cache: AtomicBool,
+    #[cfg(test)]
+    fail_next_store_after_write: AtomicBool,
+    #[cfg(test)]
+    suppress_next_publication: AtomicBool,
+    #[cfg(test)]
+    durability_confirmation_failures: AtomicUsize,
 }
 
 type TaskPublicationObserver = Arc<dyn Fn(&TaskPublication) + Send + Sync>;
@@ -82,6 +92,7 @@ impl TaskRepository {
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)?;
         let (indexes, aggregates) = repository.scan_indexes()?;
+        let task_ids = aggregates.keys().cloned().collect::<Vec<_>>();
         *repository
             .state
             .indexes
@@ -93,6 +104,9 @@ impl TaskRepository {
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)? = aggregates;
         repository.rewrite_projection_caches()?;
+        for task_id in task_ids {
+            repository.ensure_task_observer(&task_id)?;
+        }
         drop(_scan);
         Ok(repository)
     }
@@ -162,6 +176,7 @@ impl TaskRepository {
         if !valid_task_component(task_id) {
             return Err(DomainError::LedgerCorrupt);
         }
+        self.validate_record(task_id, &record, true)?;
         let task_path = self.task_path(task_id);
         std::fs::create_dir(&task_path).map_err(|_| DomainError::LedgerCorrupt)?;
         kuku::event::EventStore::open(self.events_path(task_id))
@@ -193,7 +208,61 @@ impl TaskRepository {
         if !self.task_path(task_id).is_dir() {
             return Err(DomainError::TaskNotFound);
         }
+        self.validate_record(task_id, &record, false)?;
         self.append_to_existing(task_id, record)
+    }
+
+    fn validate_record(
+        &self,
+        task_id: &TaskId,
+        record: &TaskLedgerRecord,
+        initial: bool,
+    ) -> Result<(), DomainError> {
+        let mut aggregate = if initial {
+            TaskAggregate::default()
+        } else {
+            let dirty = self
+                .state
+                .dirty_tasks
+                .lock()
+                .map_err(|_| DomainError::LedgerCorrupt)?
+                .contains(task_id);
+            let cached = self
+                .state
+                .aggregates
+                .lock()
+                .map_err(|_| DomainError::LedgerCorrupt)?
+                .get(task_id)
+                .cloned();
+            match (dirty, cached) {
+                (false, Some(aggregate)) => aggregate,
+                _ => self.rebuild(task_id)?,
+            }
+        };
+        let cursor = aggregate
+            .cursor()
+            .get()
+            .checked_add(1)
+            .and_then(|cursor| kuku::event::Cursor::try_new(cursor).ok())
+            .ok_or(DomainError::StorageExhausted)?;
+        let delta = super::projection::reduce_record(&mut aggregate, cursor, record)?;
+        super::domain::ensure_bounded(&delta)?;
+        if let TaskDelta::ChangesApplied { changes, .. } = delta {
+            aggregate.validate_timeline_changes(&changes)?;
+        }
+        let events = match record {
+            TaskLedgerRecord::Control(transaction) => transaction.events(),
+            TaskLedgerRecord::Activity(batch) => batch.events(),
+        };
+        for event in events {
+            if let kuku::event::TaskEvent::ReviewSubmissionRecorded(recorded) = event {
+                super::domain::ensure_bounded(&super::submission::review_result(
+                    recorded.clone(),
+                    false,
+                ))?;
+            }
+        }
+        Ok(())
     }
 
     fn append_to_existing(
@@ -213,6 +282,18 @@ impl TaskRepository {
             .insert(task_id.clone(), record.clone());
         let mut store = kuku::event::EventStore::open(self.events_path(task_id))
             .map_err(|_| DomainError::LedgerCorrupt)?;
+        #[cfg(test)]
+        let inject_late_error = self
+            .state
+            .fail_next_store_after_write
+            .swap(false, Ordering::SeqCst);
+        #[cfg(test)]
+        if inject_late_error {
+            self.state
+                .suppress_next_publication
+                .store(true, Ordering::SeqCst);
+        }
+        let expected = record.clone();
         let event = match store.append_synced(EventPayload::TaskLedger(record)) {
             Ok(event) => event,
             Err(_) => {
@@ -221,9 +302,20 @@ impl TaskRepository {
                     .lock()
                     .map_err(|_| DomainError::LedgerCorrupt)?
                     .remove(task_id);
+                self.recover_failed_record(task_id, &expected)?;
                 return Err(DomainError::LedgerCorrupt);
             }
         };
+        #[cfg(test)]
+        if inject_late_error {
+            self.state
+                .awaited_records
+                .lock()
+                .map_err(|_| DomainError::LedgerCorrupt)?
+                .remove(task_id);
+            self.recover_failed_record(task_id, &expected)?;
+            return Err(DomainError::LedgerCorrupt);
+        }
         let publication = self
             .state
             .publication_results
@@ -249,6 +341,14 @@ impl TaskRepository {
         let task_id = task_id.clone();
         let observed_task_id = task_id.clone();
         store.register_observer(Arc::new(move |event| {
+            #[cfg(test)]
+            if repository
+                .state
+                .suppress_next_publication
+                .swap(false, Ordering::SeqCst)
+            {
+                return;
+            }
             let result = repository.publish_stored(&task_id, event.clone());
             if result.is_err() {
                 repository.mark_dirty(&task_id, event);
@@ -280,6 +380,48 @@ impl TaskRepository {
         }));
         observed.insert(observed_task_id);
         Ok(())
+    }
+
+    fn recover_failed_record(
+        &self,
+        task_id: &TaskId,
+        record: &TaskLedgerRecord,
+    ) -> Result<(), DomainError> {
+        let event = kuku::event::EventStore::replay(self.events_path(task_id))
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .into_iter()
+            .rev()
+            .find(|event| {
+                matches!(&event.payload, EventPayload::TaskLedger(stored) if stored == record)
+            });
+        if let Some(event) = event {
+            if self.confirm_durability(task_id).is_ok() {
+                self.mark_dirty(task_id, &event);
+            } else {
+                self.mark_unconfirmed(task_id, &event);
+            }
+        }
+        Ok(())
+    }
+
+    fn confirm_durability(&self, task_id: &TaskId) -> Result<(), DomainError> {
+        #[cfg(test)]
+        if self
+            .state
+            .durability_confirmation_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(DomainError::LedgerCorrupt);
+        }
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.events_path(task_id))
+            .and_then(|file| file.sync_data())
+            .map_err(|_| DomainError::LedgerCorrupt)
     }
 
     fn publish_stored(
@@ -337,9 +479,22 @@ impl TaskRepository {
                 }
             }
         };
+        let force_replacement = match &delta {
+            TaskDelta::ChangesApplied { changes, .. } => {
+                match aggregate
+                    .validate_timeline_changes(changes)
+                    .and_then(|()| super::domain::ensure_bounded(&delta))
+                {
+                    Ok(()) => false,
+                    Err(DomainError::PayloadTooLarge) => true,
+                    Err(error) => return Err(error),
+                }
+            }
+            TaskDelta::ProjectionReplaced { .. } => false,
+        };
         aggregate.set_updated_at(updated_at(&self.events_path(task_id))?);
         let projection = aggregate.projection()?;
-        if needs_rebuild {
+        if needs_rebuild || force_replacement {
             delta = TaskDelta::ProjectionReplaced {
                 projection: Box::new(projection.clone()),
             };
@@ -547,6 +702,15 @@ impl TaskRepository {
             .scan_gate
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)?;
+        if self
+            .state
+            .unconfirmed_tasks
+            .lock()
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .contains(task_id)
+        {
+            self.confirm_durability(task_id)?;
+        }
         let aggregate = self.rebuild(task_id)?;
         self.merge_task_receipts(task_id, None)?;
         self.state
@@ -622,6 +786,15 @@ impl TaskRepository {
         }
     }
 
+    fn mark_unconfirmed(&self, task_id: &TaskId, event: &StoredEvent) {
+        self.mark_dirty(task_id, event);
+        self.state
+            .unconfirmed_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(task_id.clone());
+    }
+
     fn clear_dirty(&self, task_id: &TaskId) -> Result<(), DomainError> {
         self.state
             .dirty_tasks
@@ -633,6 +806,11 @@ impl TaskRepository {
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)?
             .retain(|_, value| value != task_id);
+        self.state
+            .unconfirmed_tasks
+            .lock()
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .remove(task_id);
         Ok(())
     }
 
@@ -685,6 +863,20 @@ impl TaskRepository {
     }
 
     #[cfg(test)]
+    pub(super) fn fail_next_store_after_write_for_test(&self) {
+        self.state
+            .fail_next_store_after_write
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_durability_confirmations_for_test(&self, count: usize) {
+        self.state
+            .durability_confirmation_failures
+            .store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
     pub(super) fn publication_results_len_for_test(&self) -> usize {
         self.state
             .publication_results
@@ -692,13 +884,6 @@ impl TaskRepository {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
-}
-
-fn updated_at(path: &Path) -> Result<String, DomainError> {
-    let modified = std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .map_err(|_| DomainError::LedgerCorrupt)?;
-    super::domain::system_time_rfc3339(modified)
 }
 
 fn control_transaction(event: &StoredEvent) -> Option<&kuku::event::TaskTransaction> {
@@ -716,42 +901,4 @@ fn delta_has_ui_change(delta: &TaskDelta) -> bool {
             timeline_window,
         } => !changes.is_empty() || timeline_window.is_some(),
     }
-}
-
-fn valid_task_component(task_id: &TaskId) -> bool {
-    let mut components = Path::new(task_id.as_str()).components();
-    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
-}
-
-fn sync_directory(path: &Path) -> Result<(), DomainError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| DomainError::LedgerCorrupt)
-}
-
-fn shared_state(root: &Path) -> Arc<RepositoryState> {
-    static STATES: OnceLock<Mutex<HashMap<PathBuf, Weak<RepositoryState>>>> = OnceLock::new();
-    let states = STATES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut states = states
-        .lock()
-        .expect("repository state lock is not poisoned");
-    if let Some(state) = states.get(root).and_then(Weak::upgrade) {
-        return state;
-    }
-    let state = Arc::new(RepositoryState::default());
-    states.insert(root.to_owned(), Arc::downgrade(&state));
-    state
-}
-
-fn shared_gate<K>(gates: &Mutex<HashMap<K, Weak<TokioMutex<()>>>>, key: K) -> Arc<TokioMutex<()>>
-where
-    K: std::hash::Hash + Eq,
-{
-    let mut gates = gates.lock().expect("repository gate map is not poisoned");
-    if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
-        return gate;
-    }
-    let gate = Arc::new(TokioMutex::new(()));
-    gates.insert(key, Arc::downgrade(&gate));
-    gate
 }

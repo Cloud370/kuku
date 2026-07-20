@@ -543,18 +543,16 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
     assert_eq!((first.items.len(), second.items.len()), (500, 203));
 
     let large = "x".repeat(9 * 1024 * 1024);
-    repository
-        .append(
-            &task_id,
-            control_record(
-                2,
-                "large",
-                vec![
-                    message(&task_id, "large-a", &large),
-                    message(&task_id, "large-b", &large),
-                ],
-            ),
-        )
+    kuku::event::EventStore::open(repository.events_path(&task_id))
+        .unwrap()
+        .append_synced(kuku::event::EventPayload::TaskLedger(control_record(
+            2,
+            "large",
+            vec![
+                message(&task_id, "large-a", &large),
+                message(&task_id, "large-b", &large),
+            ],
+        )))
         .unwrap();
     let projection = service.projection(&task_id).await.unwrap();
     assert_eq!(projection.timeline.len(), 1);
@@ -586,10 +584,10 @@ async fn timeline_pages_are_gap_free_and_choose_the_largest_bounded_suffix() {
         ),
         Err(super::DomainError::PayloadTooLarge)
     ));
-    assert!(matches!(
-        service.projection(&task_id).await,
-        Err(super::DomainError::PayloadTooLarge)
-    ));
+    let projection = service.projection(&task_id).await.unwrap();
+    assert_eq!(projection.task_revision, TaskRevision::try_new(2).unwrap());
+    assert_eq!(projection.timeline.len(), 1);
+    assert_eq!(repository.replay(&task_id).unwrap().len(), 3);
 }
 
 #[tokio::test]

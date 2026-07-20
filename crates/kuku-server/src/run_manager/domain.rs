@@ -17,6 +17,18 @@ use crate::api::{
     TaskChange, TaskProjection, TaskSummary, TimelineItemProjection,
 };
 
+const MAX_TASK_DTO_BYTES: usize = 16 * 1024 * 1024;
+
+pub(super) fn ensure_bounded(value: &impl serde::Serialize) -> Result<(), DomainError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|_| DomainError::LedgerCorrupt)?
+        .len();
+    if bytes > MAX_TASK_DTO_BYTES {
+        return Err(DomainError::PayloadTooLarge);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainError {
     TaskNotCreated,
@@ -139,6 +151,10 @@ impl TaskAggregate {
 
     pub fn workspace_id(&self) -> Option<&WorkspaceId> {
         self.workspace_id.as_ref()
+    }
+
+    pub(super) fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        self.runs.get(run_id).map(|entry| entry.fact.state)
     }
 
     pub fn revision(&self) -> TaskRevision {
@@ -493,7 +509,7 @@ impl TaskAggregate {
         if self.task_id.is_none() {
             return Err(DomainError::TaskNotCreated);
         }
-        let (start, timeline) = bounded_timeline_suffix(
+        let bounded = bounded_timeline_suffix(
             &self.timeline,
             self.timeline.len(),
             500,
@@ -503,8 +519,45 @@ impl TaskAggregate {
                     .map(|encoded| encoded.len())
                     .map_err(|_| DomainError::LedgerCorrupt)
             },
-        )?;
+        );
+        let (start, timeline) = match bounded {
+            Ok(window) => window,
+            Err(DomainError::PayloadTooLarge) => (self.timeline.len(), Vec::new()),
+            Err(error) => return Err(error),
+        };
         Ok(self.projection_value(timeline, self.timeline_cursor(start)?))
+    }
+
+    pub(super) fn validate_timeline_changes(
+        &self,
+        changes: &[TaskChange],
+    ) -> Result<(), DomainError> {
+        for change in changes {
+            let item = match change {
+                TaskChange::MessageAppended { item } => Some(item.clone()),
+                TaskChange::MessagePatched { message_id, .. } => self
+                    .timeline
+                    .iter()
+                    .find(|item| {
+                        matches!(item, TimelineItemProjection::Message(message) if message.message_id == *message_id)
+                    })
+                    .cloned(),
+                TaskChange::ActivityUpserted { activity } => {
+                    Some(TimelineItemProjection::Activity(activity.clone()))
+                }
+                TaskChange::InteractionUpserted { interaction } => {
+                    Some(TimelineItemProjection::Interaction(interaction.clone()))
+                }
+                _ => None,
+            };
+            let Some(item) = item else {
+                continue;
+            };
+            let start = self.timeline.len().saturating_sub(1);
+            let projection = self.projection_value(vec![item], self.timeline_cursor(start)?);
+            ensure_bounded(&projection)?;
+        }
+        Ok(())
     }
 
     fn timeline_cursor(&self, start: usize) -> Result<Option<PageCursor>, DomainError> {
@@ -556,7 +609,6 @@ pub(super) fn bounded_timeline_suffix(
     limit: usize,
     mut envelope_size: impl FnMut(usize) -> Result<usize, DomainError>,
 ) -> Result<(usize, Vec<TimelineItemProjection>), DomainError> {
-    const MAX_BYTES: usize = 16 * 1024 * 1024;
     if end > items.len() {
         return Err(DomainError::InvalidRequest);
     }
@@ -570,7 +622,7 @@ pub(super) fn bounded_timeline_suffix(
         let candidate_start = start - 1;
         let candidate_bytes = encoded_bytes + separator + item_bytes;
         let envelope_bytes = envelope_size(candidate_start)?;
-        if envelope_bytes - 2 + candidate_bytes > MAX_BYTES {
+        if envelope_bytes - 2 + candidate_bytes > MAX_TASK_DTO_BYTES {
             break;
         }
         encoded_bytes = candidate_bytes;

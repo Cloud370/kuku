@@ -9,6 +9,7 @@ pub mod domain;
 pub mod idempotency;
 pub mod projection;
 pub mod repository;
+mod repository_support;
 pub mod store;
 mod submission;
 
