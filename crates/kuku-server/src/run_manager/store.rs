@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use kuku::event::{
-    CommandReceipt, CommandResult, TaskEvent, TaskId, TaskLedgerRecord, TaskRevision,
-    TaskTransaction, WorkspaceId,
+    CommandReceipt, CommandResult, MessageFact, MessageRoleFact, RunFact, RunState, TaskEvent,
+    TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
 };
 
 use super::domain::{DomainError, TaskAggregate};
@@ -16,6 +16,16 @@ pub struct CreateTaskCommand {
     pub workspace_id: WorkspaceId,
     pub idempotency_key: String,
     pub title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmitRunCommand {
+    pub task_id: TaskId,
+    pub expected_task_revision: TaskRevision,
+    pub idempotency_key: String,
+    pub message: String,
+    pub tier_id: String,
+    pub skill_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +93,88 @@ impl TaskCommandService {
         task_id: &TaskId,
     ) -> Result<crate::api::TaskProjection, DomainError> {
         self.repository.rebuild(task_id)?.projection()
+    }
+
+    pub async fn submit(&self, command: SubmitRunCommand) -> Result<TaskAggregate, DomainError> {
+        let _gate = self.gate.lock().await;
+        let aggregate = self.repository.rebuild(&command.task_id)?;
+        let digest = format!(
+            "{}:{}:{}:{:?}",
+            command.task_id, command.message, command.tier_id, command.skill_ids
+        );
+        if let Some(task_id) = self
+            .idempotency
+            .lock()
+            .await
+            .lookup(&command.idempotency_key, &digest)
+            .map_err(|_| DomainError::IdempotencyConflict)?
+        {
+            return self.repository.rebuild(&task_id);
+        }
+        if aggregate.revision() != command.expected_task_revision {
+            return Err(DomainError::StaleCommand);
+        }
+        if aggregate.projection()?.task.state.is_active() {
+            return Err(DomainError::TaskBusy);
+        }
+        let run_id = kuku::event::RunId::try_new().map_err(|_| DomainError::StorageExhausted)?;
+        let receipt = CommandReceipt::new(
+            command.idempotency_key.clone(),
+            digest.clone(),
+            CommandResult::RunSubmitted {
+                run_id: run_id.clone(),
+            },
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        let transaction = TaskTransaction::try_new(
+            command
+                .expected_task_revision
+                .checked_next()
+                .map_err(|_| DomainError::StorageExhausted)?,
+            receipt,
+            vec![
+                TaskEvent::MessageAppended {
+                    message: MessageFact {
+                        message_id: format!("msg_{}", run_id.as_str()),
+                        task_id: command.task_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        role: MessageRoleFact::User,
+                        text: command.message,
+                        finalized: true,
+                        request_ids: Vec::new(),
+                        file_references: Vec::new(),
+                    },
+                },
+                TaskEvent::SkillsChanged {
+                    selection: kuku::event::SkillsChangedFact {
+                        tier_id: command.tier_id,
+                        skill_ids: command.skill_ids,
+                    },
+                },
+                TaskEvent::RunQueued {
+                    run: RunFact {
+                        run_id,
+                        task_id: command.task_id.clone(),
+                        state: RunState::Queued,
+                        started_at: "1970-01-01T00:00:00Z".into(),
+                        finished_at: None,
+                        summary: None,
+                        checks: None,
+                        metrics: None,
+                        workspace_changes: None,
+                    },
+                },
+            ],
+        )
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+        self.repository
+            .append(&command.task_id, TaskLedgerRecord::Control(transaction))?;
+        self.idempotency.lock().await.insert(
+            command.idempotency_key,
+            digest,
+            command.task_id.clone(),
+        );
+        self.repository.rebuild(&command.task_id)
     }
 
     pub fn repository(&self) -> &TaskRepository {

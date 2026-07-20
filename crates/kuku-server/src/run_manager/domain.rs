@@ -21,6 +21,7 @@ pub enum DomainError {
     TaskNotFound,
     InvalidTransition { from: RunState, to: RunState },
     TaskBusy,
+    IdempotencyConflict,
     StaleCommand,
     InteractionNotPending,
     LedgerCorrupt,
@@ -39,6 +40,9 @@ impl std::fmt::Display for DomainError {
                 )
             }
             Self::TaskBusy => formatter.write_str("task already has an active run"),
+            Self::IdempotencyConflict => {
+                formatter.write_str("idempotency key was reused with different input")
+            }
             Self::StaleCommand => formatter.write_str("command revision is stale"),
             Self::InteractionNotPending => formatter.write_str("interaction is not pending"),
             Self::LedgerCorrupt => formatter.write_str("task ledger is corrupt"),
@@ -55,6 +59,7 @@ impl DomainError {
             Self::TaskNotCreated | Self::TaskNotFound => ApiErrorCode::TaskNotFound,
             Self::InvalidTransition { .. } | Self::LedgerCorrupt => ApiErrorCode::Internal,
             Self::TaskBusy => ApiErrorCode::TaskBusy,
+            Self::IdempotencyConflict => ApiErrorCode::IdempotencyConflict,
             Self::StaleCommand => ApiErrorCode::StaleCommand,
             Self::InteractionNotPending => ApiErrorCode::InteractionNotPending,
             Self::StorageExhausted => ApiErrorCode::StorageExhausted,

@@ -3,6 +3,7 @@ use tempfile::tempdir;
 use kuku::event::WorkspaceId;
 
 use super::repository::TaskRepository;
+use super::store::SubmitRunCommand;
 use super::store::{CreateTaskCommand, TaskCommandService};
 
 fn workspace_id() -> WorkspaceId {
@@ -45,4 +46,38 @@ async fn concurrent_identical_creates_commit_one_ledger() {
     assert_eq!(left.unwrap().task_id(), right.unwrap().task_id());
     let entries = std::fs::read_dir(dir.path().join("tasks")).unwrap().count();
     assert_eq!(entries, 1);
+}
+
+#[tokio::test]
+async fn submit_is_revision_serialized_and_duplicate_replays() {
+    let dir = tempdir().unwrap();
+    let service = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
+    let task = service
+        .create_task(CreateTaskCommand {
+            workspace_id: workspace_id(),
+            idempotency_key: "create".into(),
+            title: "Task".into(),
+        })
+        .await
+        .unwrap();
+    let command = SubmitRunCommand {
+        task_id: task.task_id().unwrap().clone(),
+        expected_task_revision: task.revision(),
+        idempotency_key: "submit".into(),
+        message: "hello".into(),
+        tier_id: "tier:default".into(),
+        skill_ids: Vec::new(),
+    };
+    let first = service.submit(command.clone()).await.unwrap();
+    let replay = service.submit(command.clone()).await.unwrap();
+    assert_eq!(first.cursor(), replay.cursor());
+    let busy = SubmitRunCommand {
+        expected_task_revision: first.revision(),
+        idempotency_key: "submit-2".into(),
+        ..command
+    };
+    assert!(matches!(
+        service.submit(busy).await,
+        Err(super::DomainError::TaskBusy)
+    ));
 }

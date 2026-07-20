@@ -13,7 +13,7 @@ pub mod store;
 
 pub use domain::{DomainError, TaskAggregate};
 pub use repository::TaskRepository;
-pub use store::{CreateTaskCommand, TaskCommandService};
+pub use store::{CreateTaskCommand, SubmitRunCommand, TaskCommandService};
 
 #[cfg(test)]
 mod domain_tests;
