@@ -1,13 +1,43 @@
 use kuku::event::{
-    ChangeEntryFact, ChangeKindFact, ChangesAvailabilityFact, CommandIntent, CommandReceipt,
-    CommandResult, EventPayload, FiniteMetricValue, InteractionChoiceFact, InteractionFact,
-    ReviewSubmissionId, ReviewSubmissionReference, RevisionToken, RunFact, RunState,
-    TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord, TaskRecordClass, TaskRevision,
-    TaskTransaction, WorkspaceChangesFact, WorkspaceId, WorkspaceRelativePath,
+    AnnotationSide, ChangeEntryFact, ChangeKindFact, ChangesAvailabilityFact, CommandIntent,
+    CommandReceipt, CommandResult, EventPayload, ExecutionScope, FiniteMetricValue,
+    InteractionChoiceFact, InteractionFact, ObservationFact, ObservationKind, ObservationRetention,
+    ProviderFact, ProviderFailureFact, ProviderFailureKind, ProviderUsage, RequestCause,
+    RequestCompleted, RequestFailed, RequestScope, RequestStarted, ReviewAnnotationFact,
+    ReviewSubmissionId, ReviewSubmissionRecorded, ReviewSubmissionReference, RevisionToken,
+    RunFact, RunState, SkillLoadFact, SkillLoadOrigin, SourceFact, SourceScope, TaskActivityBatch,
+    TaskEvent, TaskId, TaskLedgerRecord, TaskRecordClass, TaskRevision, TaskTransaction,
+    WorkspaceChangesFact, WorkspaceId, WorkspaceRelativePath,
 };
 
 fn task_id() -> TaskId {
     TaskId::parse("tsk_0123456789abcdef01234567").unwrap()
+}
+
+fn execution_scope() -> ExecutionScope {
+    ExecutionScope {
+        workspace_id: workspace_id(),
+        task_id: task_id(),
+        run_id: run().run_id,
+        turn_id: "trn_0123456789abcdef01234567".parse().unwrap(),
+        conversation_id: "con_0123456789abcdef01234567".parse().unwrap(),
+        turn_index: 0,
+    }
+}
+
+fn request_scope() -> RequestScope {
+    RequestScope {
+        execution: execution_scope(),
+        request_id: "req_0123456789abcdef01234567".parse().unwrap(),
+    }
+}
+
+fn source() -> SourceFact {
+    SourceFact {
+        scope: SourceScope::System,
+        id: "system".into(),
+        relative_path: None,
+    }
 }
 
 fn workspace_id() -> WorkspaceId {
@@ -363,4 +393,134 @@ fn task_event_record_class_table_names_every_variant() {
     ];
     assert_eq!(control.len() + activity.len(), 25);
     assert!(control.iter().all(|name| !activity.contains(name)));
+}
+
+#[test]
+fn task_event_matrix_constructs_all_complex_variants() {
+    let interaction = InteractionFact {
+        interaction_id: "int_0123456789abcdef01234567".parse().unwrap(),
+        run_id: run().run_id,
+        prompt: "Choose".into(),
+        choices: vec![InteractionChoiceFact {
+            choice_id: "yes".into(),
+            label: "Yes".into(),
+        }],
+        selected_choice_id: None,
+    };
+    let skill = SkillLoadFact {
+        execution: execution_scope(),
+        caused_by_request_id: None,
+        skill_id: "skill.demo".into(),
+        source: source(),
+        origin: SkillLoadOrigin::You,
+        content_hash: "hash".into(),
+    };
+    let request_started = RequestStarted {
+        scope: request_scope(),
+        cause: RequestCause::UserSubmission,
+        provider: ProviderFact::OpenAiCompatible,
+        model: "model".into(),
+        started_at: "t".into(),
+    };
+    let request_completed = RequestCompleted {
+        scope: request_scope(),
+        usage: ProviderUsage {
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+        },
+        elapsed_ms: None,
+        provider_request_id: None,
+        cost: None,
+    };
+    let request_failed = RequestFailed {
+        scope: request_scope(),
+        usage: None,
+        elapsed_ms: None,
+        provider_request_id: None,
+        cost: None,
+        failure: ProviderFailureFact {
+            kind: ProviderFailureKind::Internal,
+            summary: "failed".into(),
+        },
+    };
+    let snapshot: kuku::event::RequestSnapshot = serde_json::from_value(serde_json::json!({
+        "scope": request_scope(),
+        "cause": {"kind": "user_submission"},
+        "provider": {"kind": "open_ai_compatible"},
+        "tier_id": "tier:default",
+        "exact": {
+            "messages": [],
+            "tools": [],
+            "parameters": {
+                "model": "model",
+                "max_output_tokens": null,
+                "temperature": null,
+                "stream": false,
+                "thinking": {"kind": "disabled"}
+            }
+        },
+        "context": {
+            "skills": [], "instructions": [], "memory": [],
+            "conversation": {"retained_turns": 0, "handoff_boundaries": 0, "history_summarized": false, "delegated_results": []},
+            "observations": [], "delegated_results": [], "capabilities": [], "token_estimate": null
+        },
+        "catalog_revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "exact_payload_hash": "hash"
+    })).unwrap();
+    let observation = ObservationFact {
+        scope: request_scope(),
+        tool_call_id: "tool".into(),
+        kind: ObservationKind::FileRead,
+        relative_path: None,
+        observed_hash: None,
+        range: None,
+        retention: ObservationRetention::Retained,
+        summary: "read".into(),
+    };
+    let review = ReviewSubmissionRecorded {
+        submission_id: "rsub_0123456789abcdef01234567".parse().unwrap(),
+        task_id: task_id(),
+        run_id: run().run_id,
+        task_revision: TaskRevision::try_new(0).unwrap(),
+        submitted_at: "t".into(),
+        notes: vec![ReviewAnnotationFact {
+            path: "src/lib.rs".into(),
+            revision: RevisionToken::parse(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            )
+            .unwrap(),
+            side: AnnotationSide::File,
+            start_line: 1,
+            end_line: 1,
+            excerpt: "x".into(),
+            comment: "note".into(),
+        }],
+    };
+    let mut completed = run();
+    completed.state = RunState::Completed;
+    completed.summary = Some("done".into());
+    let events = vec![
+        TaskEvent::InteractionOpened { interaction },
+        TaskEvent::SkillLoaded(skill),
+        TaskEvent::RequestSnapshot(snapshot),
+        TaskEvent::RequestStarted(request_started),
+        TaskEvent::RequestCompleted(request_completed),
+        TaskEvent::RequestFailed(request_failed),
+        TaskEvent::ObservationRecorded(observation),
+        TaskEvent::RunCompleted { run: completed },
+    ];
+    for event in events {
+        assert_eq!(event.record_class(), TaskRecordClass::Activity, "{event:?}");
+        assert!(TaskTransaction::try_new(
+            TaskRevision::try_new(0).unwrap(),
+            receipt(),
+            vec![event]
+        )
+        .is_err());
+    }
+    let review_event = TaskEvent::ReviewSubmissionRecorded(review);
+    assert_eq!(review_event.record_class(), TaskRecordClass::Control);
+    assert!(TaskActivityBatch::try_new(vec![review_event]).is_err());
 }
