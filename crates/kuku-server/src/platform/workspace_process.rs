@@ -119,65 +119,22 @@ pub trait ProcessChunkSink: Send {
     ) -> Pin<Box<dyn Future<Output = Result<(), ApiError>> + Send + 'a>>;
 }
 
-/// Persists workspace-process cancellation across clones and late observers.
 #[derive(Debug, Clone, Default)]
-pub struct ProcessCancellation {
+struct ProcessCancellation {
     cancelled: Arc<AtomicBool>,
-    notification: Arc<tokio::sync::Notify>,
 }
 
 impl ProcessCancellation {
-    /// Creates an active cancellation token.
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self::default()
     }
 
-    /// Requests cancellation and wakes every current observer.
-    pub fn cancel(&self) {
+    fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        self.notification.notify_waiters();
     }
 
-    /// Returns whether cancellation has been requested.
-    pub fn is_cancelled(&self) -> bool {
+    fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// Waits until cancellation, including a request made before this call.
-    pub async fn cancelled(&self) {
-        loop {
-            let notified = self.notification.notified();
-            if self.is_cancelled() {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-struct CancelProcessOnDrop {
-    cancellation: ProcessCancellation,
-    armed: bool,
-}
-
-impl CancelProcessOnDrop {
-    fn new(cancellation: ProcessCancellation) -> Self {
-        Self {
-            cancellation,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelProcessOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            self.cancellation.cancel();
-        }
     }
 }
 
@@ -301,19 +258,41 @@ impl IdentityBoundProcessRoot {
         limits: ProcessLimits,
         sink: &mut dyn ProcessChunkSink,
     ) -> Result<ProcessStatus, ApiError> {
-        self.stream_with_cancellation(command, limits, sink, None)
+        self.stream_with_notification(command, limits, sink, None)
             .await
     }
 
-    pub(super) async fn stream_with_cancellation(
+    pub(super) async fn stream_with_notification(
         &self,
         command: RootCommand,
         limits: ProcessLimits,
         sink: &mut dyn ProcessChunkSink,
-        cancellation: Option<ProcessCancellation>,
+        cancellation: Option<Arc<tokio::sync::Notify>>,
     ) -> Result<ProcessStatus, ApiError> {
-        let external_cancellation = cancellation.unwrap_or_default();
-        let mut drop_guard = CancelProcessOnDrop::new(external_cancellation.clone());
+        let external_cancellation = ProcessCancellation::new();
+        let watcher = cancellation.map(|cancellation| {
+            let external_cancellation = external_cancellation.clone();
+            tokio::spawn(async move {
+                cancellation.notified().await;
+                external_cancellation.cancel();
+            })
+        });
+        let result = self
+            .stream_with_cancellation(command, limits, sink, external_cancellation)
+            .await;
+        if let Some(watcher) = watcher {
+            watcher.abort();
+        }
+        result
+    }
+
+    async fn stream_with_cancellation(
+        &self,
+        command: RootCommand,
+        limits: ProcessLimits,
+        sink: &mut dyn ProcessChunkSink,
+        external_cancellation: ProcessCancellation,
+    ) -> Result<ProcessStatus, ApiError> {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let root = self.clone();
@@ -337,7 +316,6 @@ impl IdentityBoundProcessRoot {
                     while let Ok(chunk) = receiver.try_recv() {
                         sink.push(chunk).await?;
                     }
-                    drop_guard.disarm();
                     return Ok(output.status);
                 }
                 chunk = receiver.recv() => {
@@ -393,10 +371,10 @@ impl super::WorkspaceCapability {
         command: RootCommand,
         limits: ProcessLimits,
         sink: &mut dyn ProcessChunkSink,
-        cancellation: Option<ProcessCancellation>,
+        cancellation: Option<Arc<tokio::sync::Notify>>,
     ) -> Result<ProcessStatus, ApiError> {
         self.process_root
-            .stream_with_cancellation(command, limits, sink, cancellation)
+            .stream_with_notification(command, limits, sink, cancellation)
             .await
     }
 }
