@@ -170,7 +170,7 @@ impl WorkspaceReadService {
     fn capability(&self, workspace_id: &WorkspaceId) -> Result<WorkspaceCapability, ApiError> {
         self.workspaces
             .capability(workspace_id)
-            .map_err(redact_platform_error)
+            .map_err(redact_capability_error)
     }
 }
 
@@ -916,7 +916,23 @@ fn redact_platform_error(error: ApiError) -> ApiError {
             "review workspace is unavailable",
             "review-files",
         ),
-        ApiErrorCode::WorkspaceUnavailable => unavailable("review workspace entry is unavailable"),
+        ApiErrorCode::WorkspaceUnavailable => ApiError::new(
+            ApiErrorCode::FileNotFound,
+            "review workspace entry was not found",
+            "review-files",
+        ),
+        _ => internal_error("review workspace operation failed"),
+    }
+}
+
+fn redact_capability_error(error: ApiError) -> ApiError {
+    match error.code() {
+        ApiErrorCode::WorkspaceNotFound => ApiError::new(
+            ApiErrorCode::WorkspaceNotFound,
+            "review workspace is unavailable",
+            "review-files",
+        ),
+        ApiErrorCode::WorkspaceUnavailable => unavailable("review workspace is unavailable"),
         _ => internal_error("review workspace operation failed"),
     }
 }

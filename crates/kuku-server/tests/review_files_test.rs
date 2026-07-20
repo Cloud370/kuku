@@ -358,6 +358,15 @@ async fn response_limits_and_paths_fail_without_host_disclosure() {
         assert!(!encoded.contains(&workspace.project.display().to_string()));
         assert!(!encoded.contains(path));
     }
+
+    assert_eq!(
+        ApiErrorCode::FileNotFound,
+        service
+            .content(&workspace.workspace_id, "root/missing.txt", 1, 1)
+            .await
+            .unwrap_err()
+            .code()
+    );
 }
 
 #[tokio::test]
