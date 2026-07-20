@@ -110,6 +110,31 @@ function navigationProps(api: WebApi, commands: TaskNavigationCommands): TaskNav
 }
 
 describe('TaskNavigation', () => {
+  it.each(['submit_run', 'stop_run', 'respond'] as const)(
+    'does not open Task creation while a %s command is pending',
+    async (kind) => {
+      const user = userEvent.setup();
+      const { api, list } = setupApi();
+      list.mockResolvedValue(taskPage([]));
+      const commands = setupCommands();
+
+      render(
+        <TaskNavigation
+          {...navigationProps(api, commands)}
+          pendingCommand={pendingNonCreate(kind)}
+        />,
+      );
+
+      await screen.findByText('No Tasks yet');
+      const createButton = screen.getByRole('button', { name: 'New Task' });
+      expect(createButton).toBeDisabled();
+      await user.click(createButton);
+      expect(screen.queryByRole('button', { name: 'Create Task' })).not.toBeInTheDocument();
+      expect(commands.retryPendingCommand).not.toHaveBeenCalled();
+      expect(commands.abandonConflictedCommand).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps an unknown create visible and non-cancellable across workspace changes', async () => {
     const user = userEvent.setup();
     const { api, list } = setupApi();
@@ -379,6 +404,51 @@ function pendingCreate(
     taskId: null,
     body: { workspace_id: workspaceId, idempotency_key: 'idem-pending' },
   };
+}
+
+function pendingNonCreate(
+  kind: 'submit_run' | 'stop_run' | 'respond',
+): Exclude<PendingCommand, { kind: 'create_task' }> {
+  const meta = {
+    commandId: 2,
+    controller: new AbortController(),
+    draftGeneration: 0,
+    status: 'unknown' as const,
+    taskGeneration: 0,
+    taskId,
+  };
+  switch (kind) {
+    case 'submit_run':
+      return {
+        ...meta,
+        kind,
+        body: {
+          expected_task_revision: 4,
+          idempotency_key: 'idem-submit',
+          message: 'pending submit',
+          skill_ids: [],
+          tier_id: 'tier:balanced',
+        },
+      };
+    case 'stop_run':
+      return {
+        ...meta,
+        kind,
+        runId: 'run_000000000000000000000001',
+        body: { expected_task_revision: 4, idempotency_key: 'idem-stop' },
+      };
+    case 'respond':
+      return {
+        ...meta,
+        kind,
+        interactionId: 'int_000000000000000000000001',
+        body: {
+          choice_id: 'choice-1',
+          expected_task_revision: 4,
+          idempotency_key: 'idem-respond',
+        },
+      };
+  }
 }
 
 function taskForWorkspace(title: string, id: string): TaskSummary {

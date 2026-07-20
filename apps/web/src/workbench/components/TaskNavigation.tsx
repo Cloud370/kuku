@@ -131,8 +131,10 @@ export function TaskNavigation({
   );
   const pendingCreate = pendingCommand?.kind === 'create_task' ? pendingCommand : null;
   const pendingCreateId = pendingCreate?.commandId ?? -1;
+  const hasNonCreatePending = pendingCommand !== null && pendingCreate === null;
   const showingCreation =
-    creating || (pendingCreate !== null && pendingCreateId !== dismissedCreateId);
+    !hasNonCreatePending &&
+    (creating || (pendingCreate !== null && pendingCreateId !== dismissedCreateId));
   const noWorkspaces = workspacesLoaded && workspaces.length === 0;
 
   const loadMore = async (): Promise<void> => {
@@ -199,7 +201,7 @@ export function TaskNavigation({
         </select>
         <button
           type="button"
-          disabled={noWorkspaces}
+          disabled={noWorkspaces || hasNonCreatePending}
           className="inline-flex h-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 text-[var(--text-xs)] font-medium text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
           onClick={() => {
             setDismissedCreateId(null);
