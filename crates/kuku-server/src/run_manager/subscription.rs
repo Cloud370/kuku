@@ -10,8 +10,6 @@ use crate::api::{ApiVersion, TaskDelta, TaskProjection, TaskStreamEvent};
 use super::repository::{TaskPublication, TaskRepository};
 use super::DomainError;
 
-const TOTAL_STREAM_LIMIT: usize = 64;
-const TASK_STREAM_LIMIT: usize = 8;
 const PUBLICATION_BUFFER: usize = 256;
 
 type TaskSender = broadcast::Sender<TaskPublication>;
@@ -21,15 +19,21 @@ pub struct TaskSubscriptionHub {
     channels: Mutex<HashMap<TaskId, TaskSender>>,
     task_limits: Mutex<HashMap<TaskId, Arc<Semaphore>>>,
     total_limit: Arc<Semaphore>,
+    task_stream_limit: usize,
 }
 
 impl TaskSubscriptionHub {
-    pub fn attach(repository: TaskRepository) -> Arc<Self> {
+    pub fn attach(
+        repository: TaskRepository,
+        total_stream_limit: usize,
+        task_stream_limit: usize,
+    ) -> Arc<Self> {
         let hub = Arc::new(Self {
             repository: repository.clone(),
             channels: Mutex::new(HashMap::new()),
             task_limits: Mutex::new(HashMap::new()),
-            total_limit: Arc::new(Semaphore::new(TOTAL_STREAM_LIMIT)),
+            total_limit: Arc::new(Semaphore::new(total_stream_limit)),
+            task_stream_limit,
         });
         let weak = Arc::downgrade(&hub);
         repository.register_observer(Arc::new(move |publication| {
@@ -84,7 +88,7 @@ impl TaskSubscriptionHub {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         limits
             .entry(task_id.clone())
-            .or_insert_with(|| Arc::new(Semaphore::new(TASK_STREAM_LIMIT)))
+            .or_insert_with(|| Arc::new(Semaphore::new(self.task_stream_limit)))
             .clone()
     }
 

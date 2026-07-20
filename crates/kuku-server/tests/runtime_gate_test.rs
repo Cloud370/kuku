@@ -25,6 +25,7 @@ use kuku_server::run_manager::{
     StopRunCommand, SubmitRunCommand, TaskAggregate, TaskCommandService, TaskRepository,
     TaskRuntime, ValidatedSkillSelection,
 };
+use kuku_server::ServerLimits;
 
 struct NoWorkspaceUsage;
 
@@ -111,14 +112,15 @@ async fn a_ready_lifecycle_reconnect_revision_race_and_restart_recovery() {
         Arc::new(AcceptReviews),
         Arc::new(NoopQueue),
     );
+    let mut limits = ServerLimits::with_max_concurrent_runs(1).unwrap();
+    limits.max_queued_runs = 1;
     let runtime = TaskRuntime::new(
         repository.clone(),
         Arc::new(FakeDriverFactory),
         registry.clone(),
         Arc::new(AcceptSkills),
         Arc::new(AcceptReviews),
-        1,
-        1,
+        &limits,
     )
     .unwrap();
 
@@ -254,8 +256,7 @@ async fn a_ready_lifecycle_reconnect_revision_race_and_restart_recovery() {
         registry,
         Arc::new(AcceptSkills),
         Arc::new(AcceptReviews),
-        1,
-        1,
+        &limits,
     )
     .unwrap();
     replacement_runtime.recover_after_restart().await.unwrap();

@@ -685,14 +685,21 @@ impl TaskRuntime {
         workspaces: Arc<WorkspaceRegistry>,
         skills: Arc<dyn SkillSelectionValidator>,
         reviews: Arc<dyn ReviewSubmissionValidator>,
-        max_concurrent: usize,
-        max_queued: usize,
+        limits: &crate::ServerLimits,
     ) -> Result<Self, DomainError> {
-        let supervisor =
-            RunSupervisor::new(repository.clone(), factory, max_concurrent, max_queued)?;
+        let supervisor = RunSupervisor::new(
+            repository.clone(),
+            factory,
+            limits.max_concurrent_runs,
+            limits.max_queued_runs,
+        )?;
         let commands =
             TaskCommandService::new(repository, workspaces, skills, reviews, supervisor.clone());
-        let subscriptions = TaskSubscriptionHub::attach(commands.repository().clone());
+        let subscriptions = TaskSubscriptionHub::attach(
+            commands.repository().clone(),
+            limits.max_total_streams,
+            limits.max_streams_per_task,
+        );
         Ok(Self {
             commands,
             supervisor,
@@ -730,7 +737,12 @@ impl TaskRuntime {
             Arc::new(super::submission::TestReviewValidator),
             supervisor.clone(),
         );
-        let subscriptions = TaskSubscriptionHub::attach(commands.repository().clone());
+        let limits = crate::ServerLimits::default();
+        let subscriptions = TaskSubscriptionHub::attach(
+            commands.repository().clone(),
+            limits.max_total_streams,
+            limits.max_streams_per_task,
+        );
         Ok(Self {
             commands,
             supervisor,

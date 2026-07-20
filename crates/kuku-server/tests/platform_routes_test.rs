@@ -1,6 +1,10 @@
 mod common;
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use axum::http::StatusCode;
+use kuku_server::platform::{AuthContext, OriginPolicy};
+use kuku_server::{advertised_origins, ServerLimits};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -78,7 +82,7 @@ async fn legacy_routes_are_gone_and_body_limit_is_shared() {
         assert_eq!(StatusCode::NOT_FOUND, response.status(), "{path}");
     }
 
-    let oversized = "x".repeat(10 * 1024 * 1024 + 1);
+    let oversized = "x".repeat(ServerLimits::HTTP_BODY_BYTES + 1);
     let response = bearer(
         client
             .post(format!("{}/api/v1/init/providers", server.base_url))
@@ -89,6 +93,50 @@ async fn legacy_routes_are_gone_and_body_limit_is_shared() {
     .await
     .unwrap();
     assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, response.status());
+}
+
+#[test]
+fn shared_server_limits_freeze_runtime_and_transport_quotas() {
+    let limits = ServerLimits::with_max_concurrent_runs(32).unwrap();
+
+    assert_eq!(32, limits.max_concurrent_runs);
+    assert_eq!(10 * 1024 * 1024, limits.http_body_bytes);
+    assert_eq!(64, limits.max_queued_runs);
+    assert_eq!(64, limits.max_total_streams);
+    assert_eq!(8, limits.max_streams_per_task);
+    assert_eq!(100, limits.max_tasks_per_page);
+    assert_eq!(500, limits.max_timeline_items);
+    assert_eq!(16 * 1024 * 1024, limits.max_timeline_bytes);
+    assert!(ServerLimits::with_max_concurrent_runs(0).is_err());
+    assert!(ServerLimits::with_max_concurrent_runs(65).is_err());
+}
+
+#[test]
+fn wildcard_origins_publish_loopback_and_usable_lan_addresses() {
+    let origins = advertised_origins(
+        "0.0.0.0:17777".parse().unwrap(),
+        [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 10, 20)),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ],
+    );
+
+    assert_eq!("http://127.0.0.1:17777", origins.local);
+    assert_eq!(vec!["http://192.168.10.20:17777"], origins.lan);
+    assert!(origins
+        .all()
+        .iter()
+        .all(|origin| { !origin.contains("0.0.0.0") && !origin.contains("[::]") }));
+    let policy = OriginPolicy::new(origins.all()).unwrap();
+    let auth = AuthContext {
+        authenticated: true,
+        mode: kuku_server::api::AuthMode::Bearer,
+    };
+    assert!(policy
+        .check_request(Some("http://192.168.10.20:17777"), &auth)
+        .is_ok());
 }
 
 #[tokio::test]
@@ -102,7 +150,7 @@ async fn explicit_config_path_is_retained_by_prepared_services() {
         Some(TOKEN.to_owned()),
         Vec::new(),
         "http://127.0.0.1".to_owned(),
-        16,
+        ServerLimits::default(),
     )
     .await
     .unwrap();
@@ -110,4 +158,5 @@ async fn explicit_config_path_is_retained_by_prepared_services() {
         config.path(),
         state.platform.config.snapshot().await.unwrap().path
     );
+    assert_eq!(ServerLimits::default(), state.limits);
 }

@@ -4,6 +4,7 @@ pub mod platform;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;
+mod server_limits;
 #[cfg(feature = "test-scenarios")]
 pub mod testing;
 
@@ -23,11 +24,13 @@ use tower_http::trace::TraceLayer;
 use platform::{AuthPolicy, BearerTokenStore, ProviderProbe};
 use run_manager::driver::RunDriverFactory;
 use run_manager::{ReviewSubmissionValidator, SkillSelectionValidator};
+pub use server_limits::ServerLimits;
 
 pub struct AppState {
     pub platform: Arc<platform::PlatformServices>,
     pub task_runtime: Arc<run_manager::TaskRuntime>,
     pub kuku_home: PathBuf,
+    pub limits: ServerLimits,
     _instance_lock: platform::ServerInstanceLock,
 }
 
@@ -57,6 +60,10 @@ impl PreparedServer {
         let url = format!("{origin}/#credential={token}");
         println!("kuku server: {origin}");
         println!("kuku credential URL: {url}");
+        if let Some(lan) = &self.state.platform.connection.lan_url {
+            println!("kuku LAN: {lan}");
+            println!("kuku LAN credential URL: {lan}/#credential={token}");
+        }
         if show_qr {
             if let Ok(code) = qrcode::QrCode::new(url.as_bytes()) {
                 println!(
@@ -96,11 +103,8 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
     let listen_addr: SocketAddr = args.listen.parse().map_err(|error| {
         StartupError::InvalidArgument(format!("invalid listen address: {error}"))
     })?;
-    if !(1..=64).contains(&args.max_concurrent_runs) {
-        return Err(StartupError::InvalidArgument(
-            "max concurrent runs must be between 1 and 64".to_owned(),
-        ));
-    }
+    let limits = ServerLimits::with_max_concurrent_runs(args.max_concurrent_runs)
+        .map_err(StartupError::InvalidArgument)?;
     let home = std::env::var_os("KUKU_HOME")
         .map(PathBuf::from)
         .or_else(|| home::home_dir().map(|dir| dir.join(".kuku")))
@@ -135,14 +139,7 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
             path: std::env::current_dir()?,
         });
     }
-    let preferred_origin = local_origin(listen_addr);
-    let mut allowed_origins = args.allow_origin;
-    if !allowed_origins
-        .iter()
-        .any(|origin| origin == &preferred_origin)
-    {
-        allowed_origins.push(preferred_origin.clone());
-    }
+    let explicit_origins = args.allow_origin;
     let instance_lock = platform::ServerInstanceLock::acquire(&home).map_err(|error| {
         if matches!(error, platform::InstanceLockError::AlreadyRunning) {
             StartupError::AlreadyRunning
@@ -155,17 +152,27 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
         }
     })?;
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    let bound_origin = local_origin(listener.local_addr()?);
-    allowed_origins.retain(|origin| origin != &preferred_origin);
-    allowed_origins.push(bound_origin.clone());
+    let advertised = advertised_origins(
+        listener.local_addr()?,
+        if_addrs::get_if_addrs()?
+            .into_iter()
+            .map(|interface| interface.ip()),
+    );
+    let mut allowed_origins = advertised.all();
+    for origin in explicit_origins {
+        if !allowed_origins.contains(&origin) {
+            allowed_origins.push(origin);
+        }
+    }
     let state = AppState::open_with_existing_lock(
         &home,
         &config_path,
         token,
         registration_roots,
-        bound_origin,
+        advertised.local,
+        advertised.lan.first().cloned(),
         allowed_origins,
-        args.max_concurrent_runs,
+        limits,
         instance_lock,
     )
     .await
@@ -187,12 +194,61 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
     })
 }
 
-fn local_origin(address: SocketAddr) -> String {
-    if address.ip().is_unspecified() {
-        format!("http://127.0.0.1:{}", address.port())
-    } else {
-        format!("http://{address}")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvertisedOrigins {
+    pub local: String,
+    pub lan: Vec<String>,
+}
+
+impl AdvertisedOrigins {
+    pub fn all(&self) -> Vec<String> {
+        let mut origins = vec![self.local.clone()];
+        for origin in &self.lan {
+            if !origins.contains(origin) {
+                origins.push(origin.clone());
+            }
+        }
+        origins
     }
+}
+
+pub fn advertised_origins(
+    bound: SocketAddr,
+    interface_ips: impl IntoIterator<Item = std::net::IpAddr>,
+) -> AdvertisedOrigins {
+    let port = bound.port();
+    if !bound.ip().is_unspecified() {
+        let origin = origin_for(bound.ip(), port);
+        return AdvertisedOrigins {
+            local: origin.clone(),
+            lan: (!bound.ip().is_loopback())
+                .then_some(origin)
+                .into_iter()
+                .collect(),
+        };
+    }
+    let local_ip = if bound.is_ipv4() {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+    };
+    let mut lan = interface_ips
+        .into_iter()
+        .filter(|ip| ip.is_ipv4() == bound.is_ipv4())
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
+        .filter(|ip| !matches!(ip, std::net::IpAddr::V6(value) if value.is_unicast_link_local()))
+        .map(|ip| origin_for(ip, port))
+        .collect::<Vec<_>>();
+    lan.sort();
+    lan.dedup();
+    AdvertisedOrigins {
+        local: origin_for(local_ip, port),
+        lan,
+    }
+}
+
+fn origin_for(ip: std::net::IpAddr, port: u16) -> String {
+    format!("http://{}", SocketAddr::new(ip, port))
 }
 
 async fn auth_middleware(
@@ -265,51 +321,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             auth_middleware,
         ))
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024))
-}
-
-pub async fn start_server(
-    config: kuku::config::Config,
-    password: Option<String>,
-    max_concurrent_runs: usize,
-) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let kuku_home = kuku::session::kuku_home().unwrap_or_else(|_| PathBuf::from(".kuku"));
-    let state = AppState::open(
-        &kuku_home,
-        Some(config),
-        password,
-        vec![platform::RegistrationRootSpec {
-            label: "Current directory".to_owned(),
-            path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        }],
-        "http://127.0.0.1:17777".to_owned(),
-        max_concurrent_runs,
-    )
-    .await
-    .expect("server services must initialize");
-
-    let app = build_app(state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let handle = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
-
-    (addr, handle)
-}
-
-pub async fn shutdown_signal(state: Arc<AppState>) {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
-
-    let _ = state;
+        .layer(RequestBodyLimitLayer::new(state.limits.http_body_bytes))
 }
 
 fn auth_required_response() -> Response {
@@ -336,33 +348,13 @@ fn secure_response(state: &AppState, mut response: Response) -> Response {
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
-    pub async fn open(
-        home: &std::path::Path,
-        _initial_config: Option<kuku::config::Config>,
-        bearer_token: Option<String>,
-        registration_roots: Vec<platform::RegistrationRootSpec>,
-        preferred_origin: String,
-        max_concurrent_runs: usize,
-    ) -> Result<Arc<Self>, crate::api::ApiError> {
-        Self::open_with_config_path(
-            home,
-            &home.join("config.toml"),
-            bearer_token,
-            registration_roots,
-            preferred_origin,
-            max_concurrent_runs,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub async fn open_with_config_path(
         home: &std::path::Path,
         config_path: &std::path::Path,
         bearer_token: Option<String>,
         registration_roots: Vec<platform::RegistrationRootSpec>,
         preferred_origin: String,
-        max_concurrent_runs: usize,
+        limits: ServerLimits,
     ) -> Result<Arc<Self>, crate::api::ApiError> {
         Self::open_with_config_path_and_origins(
             home,
@@ -370,8 +362,9 @@ impl AppState {
             bearer_token,
             registration_roots,
             preferred_origin.clone(),
+            None,
             vec![preferred_origin],
-            max_concurrent_runs,
+            limits,
         )
         .await
     }
@@ -383,8 +376,9 @@ impl AppState {
         bearer_token: Option<String>,
         registration_roots: Vec<platform::RegistrationRootSpec>,
         preferred_origin: String,
+        lan_origin: Option<String>,
         allowed_origins: Vec<String>,
-        max_concurrent_runs: usize,
+        limits: ServerLimits,
     ) -> Result<Arc<Self>, crate::api::ApiError> {
         let instance_lock = platform::ServerInstanceLock::acquire(home).map_err(|error| {
             crate::api::ApiError::new(
@@ -399,8 +393,9 @@ impl AppState {
             bearer_token,
             registration_roots,
             preferred_origin,
+            lan_origin,
             allowed_origins,
-            max_concurrent_runs,
+            limits,
             instance_lock,
         )
         .await
@@ -413,8 +408,9 @@ impl AppState {
         bearer_token: Option<String>,
         registration_roots: Vec<platform::RegistrationRootSpec>,
         preferred_origin: String,
+        lan_origin: Option<String>,
         allowed_origins: Vec<String>,
-        max_concurrent_runs: usize,
+        limits: ServerLimits,
         instance_lock: platform::ServerInstanceLock,
     ) -> Result<Arc<Self>, crate::api::ApiError> {
         let revisions = platform::ServerRevisionCoordinator::open(home);
@@ -448,7 +444,7 @@ impl AppState {
             Arc::clone(&config),
             Arc::clone(&workspaces),
             Arc::clone(&revisions),
-            u8::try_from(max_concurrent_runs).map_err(|_| {
+            u8::try_from(limits.max_concurrent_runs).map_err(|_| {
                 crate::api::ApiError::new(
                     crate::api::ApiErrorCode::InvalidRequest,
                     "max concurrent runs is invalid",
@@ -474,7 +470,7 @@ impl AppState {
                 display_name: identity.display_name,
                 preferred_origin: preferred_origin.clone(),
                 local_url: preferred_origin,
-                lan_url: None,
+                lan_url: lan_origin,
                 plaintext: true,
             },
         });
@@ -490,8 +486,7 @@ impl AppState {
                 workspaces,
                 Arc::new(RuntimeSkillValidator),
                 Arc::new(RuntimeReviewValidator),
-                max_concurrent_runs,
-                64,
+                &limits,
             )
             .map_err(|error| error.into_api_error("task-runtime"))?,
         );
@@ -503,6 +498,7 @@ impl AppState {
             platform,
             task_runtime: runtime,
             kuku_home: home.to_owned(),
+            limits,
             _instance_lock: instance_lock,
         }))
     }

@@ -13,9 +13,6 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Router;
 use common::stream::next_json_line;
-use kuku::config::{
-    Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, UpdateConfig,
-};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
@@ -173,19 +170,6 @@ async fn provider_response(State(state): State<Arc<ProviderState>>) -> impl Into
     )
 }
 
-fn unconfigured_config() -> Config {
-    Config {
-        tiers: std::collections::BTreeMap::new(),
-        providers: std::collections::BTreeMap::new(),
-        default_tier: String::new(),
-        discovery: DiscoveryConfig::default(),
-        handoff: HandoffConfig::default(),
-        logs: LogsConfig::default(),
-        plugin: PluginConfig::default(),
-        update: UpdateConfig::default(),
-    }
-}
-
 struct SameHomeServer {
     base_url: String,
     handle: tokio::task::JoinHandle<()>,
@@ -194,17 +178,16 @@ struct SameHomeServer {
 impl SameHomeServer {
     async fn try_start(
         home: &Path,
-        config: Config,
-        password: Option<String>,
+        bearer_token: Option<String>,
         registration_roots: Vec<kuku_server::platform::RegistrationRootSpec>,
     ) -> Result<Self, String> {
-        let state = kuku_server::AppState::open(
+        let state = kuku_server::AppState::open_with_config_path(
             home,
-            Some(config),
-            password,
+            &home.join("config.toml"),
+            bearer_token,
             registration_roots,
             "http://127.0.0.1".to_owned(),
-            16,
+            kuku_server::ServerLimits::default(),
         )
         .await
         .map_err(|error| format!("{error:?}"))?;
@@ -361,8 +344,7 @@ async fn wait_for_terminal_projection(alpha: &AlphaClient, task_id: &str) -> Val
 async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
     let mut provider = ControlledProvider::start().await;
     let mut server =
-        common::TestServer::start_with_password(unconfigured_config(), Some(TOKEN.to_owned()))
-            .await;
+        common::TestServer::start_unconfigured_with_token(Some(TOKEN.to_owned())).await;
     let alpha = AlphaClient::new(server.base_url.clone());
 
     let unauthenticated = alpha.get("/api/v1/status", false).await;
@@ -381,7 +363,6 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
     let _workspace = std::mem::replace(&mut server.workspace, tempfile::tempdir().unwrap()).keep();
     let second = SameHomeServer::try_start(
         &home,
-        unconfigured_config(),
         Some(TOKEN.to_owned()),
         vec![kuku_server::platform::RegistrationRootSpec {
             label: "Test workspaces".to_owned(),
@@ -527,7 +508,6 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
 
     let reopened = SameHomeServer::try_start(
         &home,
-        unconfigured_config(),
         Some(TOKEN.to_owned()),
         vec![kuku_server::platform::RegistrationRootSpec {
             label: "Test workspaces".to_owned(),
