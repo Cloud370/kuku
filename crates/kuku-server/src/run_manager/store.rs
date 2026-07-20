@@ -229,6 +229,27 @@ impl TaskCommandService {
         })
     }
 
+    pub async fn timeline(
+        &self,
+        task_id: &TaskId,
+        query: crate::api::TimelineQuery,
+    ) -> Result<crate::api::TimelinePage, DomainError> {
+        if query.limit == 0 || query.limit > 500 {
+            return Err(DomainError::LedgerCorrupt);
+        }
+        let projection = self.projection(task_id).await?;
+        let mut items = projection.timeline;
+        if items.len() > query.limit as usize {
+            items = items[items.len() - query.limit as usize..].to_vec();
+        }
+        Ok(crate::api::TimelinePage {
+            api_version: crate::api::ApiVersion,
+            task_id: task_id.clone(),
+            items,
+            next_cursor: None,
+        })
+    }
+
     pub async fn stop(&self, command: StopRunCommand) -> Result<TaskAggregate, DomainError> {
         let _gate = self.gate.lock().await;
         let aggregate = self.repository.rebuild(&command.task_id)?;
