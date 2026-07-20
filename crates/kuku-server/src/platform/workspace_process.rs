@@ -462,7 +462,10 @@ fn set_process_root(
     command: &mut Command,
     root: &IdentityBoundProcessRoot,
 ) -> Result<(), ApiError> {
+    use std::os::windows::process::CommandExt;
+
     command.current_dir(root.process_path.as_ref());
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     Ok(())
 }
 
@@ -536,6 +539,12 @@ impl ProcessTree {
                 reap_failed_attach(child);
                 return Err(unavailable("workspace process job cannot be configured"));
             }
+            if !resume_suspended_process(child.id()) {
+                windows_sys::Win32::System::JobObjects::TerminateJobObject(job, 1);
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                reap_failed_attach(child);
+                return Err(unavailable("workspace process cannot be resumed"));
+            }
             Ok(Self(job))
         }
     }
@@ -577,6 +586,42 @@ impl ProcessTree {
 fn reap_failed_attach(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(process_id: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: snapshot and thread handles are checked before use and closed exactly once.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut found = false;
+        let mut has_entry = Thread32First(snapshot, &mut entry) != 0;
+        while has_entry {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    found = ResumeThread(thread) != u32::MAX;
+                    CloseHandle(thread);
+                    if found {
+                        break;
+                    }
+                }
+            }
+            has_entry = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        found
+    }
 }
 
 #[cfg(unix)]

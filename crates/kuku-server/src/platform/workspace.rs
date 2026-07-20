@@ -866,7 +866,13 @@ fn open_directory_no_follow(parent: &Dir, segment: &std::ffi::OsStr) -> std::io:
     options
         .custom_flags((rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW).bits() as i32);
     #[cfg(windows)]
-    options.custom_flags(0x0220_0000);
+    {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        options
+            .custom_flags(0x0220_0000)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
     let file = parent.open_with(segment, &options)?;
     Ok(Dir::from_std_file(file.into_std()))
 }
