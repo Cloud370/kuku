@@ -1,0 +1,56 @@
+use kuku::event::{ObservationFact, RequestScope, WorkspaceRelativePath};
+
+use super::observation_contract::{ObservationState, ObservationTracker};
+
+/// Current host-side state returned for one contained workspace path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CurrentObservationState {
+    Present(String),
+    Missing,
+    Inaccessible,
+}
+
+/// Provides contained current state for observed workspace paths.
+pub(crate) trait ObservationHashProvider {
+    fn current_state(&self, path: &WorkspaceRelativePath) -> CurrentObservationState;
+}
+
+/// One immutable fact plus a derived current-drift overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObservationProjection {
+    pub(crate) fact: ObservationFact,
+    pub(crate) current_drift: ObservationState,
+}
+
+pub(crate) struct ObservationReducer;
+
+impl ObservationReducer {
+    pub(crate) fn for_request(
+        scope: &RequestScope,
+        facts: &[ObservationFact],
+        hashes: &dyn ObservationHashProvider,
+    ) -> Vec<ObservationProjection> {
+        facts
+            .iter()
+            .filter(|fact| fact.scope == *scope)
+            .map(|fact| project(fact, hashes))
+            .collect()
+    }
+}
+
+fn project(fact: &ObservationFact, hashes: &dyn ObservationHashProvider) -> ObservationProjection {
+    let current_drift = match fact.relative_path.as_ref() {
+        None => ObservationState::NotApplicable,
+        Some(path) => match hashes.current_state(path) {
+            CurrentObservationState::Present(current_hash) => {
+                ObservationTracker::new(fact).compare(Some(current_hash.as_str()))
+            }
+            CurrentObservationState::Missing => ObservationState::NoLongerPresent,
+            CurrentObservationState::Inaccessible => ObservationState::Inaccessible,
+        },
+    };
+    ObservationProjection {
+        fact: fact.clone(),
+        current_drift,
+    }
+}
