@@ -252,6 +252,18 @@ impl TaskCommandService {
                         file_references: Vec::new(),
                     },
                 },
+                TaskEvent::MessageAppended {
+                    message: MessageFact {
+                        message_id: format!("msg_agent_{}", run_id.as_str()),
+                        task_id: command.task_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        role: MessageRoleFact::Agent,
+                        text: String::new(),
+                        finalized: false,
+                        request_ids: Vec::new(),
+                        file_references: Vec::new(),
+                    },
+                },
                 TaskEvent::SkillsChanged {
                     selection: validated.selection,
                 },
@@ -353,6 +365,18 @@ impl TaskCommandService {
                         role: MessageRoleFact::User,
                         text: command.message,
                         finalized: true,
+                        request_ids: Vec::new(),
+                        file_references: Vec::new(),
+                    },
+                },
+                TaskEvent::MessageAppended {
+                    message: MessageFact {
+                        message_id: format!("msg_agent_{}", run_id.as_str()),
+                        task_id: command.task_id.clone(),
+                        run_id: Some(run_id.clone()),
+                        role: MessageRoleFact::Agent,
+                        text: String::new(),
+                        finalized: false,
                         request_ids: Vec::new(),
                         file_references: Vec::new(),
                     },
@@ -594,12 +618,22 @@ impl TaskCommandService {
     }
 
     pub async fn stop(&self, command: StopRunCommand) -> Result<CommandAccepted, DomainError> {
+        self.stop_owned(command).await.map(|(accepted, _)| accepted)
+    }
+
+    pub(super) async fn stop_owned(
+        &self,
+        command: StopRunCommand,
+    ) -> Result<(CommandAccepted, RunId), DomainError> {
         let intent = CommandIntent::Stop;
         let digest = intent_digest(Some(&command.task_id), &intent)?;
+        let idempotency_key = command.idempotency_key.clone();
         let _key = self.repository.key_guard(&command.idempotency_key).await;
         let _task = self.repository.task_guard(&command.task_id).await;
         if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
-            return replay_accepted(receipt, &command.task_id, CommandResult::Stopped);
+            let accepted = replay_accepted(receipt, &command.task_id, CommandResult::Stopped)?;
+            let run_id = self.control_run_id(&command.task_id, &idempotency_key, &digest)?;
+            return Ok((accepted, run_id));
         }
         let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
@@ -615,6 +649,7 @@ impl TaskCommandService {
             .map_err(|_| DomainError::StorageExhausted)?;
         let receipt = CommandReceipt::new(command.idempotency_key, digest, CommandResult::Stopped)
             .map_err(|_| DomainError::LedgerCorrupt)?;
+        let run_id = active.run_id.clone();
         let record = TaskTransaction::try_new(
             next_revision,
             receipt,
@@ -635,18 +670,30 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        Ok(CommandAccepted {
-            api_version: ApiVersion,
-            task_id: command.task_id,
-            task_revision: next_revision,
-            replayed: false,
-        })
+        Ok((
+            CommandAccepted {
+                api_version: ApiVersion,
+                task_id: command.task_id,
+                task_revision: next_revision,
+                replayed: false,
+            },
+            run_id,
+        ))
     }
 
     pub async fn resolve_interaction(
         &self,
         command: ResolveInteractionCommand,
     ) -> Result<CommandAccepted, DomainError> {
+        self.resolve_interaction_owned(command)
+            .await
+            .map(|(accepted, _)| accepted)
+    }
+
+    pub(super) async fn resolve_interaction_owned(
+        &self,
+        command: ResolveInteractionCommand,
+    ) -> Result<(CommandAccepted, RunId), DomainError> {
         let intent = CommandIntent::ResolveInteraction {
             interaction_id: command.interaction_id.clone(),
             choice_id: command.choice_id.clone(),
@@ -655,11 +702,13 @@ impl TaskCommandService {
         let _key = self.repository.key_guard(&command.idempotency_key).await;
         let _task = self.repository.task_guard(&command.task_id).await;
         if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
-            return replay_accepted(
+            let accepted = replay_accepted(
                 receipt,
                 &command.task_id,
                 CommandResult::InteractionResolved,
-            );
+            )?;
+            let run_id = self.interaction_run_id(&command.task_id, &command.interaction_id)?;
+            return Ok((accepted, run_id));
         }
         let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
@@ -678,6 +727,7 @@ impl TaskCommandService {
             CommandResult::InteractionResolved,
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
+        let run_id = self.interaction_run_id(&command.task_id, &command.interaction_id)?;
         let record = TaskTransaction::try_new(
             next_revision,
             receipt,
@@ -689,12 +739,69 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        Ok(CommandAccepted {
-            api_version: ApiVersion,
-            task_id: command.task_id,
-            task_revision: next_revision,
-            replayed: false,
-        })
+        Ok((
+            CommandAccepted {
+                api_version: ApiVersion,
+                task_id: command.task_id,
+                task_revision: next_revision,
+                replayed: false,
+            },
+            run_id,
+        ))
+    }
+
+    fn control_run_id(
+        &self,
+        task_id: &TaskId,
+        idempotency_key: &str,
+        digest: &str,
+    ) -> Result<RunId, DomainError> {
+        self.repository
+            .replay(task_id)?
+            .into_iter()
+            .find_map(|record| {
+                let kuku::event::EventPayload::TaskLedger(TaskLedgerRecord::Control(transaction)) =
+                    record.payload
+                else {
+                    return None;
+                };
+                if transaction.command().idempotency_key() != idempotency_key
+                    || transaction.command().intent_digest() != digest
+                {
+                    return None;
+                }
+                transaction.events().iter().find_map(|event| match event {
+                    TaskEvent::RunStopping { run } => Some(run.run_id.clone()),
+                    _ => None,
+                })
+            })
+            .ok_or(DomainError::LedgerCorrupt)
+    }
+
+    fn interaction_run_id(
+        &self,
+        task_id: &TaskId,
+        interaction_id: &kuku::event::InteractionId,
+    ) -> Result<RunId, DomainError> {
+        self.repository
+            .replay(task_id)?
+            .into_iter()
+            .filter_map(|record| match record.payload {
+                kuku::event::EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)) => {
+                    Some(batch)
+                }
+                _ => None,
+            })
+            .flat_map(|batch| batch.events().to_vec())
+            .find_map(|event| match event {
+                TaskEvent::InteractionOpened { interaction }
+                    if &interaction.interaction_id == interaction_id =>
+                {
+                    Some(interaction.run_id)
+                }
+                _ => None,
+            })
+            .ok_or(DomainError::LedgerCorrupt)
     }
 
     pub fn repository(&self) -> &TaskRepository {
@@ -773,7 +880,7 @@ fn digest(value: &impl Serialize) -> Result<String, DomainError> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn current_timestamp() -> Result<String, DomainError> {
+pub(super) fn current_timestamp() -> Result<String, DomainError> {
     super::domain::system_time_rfc3339(std::time::SystemTime::now())
 }
 
