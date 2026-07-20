@@ -119,17 +119,80 @@ pub trait ProcessChunkSink: Send {
     ) -> Pin<Box<dyn Future<Output = Result<(), ApiError>> + Send + 'a>>;
 }
 
+/// Persists workspace-process cancellation across clones and late observers.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessCancellation {
+    cancelled: Arc<AtomicBool>,
+    notification: Arc<tokio::sync::Notify>,
+}
+
+impl ProcessCancellation {
+    /// Creates an active cancellation token.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Requests cancellation and wakes every current observer.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notification.notify_waiters();
+    }
+
+    /// Returns whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Waits until cancellation, including a request made before this call.
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.notification.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct CancelProcessOnDrop {
+    cancellation: ProcessCancellation,
+    armed: bool,
+}
+
+impl CancelProcessOnDrop {
+    fn new(cancellation: ProcessCancellation) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelProcessOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
+}
+
 /// Describes how a workspace process exited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessStatus {
     code: Option<i32>,
     timed_out: bool,
+    cancelled: bool,
 }
 
 impl ProcessStatus {
     /// Returns true only for a normal zero exit status.
     pub fn success(&self) -> bool {
-        !self.timed_out && self.code == Some(0)
+        !self.timed_out && !self.cancelled && self.code == Some(0)
     }
 
     /// Returns the platform exit code when available.
@@ -140,6 +203,11 @@ impl ProcessStatus {
     /// Returns true when the process exceeded its deadline and was reaped.
     pub fn timed_out(&self) -> bool {
         self.timed_out
+    }
+
+    /// Returns true when external cancellation terminated and reaped the process tree.
+    pub fn cancelled(&self) -> bool {
+        self.cancelled
     }
 }
 
@@ -220,6 +288,7 @@ impl IdentityBoundProcessRoot {
                 limits,
                 None,
                 Arc::new(AtomicBool::new(false)),
+                ProcessCancellation::new(),
             )
         })
         .await
@@ -232,12 +301,32 @@ impl IdentityBoundProcessRoot {
         limits: ProcessLimits,
         sink: &mut dyn ProcessChunkSink,
     ) -> Result<ProcessStatus, ApiError> {
+        self.stream_with_cancellation(command, limits, sink, None)
+            .await
+    }
+
+    pub(super) async fn stream_with_cancellation(
+        &self,
+        command: RootCommand,
+        limits: ProcessLimits,
+        sink: &mut dyn ProcessChunkSink,
+        cancellation: Option<ProcessCancellation>,
+    ) -> Result<ProcessStatus, ApiError> {
+        let external_cancellation = cancellation.unwrap_or_default();
+        let mut drop_guard = CancelProcessOnDrop::new(external_cancellation.clone());
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let root = self.clone();
         let worker_cancelled = cancelled.clone();
         let mut worker = tokio::task::spawn_blocking(move || {
-            run_process(root, command, limits, Some(sender), worker_cancelled)
+            run_process(
+                root,
+                command,
+                limits,
+                Some(sender),
+                worker_cancelled,
+                external_cancellation,
+            )
         });
 
         loop {
@@ -248,6 +337,7 @@ impl IdentityBoundProcessRoot {
                     while let Ok(chunk) = receiver.try_recv() {
                         sink.push(chunk).await?;
                     }
+                    drop_guard.disarm();
                     return Ok(output.status);
                 }
                 chunk = receiver.recv() => {
@@ -296,14 +386,33 @@ impl IdentityBoundProcessRoot {
     }
 }
 
+impl super::WorkspaceCapability {
+    /// Streams a bounded command until it exits or external cancellation is requested.
+    pub async fn stream_at_root_with_cancellation(
+        &self,
+        command: RootCommand,
+        limits: ProcessLimits,
+        sink: &mut dyn ProcessChunkSink,
+        cancellation: Option<ProcessCancellation>,
+    ) -> Result<ProcessStatus, ApiError> {
+        self.process_root
+            .stream_with_cancellation(command, limits, sink, cancellation)
+            .await
+    }
+}
+
 fn run_process(
     root: IdentityBoundProcessRoot,
     request: RootCommand,
     limits: ProcessLimits,
     chunks: Option<mpsc::UnboundedSender<ProcessChunk>>,
     cancelled: Arc<AtomicBool>,
+    external_cancellation: ProcessCancellation,
 ) -> Result<ProcessOutput, ApiError> {
     root.verify()?;
+    if external_cancellation.is_cancelled() {
+        return Ok(cancelled_output());
+    }
     let mut command = Command::new(&request.program);
     command
         .args(&request.arguments)
@@ -348,27 +457,34 @@ fn run_process(
     );
 
     let deadline = Instant::now() + limits.timeout;
-    let (exit, timed_out) = loop {
+    let (exit, timed_out, externally_cancelled) = loop {
+        if external_cancellation.is_cancelled() {
+            process_tree.terminate(&mut child);
+            let exit = child
+                .wait()
+                .map_err(|_| unavailable("workspace process cannot be reaped"))?;
+            break (exit, false, true);
+        }
         if let Some(exit) = child
             .try_wait()
             .map_err(|_| unavailable("workspace process status is unavailable"))?
         {
             process_tree.terminate(&mut child);
-            break (exit, false);
+            break (exit, false, false);
         }
         if exceeded.load(Ordering::SeqCst) || cancelled.load(Ordering::SeqCst) {
             process_tree.terminate(&mut child);
             let exit = child
                 .wait()
                 .map_err(|_| unavailable("workspace process cannot be reaped"))?;
-            break (exit, false);
+            break (exit, false, false);
         }
         if Instant::now() >= deadline {
             process_tree.terminate(&mut child);
             let exit = child
                 .wait()
                 .map_err(|_| unavailable("workspace process cannot be reaped"))?;
-            break (exit, true);
+            break (exit, true, false);
         }
         std::thread::sleep(POLL_INTERVAL);
     };
@@ -392,10 +508,23 @@ fn run_process(
         status: ProcessStatus {
             code: exit.code(),
             timed_out,
+            cancelled: externally_cancelled,
         },
         stdout,
         stderr,
     })
+}
+
+fn cancelled_output() -> ProcessOutput {
+    ProcessOutput {
+        status: ProcessStatus {
+            code: None,
+            timed_out: false,
+            cancelled: true,
+        },
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -667,3 +796,7 @@ fn api_error(code: ApiErrorCode, message: &'static str) -> ApiError {
 fn unavailable(message: &'static str) -> ApiError {
     api_error(ApiErrorCode::WorkspaceUnavailable, message)
 }
+
+#[cfg(test)]
+#[path = "workspace_process_tests.rs"]
+mod tests;

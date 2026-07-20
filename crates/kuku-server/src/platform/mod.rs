@@ -24,8 +24,8 @@ pub use security::{OriginPolicy, SecurityHeaders};
 pub use settings_service::SettingsService;
 pub use types::{ConfigPatch, ConfigSnapshot, PlatformState};
 pub use workspace::{
-    NormalizedRelativePath, ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput,
-    ProcessStatus, ProcessStream, RegistrationRootCapability, RegistrationRootRegistry,
-    RegistrationRootSpec, RootCommand, WorkspaceCapability, WorkspaceRegistry, WorkspaceTaskLease,
-    WorkspaceUsagePort,
+    NormalizedRelativePath, ProcessCancellation, ProcessChunk, ProcessChunkSink, ProcessLimits,
+    ProcessOutput, ProcessStatus, ProcessStream, RegistrationRootCapability,
+    RegistrationRootRegistry, RegistrationRootSpec, RootCommand, WorkspaceCapability,
+    WorkspaceRegistry, WorkspaceTaskLease, WorkspaceUsagePort,
 };

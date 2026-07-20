@@ -21,8 +21,8 @@ use super::{accepted_digest, write_private_atomic, RevisionDomain, ServerRevisio
 mod process;
 use process::{FileIdentity, IdentityBoundProcessRoot};
 pub use process::{
-    ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput, ProcessStatus, ProcessStream,
-    RootCommand,
+    ProcessCancellation, ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput,
+    ProcessStatus, ProcessStream, RootCommand,
 };
 
 const ROOTS_FILE: &str = "registration-roots.json";
