@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use axum::http::StatusCode;
 use kuku_server::platform::{AuthContext, OriginPolicy};
 use kuku_server::{advertised_origins, InterfaceAddress, ServerLimits};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -82,17 +83,26 @@ async fn legacy_routes_are_gone_and_body_limit_is_shared() {
         assert_eq!(StatusCode::NOT_FOUND, response.status(), "{path}");
     }
 
-    let oversized = "x".repeat(ServerLimits::HTTP_BODY_BYTES + 1);
-    let response = bearer(
-        client
-            .post(format!("{}/api/v1/init/providers", server.base_url))
-            .header("content-type", "application/json")
-            .body(oversized),
+    let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let request = format!(
+        "POST /api/v1/init/providers HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        server.addr,
+        ServerLimits::HTTP_BODY_BYTES + 1,
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = [0_u8; 1024];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.read(&mut response),
     )
-    .send()
     .await
+    .expect("server did not reject oversized Content-Length")
     .unwrap();
-    assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, response.status());
+    let response = std::str::from_utf8(&response[..read]).unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"),
+        "unexpected response: {response}"
+    );
 }
 
 #[test]
