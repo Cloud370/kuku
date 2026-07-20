@@ -386,7 +386,7 @@ impl RunSupervisor {
                 .collect(),
             agent_message_id: format!("msg_agent_{}", run_id.as_str()),
             execution_scope,
-            task_events_path: self.repository.events_path(task_id),
+            event_store: self.repository.event_store(task_id)?,
         })
     }
 

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +11,7 @@ use kuku::event::{
 };
 use tokio::sync::mpsc;
 
-use crate::platform::{WorkspaceCapability, WorkspaceRegistry};
+use crate::platform::WorkspaceRegistry;
 
 use super::DomainError;
 
@@ -66,7 +65,7 @@ pub struct DriverStart {
     pub skill_ids: Vec<String>,
     pub agent_message_id: String,
     pub execution_scope: ExecutionScope,
-    pub task_events_path: PathBuf,
+    pub event_store: kuku::event::EventStore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,25 +118,14 @@ pub trait RunDriverFactory: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<DriverHandle, DomainError>> + Send>>;
 }
 
-pub trait KukuQueryBuilder: Send + Sync {
-    fn build(
-        &self,
-        start: &DriverStart,
-        workspace: WorkspaceCapability,
-    ) -> Result<kuku::Query, DomainError>;
-}
-
 pub struct KukuDriverFactory {
     workspaces: Arc<WorkspaceRegistry>,
-    queries: Arc<dyn KukuQueryBuilder>,
+    config: Arc<kuku::config::Config>,
 }
 
 impl KukuDriverFactory {
-    pub fn new(workspaces: Arc<WorkspaceRegistry>, queries: Arc<dyn KukuQueryBuilder>) -> Self {
-        Self {
-            workspaces,
-            queries,
-        }
+    pub fn new(workspaces: Arc<WorkspaceRegistry>, config: Arc<kuku::config::Config>) -> Self {
+        Self { workspaces, config }
     }
 }
 
@@ -147,12 +135,20 @@ impl RunDriverFactory for KukuDriverFactory {
         start: DriverStart,
     ) -> Pin<Box<dyn Future<Output = Result<DriverHandle, DomainError>> + Send>> {
         let workspaces = self.workspaces.clone();
-        let queries = self.queries.clone();
+        let config = self.config.clone();
         Box::pin(async move {
             let capability = workspaces
                 .capability(&start.workspace_id)
                 .map_err(|_| DomainError::WorkspaceNotFound)?;
-            let query = queries.build(&start, capability)?;
+            let query = capability
+                .query(
+                    start.prompt.clone(),
+                    start.execution_scope.clone(),
+                    start.event_store.clone(),
+                )
+                .map_err(|_| DomainError::InvalidRequest)?
+                .config((*config).clone())
+                .tier(start.tier_id.clone());
             let run = query
                 .start()
                 .await
@@ -253,18 +249,7 @@ async fn run_kuku_driver(
                         }
                     }
                     Ok(Some(kuku::UiEvent::ToolStart { id, tool, summary, kind })) => {
-                        let activity = ActivityFact {
-                            activity_id: id.clone(),
-                            run_id: start.run_id.clone(),
-                            title: tool,
-                            kind: match &kind {
-                                kuku::ToolKind::Agent { .. } => ActivityKindFact::DelegatedAgent,
-                                _ => ActivityKindFact::Tool,
-                            },
-                            status: ActivityStatusFact::Running,
-                            detail: Some(summary),
-                            file_references: Vec::new(),
-                        };
+                        let activity = started_activity(&start.run_id, id.clone(), tool, summary, kind);
                         activities.insert(id, activity.clone());
                         if events.send(DriverEvent::Activity(vec![
                             TaskEvent::ActivityUpserted { activity },
@@ -272,10 +257,9 @@ async fn run_kuku_driver(
                             return;
                         }
                     }
-                    Ok(Some(kuku::UiEvent::ToolEnd { id, status, summary, .. })) => {
-                        if let Some(mut activity) = activities.remove(&id) {
-                            activity.status = activity_status(&status);
-                            activity.detail = Some(summary);
+                    Ok(Some(kuku::UiEvent::ToolEnd { id, status, summary, model_content, .. })) => {
+                        if let Some(activity) = activities.remove(&id) {
+                            let activity = finished_activity(activity, &status, summary, model_content.as_deref());
                             if events.send(DriverEvent::Activity(vec![
                                 TaskEvent::ActivityUpserted { activity },
                             ])).await.is_err() {
@@ -406,5 +390,131 @@ fn activity_status(status: &str) -> ActivityStatusFact {
     match status {
         "completed" | "success" | "ok" => ActivityStatusFact::Completed,
         _ => ActivityStatusFact::Failed,
+    }
+}
+
+fn started_activity(
+    run_id: &RunId,
+    activity_id: String,
+    title: String,
+    summary: String,
+    kind: kuku::ToolKind,
+) -> ActivityFact {
+    let (kind, detail, conversation_id, agent, tier, result_in_main) = match kind {
+        kuku::ToolKind::Agent {
+            conversation_id,
+            agent,
+            tier,
+        } => (
+            ActivityKindFact::DelegatedAgent,
+            None,
+            Some(conversation_id),
+            Some(agent),
+            Some(tier),
+            Some(false),
+        ),
+        _ => (
+            ActivityKindFact::Tool,
+            Some(summary),
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
+    ActivityFact {
+        activity_id,
+        run_id: run_id.clone(),
+        title,
+        kind,
+        status: ActivityStatusFact::Running,
+        detail,
+        conversation_id,
+        agent,
+        tier,
+        result_in_main,
+        file_references: Vec::new(),
+    }
+}
+
+fn finished_activity(
+    mut activity: ActivityFact,
+    status: &str,
+    summary: String,
+    model_content: Option<&str>,
+) -> ActivityFact {
+    activity.status = activity_status(status);
+    if activity.kind == ActivityKindFact::DelegatedAgent {
+        activity.detail = None;
+        activity.result_in_main = Some(model_content.is_some());
+    } else {
+        activity.detail = Some(summary);
+    }
+    activity
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use kuku::event::{ConversationId, RunId};
+
+    use super::{finished_activity, started_activity, ActivityKindFact, ActivityStatusFact};
+
+    fn run_id() -> RunId {
+        RunId::parse("run_0123456789abcdef01234567").unwrap()
+    }
+
+    #[test]
+    fn delegated_activity_keeps_typed_identity_and_no_detail() {
+        let conversation_id = ConversationId::parse("con_0123456789abcdef01234567").unwrap();
+        let activity = started_activity(
+            &run_id(),
+            "tool_1".to_owned(),
+            "delegate".to_owned(),
+            "summary must not leak into detail".to_owned(),
+            kuku::ToolKind::Agent {
+                conversation_id: conversation_id.clone(),
+                agent: "reviewer".to_owned(),
+                tier: "strong".to_owned(),
+            },
+        );
+
+        assert_eq!(activity.kind, ActivityKindFact::DelegatedAgent);
+        assert_eq!(activity.conversation_id, Some(conversation_id));
+        assert_eq!(activity.agent.as_deref(), Some("reviewer"));
+        assert_eq!(activity.tier.as_deref(), Some("strong"));
+        assert_eq!(activity.result_in_main, Some(false));
+        assert_eq!(activity.detail, None);
+
+        let activity = finished_activity(
+            activity,
+            "ok",
+            "finished".to_owned(),
+            Some("delegated result"),
+        );
+        assert_eq!(activity.status, ActivityStatusFact::Completed);
+        assert_eq!(activity.result_in_main, Some(true));
+        assert_eq!(activity.detail, None);
+    }
+
+    #[test]
+    fn ordinary_tool_keeps_detail_and_null_delegated_fields() {
+        let activity = started_activity(
+            &run_id(),
+            "tool_2".to_owned(),
+            "read_file".to_owned(),
+            "reading".to_owned(),
+            kuku::ToolKind::Simple,
+        );
+        assert_eq!(activity.kind, ActivityKindFact::Tool);
+        assert_eq!(activity.detail.as_deref(), Some("reading"));
+        assert_eq!(activity.conversation_id, None);
+        assert_eq!(activity.agent, None);
+        assert_eq!(activity.tier, None);
+        assert_eq!(activity.result_in_main, None);
+
+        let activity = finished_activity(activity, "error", "failed".to_owned(), None);
+        assert_eq!(activity.status, ActivityStatusFact::Failed);
+        assert_eq!(activity.detail.as_deref(), Some("failed"));
+        assert_eq!(activity.result_in_main, None);
     }
 }

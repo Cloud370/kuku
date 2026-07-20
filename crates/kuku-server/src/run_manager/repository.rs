@@ -124,6 +124,11 @@ impl TaskRepository {
         self.task_path(task_id).join("events.jsonl")
     }
 
+    pub fn event_store(&self, task_id: &TaskId) -> Result<kuku::event::EventStore, DomainError> {
+        kuku::event::EventStore::open(self.events_path(task_id))
+            .map_err(|_| DomainError::LedgerCorrupt)
+    }
+
     pub async fn create_guard(&self) -> OwnedMutexGuard<()> {
         self.state.create_gate.clone().lock_owned().await
     }

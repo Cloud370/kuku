@@ -526,10 +526,10 @@ fn validate_task_ledger(
                 crate::event::TaskEvent::RunCompleted { run }
                 | crate::event::TaskEvent::RunStopped { run }
                 | crate::event::TaskEvent::RunFailed { run }
-                | crate::event::TaskEvent::RunInterrupted { run } => {
-                    if active_run.is_some_and(|active| active.run_id == run.run_id) {
-                        active_run = None;
-                    }
+                | crate::event::TaskEvent::RunInterrupted { run }
+                    if active_run.is_some_and(|active| active.run_id == run.run_id) =>
+                {
+                    active_run = None;
                 }
                 _ => {}
             }
