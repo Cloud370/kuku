@@ -187,13 +187,19 @@ export function reduceTaskBatch(
   let nextHistory = cloneHistory(history);
 
   if (timelineWindow !== null) {
-    const evictedCount = Math.max(0, candidate.timeline.length - LIVE_TIMELINE_LIMIT);
+    const evictedCount = timelineWindow.evicted_items.length;
     const expectedEvictions = candidate.timeline.slice(0, evictedCount);
     if (!timelineItemsEqual(expectedEvictions, timelineWindow.evicted_items)) {
       throw new ProjectionGapError('Timeline window eviction mismatch');
     }
 
     candidate.timeline = candidate.timeline.slice(evictedCount);
+    if (candidate.timeline.length === 0 && evictedCount > 0) {
+      throw new ProjectionGapError('Timeline window cannot evict every candidate item');
+    }
+    if (candidate.timeline.length > LIVE_TIMELINE_LIMIT) {
+      throw new ProjectionGapError('Timeline window exceeds the live timeline limit');
+    }
     candidate.timeline_next_cursor = timelineWindow.next_cursor;
     nextHistory = appendEvictions(
       nextHistory,

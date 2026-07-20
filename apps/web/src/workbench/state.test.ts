@@ -424,6 +424,99 @@ describe('atomic Task change reduction', () => {
     expect(reduced.projection.timeline).toEqual([...timeline.slice(3), ...additions]);
   });
 
+  it('accepts an authoritative byte-bound prefix below the item limit', () => {
+    const first = message('msg_0', 0);
+    const second = message('msg_1', 1);
+    const timeline = [first, second];
+    const appended = message('msg_2', 2);
+    const reduced = reduceTaskBatch(
+      projectionAt(20, 8, timeline),
+      createWorkbenchSnapshot().timelineHistory,
+      [{ type: 'message_appended', item: appended }],
+      { evicted_items: [first], next_cursor: 'page:byte-bound' },
+      9,
+      21,
+    );
+
+    expect(reduced.projection.timeline).toEqual([second, appended]);
+    expect(reduced.projection.timeline_next_cursor).toBe('page:byte-bound');
+    expect(reduced.timelineHistory.items).toEqual([first]);
+  });
+
+  it('keeps the candidate when the authoritative eviction prefix is empty', () => {
+    const timeline = [message('msg_0', 0)];
+    const appended = message('msg_1', 1);
+    const reduced = reduceTaskBatch(
+      projectionAt(20, 8, timeline),
+      createWorkbenchSnapshot().timelineHistory,
+      [{ type: 'message_appended', item: appended }],
+      { evicted_items: [], next_cursor: null },
+      9,
+      21,
+    );
+
+    expect(reduced.projection.timeline).toEqual([...timeline, appended]);
+    expect(reduced.timelineHistory.items).toEqual([]);
+  });
+
+  it('accepts same-batch additions that are immediately evicted', () => {
+    const timeline = [message('msg_1', 10), message('msg_2', 20)];
+    const immediatelyEvicted = message('msg_0', 5);
+    const reduced = reduceTaskBatch(
+      projectionAt(20, 8, timeline),
+      createWorkbenchSnapshot().timelineHistory,
+      [{ type: 'message_appended', item: immediatelyEvicted }],
+      { evicted_items: [immediatelyEvicted], next_cursor: 'page:byte-bound' },
+      9,
+      21,
+    );
+
+    expect(reduced.projection.timeline).toEqual(timeline);
+    expect(reduced.timelineHistory.items).toEqual([immediatelyEvicted]);
+  });
+
+  it('rejects invented and non-prefix byte-bound evictions', () => {
+    const first = message('msg_0', 0);
+    const nonPrefix = message('msg_1', 1);
+    const timeline = [first, nonPrefix];
+    const change = [{ type: 'message_appended', item: message('msg_2', 2) }] satisfies TaskChange[];
+
+    expect(() =>
+      reduceTaskBatch(
+        projectionAt(20, 8, timeline),
+        createWorkbenchSnapshot().timelineHistory,
+        change,
+        { evicted_items: [message('invented', -1)], next_cursor: null },
+        9,
+        21,
+      ),
+    ).toThrow(ProjectionGapError);
+    expect(() =>
+      reduceTaskBatch(
+        projectionAt(20, 8, timeline),
+        createWorkbenchSnapshot().timelineHistory,
+        change,
+        { evicted_items: [nonPrefix], next_cursor: null },
+        9,
+        21,
+      ),
+    ).toThrow(ProjectionGapError);
+  });
+
+  it('rejects an authoritative window that evicts the entire non-empty candidate', () => {
+    const appended = message('msg_0', 0);
+    expect(() =>
+      reduceTaskBatch(
+        projectionAt(20, 8),
+        createWorkbenchSnapshot().timelineHistory,
+        [{ type: 'message_appended', item: appended }],
+        { evicted_items: [appended], next_cursor: 'page:byte-bound' },
+        9,
+        21,
+      ),
+    ).toThrow(ProjectionGapError);
+  });
+
   it('compares authoritative evictions structurally rather than by object key order', () => {
     const first = message('msg_0', 0, 'zero');
     if (first.type !== 'message') throw new Error('fixture item must be a message');
