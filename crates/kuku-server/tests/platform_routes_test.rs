@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use axum::http::StatusCode;
 use kuku_server::platform::{AuthContext, OriginPolicy};
-use kuku_server::{advertised_origins, ServerLimits};
+use kuku_server::{advertised_origins, InterfaceAddress, ServerLimits};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -116,15 +116,31 @@ fn wildcard_origins_publish_loopback_and_usable_lan_addresses() {
     let origins = advertised_origins(
         "0.0.0.0:17777".parse().unwrap(),
         [
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpAddr::V4(Ipv4Addr::new(192, 168, 10, 20)),
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            InterfaceAddress {
+                name: "lo".to_owned(),
+                ip: IpAddr::V4(Ipv4Addr::new(10, 255, 255, 254)),
+                is_loopback: true,
+            },
+            InterfaceAddress {
+                name: "eth0".to_owned(),
+                ip: IpAddr::V4(Ipv4Addr::new(172, 20, 0, 2)),
+                is_loopback: false,
+            },
+            InterfaceAddress {
+                name: "unspecified".to_owned(),
+                ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                is_loopback: false,
+            },
+            InterfaceAddress {
+                name: "lo6".to_owned(),
+                ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                is_loopback: true,
+            },
         ],
     );
 
     assert_eq!("http://127.0.0.1:17777", origins.local);
-    assert_eq!(vec!["http://192.168.10.20:17777"], origins.lan);
+    assert_eq!(vec!["http://172.20.0.2:17777"], origins.lan);
     assert!(origins
         .all()
         .iter()
@@ -135,7 +151,7 @@ fn wildcard_origins_publish_loopback_and_usable_lan_addresses() {
         mode: kuku_server::api::AuthMode::Bearer,
     };
     assert!(policy
-        .check_request(Some("http://192.168.10.20:17777"), &auth)
+        .check_request(Some("http://172.20.0.2:17777"), &auth)
         .is_ok());
 }
 

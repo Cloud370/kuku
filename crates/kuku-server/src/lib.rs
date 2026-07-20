@@ -38,6 +38,7 @@ pub struct PreparedServer {
     pub app: Router,
     pub listener: tokio::net::TcpListener,
     pub state: Arc<AppState>,
+    lan_origins: Vec<String>,
     watcher: Option<config_watcher::ConfigWatcherHandle>,
 }
 
@@ -60,7 +61,7 @@ impl PreparedServer {
         let url = format!("{origin}/#credential={token}");
         println!("kuku server: {origin}");
         println!("kuku credential URL: {url}");
-        if let Some(lan) = &self.state.platform.connection.lan_url {
+        for lan in &self.lan_origins {
             println!("kuku LAN: {lan}");
             println!("kuku LAN credential URL: {lan}/#credential={token}");
         }
@@ -154,9 +155,15 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     let advertised = advertised_origins(
         listener.local_addr()?,
-        if_addrs::get_if_addrs()?
-            .into_iter()
-            .map(|interface| interface.ip()),
+        if_addrs::get_if_addrs()?.into_iter().map(|interface| {
+            let is_loopback = interface.is_loopback() || loopback_interface_name(&interface.name);
+            let ip = interface.ip();
+            InterfaceAddress {
+                name: interface.name,
+                ip,
+                is_loopback,
+            }
+        }),
     );
     let mut allowed_origins = advertised.all();
     for origin in explicit_origins {
@@ -186,10 +193,12 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
     let watcher =
         config_watcher::ConfigWatcherHandle::start(config_path, Arc::clone(&state.platform.config));
     let app = build_app(Arc::clone(&state));
+    let lan_origins = advertised.lan;
     Ok(PreparedServer {
         app,
         listener,
         state,
+        lan_origins,
         watcher: Some(watcher),
     })
 }
@@ -198,6 +207,13 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
 pub struct AdvertisedOrigins {
     pub local: String,
     pub lan: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceAddress {
+    pub name: String,
+    pub ip: std::net::IpAddr,
+    pub is_loopback: bool,
 }
 
 impl AdvertisedOrigins {
@@ -214,7 +230,7 @@ impl AdvertisedOrigins {
 
 pub fn advertised_origins(
     bound: SocketAddr,
-    interface_ips: impl IntoIterator<Item = std::net::IpAddr>,
+    interfaces: impl IntoIterator<Item = InterfaceAddress>,
 ) -> AdvertisedOrigins {
     let port = bound.port();
     if !bound.ip().is_unspecified() {
@@ -232,8 +248,10 @@ pub fn advertised_origins(
     } else {
         std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
     };
-    let mut lan = interface_ips
+    let mut lan = interfaces
         .into_iter()
+        .filter(|interface| !interface.is_loopback)
+        .map(|interface| interface.ip)
         .filter(|ip| ip.is_ipv4() == bound.is_ipv4())
         .filter(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
         .filter(|ip| !matches!(ip, std::net::IpAddr::V6(value) if value.is_unicast_link_local()))
@@ -245,6 +263,10 @@ pub fn advertised_origins(
         local: origin_for(local_ip, port),
         lan,
     }
+}
+
+fn loopback_interface_name(name: &str) -> bool {
+    matches!(name, "lo" | "lo0")
 }
 
 fn origin_for(ip: std::net::IpAddr, port: u16) -> String {
