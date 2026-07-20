@@ -1,12 +1,12 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, ReadDir};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tokio::sync::{OnceCell, OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{OnceCell, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use typed_path::{Utf8Component, Utf8UnixPath, Utf8WindowsPath};
 
 use crate::api::{
@@ -16,6 +16,14 @@ use crate::api::{
 };
 
 use super::{accepted_digest, write_private_atomic, RevisionDomain, ServerRevisionCoordinator};
+
+#[path = "workspace_process.rs"]
+mod process;
+use process::{FileIdentity, IdentityBoundProcessRoot};
+pub use process::{
+    ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput, ProcessStatus, ProcessStream,
+    RootCommand,
+};
 
 const ROOTS_FILE: &str = "registration-roots.json";
 const WORKSPACES_FILE: &str = "workspaces.json";
@@ -38,6 +46,7 @@ pub struct RegistrationRootCapability {
     /// The nonsecret label shown to clients.
     pub label: String,
     root: Arc<Dir>,
+    process_path: Arc<PathBuf>,
 }
 
 impl std::fmt::Debug for RegistrationRootCapability {
@@ -102,6 +111,7 @@ impl RegistrationRootRegistry {
             active.push(RegistrationRootCapability {
                 registration_root_id: root_id,
                 label: spec.label,
+                process_path: Arc::new(canonical.clone()),
                 root: Arc::new(root),
             });
         }
@@ -161,6 +171,7 @@ struct WorkspaceRecord {
 pub struct WorkspaceCapability {
     workspace_id: WorkspaceId,
     root: Arc<Dir>,
+    process_root: IdentityBoundProcessRoot,
 }
 
 impl std::fmt::Debug for WorkspaceCapability {
@@ -185,26 +196,100 @@ impl WorkspaceCapability {
 
     /// Opens a regular file beneath the capability without following symlinks.
     pub fn open_file(&self, path: &NormalizedRelativePath) -> Result<File, ApiError> {
-        ensure_no_symlinks(&self.root, path.as_path(), false)?;
-        self.root
-            .open(path.as_path())
-            .map_err(|_| unavailable("workspace file is unavailable"))
+        let components: Vec<_> = path.as_path().components().collect();
+        let (last, parents) = components
+            .split_last()
+            .ok_or_else(|| invalid_request("workspace path must not be empty"))?;
+        let parent = open_directory_components(&self.root, parents)?;
+        let std::path::Component::Normal(segment) = last else {
+            return Err(invalid_request("workspace path is not normalized"));
+        };
+        let metadata = parent
+            .symlink_metadata(segment)
+            .map_err(|_| unavailable("workspace path is unavailable"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(unavailable("workspace path is not a regular file"));
+        }
+        let file = parent
+            .open(segment)
+            .map_err(|_| unavailable("workspace file is unavailable"))?;
+        let opened = file
+            .metadata()
+            .map_err(|_| unavailable("workspace file is unavailable"))?;
+        if FileIdentity::from_metadata(&metadata)? != FileIdentity::from_metadata(&opened)? {
+            return Err(unavailable("workspace file identity changed"));
+        }
+        Ok(file)
     }
 
     /// Reads a directory beneath the capability without following symlinks.
     pub fn read_dir(&self, path: &NormalizedRelativePath) -> Result<ReadDir, ApiError> {
-        ensure_no_symlinks(&self.root, path.as_path(), true)?;
-        self.root
-            .read_dir(path.as_path())
-            .map_err(|_| unavailable("workspace directory is unavailable"))
+        open_directory_relative(&self.root, path)?
+            .read_dir(".")
+            .map_err(|_| unavailable("workspace directory entries are unavailable"))
     }
 
     /// Opens a directory beneath the capability without following symlinks.
     pub fn open_dir(&self, path: &NormalizedRelativePath) -> Result<Dir, ApiError> {
-        ensure_no_symlinks(&self.root, path.as_path(), true)?;
-        self.root
-            .open_dir(path.as_path())
-            .map_err(|_| unavailable("workspace directory is unavailable"))
+        open_directory_relative(&self.root, path)
+    }
+
+    /// Runs a bounded shell-free command at the identity-bound workspace root.
+    pub async fn run_at_root(
+        &self,
+        command: RootCommand,
+        limits: ProcessLimits,
+    ) -> Result<ProcessOutput, ApiError> {
+        self.process_root.run(command, limits).await
+    }
+
+    /// Streams a bounded shell-free command at the identity-bound workspace root.
+    pub async fn stream_at_root(
+        &self,
+        command: RootCommand,
+        limits: ProcessLimits,
+        sink: &mut dyn ProcessChunkSink,
+    ) -> Result<ProcessStatus, ApiError> {
+        self.process_root.stream(command, limits, sink).await
+    }
+
+    /// Verifies a command's reported root resolves to this same filesystem identity.
+    pub fn reported_root_is_self(&self, output: &ProcessOutput) -> bool {
+        self.process_root.reported_root_is_self(output)
+    }
+
+    async fn git_branch(&self) -> Option<String> {
+        let limits = ProcessLimits::new(std::time::Duration::from_secs(1), 4096).ok()?;
+        let root = self
+            .run_at_root(
+                RootCommand::new("git").args(["rev-parse", "--show-toplevel"]),
+                limits.clone(),
+            )
+            .await
+            .ok()?;
+        if !root.status().success() || !self.reported_root_is_self(&root) {
+            return None;
+        }
+        let branch = self
+            .run_at_root(
+                RootCommand::new("git").args(["symbolic-ref", "--short", "HEAD"]),
+                limits,
+            )
+            .await
+            .ok()?;
+        if !branch.status().success() {
+            return None;
+        }
+        let value = std::str::from_utf8(branch.stdout())
+            .ok()?
+            .trim_end_matches(['\r', '\n']);
+        if value.is_empty()
+            || value.len() > 256
+            || value.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return None;
+        }
+        Some(value.to_owned())
     }
 }
 
@@ -270,6 +355,12 @@ pub struct WorkspaceTaskLease {
     _gate: OwnedRwLockReadGuard<()>,
 }
 
+/// Holds a validated workspace default mutation while the registry write gate is held.
+pub(crate) struct PreparedWorkspaceDefault {
+    next: WorkspaceFile,
+    _gate: OwnedRwLockWriteGuard<()>,
+}
+
 /// Owns private workspace records and their mutation ordering.
 pub struct WorkspaceRegistry {
     home: PathBuf,
@@ -278,7 +369,7 @@ pub struct WorkspaceRegistry {
     revision: Arc<ServerRevisionCoordinator>,
     revision_registered: OnceCell<()>,
     gate: Arc<RwLock<()>>,
-    state: RwLock<WorkspaceFile>,
+    state: StdRwLock<WorkspaceFile>,
 }
 
 impl WorkspaceRegistry {
@@ -298,7 +389,7 @@ impl WorkspaceRegistry {
             revision,
             revision_registered: OnceCell::new(),
             gate: Arc::new(RwLock::new(())),
-            state: RwLock::new(state),
+            state: StdRwLock::new(state),
         }))
     }
 
@@ -311,10 +402,16 @@ impl WorkspaceRegistry {
     /// Lists all persisted workspaces without exposing ambient paths.
     pub async fn list(&self) -> Result<WorkspacePage, ApiError> {
         self.ensure_revision_registered().await;
-        let state = self.state.read().await;
-        let mut items = Vec::with_capacity(state.records.len());
-        for record in &state.records {
-            items.push(self.summary(record, &state.default_workspace_id));
+        let (records, default_workspace_id) = {
+            let state = self
+                .state
+                .read()
+                .expect("workspace state lock is not poisoned");
+            (state.records.clone(), state.default_workspace_id.clone())
+        };
+        let mut items = Vec::with_capacity(records.len());
+        for record in &records {
+            items.push(self.summary(record, &default_workspace_id).await);
         }
         Ok(WorkspacePage {
             api_version: ApiVersion,
@@ -334,54 +431,75 @@ impl WorkspaceRegistry {
         request: RegisterWorkspaceRequest,
     ) -> Result<WorkspaceSummary, ApiError> {
         self.ensure_revision_registered().await;
+        let guard = self.revision.begin(&request.expected_revision).await?;
         if request.label.trim().is_empty() {
             return Err(invalid_request("workspace label must not be empty"));
         }
         let relative_path = NormalizedRelativePath::parse(&request.relative_path)?;
-        let guard = self.revision.begin(&request.expected_revision).await?;
         let _registry_gate = self.gate.write().await;
         let root = self.roots.resolve(&request.root_id)?;
-        open_workspace_root(&root.root, &relative_path)?;
+        let opened = open_workspace_root(&root.root, &relative_path)?;
+        let candidate_identity = FileIdentity::from_metadata(
+            &opened
+                .dir_metadata()
+                .map_err(|_| unavailable("workspace identity cannot be read"))?,
+        )?;
 
-        let mut state = self.state.write().await;
-        if state.records.iter().any(|record| {
-            record.registration_root_id == request.root_id && record.relative_path == relative_path
-        }) {
-            return Err(invalid_request("workspace is already registered"));
-        }
-        let workspace_id = WorkspaceId::try_new()
-            .map_err(|_| internal_error("workspace ID cannot be generated"))?;
-        let first = state.records.is_empty();
-        let record = WorkspaceRecord {
-            workspace_id: workspace_id.clone(),
-            label: request.label,
-            registration_root_id: request.root_id,
-            relative_path,
+        let (record, default_workspace_id, digest) = {
+            let mut state = self
+                .state
+                .write()
+                .expect("workspace state lock is not poisoned");
+            for record in &state.records {
+                if record.registration_root_id == request.root_id
+                    && record.relative_path == relative_path
+                {
+                    return Err(invalid_request("workspace is already registered"));
+                }
+                if let Ok(existing) = self.capability_for(record) {
+                    if existing.process_root.identity() == candidate_identity {
+                        return Err(invalid_request("workspace is already registered"));
+                    }
+                }
+            }
+            let workspace_id = WorkspaceId::try_new()
+                .map_err(|_| internal_error("workspace ID cannot be generated"))?;
+            let first = state.records.is_empty();
+            let record = WorkspaceRecord {
+                workspace_id: workspace_id.clone(),
+                label: request.label,
+                registration_root_id: request.root_id,
+                relative_path,
+            };
+            let mut next = state.clone();
+            next.records.push(record.clone());
+            if first {
+                next.default_workspace_id = Some(workspace_id);
+            }
+            self.persist(&next)?;
+            let digest = self.digest_state(&next);
+            let default_workspace_id = next.default_workspace_id.clone();
+            *state = next;
+            (record, default_workspace_id, digest)
         };
-        let mut next = state.clone();
-        next.records.push(record.clone());
-        if first {
-            next.default_workspace_id = Some(workspace_id);
-        }
-        self.persist(&next)?;
-        let digest = self.digest_state(&next);
-        let summary = self.summary(&record, &next.default_workspace_id);
-        *state = next;
-        drop(state);
+        drop(_registry_gate);
         guard.finish(RevisionDomain::Workspace, digest).await?;
+        let summary = self.summary(&record, &default_workspace_id).await;
         Ok(summary)
     }
 
     /// Resolves a persisted workspace into a fresh capability.
-    pub async fn capability(&self, id: &WorkspaceId) -> Result<WorkspaceCapability, ApiError> {
-        let state = self.state.read().await;
+    pub fn capability(&self, id: &WorkspaceId) -> Result<WorkspaceCapability, ApiError> {
+        let state = self
+            .state
+            .read()
+            .expect("workspace state lock is not poisoned");
         let record = state
             .records
             .iter()
             .find(|record| record.workspace_id == *id)
             .ok_or_else(not_found)?
             .clone();
-        drop(state);
         self.capability_for(&record)
     }
 
@@ -391,7 +509,7 @@ impl WorkspaceRegistry {
         id: &WorkspaceId,
     ) -> Result<WorkspaceTaskLease, ApiError> {
         let gate = self.gate.clone().read_owned().await;
-        let capability = self.capability(id).await?;
+        let capability = self.capability(id)?;
         Ok(WorkspaceTaskLease {
             capability,
             _gate: gate,
@@ -406,8 +524,23 @@ impl WorkspaceRegistry {
     ) -> Result<WorkspacePage, ApiError> {
         self.ensure_revision_registered().await;
         let guard = self.revision.begin(&expected).await?;
-        let _registry_gate = self.gate.write().await;
-        let mut state = self.state.write().await;
+        let prepared = self.prepare_default(id).await?;
+        let digest = self.apply_prepared_default(prepared)?;
+        let server_revision = guard.finish(RevisionDomain::Workspace, digest).await?;
+        let mut page = self.list().await?;
+        page.server_revision = server_revision;
+        Ok(page)
+    }
+
+    pub(crate) async fn prepare_default(
+        self: &Arc<Self>,
+        id: &WorkspaceId,
+    ) -> Result<PreparedWorkspaceDefault, ApiError> {
+        let gate = self.gate.clone().write_owned().await;
+        let state = self
+            .state
+            .read()
+            .expect("workspace state lock is not poisoned");
         if !state
             .records
             .iter()
@@ -417,21 +550,22 @@ impl WorkspaceRegistry {
         }
         let mut next = state.clone();
         next.default_workspace_id = Some(id.clone());
-        self.persist(&next)?;
-        let digest = self.digest_state(&next);
-        let items = next
-            .records
-            .iter()
-            .map(|record| self.summary(record, &next.default_workspace_id))
-            .collect();
-        *state = next;
+        Ok(PreparedWorkspaceDefault { next, _gate: gate })
+    }
+
+    pub(crate) fn apply_prepared_default(
+        &self,
+        prepared: PreparedWorkspaceDefault,
+    ) -> Result<super::AcceptedDigest, ApiError> {
+        self.persist(&prepared.next)?;
+        let digest = self.digest_state(&prepared.next);
+        let mut state = self
+            .state
+            .write()
+            .expect("workspace state lock is not poisoned");
+        *state = prepared.next;
         drop(state);
-        let server_revision = guard.finish(RevisionDomain::Workspace, digest).await?;
-        Ok(WorkspacePage {
-            api_version: ApiVersion,
-            server_revision,
-            items,
-        })
+        Ok(digest)
     }
 
     /// Removes only the registry record after checking durable Task usage.
@@ -450,24 +584,29 @@ impl WorkspaceRegistry {
                 "platform-workspace",
             ));
         }
-        let mut state = self.state.write().await;
-        let position = state
-            .records
-            .iter()
-            .position(|record| record.workspace_id == *id)
-            .ok_or_else(not_found)?;
-        let mut next = state.clone();
-        next.records.remove(position);
-        if next.default_workspace_id.as_ref() == Some(id) {
-            next.default_workspace_id = next
+        let digest = {
+            let mut state = self
+                .state
+                .write()
+                .expect("workspace state lock is not poisoned");
+            let position = state
                 .records
-                .first()
-                .map(|record| record.workspace_id.clone());
-        }
-        self.persist(&next)?;
-        let digest = self.digest_state(&next);
-        *state = next;
-        drop(state);
+                .iter()
+                .position(|record| record.workspace_id == *id)
+                .ok_or_else(not_found)?;
+            let mut next = state.clone();
+            next.records.remove(position);
+            if next.default_workspace_id.as_ref() == Some(id) {
+                next.default_workspace_id = next
+                    .records
+                    .first()
+                    .map(|record| record.workspace_id.clone());
+            }
+            self.persist(&next)?;
+            let digest = self.digest_state(&next);
+            *state = next;
+            digest
+        };
         guard.finish(RevisionDomain::Workspace, digest).await?;
         Ok(())
     }
@@ -475,9 +614,13 @@ impl WorkspaceRegistry {
     async fn ensure_revision_registered(&self) {
         self.revision_registered
             .get_or_init(|| async {
-                let state = self.state.read().await;
-                let digest = self.digest_state(&state);
-                drop(state);
+                let digest = {
+                    let state = self
+                        .state
+                        .read()
+                        .expect("workspace state lock is not poisoned");
+                    self.digest_state(&state)
+                };
                 self.revision
                     .register_initial(RevisionDomain::Workspace, digest)
                     .await;
@@ -494,27 +637,39 @@ impl WorkspaceRegistry {
             .map_err(|_| unavailable("workspace directory is unavailable"))?;
         Ok(WorkspaceCapability {
             workspace_id: record.workspace_id.clone(),
+            process_root: IdentityBoundProcessRoot::new(
+                Arc::new(
+                    opened
+                        .try_clone()
+                        .map_err(|_| unavailable("workspace identity cannot be cloned"))?,
+                ),
+                root.process_path.join(&record.relative_path.0),
+            )?,
             root: Arc::new(opened),
         })
     }
 
-    fn summary(&self, record: &WorkspaceRecord, default: &Option<WorkspaceId>) -> WorkspaceSummary {
-        let availability = match self.roots.resolve(&record.registration_root_id) {
-            Ok(root) => match open_workspace_root(&root.root, &record.relative_path) {
-                Ok(_) => WorkspaceAvailability::Available,
-                Err(error) if error.code() == ApiErrorCode::WorkspaceNotFound => {
-                    WorkspaceAvailability::Missing
-                }
-                Err(_) => WorkspaceAvailability::Inaccessible,
-            },
-            Err(_) => WorkspaceAvailability::Inaccessible,
+    async fn summary(
+        &self,
+        record: &WorkspaceRecord,
+        default: &Option<WorkspaceId>,
+    ) -> WorkspaceSummary {
+        let (availability, branch) = match self.capability_for(record) {
+            Ok(capability) => (
+                WorkspaceAvailability::Available,
+                capability.git_branch().await,
+            ),
+            Err(error) if error.code() == ApiErrorCode::WorkspaceNotFound => {
+                (WorkspaceAvailability::Missing, None)
+            }
+            Err(_) => (WorkspaceAvailability::Inaccessible, None),
         };
         WorkspaceSummary {
             workspace_id: record.workspace_id.clone(),
             label: record.label.clone(),
             is_default: default.as_ref() == Some(&record.workspace_id),
             availability,
-            branch: None,
+            branch,
         }
     }
 
@@ -651,10 +806,22 @@ fn validate_workspace_file(state: &WorkspaceFile) -> Result<(), ApiError> {
 }
 
 fn open_workspace_root(root: &Dir, relative: &NormalizedRelativePath) -> Result<Dir, ApiError> {
+    open_directory_relative(root, relative)
+}
+
+fn open_directory_relative(root: &Dir, relative: &NormalizedRelativePath) -> Result<Dir, ApiError> {
+    let components: Vec<_> = relative.as_path().components().collect();
+    open_directory_components(root, &components)
+}
+
+fn open_directory_components(
+    root: &Dir,
+    components: &[std::path::Component<'_>],
+) -> Result<Dir, ApiError> {
     let mut current = root
         .try_clone()
         .map_err(|_| unavailable("workspace root is unavailable"))?;
-    for component in relative.as_path().components() {
+    for component in components {
         let std::path::Component::Normal(segment) = component else {
             return Err(invalid_request("workspace path is not normalized"));
         };
@@ -670,41 +837,19 @@ fn open_workspace_root(root: &Dir, relative: &NormalizedRelativePath) -> Result<
                 "workspace path must name a real directory without symlinks",
             ));
         }
-        current = current
+        let opened = current
             .open_dir(segment)
             .map_err(|_| unavailable("workspace directory is unavailable"))?;
+        let opened_metadata = opened
+            .dir_metadata()
+            .map_err(|_| unavailable("workspace directory is unavailable"))?;
+        if FileIdentity::from_metadata(&metadata)? != FileIdentity::from_metadata(&opened_metadata)?
+        {
+            return Err(unavailable("workspace directory identity changed"));
+        }
+        current = opened;
     }
     Ok(current)
-}
-
-fn ensure_no_symlinks(root: &Dir, path: &Path, final_is_directory: bool) -> Result<(), ApiError> {
-    let mut current = root
-        .try_clone()
-        .map_err(|_| unavailable("workspace root is unavailable"))?;
-    let components: Vec<_> = path.components().collect();
-    for (index, component) in components.iter().enumerate() {
-        let std::path::Component::Normal(segment) = component else {
-            return Err(invalid_request("workspace path is not normalized"));
-        };
-        let metadata = current
-            .symlink_metadata(segment)
-            .map_err(|_| unavailable("workspace path is unavailable"))?;
-        if metadata.file_type().is_symlink() {
-            return Err(unavailable("workspace path contains a symlink"));
-        }
-        let last = index + 1 == components.len();
-        if !last || final_is_directory {
-            if !metadata.is_dir() {
-                return Err(unavailable("workspace path is not a directory"));
-            }
-            current = current
-                .open_dir(segment)
-                .map_err(|_| unavailable("workspace directory is unavailable"))?;
-        } else if !metadata.is_file() {
-            return Err(unavailable("workspace path is not a regular file"));
-        }
-    }
-    Ok(())
 }
 
 fn generate_root_id() -> Result<RegistrationRootId, ApiError> {

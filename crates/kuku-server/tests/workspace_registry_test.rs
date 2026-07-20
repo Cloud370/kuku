@@ -7,12 +7,29 @@ use kuku_server::api::{
     ApiError, ApiErrorCode, RegisterWorkspaceRequest, RemoveWorkspaceRequest, WorkspaceAvailability,
 };
 use kuku_server::platform::{
-    RegistrationRootRegistry, RegistrationRootSpec, ServerRevisionCoordinator, WorkspaceRegistry,
-    WorkspaceUsagePort,
+    ProcessChunk, ProcessChunkSink, ProcessLimits, RegistrationRootRegistry, RegistrationRootSpec,
+    RootCommand, ServerRevisionCoordinator, WorkspaceRegistry, WorkspaceUsagePort,
 };
 
 struct UsageFixture {
     in_use: AtomicBool,
+}
+
+#[derive(Default)]
+struct ChunkFixture {
+    chunks: Vec<ProcessChunk>,
+}
+
+impl ProcessChunkSink for ChunkFixture {
+    fn push<'a>(
+        &'a mut self,
+        chunk: ProcessChunk,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ApiError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.chunks.push(chunk);
+            Ok(())
+        })
+    }
 }
 
 impl WorkspaceUsagePort for UsageFixture {
@@ -103,7 +120,7 @@ async fn opaque_registry_persists_ids_without_exposing_host_roots() {
         assert_eq!(0o600, mode);
     }
 
-    let capability = registry.capability(&workspace.workspace_id).await.unwrap();
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
     let relative = capability.resolve("readme.txt").unwrap();
     let mut file = capability.open_file(&relative).unwrap();
     let mut contents = String::new();
@@ -132,7 +149,7 @@ async fn registry_rejects_lexical_escape_duplicates_and_symlinks() {
     });
     let registry = open_registry(home.path(), allowed.path(), usage);
     let workspace = register(&registry, "project", "kuku").await;
-    let capability = registry.capability(&workspace.workspace_id).await.unwrap();
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
 
     for invalid in [
         "",
@@ -239,6 +256,139 @@ async fn revision_and_usage_gate_protect_workspace_mutations() {
         .await
         .unwrap();
     assert!(allowed.path().join("one").is_dir());
+}
+
+#[tokio::test]
+async fn stale_revision_wins_before_registration_validation() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    std::fs::create_dir(allowed.path().join("one")).unwrap();
+    let usage = Arc::new(UsageFixture {
+        in_use: AtomicBool::new(false),
+    });
+    let registry = open_registry(home.path(), allowed.path(), usage);
+    let stale = registry.revision().await.unwrap();
+    register(&registry, "one", "one").await;
+
+    let error = registry
+        .register(RegisterWorkspaceRequest {
+            root_id: registry.registration_roots().list()[0].root_id.clone(),
+            relative_path: "../escape".to_owned(),
+            label: String::new(),
+            expected_revision: stale,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::StaleServerRevision, error.code());
+}
+
+#[tokio::test]
+async fn overlapping_roots_cannot_register_the_same_directory_twice() {
+    let home = tempfile::tempdir().unwrap();
+    let outer = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(outer.path().join("inner/project")).unwrap();
+    let roots = RegistrationRootRegistry::from_server_config(
+        home.path(),
+        vec![
+            RegistrationRootSpec {
+                label: "Outer".to_owned(),
+                path: outer.path().to_owned(),
+            },
+            RegistrationRootSpec {
+                label: "Inner".to_owned(),
+                path: outer.path().join("inner"),
+            },
+        ],
+    )
+    .unwrap();
+    let root_page = roots.list();
+    let registry = WorkspaceRegistry::open(
+        home.path(),
+        roots,
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+        ServerRevisionCoordinator::open(home.path()),
+    )
+    .unwrap();
+    registry
+        .register(RegisterWorkspaceRequest {
+            root_id: root_page[0].root_id.clone(),
+            relative_path: "inner/project".to_owned(),
+            label: "first".to_owned(),
+            expected_revision: registry.revision().await.unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let error = registry
+        .register(RegisterWorkspaceRequest {
+            root_id: root_page[1].root_id.clone(),
+            relative_path: "project".to_owned(),
+            label: "duplicate".to_owned(),
+            expected_revision: registry.revision().await.unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::InvalidRequest, error.code());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn process_boundary_is_identity_bound_and_projects_git_branch() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let project = allowed.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(&project)
+        .status()
+        .unwrap()
+        .success());
+    let usage = Arc::new(UsageFixture {
+        in_use: AtomicBool::new(false),
+    });
+    let registry = open_registry(home.path(), allowed.path(), usage);
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+    let limits = ProcessLimits::new(std::time::Duration::from_secs(2), 4 * 1024).unwrap();
+    let root = capability
+        .run_at_root(
+            RootCommand::new("git").args(["rev-parse", "--show-toplevel"]),
+            limits.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(root.status().success());
+    assert!(capability.reported_root_is_self(&root));
+
+    let mut sink = ChunkFixture::default();
+    let status = capability
+        .stream_at_root(
+            RootCommand::new("git").args(["symbolic-ref", "--short", "HEAD"]),
+            limits,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    assert!(status.success());
+    assert!(!sink.chunks.is_empty());
+    assert_eq!(
+        Some("main"),
+        registry.list().await.unwrap().items[0].branch.as_deref()
+    );
+
+    assert!(std::process::Command::new("git")
+        .args(["checkout", "-b", "feature"])
+        .current_dir(&project)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        Some("feature"),
+        registry.list().await.unwrap().items[0].branch.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -364,7 +514,6 @@ async fn removed_registration_root_makes_persisted_workspace_unavailable() {
         ApiErrorCode::WorkspaceUnavailable,
         reopened
             .capability(&workspace.workspace_id)
-            .await
             .unwrap_err()
             .code()
     );
