@@ -244,6 +244,41 @@ async fn query_capability_never_uses_a_replacement_workspace_root() {
         assert!(displaced.join("command-marker.txt").exists());
     }
     assert!(!root.join("command-marker.txt").exists());
+
+    #[cfg(not(windows))]
+    {
+        let (events, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let started = std::time::Instant::now();
+        let disconnected = capability
+            .run_command(
+                WorkspaceCommandRequest {
+                    command: "sleep 60 & child=$!; printf '%s %s' $$ $child > disconnect-pids; printf output; wait".to_string(),
+                    timeout: std::time::Duration::from_secs(60),
+                    max_output_bytes: 4096,
+                },
+                Some(events),
+                kuku::WorkspaceCommandCancellation::default(),
+            )
+            .await;
+        assert!(disconnected.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let pids = std::fs::read_to_string(displaced.join("disconnect-pids")).unwrap();
+        let pids = pids
+            .split_whitespace()
+            .map(|pid| pid.parse::<i32>().unwrap())
+            .collect::<Vec<_>>();
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        for _ in 0..100 {
+            if pids.iter().all(|pid| unsafe { kill(*pid, 0) } == -1) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(pids.iter().all(|pid| unsafe { kill(*pid, 0) } == -1));
+    }
 }
 
 #[tokio::test]

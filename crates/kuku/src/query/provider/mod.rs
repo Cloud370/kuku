@@ -68,6 +68,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     let (catalog_text, skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
+        pending.workspace_capability.as_deref(),
         pending.conversation.as_str(),
         pending.turn,
         pending.agent_registry.as_ref(),

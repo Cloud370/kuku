@@ -47,6 +47,17 @@ impl WorkspaceQueryCapability for ReplacingCapability {
         Ok(bytes)
     }
 
+    fn read_skill_source(
+        &self,
+        selected: &kuku::event::SkillContextFact,
+        max_bytes: usize,
+    ) -> kuku::Result<Vec<u8>> {
+        let path = selected.source.relative_path.as_ref().ok_or_else(|| {
+            kuku::Error::InvalidTaskContext("selected skill path is missing".to_string())
+        })?;
+        self.read_file(path.as_str(), max_bytes)
+    }
+
     fn write_file(
         &self,
         relative_path: &str,
@@ -75,7 +86,7 @@ impl WorkspaceQueryCapability for ReplacingCapability {
     fn run_command<'a>(
         &'a self,
         request: kuku::WorkspaceCommandRequest,
-        _events: Option<tokio::sync::mpsc::Sender<kuku::WorkspaceCommandEvent>>,
+        events: Option<tokio::sync::mpsc::Sender<kuku::WorkspaceCommandEvent>>,
         _cancellation: kuku::WorkspaceCommandCancellation,
     ) -> Pin<
         Box<
@@ -102,6 +113,21 @@ impl WorkspaceQueryCapability for ReplacingCapability {
                 .current_dir(self.root.with_extension("displaced"))
                 .output()
                 .await?;
+            if let Some(events) = events {
+                let midpoint = output.stdout.len() / 2;
+                for chunk in [&output.stdout[..midpoint], &output.stdout[midpoint..]] {
+                    if !chunk.is_empty() {
+                        events
+                            .send(kuku::WorkspaceCommandEvent::Stdout(chunk.to_vec()))
+                            .await
+                            .map_err(|_| {
+                                kuku::Error::WorkspaceUnavailable(
+                                    "command output receiver closed".to_string(),
+                                )
+                            })?;
+                    }
+                }
+            }
             Ok(kuku::WorkspaceCommandOutput {
                 exit_code: output.status.code(),
                 timed_out: false,
@@ -253,15 +279,31 @@ async fn task_command_never_executes_in_a_replacement_workspace_root() {
         home.path(),
         "run_command",
         serde_json::json!({
-            "command": "printf replacement > command-marker.txt",
+            "command": "printf first; printf second; printf replacement > command-marker.txt",
             "timeout": 5,
             "brief": "write marker"
         }),
     )
     .await;
-    let _ = next_tool_result(&mut run).await;
+    let mut streamed = String::new();
+    loop {
+        match run.next().await.unwrap().unwrap() {
+            kuku::UiEvent::PermissionRequested { request } => {
+                run.decide(&request.id, kuku::PermissionChoice::Once, None)
+                    .await
+                    .unwrap();
+            }
+            kuku::UiEvent::ToolOutput {
+                event: kuku::ToolEvent::Stdout { text },
+                ..
+            } => streamed.push_str(&text),
+            kuku::UiEvent::ToolEnd { .. } => break,
+            _ => {}
+        }
+    }
 
     assert!(!root.join("command-marker.txt").exists());
+    assert_eq!(streamed, "firstsecond");
 }
 
 #[tokio::test]

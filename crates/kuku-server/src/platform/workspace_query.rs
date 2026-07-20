@@ -28,17 +28,19 @@ impl ProcessChunkSink for CommandOutputSink {
                 ProcessStream::Stdout => {
                     self.stdout.extend_from_slice(&bytes);
                     if let Some(events) = &self.events {
-                        let _ = events
+                        events
                             .send(kuku::WorkspaceCommandEvent::Stdout(bytes))
-                            .await;
+                            .await
+                            .map_err(|_| unavailable("workspace command output consumer closed"))?;
                     }
                 }
                 ProcessStream::Stderr => {
                     self.stderr.extend_from_slice(&bytes);
                     if let Some(events) = &self.events {
-                        let _ = events
+                        events
                             .send(kuku::WorkspaceCommandEvent::Stderr(bytes))
-                            .await;
+                            .await
+                            .map_err(|_| unavailable("workspace command output consumer closed"))?;
                     }
                 }
             }
@@ -53,7 +55,7 @@ impl WorkspaceCapability {
         prompt: impl Into<String>,
         execution_scope: kuku::ExecutionScope,
         event_store: kuku::event::EventStore,
-        selected_skill_ids: Vec<String>,
+        selected_skills: Vec<kuku::event::SkillContextFact>,
     ) -> Result<kuku::Query, crate::api::ApiError> {
         if execution_scope.workspace_id != self.workspace_id {
             return Err(invalid_request(
@@ -63,7 +65,7 @@ impl WorkspaceCapability {
         self.process_root.verify_execution_path()?;
         Ok(kuku::query(prompt).task_context(
             kuku::TaskQueryContext::new(execution_scope, event_store, Arc::new(self.clone()))
-                .with_selected_skills(selected_skill_ids),
+                .with_selected_skills(selected_skills),
         ))
     }
 }
@@ -113,6 +115,29 @@ impl kuku::WorkspaceQueryCapability for WorkspaceCapability {
             ));
         }
         Ok(bytes)
+    }
+
+    fn read_skill_source(
+        &self,
+        selected: &kuku::event::SkillContextFact,
+        max_bytes: usize,
+    ) -> kuku::Result<Vec<u8>> {
+        if !matches!(
+            selected.source.scope,
+            kuku::event::SourceScope::Project | kuku::event::SourceScope::Workspace
+        ) {
+            return Err(kuku::Error::InvalidTaskContext(format!(
+                "selected skill source scope is unsupported: {}",
+                selected.skill_id
+            )));
+        }
+        let relative_path = selected.source.relative_path.as_ref().ok_or_else(|| {
+            kuku::Error::InvalidTaskContext(format!(
+                "selected skill has no workspace-relative source: {}",
+                selected.skill_id
+            ))
+        })?;
+        self.read_file(relative_path.as_str(), max_bytes)
     }
 
     fn write_file(
@@ -196,9 +221,10 @@ impl kuku::WorkspaceQueryCapability for WorkspaceCapability {
                     &mut sink,
                     Some(process_cancellation),
                 )
-                .await
-                .map_err(|_| invalid_workspace_access("workspace process cannot be executed"))?;
+                .await;
             bridge.abort();
+            let status = status
+                .map_err(|_| invalid_workspace_access("workspace process cannot be executed"))?;
             Ok(kuku::WorkspaceCommandOutput {
                 exit_code: status.code(),
                 timed_out: status.timed_out(),
@@ -251,7 +277,18 @@ fn write_capability_file(
     #[cfg(unix)]
     options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     #[cfg(windows)]
-    options.custom_flags(0x0020_0000);
+    {
+        use windows_sys::Win32::Foundation::GENERIC_WRITE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+
+        options
+            .access_mode(GENERIC_WRITE | DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let result = (|| {
         let mut file = parent
             .open_with(&temporary, &options)
@@ -341,7 +378,7 @@ fn collect_capability_entries(
     children.sort_by_key(|entry| entry.file_name());
     for entry in children {
         if entries.len() >= max_entries {
-            break;
+            return Err(unavailable("workspace entry limit was exceeded"));
         }
         let name = entry.file_name();
         let name = name
@@ -359,7 +396,7 @@ fn collect_capability_entries(
             format!("{prefix}/{name}")
         };
         if path.len() > 4096 {
-            continue;
+            return Err(unavailable("workspace entry path limit was exceeded"));
         }
         let is_dir = metadata.is_dir();
         let is_file = metadata.is_file();

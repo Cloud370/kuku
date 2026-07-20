@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
-use httpmock::MockServer;
+use httpmock::{prelude::HttpMockRequest, MockServer};
 use kuku::event::{EventPayload, EventStore, ExecutionScope};
 use kuku::query::{TaskQueryContext, WorkspaceQueryCapability};
 
@@ -48,6 +48,17 @@ impl WorkspaceQueryCapability for TestWorkspaceCapability {
             ));
         }
         Ok(bytes)
+    }
+
+    fn read_skill_source(
+        &self,
+        selected: &kuku::event::SkillContextFact,
+        max_bytes: usize,
+    ) -> kuku::Result<Vec<u8>> {
+        let path = selected.source.relative_path.as_ref().ok_or_else(|| {
+            kuku::Error::InvalidTaskContext("selected skill path is missing".to_string())
+        })?;
+        self.read_file(path.as_str(), max_bytes)
     }
 
     fn write_file(
@@ -126,6 +137,32 @@ fn workspace_capability(
         root: root.to_path_buf(),
         valid,
     })
+}
+
+fn selected_project_skill(
+    workspace: &std::path::Path,
+    skill_id: &str,
+    relative_path: &str,
+) -> kuku::event::SkillContextFact {
+    let path = workspace.join(relative_path);
+    let name = skill_id.rsplit(':').next().unwrap();
+    let registry = kuku::skill::registry::SkillRegistry::builder()
+        .load_from_dir(
+            path.parent().unwrap().parent().unwrap(),
+            kuku::skill::definition::SkillSource::Project,
+        )
+        .unwrap()
+        .build();
+    kuku::event::SkillContextFact {
+        skill_id: skill_id.to_string(),
+        source: kuku::event::SourceFact {
+            scope: kuku::event::SourceScope::Project,
+            id: format!("source:project:{name}"),
+            relative_path: Some(kuku::event::WorkspaceRelativePath::parse(relative_path).unwrap()),
+        },
+        origin: kuku::event::SkillLoadOrigin::You,
+        content_hash: registry.get(name).unwrap().hash.clone(),
+    }
 }
 
 fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> EventStore {
@@ -340,7 +377,7 @@ async fn task_query_rejects_task_workspace_or_active_run_mismatch_before_append(
 async fn task_query_activates_only_explicitly_selected_capability_skills() {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    for name in ["focus", "ignored"] {
+    for name in ["focus", "ignored", "zeta"] {
         let directory = workspace.path().join(format!(".agent/skills/{name}"));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
@@ -351,12 +388,38 @@ async fn task_query_activates_only_explicitly_selected_capability_skills() {
     }
     let scope = common::execution_scope();
     let store = task_store(&home.path().join("events.jsonl"), &scope);
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .matches(|request: &HttpMockRequest| {
+                let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default());
+                matches!(
+                    (body.find("zeta instructions"), body.find("focus instructions")),
+                    (Some(zeta), Some(focus)) if zeta < focus
+                ) && !body.contains("ignored instructions")
+            });
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concluding_anthropic_response("done"));
+    });
     let context = TaskQueryContext::new(
         scope,
         store.clone(),
         workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
     )
-    .with_selected_skills(vec!["skill:project:focus".to_string()]);
+    .with_selected_skills(vec![
+        selected_project_skill(
+            workspace.path(),
+            "skill:project:zeta",
+            ".agent/skills/zeta/SKILL.md",
+        ),
+        selected_project_skill(
+            workspace.path(),
+            "skill:project:focus",
+            ".agent/skills/focus/SKILL.md",
+        ),
+    ]);
     let mut config: kuku::config::ConfigFile =
         toml::from_str(kuku::config::generate_default()).unwrap();
     config.discovery.as_mut().unwrap().auto_discover = false;
@@ -364,8 +427,9 @@ async fn task_query_activates_only_explicitly_selected_capability_skills() {
     configured_query("hello")
         .config(config.resolve().unwrap())
         .kuku_home(home.path())
+        .base_url(server.base_url())
         .task_context(context)
-        .start()
+        .run()
         .await
         .unwrap();
 
@@ -380,6 +444,7 @@ async fn task_query_activates_only_explicitly_selected_capability_skills() {
         .unwrap();
     let encoded = registry.to_string();
     assert!(encoded.contains("focus"));
+    assert!(encoded.contains("zeta"));
     assert!(!encoded.contains("ignored"));
 }
 
@@ -395,7 +460,19 @@ async fn unavailable_selected_skill_is_rejected_before_query_facts_append() {
         store.clone(),
         workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
     )
-    .with_selected_skills(vec!["skill:project:missing".to_string()]);
+    .with_selected_skills(vec![kuku::event::SkillContextFact {
+        skill_id: "skill:project:missing".to_string(),
+        source: kuku::event::SourceFact {
+            scope: kuku::event::SourceScope::Project,
+            id: "source:project:missing".to_string(),
+            relative_path: Some(
+                kuku::event::WorkspaceRelativePath::parse(".agent/skills/missing/SKILL.md")
+                    .unwrap(),
+            ),
+        },
+        origin: kuku::event::SkillLoadOrigin::You,
+        content_hash: "sha256:missing".to_string(),
+    }]);
 
     let error = configured_query("hello")
         .kuku_home(home.path())
@@ -406,6 +483,98 @@ async fn unavailable_selected_skill_is_rejected_before_query_facts_append() {
 
     assert_eq!(error.code(), "invalid_task_context");
     assert_eq!(store.read_all().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn fresh_task_turn_uses_current_skill_selection_and_can_clear_it() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    for name in ["alpha", "beta"] {
+        let directory = workspace.path().join(format!(".agent/skills/{name}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n\n{name} exact instructions\n"),
+        )
+        .unwrap();
+    }
+    let scope = common::execution_scope();
+    let store = task_store(&home.path().join("events.jsonl"), &scope);
+    let capability = workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true)));
+    let alpha = selected_project_skill(
+        workspace.path(),
+        "skill:project:alpha",
+        ".agent/skills/alpha/SKILL.md",
+    );
+    let beta = selected_project_skill(
+        workspace.path(),
+        "skill:project:beta",
+        ".agent/skills/beta/SKILL.md",
+    );
+
+    let alpha_server = MockServer::start();
+    alpha_server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concluding_anthropic_response("alpha done"));
+    });
+    configured_query("first")
+        .base_url(alpha_server.base_url())
+        .kuku_home(home.path())
+        .task_context(
+            TaskQueryContext::new(scope.clone(), store.clone(), capability.clone())
+                .with_selected_skills(vec![alpha]),
+        )
+        .run()
+        .await
+        .unwrap();
+
+    let beta_server = MockServer::start();
+    beta_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .matches(|request: &HttpMockRequest| {
+                let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default());
+                body.contains("beta exact instructions")
+                    && !body.contains("alpha exact instructions")
+            });
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concluding_anthropic_response("beta done"));
+    });
+    configured_query("second")
+        .base_url(beta_server.base_url())
+        .kuku_home(home.path())
+        .task_context(
+            TaskQueryContext::new(scope.clone(), store.clone(), capability.clone())
+                .with_selected_skills(vec![beta]),
+        )
+        .run()
+        .await
+        .unwrap();
+
+    let empty_server = MockServer::start();
+    empty_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .matches(|request: &HttpMockRequest| {
+                let body = String::from_utf8_lossy(request.body.as_deref().unwrap_or_default());
+                body.contains("Loaded: none")
+                    && !body.contains("alpha exact instructions")
+                    && !body.contains("beta exact instructions")
+            });
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concluding_anthropic_response("empty done"));
+    });
+    configured_query("third")
+        .base_url(empty_server.base_url())
+        .kuku_home(home.path())
+        .task_context(TaskQueryContext::new(scope, store, capability))
+        .run()
+        .await
+        .unwrap();
 }
 
 fn concluding_anthropic_response(text: &str) -> String {

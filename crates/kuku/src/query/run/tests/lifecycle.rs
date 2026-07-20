@@ -406,3 +406,196 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
     assert!(messages.contains(&"User".to_string()));
     assert!(messages.contains(&"Assistant".to_string()));
 }
+
+#[test]
+fn dropping_run_cancels_persistent_command_slots() {
+    let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(1);
+    let command_cancellation = crate::query::WorkspaceCommandCancellation::default();
+    let observed = command_cancellation.clone();
+    let mut slots = std::collections::HashMap::new();
+    slots.insert(
+        "command".to_string(),
+        ExecSlot {
+            tool_call_id: "command".to_string(),
+            conversation: None,
+            kind: ToolKind::Command { pid: None },
+            ordered_with_simple_tools: false,
+            label: "command".to_string(),
+            cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+            command_cancellation: Some(command_cancellation),
+            nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        },
+    );
+    let run = Run {
+        execution_scope: test_execution_scope(),
+        session_id: "test".to_string(),
+        state: RunState::Done(None),
+        slots,
+        slot_event_tx,
+        slot_event_rx,
+        cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+        lock_path: std::path::PathBuf::new(),
+        deferred_runtime_logs: std::collections::VecDeque::new(),
+    };
+
+    drop(run);
+
+    assert!(observed.is_cancelled());
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct SilentProcessCapability {
+    marker: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl crate::query::WorkspaceQueryCapability for SilentProcessCapability {
+    fn workspace_id(&self) -> &str {
+        "wsp_111111111111111111111111"
+    }
+
+    fn verify_identity(&self) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn file_exists(&self, _: &str) -> crate::Result<bool> {
+        Ok(false)
+    }
+
+    fn read_file(&self, _: &str, _: usize) -> crate::Result<Vec<u8>> {
+        Err(crate::Error::WorkspaceUnavailable(
+            "unsupported".to_string(),
+        ))
+    }
+
+    fn read_skill_source(
+        &self,
+        _: &crate::event::SkillContextFact,
+        _: usize,
+    ) -> crate::Result<Vec<u8>> {
+        Err(crate::Error::WorkspaceUnavailable(
+            "unsupported".to_string(),
+        ))
+    }
+
+    fn write_file(&self, _: &str, _: &[u8], _: usize) -> crate::Result<()> {
+        Err(crate::Error::WorkspaceUnavailable(
+            "unsupported".to_string(),
+        ))
+    }
+
+    fn list_entries(&self, _: &str, _: usize) -> crate::Result<Vec<crate::WorkspaceEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn run_command<'a>(
+        &'a self,
+        _: crate::WorkspaceCommandRequest,
+        _: Option<tokio::sync::mpsc::Sender<crate::WorkspaceCommandEvent>>,
+        cancellation: crate::WorkspaceCommandCancellation,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = crate::Result<crate::WorkspaceCommandOutput>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            use std::os::unix::process::CommandExt;
+
+            let script = format!(
+                "sleep 60 & child=$!; printf '%s %s' $$ $child > '{}'; wait",
+                self.marker.display()
+            );
+            let mut command = tokio::process::Command::new("sh");
+            command.arg("-c").arg(script);
+            command.as_std_mut().process_group(0);
+            let mut child = command.spawn()?;
+            let process_group = child.id().unwrap() as i32;
+            tokio::select! {
+                status = child.wait() => Ok(crate::WorkspaceCommandOutput {
+                    exit_code: status?.code(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    duration_ms: 0,
+                }),
+                _ = cancellation.cancelled() => {
+                    unsafe extern "C" {
+                        fn kill(pid: i32, signal: i32) -> i32;
+                    }
+                    unsafe { kill(-process_group, 9); }
+                    let _ = child.wait().await;
+                    Ok(crate::WorkspaceCommandOutput {
+                        exit_code: None,
+                        timed_out: false,
+                        cancelled: true,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                        duration_ms: 0,
+                    })
+                }
+            }
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_run_reaps_silent_command_parent_and_descendant() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("pids");
+    let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(4);
+    let slot = crate::query::slots::spawn_command_slot(
+        "command".to_string(),
+        None,
+        serde_json::json!({"command": "ignored", "timeout": 60, "brief": "silent"}),
+        "silent".to_string(),
+        directory.path().to_path_buf(),
+        Some(std::sync::Arc::new(SilentProcessCapability {
+            marker: marker.clone(),
+        })),
+        slot_event_tx.clone(),
+    );
+    let mut slots = std::collections::HashMap::new();
+    slots.insert("command".to_string(), slot);
+    let run = Run {
+        execution_scope: test_execution_scope(),
+        session_id: "test".to_string(),
+        state: RunState::Done(None),
+        slots,
+        slot_event_tx,
+        slot_event_rx,
+        cancel_token: std::sync::Arc::new(tokio::sync::Notify::new()),
+        lock_path: std::path::PathBuf::new(),
+        deferred_runtime_logs: std::collections::VecDeque::new(),
+    };
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let pids = std::fs::read_to_string(&marker).unwrap();
+    let pids = pids
+        .split_whitespace()
+        .map(|pid| pid.parse::<i32>().unwrap())
+        .collect::<Vec<_>>();
+
+    drop(run);
+
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    for _ in 0..100 {
+        if pids.iter().all(|pid| unsafe { kill(*pid, 0) } == -1) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(pids.iter().all(|pid| unsafe { kill(*pid, 0) } == -1));
+}

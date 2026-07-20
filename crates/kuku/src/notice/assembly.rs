@@ -16,13 +16,16 @@ use super::types::{
 
 pub(crate) struct NoticeAssemblyInput<'a> {
     pub(crate) workspace: &'a Path,
+    pub(crate) workspace_capability: Option<&'a dyn crate::query::WorkspaceQueryCapability>,
     pub(crate) events: &'a [StoredEvent],
     pub(crate) context_budget_tier: ContextBudgetTier,
     pub(crate) conversation: &'a ConversationAddress,
     pub(crate) agent_registry: Option<&'a AgentRegistry>,
 }
 
-pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notice> {
+pub(crate) fn build_runtime_notices(
+    input: NoticeAssemblyInput<'_>,
+) -> crate::error::Result<Vec<Notice>> {
     let mut notices = Vec::new();
 
     if input.conversation.is_main() {
@@ -47,14 +50,15 @@ pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notic
 
     if let Some(notice) = build_context_drift_notice(
         input.workspace,
+        input.workspace_capability,
         input.events,
         input.conversation.as_str(),
         input.context_budget_tier,
-    ) {
+    )? {
         notices.push(notice);
     }
 
-    notices
+    Ok(notices)
 }
 
 fn build_agent_directory_notice(
@@ -161,11 +165,14 @@ fn latest_prompt_snapshot<'a>(
 
 fn build_context_drift_notice(
     workspace: &Path,
+    workspace_capability: Option<&dyn crate::query::WorkspaceQueryCapability>,
     events: &[StoredEvent],
     conversation: &str,
     tier: ContextBudgetTier,
-) -> Option<Notice> {
-    let snapshot = latest_prompt_snapshot(events, conversation)?;
+) -> crate::error::Result<Option<Notice>> {
+    let Some(snapshot) = latest_prompt_snapshot(events, conversation) else {
+        return Ok(None);
+    };
     let (project_sources, memory_sources, asset_sources) = match snapshot {
         EventPayload::PromptSnapshot {
             project_instruction_sources,
@@ -177,7 +184,7 @@ fn build_context_drift_notice(
             memory_sources,
             prompt_asset_sources,
         ),
-        _ => return None,
+        _ => return Ok(None),
     };
 
     let mut entries = Vec::new();
@@ -187,15 +194,26 @@ fn build_context_drift_notice(
         .chain(asset_sources.iter())
     {
         let path = PathBuf::from(&source.path);
-        if !path.is_absolute() {
+        let label = if path.is_absolute() {
+            path.strip_prefix(workspace)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            source.path.clone()
+        };
+        let read_result = if path.is_absolute() {
+            std::fs::read(&path).map_err(|error| error.kind())
+        } else if let Some(capability) = workspace_capability {
+            match capability.file_exists(&source.path) {
+                Ok(true) => Ok(capability.read_file(&source.path, 4 * 1024 * 1024)?),
+                Ok(false) => Err(std::io::ErrorKind::NotFound),
+                Err(error) => return Err(error),
+            }
+        } else {
             continue;
-        }
-        let label = path
-            .strip_prefix(workspace)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        match std::fs::read(&path) {
+        };
+        match read_result {
             Ok(current_bytes) => {
                 let current_hash = content_hash_bytes(&current_bytes);
                 if current_hash == source.hash {
@@ -206,7 +224,7 @@ fn build_context_drift_notice(
                     status: ContextDriftStatus::Updated,
                 });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(std::io::ErrorKind::NotFound) => {
                 entries.push(ContextDriftEntry {
                     path: label,
                     status: ContextDriftStatus::Deleted,
@@ -217,15 +235,15 @@ fn build_context_drift_notice(
     }
 
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
     let max = max_context_drift_entries(tier);
     entries.truncate(max);
 
-    Some(Notice {
+    Ok(Some(Notice {
         kind: NoticeKind::ContextDrift { entries },
         severity: NoticeSeverity::Info,
-    })
+    }))
 }
 
 fn max_context_drift_entries(tier: ContextBudgetTier) -> usize {
@@ -248,6 +266,100 @@ mod tests {
     use crate::event::{EventPayload, StoredEvent};
     use crate::notice::render::render_notice_body;
     use crate::prompt::builtin_prompt_catalog;
+
+    #[derive(Debug)]
+    struct NoticeCapability {
+        files: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    impl NoticeCapability {
+        fn new(path: &str, content: &[u8]) -> Self {
+            Self {
+                files: std::sync::Mutex::new(std::collections::HashMap::from([(
+                    path.to_string(),
+                    content.to_vec(),
+                )])),
+                fail: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl crate::query::WorkspaceQueryCapability for NoticeCapability {
+        fn workspace_id(&self) -> &str {
+            "wsp_111111111111111111111111"
+        }
+
+        fn verify_identity(&self) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn file_exists(&self, path: &str) -> crate::Result<bool> {
+            if self.fail.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(crate::Error::WorkspaceUnavailable(
+                    "unavailable".to_string(),
+                ));
+            }
+            Ok(self.files.lock().unwrap().contains_key(path))
+        }
+
+        fn read_file(&self, path: &str, max_bytes: usize) -> crate::Result<Vec<u8>> {
+            let bytes = self
+                .files
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| crate::Error::WorkspaceUnavailable("missing".to_string()))?;
+            if bytes.len() > max_bytes {
+                return Err(crate::Error::WorkspaceUnavailable("too large".to_string()));
+            }
+            Ok(bytes)
+        }
+
+        fn read_skill_source(
+            &self,
+            selected: &crate::event::SkillContextFact,
+            max_bytes: usize,
+        ) -> crate::Result<Vec<u8>> {
+            self.read_file(
+                selected.source.relative_path.as_ref().unwrap().as_str(),
+                max_bytes,
+            )
+        }
+
+        fn write_file(&self, _: &str, _: &[u8], _: usize) -> crate::Result<()> {
+            Err(crate::Error::WorkspaceUnavailable(
+                "unsupported".to_string(),
+            ))
+        }
+
+        fn list_entries(&self, _: &str, _: usize) -> crate::Result<Vec<crate::WorkspaceEntry>> {
+            Err(crate::Error::WorkspaceUnavailable(
+                "unsupported".to_string(),
+            ))
+        }
+
+        fn run_command<'a>(
+            &'a self,
+            _: crate::WorkspaceCommandRequest,
+            _: Option<tokio::sync::mpsc::Sender<crate::WorkspaceCommandEvent>>,
+            _: crate::WorkspaceCommandCancellation,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = crate::Result<crate::WorkspaceCommandOutput>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Err(crate::Error::WorkspaceUnavailable(
+                    "unsupported".to_string(),
+                ))
+            })
+        }
+    }
+
     fn make_entry(index: usize) -> ContextDriftEntry {
         ContextDriftEntry {
             path: format!("file-{index}.md"),
@@ -307,11 +419,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: Path::new("."),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
-        });
+        })
+        .unwrap();
 
         assert!(!notices
             .iter()
@@ -336,11 +450,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: Path::new("."),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &review,
             agent_registry: None,
-        });
+        })
+        .unwrap();
 
         let catalog = builtin_prompt_catalog();
         let rendered = notices
@@ -394,6 +510,54 @@ mod tests {
     }
 
     #[test]
+    fn capability_relative_drift_reports_changes_deletion_and_unavailability() {
+        let events = vec![make_prompt_snapshot(
+            1,
+            "main",
+            vec![FileSource {
+                path: "AGENTS.md".to_string(),
+                hash: content_hash_bytes(b"before"),
+            }],
+            vec![],
+        )];
+        let capability = NoticeCapability::new("AGENTS.md", b"before");
+        let assemble = || {
+            build_runtime_notices(NoticeAssemblyInput {
+                workspace: Path::new("workspace-id"),
+                workspace_capability: Some(&capability),
+                events: &events,
+                context_budget_tier: ContextBudgetTier::Normal,
+                conversation: &ConversationAddress::MAIN,
+                agent_registry: None,
+            })
+        };
+
+        assert!(assemble().unwrap().is_empty());
+        capability
+            .files
+            .lock()
+            .unwrap()
+            .insert("AGENTS.md".to_string(), b"after".to_vec());
+        let changed = assemble().unwrap();
+        assert!(matches!(
+            changed[0].kind,
+            NoticeKind::ContextDrift { ref entries }
+                if entries[0].status == ContextDriftStatus::Updated
+        ));
+        capability.files.lock().unwrap().remove("AGENTS.md");
+        let deleted = assemble().unwrap();
+        assert!(matches!(
+            deleted[0].kind,
+            NoticeKind::ContextDrift { ref entries }
+                if entries[0].status == ContextDriftStatus::Deleted
+        ));
+        capability
+            .fail
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(assemble().unwrap_err().code(), "workspace_unavailable");
+    }
+
+    #[test]
     fn prompt_snapshot_drift_detected_when_file_changed() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("AGENTS.md");
@@ -413,11 +577,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
-        });
+        })
+        .unwrap();
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
         assert_eq!(notices.len(), 1);
@@ -442,11 +608,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
-        });
+        })
+        .unwrap();
 
         assert!(notices.is_empty(), "no drift when hashes match");
     }
@@ -468,11 +636,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
-        });
+        })
+        .unwrap();
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
         assert_eq!(notices.len(), 1);
@@ -499,11 +669,13 @@ mod tests {
 
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace: temp.path(),
+            workspace_capability: None,
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
             agent_registry: None,
-        });
+        })
+        .unwrap();
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
         assert_eq!(notices.len(), 1);

@@ -51,70 +51,100 @@ pub(crate) fn build_registry_snapshot(
 
 pub(crate) fn build_registry_snapshot_with_capability(
     capability: &dyn crate::query::WorkspaceQueryCapability,
-    _discovery_config: &DiscoveryConfig,
-    selected_skills: &[String],
+    selected_skills: &[crate::event::SkillContextFact],
 ) -> crate::error::Result<SkillRegistry> {
-    const MAX_DISCOVERY_ENTRIES: usize = 20_000;
     let mut builder = SkillRegistry::builder();
-    if selected_skills.is_empty() {
-        return Ok(builder.build());
-    }
-    let selected_names = selected_skills
-        .iter()
-        .map(|id| {
-            let mut components = id.split(':');
-            match (
-                components.next(),
-                components.next(),
-                components.next(),
-                components.next(),
-            ) {
-                (Some("skill"), Some("project"), Some(name), None) if !name.is_empty() => Ok(name),
-                _ => Err(crate::error::Error::InvalidTaskContext(format!(
-                    "selected skill ID is invalid or unsupported: {id}"
-                ))),
+    let mut seen_ids = BTreeSet::new();
+    let mut seen_names = BTreeSet::new();
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_sources = BTreeSet::new();
+    for selected in selected_skills {
+        let (scope_name, definition_source) = match selected.source.scope {
+            crate::event::SourceScope::Project => {
+                ("project", crate::skill::definition::SkillSource::Project)
             }
-        })
-        .collect::<crate::error::Result<Vec<_>>>()?;
-    for entry in capability.list_entries(".", MAX_DISCOVERY_ENTRIES)? {
-        let components: Vec<_> = entry.path.split('/').collect();
-        if !entry.is_file
-            || components.len() != 4
-            || !components[0].starts_with('.')
-            || components[1] != "skills"
-            || components[3] != "SKILL.md"
-            || !selected_names.iter().any(|name| *name == components[2])
-        {
-            continue;
+            crate::event::SourceScope::Workspace => (
+                "workspace",
+                crate::skill::definition::SkillSource::Workspace,
+            ),
+            _ => {
+                return Err(crate::error::Error::InvalidTaskContext(format!(
+                    "selected skill source scope is unsupported: {}",
+                    selected.skill_id
+                )))
+            }
+        };
+        let expected_prefix = format!("skill:{scope_name}:");
+        let Some(name) = selected.skill_id.strip_prefix(&expected_prefix) else {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill ID does not match its source scope: {}",
+                selected.skill_id
+            )));
+        };
+        if name.is_empty() || name.contains(':') || selected.source.id.is_empty() {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill identity is invalid: {}",
+                selected.skill_id
+            )));
         }
-        let bytes = capability.read_file(&entry.path, 1024 * 1024)?;
+        let Some(relative_path) = selected.source.relative_path.as_ref() else {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill has no workspace-relative source: {}",
+                selected.skill_id
+            )));
+        };
+        let source_key = format!("{scope_name}:{}", selected.source.id);
+        if !seen_ids.insert(selected.skill_id.as_str())
+            || !seen_names.insert(name)
+            || !seen_paths.insert(relative_path.as_str())
+            || !seen_sources.insert(source_key)
+        {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill source is duplicated: {}",
+                selected.skill_id
+            )));
+        }
+        let bytes = capability
+            .read_skill_source(selected, 1024 * 1024)
+            .map_err(|_| {
+                crate::error::Error::InvalidTaskContext(format!(
+                    "selected skill source is unavailable: {}",
+                    selected.skill_id
+                ))
+            })?;
         let content = String::from_utf8(bytes).map_err(|_| {
-            crate::error::Error::InvalidArgument(format!(
+            crate::error::Error::InvalidTaskContext(format!(
                 "skill is not valid UTF-8: {}",
-                entry.path
+                relative_path
             ))
         })?;
-        let skill_dir = Path::new(components[0])
-            .join(components[1])
-            .join(components[2]);
-        if let Ok(definition) = super::loader::parse_skill(
-            &content,
-            &skill_dir,
-            &crate::skill::definition::SkillSource::Project,
-        ) {
-            builder = builder.with_definition(definition);
+        let skill_dir = Path::new(relative_path.as_str()).parent().ok_or_else(|| {
+            crate::error::Error::InvalidTaskContext(format!(
+                "selected skill source path is invalid: {relative_path}"
+            ))
+        })?;
+        let definition = super::loader::parse_skill(&content, skill_dir, &definition_source)
+            .map_err(|_| {
+                crate::error::Error::InvalidTaskContext(format!(
+                    "selected skill source is invalid: {}",
+                    selected.skill_id
+                ))
+            })?;
+        if definition.name != name {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill source name does not match its path: {}",
+                relative_path
+            )));
         }
+        if definition.hash != selected.content_hash {
+            return Err(crate::error::Error::InvalidTaskContext(format!(
+                "selected skill content changed: {}",
+                selected.skill_id
+            )));
+        }
+        builder = builder.with_definition(definition);
     }
-    let registry = builder.build();
-    if let Some(missing) = selected_names
-        .iter()
-        .find(|name| registry.get(name).is_none())
-    {
-        return Err(crate::error::Error::InvalidTaskContext(format!(
-            "selected skill is unavailable: skill:project:{missing}"
-        )));
-    }
-    Ok(registry)
+    Ok(builder.build())
 }
 
 pub(crate) fn restore_turn_snapshot(
@@ -198,6 +228,24 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> 
     }
 
     loaded.into_iter().collect()
+}
+
+pub(crate) fn latest_snapshot_skill_names(
+    events: &[StoredEvent],
+    conversation: &str,
+) -> Vec<String> {
+    filter_rolled_back_events(events)
+        .into_iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::ContextSkills {
+                conversation: event_conversation,
+                bootstrap_loaded,
+                ..
+            } if event_conversation == conversation => Some(bootstrap_loaded.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn binding_sources_for_skills(

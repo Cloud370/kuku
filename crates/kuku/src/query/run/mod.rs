@@ -26,6 +26,13 @@ use super::types::{
 
 impl Drop for Run {
     fn drop(&mut self) {
+        for slot in self.slots.values() {
+            slot.cancel.notify_one();
+            if let Some(cancellation) = &slot.command_cancellation {
+                cancellation.cancel();
+            }
+        }
+        self.cancel_token.notify_waiters();
         crate::session::release_lock(&self.lock_path);
     }
 }

@@ -24,6 +24,7 @@ pub(super) fn should_trigger_handoff(headroom: &ContextHeadroom, threshold: f64)
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_runtime_blocks(
     workspace: &std::path::Path,
+    workspace_capability: Option<&dyn crate::query::WorkspaceQueryCapability>,
     conversation: &str,
     turn: u64,
     agent_registry: Option<&crate::agent::registry::AgentRegistry>,
@@ -47,8 +48,11 @@ pub(super) fn build_runtime_blocks(
         agent_registry.and_then(|reg| crate::agent::catalog::render_agent_catalog(reg, catalog));
 
     let skills_text = skill_registry.and_then(|skill_reg| {
-        let loaded_skill_names =
-            crate::skill::session::loaded_skill_names(existing_events, conversation);
+        let loaded_skill_names = if workspace_capability.is_some() {
+            crate::skill::session::latest_snapshot_skill_names(existing_events, conversation)
+        } else {
+            crate::skill::session::loaded_skill_names(existing_events, conversation)
+        };
         let skill_changes = if turn > 1 {
             previous_skill_registry.and_then(|previous_skill_registry| {
                 crate::skill::registry::detect_skill_changes(previous_skill_registry, skill_reg)
@@ -85,11 +89,12 @@ pub(super) fn build_runtime_blocks(
             .collect::<Vec<_>>();
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace,
+            workspace_capability,
             events: &notice_events,
             context_budget_tier: context_headroom.tier,
             conversation: &conversation,
             agent_registry,
-        });
+        })?;
         for notice in &notices {
             if let Some(body) = render_notice_body(notice, catalog) {
                 notice_bodies.push(body);

@@ -32,6 +32,7 @@ pub(crate) async fn run_command_with_capability(
     let (capability_tx, forward_handle) = match event_tx {
         Some(event_tx) => {
             let (tx, mut rx) = mpsc::channel(64);
+            let forward_cancellation = cancellation.clone();
             let handle = tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
                     let event = match event {
@@ -42,8 +43,15 @@ pub(crate) async fn run_command_with_capability(
                             CommandEvent::Stderr(String::from_utf8_lossy(&bytes).into_owned())
                         }
                     };
-                    if event_tx.send(event).await.is_err() {
-                        break;
+                    tokio::select! {
+                        biased;
+                        _ = forward_cancellation.cancelled() => break,
+                        result = event_tx.send(event) => {
+                            if result.is_err() {
+                                forward_cancellation.cancel();
+                                break;
+                            }
+                        }
                     }
                 }
             });

@@ -202,7 +202,6 @@ impl Query {
                 .map(|context| {
                     build_registry_snapshot_with_capability(
                         context.workspace.as_ref(),
-                        &config.discovery,
                         &context.selected_skills,
                     )
                 })
@@ -316,13 +315,26 @@ impl Query {
             };
             match discovered {
                 Ok(registry) => {
-                    let (registry, bootstrap_loaded) =
-                        if let Some(snapshot) = previous_skill_snapshot.as_ref() {
-                            bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
-                            (snapshot.registry.clone(), snapshot.bootstrap_loaded.clone())
-                        } else {
-                            (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
-                        };
+                    let bootstrap_loaded = if task_context.is_some() {
+                        let selected = task_context
+                            .as_ref()
+                            .map(|context| {
+                                context
+                                    .selected_skills
+                                    .iter()
+                                    .filter_map(|skill| skill.skill_id.rsplit(':').next())
+                                    .map(String::from)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        bootstrap_skill = bootstrap_skill_from_registry(&registry, &selected);
+                        selected
+                    } else if let Some(snapshot) = previous_skill_snapshot.as_ref() {
+                        bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
+                        snapshot.bootstrap_loaded.clone()
+                    } else {
+                        bootstrap_loaded_names(bootstrap_skill.as_ref())
+                    };
                     store.append(EventPayload::ContextSkills {
                         conversation: conversation.as_str().to_string(),
                         turn,
@@ -601,9 +613,16 @@ fn bootstrap_loaded_names(
 fn restore_bootstrap_skill(
     snapshot: &TurnSkillSnapshot,
 ) -> Option<crate::query::types::BootstrapSkill> {
+    bootstrap_skill_from_registry(&snapshot.registry, &snapshot.bootstrap_loaded)
+}
+
+fn bootstrap_skill_from_registry(
+    registry: &crate::skill::registry::SkillRegistry,
+    loaded: &[String],
+) -> Option<crate::query::types::BootstrapSkill> {
     let mut restored = Vec::new();
-    for skill_name in &snapshot.bootstrap_loaded {
-        let definition = snapshot.registry.get(skill_name)?;
+    for skill_name in loaded {
+        let definition = registry.get(skill_name)?;
         let skill_dir = definition.source_path.as_deref().unwrap_or("");
         restored.push(format!(
             "<!-- loaded: {skill_dir} -->\n\n{}",
@@ -615,8 +634,8 @@ fn restore_bootstrap_skill(
         return None;
     }
 
-    let name = if snapshot.bootstrap_loaded.len() == 1 {
-        snapshot.bootstrap_loaded.first().cloned()
+    let name = if loaded.len() == 1 {
+        loaded.first().cloned()
     } else {
         None
     };

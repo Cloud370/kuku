@@ -8,6 +8,8 @@ pub enum SkillSource {
     User,
     #[serde(rename = "project")]
     Project,
+    #[serde(rename = "workspace")]
+    Workspace,
 }
 
 impl SkillSource {
@@ -15,6 +17,7 @@ impl SkillSource {
         match self {
             Self::User => "user",
             Self::Project => "project",
+            Self::Workspace => "workspace",
         }
     }
 }
@@ -123,7 +126,11 @@ mod tests {
 
     #[test]
     fn serde_round_trip() {
-        let sources = [SkillSource::User, SkillSource::Project];
+        let sources = [
+            SkillSource::User,
+            SkillSource::Project,
+            SkillSource::Workspace,
+        ];
         for src in sources {
             let json = serde_json::to_string(&src).unwrap();
             let back: SkillSource = serde_json::from_str(&json).unwrap();
@@ -140,6 +147,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SkillSource::Project).unwrap(),
             "\"project\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SkillSource::Workspace).unwrap(),
+            "\"workspace\""
         );
     }
 }

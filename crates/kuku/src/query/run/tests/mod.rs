@@ -66,6 +66,7 @@ fn make_test_pending(
         events_path,
         kuku_home: dir.to_path_buf(),
         workspace: dir.to_path_buf(),
+        workspace_capability: None,
         policy_path: dir.join("policy.md"),
         turn: 1,
         request_num: 1,

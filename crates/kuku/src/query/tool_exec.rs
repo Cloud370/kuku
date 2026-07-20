@@ -520,6 +520,7 @@ mod tests {
             events_path: events_path.clone(),
             kuku_home: workspace.clone(),
             workspace: workspace.clone(),
+            workspace_capability: None,
             policy_path: workspace.join("policy.md"),
             turn: 1,
             request_num: 1,

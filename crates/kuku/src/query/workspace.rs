@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::event::ExecutionScope;
+use crate::event::{ExecutionScope, SkillContextFact};
 
 pub trait WorkspaceQueryCapability: std::fmt::Debug + Send + Sync {
     fn workspace_id(&self) -> &str;
@@ -14,6 +14,8 @@ pub trait WorkspaceQueryCapability: std::fmt::Debug + Send + Sync {
     fn file_exists(&self, relative_path: &str) -> Result<bool>;
 
     fn read_file(&self, relative_path: &str, max_bytes: usize) -> Result<Vec<u8>>;
+
+    fn read_skill_source(&self, selected: &SkillContextFact, max_bytes: usize) -> Result<Vec<u8>>;
 
     fn write_file(&self, relative_path: &str, contents: &[u8], max_bytes: usize) -> Result<()>;
 
@@ -92,7 +94,7 @@ pub struct TaskQueryContext {
     pub(super) execution_scope: ExecutionScope,
     pub(super) event_store: crate::event::EventStore,
     pub(super) workspace: Arc<dyn WorkspaceQueryCapability>,
-    pub(super) selected_skills: Vec<String>,
+    pub(super) selected_skills: Vec<SkillContextFact>,
 }
 
 impl std::fmt::Debug for TaskQueryContext {
@@ -119,7 +121,7 @@ impl TaskQueryContext {
         }
     }
 
-    pub fn with_selected_skills(mut self, selected_skills: Vec<String>) -> Self {
+    pub fn with_selected_skills(mut self, selected_skills: Vec<SkillContextFact>) -> Self {
         self.selected_skills = selected_skills;
         self
     }
