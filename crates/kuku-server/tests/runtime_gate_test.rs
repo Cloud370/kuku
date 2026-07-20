@@ -594,18 +594,17 @@ fn assert_record_deltas_match_replay(repository: &TaskRepository, task_id: &Task
         apply_changes(&mut prior, &changes);
         apply_full_timeline(&mut full_timeline, &changes);
         if let Some(window) = timeline_window {
+            let candidate = prior.timeline.clone();
             assert_eq!(
                 window.evicted_items,
-                full_timeline[..window.evicted_items.len()]
+                candidate[..window.evicted_items.len()]
             );
-            full_timeline.drain(..window.evicted_items.len());
+            prior.timeline = candidate[window.evicted_items.len()..].to_vec();
             prior.timeline_next_cursor = window.next_cursor;
         }
         assert_eq!(full_timeline, aggregate.timeline_items());
         prior.cursor = cursor(stored.id);
         prior.task_revision = expected.task_revision;
-        prior.timeline = expected.timeline.clone();
-        prior.timeline_next_cursor = expected.timeline_next_cursor.clone();
         prior.task.updated_at = expected.task.updated_at.clone();
         assert_eq!(prior, expected);
         wire_projection = Some(prior);
@@ -617,11 +616,12 @@ fn apply_full_timeline(full: &mut Vec<TimelineItemProjection>, changes: &[TaskCh
         match change {
             TaskChange::MessageAppended { item } => full.push(item.clone()),
             TaskChange::ActivityUpserted { activity } => {
-                full.push(TimelineItemProjection::Activity(activity.clone()))
+                upsert_timeline_item(full, TimelineItemProjection::Activity(activity.clone()))
             }
-            TaskChange::InteractionUpserted { interaction } => {
-                full.push(TimelineItemProjection::Interaction(interaction.clone()))
-            }
+            TaskChange::InteractionUpserted { interaction } => upsert_timeline_item(
+                full,
+                TimelineItemProjection::Interaction(interaction.clone()),
+            ),
             TaskChange::MessagePatched {
                 message_id,
                 append_text,
@@ -644,6 +644,26 @@ fn apply_full_timeline(full: &mut Vec<TimelineItemProjection>, changes: &[TaskCh
             | TaskChange::ContextSummaryChanged { .. }
             | TaskChange::ReviewSubmissionsChanged { .. } => {}
         }
+    }
+}
+
+fn upsert_timeline_item(items: &mut Vec<TimelineItemProjection>, item: TimelineItemProjection) {
+    let same_item = |existing: &TimelineItemProjection| match (&existing, &item) {
+        (TimelineItemProjection::Activity(left), TimelineItemProjection::Activity(right)) => {
+            left.activity_id == right.activity_id
+        }
+        (TimelineItemProjection::Interaction(left), TimelineItemProjection::Interaction(right)) => {
+            left.interaction_id == right.interaction_id
+        }
+        (TimelineItemProjection::Message(left), TimelineItemProjection::Message(right)) => {
+            left.message_id == right.message_id
+        }
+        _ => false,
+    };
+    if let Some(index) = items.iter().position(same_item) {
+        items[index] = item;
+    } else {
+        items.push(item);
     }
 }
 
@@ -721,20 +741,14 @@ fn apply_changes(projection: &mut TaskProjection, changes: &[TaskChange]) {
                     message.request_ids = request_ids.clone();
                 }
             }
-            TaskChange::ActivityUpserted { activity } => {
-                projection
-                    .timeline
-                    .push(kuku_server::api::TimelineItemProjection::Activity(
-                        activity.clone(),
-                    ))
-            }
-            TaskChange::InteractionUpserted { interaction } => {
-                projection
-                    .timeline
-                    .push(kuku_server::api::TimelineItemProjection::Interaction(
-                        interaction.clone(),
-                    ))
-            }
+            TaskChange::ActivityUpserted { activity } => upsert_timeline_item(
+                &mut projection.timeline,
+                kuku_server::api::TimelineItemProjection::Activity(activity.clone()),
+            ),
+            TaskChange::InteractionUpserted { interaction } => upsert_timeline_item(
+                &mut projection.timeline,
+                kuku_server::api::TimelineItemProjection::Interaction(interaction.clone()),
+            ),
             TaskChange::RunStateChanged {
                 task,
                 active_run,
