@@ -38,4 +38,17 @@ describe('SafeCodeBlock', () => {
     expect(writeText).toHaveBeenCalledWith('const safe = true;');
     expect(screen.getByRole('status')).toHaveTextContent('Copied');
   });
+
+  it('announces when clipboard access is unavailable', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    render(<SafeCodeBlock code="const safe = true;" language="typescript" />);
+
+    await user.click(screen.getByRole('button', { name: 'Copy code' }));
+
+    expect(screen.getByRole('status')).toHaveTextContent('Copy unavailable');
+  });
 });

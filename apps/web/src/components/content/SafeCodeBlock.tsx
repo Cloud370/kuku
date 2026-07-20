@@ -29,8 +29,17 @@ interface SafeCodeBlockProps {
   language?: string | null;
 }
 
+function hasClipboard(value: unknown): value is Pick<Clipboard, 'writeText'> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'writeText' in value &&
+    typeof value.writeText === 'function'
+  );
+}
+
 export function SafeCodeBlock({ code, language = null }: SafeCodeBlockProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'unavailable'>('idle');
   const requestedLanguage = language?.trim().toLowerCase() ?? '';
   const normalizedLanguage = LANGUAGE_ALIASES[requestedLanguage] ?? requestedLanguage;
   const registered =
@@ -44,8 +53,17 @@ export function SafeCodeBlock({ code, language = null }: SafeCodeBlockProps) {
   const label = requestedLanguage.length > 0 ? `${requestedLanguage} code` : 'Code';
 
   async function copy() {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
+    const clipboardValue = (navigator as unknown as { clipboard?: unknown }).clipboard;
+    if (!hasClipboard(clipboardValue)) {
+      setCopyStatus('unavailable');
+      return;
+    }
+    try {
+      await clipboardValue.writeText(code);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('unavailable');
+    }
   }
 
   return (
@@ -65,7 +83,11 @@ export function SafeCodeBlock({ code, language = null }: SafeCodeBlockProps) {
           title="Copy code"
           type="button"
         >
-          {copied ? <Check aria-hidden="true" size={14} /> : <Copy aria-hidden="true" size={14} />}
+          {copyStatus === 'copied' ? (
+            <Check aria-hidden="true" size={14} />
+          ) : (
+            <Copy aria-hidden="true" size={14} />
+          )}
         </button>
       </div>
       <pre className="m-0 overflow-visible p-4 text-xs">
@@ -78,9 +100,9 @@ export function SafeCodeBlock({ code, language = null }: SafeCodeBlockProps) {
           />
         )}
       </pre>
-      {copied ? (
+      {copyStatus !== 'idle' ? (
         <span className="sr-only" role="status">
-          Copied
+          {copyStatus === 'copied' ? 'Copied' : 'Copy unavailable'}
         </span>
       ) : null}
     </section>
