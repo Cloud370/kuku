@@ -164,6 +164,88 @@ credential = { source = "direct_value", value = "key" }
 }
 
 #[tokio::test]
+async fn valid_reload_observes_external_deletion() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        service.reload_from_disk().await.unwrap(),
+        PlatformState::Missing
+    );
+    assert!(service.snapshot().await.unwrap().resolved.is_none());
+}
+
+#[tokio::test]
+async fn watcher_detects_replacement_with_preserved_mtime() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let watcher =
+        kuku_server::config_watcher::ConfigWatcherHandle::start(path.clone(), service.clone());
+    std::fs::write(
+        &path,
+        r#"default_model = "next"
+[model.next]
+provider = "local"
+model = "model-y"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(original_mtime))
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(3200)).await;
+    assert_eq!(
+        service
+            .snapshot()
+            .await
+            .unwrap()
+            .resolved
+            .unwrap()
+            .default_tier(),
+        "next"
+    );
+    watcher.shutdown().await;
+}
+
+#[tokio::test]
 async fn concurrent_commit_and_reload_never_install_the_stale_snapshot() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("config.toml");

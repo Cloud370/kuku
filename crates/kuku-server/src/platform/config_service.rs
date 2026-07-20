@@ -194,7 +194,15 @@ impl ConfigService {
     }
 
     pub async fn reload_from_disk(&self) -> Result<PlatformState, ApiError> {
+        self.reload_from_disk_with(|| {}).await
+    }
+
+    async fn reload_from_disk_with(
+        &self,
+        after_read: impl FnOnce(),
+    ) -> Result<PlatformState, ApiError> {
         let (raw, last_good, disk_state, disk_digest) = read_state(&self.path);
+        after_read();
         let (old_digest, old_state, changed) = {
             let state = self.inner.read().await;
             (
@@ -225,7 +233,16 @@ impl ConfigService {
             return Ok(state.disk_state.clone());
         }
         if matches!(disk_state, PlatformState::Invalid { .. }) {
+            let current = self.revision.current().await?;
+            let _guard = self.revision.begin(&current).await?;
+            let (_, _, _, latest_digest) = read_state(&self.path);
+            if latest_digest != disk_digest {
+                return Ok(self.state().await);
+            }
             let mut state = self.inner.write().await;
+            if state.disk_digest != old_digest || state.disk_state != old_state {
+                return Ok(state.disk_state.clone());
+            }
             state.disk_state = disk_state.clone();
             state.disk_digest = disk_digest;
             return Ok(state.disk_state.clone());
@@ -291,4 +308,76 @@ fn io_error(error: std::io::Error) -> ApiError {
 #[allow(dead_code)]
 fn _provider_format_name(format: ProviderFormat) -> &'static str {
     format.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INITIAL: &str = r#"default_model = "initial"
+[model.initial]
+provider = "local"
+model = "model-a"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#;
+
+    const COMMITTED: &str = r#"default_model = "committed"
+[model.committed]
+provider = "local"
+model = "model-b"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stale_invalid_reload_cannot_overwrite_a_concurrent_commit() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.toml");
+        std::fs::write(&path, INITIAL).unwrap();
+        let revisions = ServerRevisionCoordinator::open(home.path());
+        let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+        let expected = service.revision().await.unwrap();
+        std::fs::write(&path, "not valid [[[\n").unwrap();
+
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reload_service = service.clone();
+        let reload = tokio::spawn(async move {
+            reload_service
+                .reload_from_disk_with(move || {
+                    read_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || read_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        std::fs::write(&path, INITIAL).unwrap();
+        let committed = kuku::config::parse_config_file(COMMITTED).unwrap();
+        service
+            .commit_config(ConfigPatch::replace(committed), expected)
+            .await
+            .unwrap();
+        release_tx.send(()).unwrap();
+        reload.await.unwrap().unwrap();
+
+        assert_eq!(service.state().await, PlatformState::Ready);
+        assert_eq!(
+            service
+                .snapshot()
+                .await
+                .unwrap()
+                .resolved
+                .unwrap()
+                .default_tier(),
+            "committed"
+        );
+    }
 }
