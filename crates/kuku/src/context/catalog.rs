@@ -1,6 +1,7 @@
 //! Deterministic, revisioned Context catalog values.
 
 use std::collections::BTreeSet;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -305,9 +306,11 @@ impl CatalogEntries {
         agents: &AgentRegistry,
         prompts: &PromptCatalog,
         tools: Vec<CatalogEntry>,
+        workspace_root: &Path,
         workspace_generation: u64,
         config_generation: u64,
     ) -> Result<Self, CatalogError> {
+        let canonical_workspace_root = std::fs::canonicalize(workspace_root).ok();
         let tiers = config
             .tiers
             .iter()
@@ -316,12 +319,12 @@ impl CatalogEntries {
         let skill_entries = skills
             .definitions()
             .into_iter()
-            .map(skill_entry)
+            .map(|definition| skill_entry(&definition, canonical_workspace_root.as_deref()))
             .collect::<Result<Vec<_>, _>>()?;
         let agent_entries = agents
             .definitions()
             .into_iter()
-            .map(agent_entry)
+            .map(|definition| agent_entry(&definition, canonical_workspace_root.as_deref()))
             .collect::<Result<Vec<_>, _>>()?;
         Self::new_with_source_hashes(
             tiers,
@@ -443,6 +446,7 @@ fn tier_entry(
 
 fn skill_entry(
     definition: &crate::skill::definition::SkillDefinition,
+    canonical_workspace_root: Option<&Path>,
 ) -> Result<CatalogEntry, CatalogError> {
     let (source_scope, fact_scope) = match definition.source {
         SkillSource::User => (CatalogSource::User, SourceScope::User),
@@ -457,7 +461,11 @@ fn skill_entry(
         source_fact(
             fact_scope,
             format!("skill-source:{}:{}", source_scope.as_str(), definition.name),
-            contained_path(source_scope, definition.source_path.as_deref()),
+            contained_path(
+                source_scope,
+                canonical_workspace_root,
+                definition.source_path.as_deref(),
+            ),
         ),
         &definition.hash,
         bounded_preview(&definition.name, &definition.description),
@@ -467,6 +475,7 @@ fn skill_entry(
 
 fn agent_entry(
     definition: &crate::agent::definition::AgentDefinition,
+    canonical_workspace_root: Option<&Path>,
 ) -> Result<CatalogEntry, CatalogError> {
     let (source_scope, fact_scope) = match definition.source {
         DefinitionSource::Builtin => (CatalogSource::System, SourceScope::System),
@@ -486,7 +495,11 @@ fn agent_entry(
         source_fact(
             fact_scope,
             format!("agent-source:{}:{}", source_scope.as_str(), definition.name),
-            contained_path(source_scope, definition.source_path.as_deref()),
+            contained_path(
+                source_scope,
+                canonical_workspace_root,
+                definition.source_path.as_deref(),
+            ),
         ),
         &definition.hash,
         bounded_preview(&definition.name, &definition.description),
@@ -509,12 +522,29 @@ fn source_fact(
 
 fn contained_path(
     source_scope: CatalogSource,
+    canonical_workspace_root: Option<&Path>,
     path: Option<&str>,
 ) -> Option<WorkspaceRelativePath> {
     if matches!(source_scope, CatalogSource::System | CatalogSource::User) {
         return None;
     }
-    path.and_then(|value| WorkspaceRelativePath::parse(value).ok())
+    let root = canonical_workspace_root?;
+    let source = Path::new(path?);
+    let candidate = if source.is_absolute() {
+        source.to_owned()
+    } else {
+        root.join(source)
+    };
+    let canonical_source = std::fs::canonicalize(candidate).ok()?;
+    let relative = canonical_source.strip_prefix(root).ok()?;
+    let mut segments = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(segment) = component else {
+            return None;
+        };
+        segments.push(segment.to_str()?);
+    }
+    WorkspaceRelativePath::parse(segments.join("/")).ok()
 }
 
 fn bounded_preview(name: &str, description: &str) -> String {
@@ -610,11 +640,15 @@ mod tests {
     fn system_and_user_paths_are_not_workspace_provenance() {
         assert_eq!(
             None,
-            contained_path(CatalogSource::System, Some("prompts/agents/review.md"))
+            contained_path(
+                CatalogSource::System,
+                None,
+                Some("prompts/agents/review.md")
+            )
         );
         assert_eq!(
             None,
-            contained_path(CatalogSource::User, Some("skills/tdd/SKILL.md"))
+            contained_path(CatalogSource::User, None, Some("skills/tdd/SKILL.md"))
         );
     }
 }

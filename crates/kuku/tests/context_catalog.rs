@@ -184,6 +184,7 @@ fn generation_change_revisions_the_catalog() {
 
 #[test]
 fn registries_build_typed_entries_without_ambient_paths_or_instructions() {
+    let workspace = tempfile::tempdir().unwrap();
     let config = config_with_tiers(&[
         ("default", "General work"),
         ("balanced", "Balanced work"),
@@ -225,9 +226,17 @@ fn registries_build_typed_entries_without_ambient_paths_or_instructions() {
     )
     .unwrap();
 
-    let catalog =
-        CatalogEntries::from_registries(&config, &skills, &agents, &prompts, vec![tool], 3, 5)
-            .unwrap();
+    let catalog = CatalogEntries::from_registries(
+        &config,
+        &skills,
+        &agents,
+        &prompts,
+        vec![tool],
+        workspace.path(),
+        3,
+        5,
+    )
+    .unwrap();
 
     assert!(catalog.tiers.iter().any(|entry| entry.id == "tier:default"));
     assert_eq!("skill:project:tdd", catalog.skills[0].id);
@@ -288,6 +297,7 @@ fn valid_long_and_empty_metadata_produce_bounded_fallback_previews() {
         &agents,
         &prompts,
         Vec::new(),
+        workspace.path(),
         1,
         1,
     )
@@ -300,6 +310,7 @@ fn valid_long_and_empty_metadata_produce_bounded_fallback_previews() {
 
 #[test]
 fn builtin_agent_asset_paths_are_not_workspace_provenance() {
+    let workspace = tempfile::tempdir().unwrap();
     let prompts = kuku::prompt::builtin_prompt_catalog();
     let agents = kuku::agent::registry::AgentRegistry::builder()
         .builtins(&prompts)
@@ -310,6 +321,7 @@ fn builtin_agent_asset_paths_are_not_workspace_provenance() {
         &agents,
         &prompts,
         Vec::new(),
+        workspace.path(),
         1,
         1,
     )
@@ -322,7 +334,90 @@ fn builtin_agent_asset_paths_are_not_workspace_provenance() {
 }
 
 #[test]
+fn project_source_outside_workspace_is_not_workspace_provenance() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let source_path = outside.path().join("skills/tdd/SKILL.md");
+    std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+    std::fs::write(&source_path, "Test first").unwrap();
+    let skill = SkillDefinition {
+        name: "tdd".to_owned(),
+        description: "Test-first development".to_owned(),
+        instructions: "Test first".to_owned(),
+        source: SkillSource::Project,
+        hash: "sha256:skill".to_owned(),
+        source_path: Some(source_path.to_string_lossy().into_owned()),
+        allowed_tools: None,
+        disallowed_tools: None,
+        max_turns: None,
+        model: None,
+        license: None,
+        compatibility: None,
+        metadata: serde_json::Value::Null,
+    };
+    let skills = SkillRegistry::builder()
+        .with_definition(skill.clone())
+        .build();
+    let prompts = kuku::prompt::builtin_prompt_catalog();
+    let agents = kuku::agent::registry::AgentRegistry::builder()
+        .builtins(&prompts)
+        .build();
+
+    let catalog = CatalogEntries::from_registries(
+        &config_with_tiers(&[
+            ("default", "Default"),
+            ("balanced", "Balanced"),
+            ("light", "Light"),
+        ]),
+        &skills,
+        &agents,
+        &prompts,
+        Vec::new(),
+        workspace.path(),
+        1,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(None, catalog.skills[0].source.relative_path);
+
+    let inside_path = workspace.path().join("skills/tdd/SKILL.md");
+    std::fs::create_dir_all(inside_path.parent().unwrap()).unwrap();
+    std::fs::write(&inside_path, "Test first").unwrap();
+    let mut inside_skill = skill;
+    inside_skill.source_path = Some(inside_path.to_string_lossy().into_owned());
+    let inside_skills = SkillRegistry::builder()
+        .with_definition(inside_skill)
+        .build();
+    let inside_catalog = CatalogEntries::from_registries(
+        &config_with_tiers(&[
+            ("default", "Default"),
+            ("balanced", "Balanced"),
+            ("light", "Light"),
+        ]),
+        &inside_skills,
+        &agents,
+        &prompts,
+        Vec::new(),
+        workspace.path(),
+        1,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(
+        Some("skills/tdd/SKILL.md"),
+        inside_catalog.skills[0]
+            .source
+            .relative_path
+            .as_ref()
+            .map(kuku::event::WorkspaceRelativePath::as_str)
+    );
+}
+
+#[test]
 fn agent_tier_must_reference_a_catalog_tier() {
+    let workspace = tempfile::tempdir().unwrap();
     let prompts = kuku::prompt::builtin_prompt_catalog();
     let agents = kuku::agent::registry::AgentRegistry::builder()
         .builtins(&prompts)
@@ -333,6 +428,7 @@ fn agent_tier_must_reference_a_catalog_tier() {
         &agents,
         &prompts,
         Vec::new(),
+        workspace.path(),
         1,
         1,
     );
