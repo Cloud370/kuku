@@ -152,7 +152,9 @@ fn create_private_directory(path: &Path) -> Result<(), ApiError> {
         .parent()
         .ok_or_else(|| internal_error("bearer credential path has no parent"))?;
     fs::create_dir_all(parent).map_err(|error| {
-        internal_error(format!("failed to create bearer credential directory: {error}"))
+        internal_error(format!(
+            "failed to create bearer credential directory: {error}"
+        ))
     })?;
     set_private_directory_permissions(parent)
 }
@@ -162,7 +164,9 @@ fn set_private_directory_permissions(path: &Path) -> Result<(), ApiError> {
     use std::os::unix::fs::PermissionsExt;
 
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
-        internal_error(format!("failed to protect bearer credential directory: {error}"))
+        internal_error(format!(
+            "failed to protect bearer credential directory: {error}"
+        ))
     })
 }
 
@@ -173,8 +177,9 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), ApiError> {
 
 fn generate_token() -> Result<String, ApiError> {
     let mut bytes = [0_u8; TOKEN_BYTES];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| internal_error(format!("failed to generate bearer credential: {error}")))?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        internal_error(format!("failed to generate bearer credential: {error}"))
+    })?;
     Ok(encode_hex(&bytes))
 }
 
