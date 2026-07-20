@@ -229,6 +229,12 @@ async fn validators_and_queue_wrap_the_single_submission_transaction() {
             .unwrap()
             .replayed
     );
+    let mut changed_content = review.clone();
+    changed_content.message = "Different review notes".to_owned();
+    assert!(matches!(
+        service.submit_review(changed_content).await,
+        Err(super::DomainError::IdempotencyConflict)
+    ));
     let mut changed_review = review;
     changed_review.payload_hash = "sha256:changed-payload".to_owned();
     assert!(matches!(

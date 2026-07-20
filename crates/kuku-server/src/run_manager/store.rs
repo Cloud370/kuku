@@ -293,11 +293,7 @@ impl TaskCommandService {
         let intent = CommandIntent::SubmitReview {
             submission_id: command.submission_id.clone(),
         };
-        let digest = intent_digest_with_payload(
-            Some(&command.task_id),
-            &intent,
-            Some(&command.payload_hash),
-        )?;
+        let digest = review_intent_digest(&command, &intent)?;
         let _key = self.repository.key_guard(&command.idempotency_key).await;
         let _task = self.repository.task_guard(&command.task_id).await;
         if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
@@ -723,26 +719,37 @@ fn replay_accepted(
 }
 
 fn intent_digest(task_id: Option<&TaskId>, intent: &CommandIntent) -> Result<String, DomainError> {
-    intent_digest_with_payload(task_id, intent, None)
-}
-
-fn intent_digest_with_payload(
-    task_id: Option<&TaskId>,
-    intent: &CommandIntent,
-    payload_hash: Option<&str>,
-) -> Result<String, DomainError> {
     #[derive(Serialize)]
     struct DigestInput<'a> {
         task_id: Option<&'a TaskId>,
         intent: &'a CommandIntent,
-        payload_hash: Option<&'a str>,
     }
-    let bytes = serde_json::to_vec(&DigestInput {
-        task_id,
+    digest(&DigestInput { task_id, intent })
+}
+
+fn review_intent_digest(
+    command: &SubmitReviewCommand,
+    intent: &CommandIntent,
+) -> Result<String, DomainError> {
+    #[derive(Serialize)]
+    struct DigestInput<'a> {
+        task_id: &'a TaskId,
+        intent: &'a CommandIntent,
+        payload_hash: &'a str,
+        message: &'a str,
+        notes: &'a [kuku::event::ReviewAnnotationFact],
+    }
+    digest(&DigestInput {
+        task_id: &command.task_id,
         intent,
-        payload_hash,
+        payload_hash: &command.payload_hash,
+        message: &command.message,
+        notes: &command.notes,
     })
-    .map_err(|_| DomainError::LedgerCorrupt)?;
+}
+
+fn digest(value: &impl Serialize) -> Result<String, DomainError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| DomainError::LedgerCorrupt)?;
     let digest = Sha256::digest(bytes);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }

@@ -254,13 +254,19 @@ impl TaskRepository {
                 repository.mark_dirty(&task_id, event);
             }
             let awaited = match &event.payload {
-                EventPayload::TaskLedger(record) => repository
-                    .state
-                    .awaited_records
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&task_id)
-                    .is_some_and(|expected| expected == *record),
+                EventPayload::TaskLedger(record) => {
+                    let mut awaited = repository
+                        .state
+                        .awaited_records
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if awaited.get(&task_id) == Some(record) {
+                        awaited.remove(&task_id);
+                        true
+                    } else {
+                        false
+                    }
+                }
                 _ => false,
             };
             if awaited {
