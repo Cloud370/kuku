@@ -40,6 +40,33 @@ impl PromptCatalog {
             tools: load_subdir_map(dir, "tools", &builtin.tools)?,
         })
     }
+
+    /// Return a deterministic hash of all prompt asset identities and content hashes.
+    pub fn hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hash_asset(&mut hasher, "system", &self.system);
+        for (group, assets) in [
+            ("blocks", &self.blocks),
+            ("agents", &self.agents),
+            ("memory", &self.memory),
+            ("runtime", &self.runtime),
+            ("tools", &self.tools),
+        ] {
+            for (name, asset) in assets {
+                hasher.update(group.as_bytes());
+                hasher.update(b"\0");
+                hash_asset(&mut hasher, name, asset);
+            }
+        }
+        format!("sha256:{:x}", hasher.finalize())
+    }
+}
+
+fn hash_asset(hasher: &mut Sha256, name: &str, asset: &PromptAsset) {
+    hasher.update(name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(asset.hash.as_bytes());
+    hasher.update(b"\n");
 }
 
 pub fn load_prompt_template(dir: &Path, name: &str) -> crate::error::Result<String> {

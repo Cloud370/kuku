@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use crate::context::ToolSchema;
@@ -194,7 +193,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
     tools
 }
 
-#[cfg(test)]
+#[allow(dead_code)] // consumed by Context catalog assembly
 pub(crate) fn registry_hash(registry: &[ToolDefinition]) -> String {
     let canonical = serde_json::to_vec(registry).expect("tool registry serializes");
     let digest = Sha256::digest(canonical);
