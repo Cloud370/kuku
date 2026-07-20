@@ -194,6 +194,106 @@ fn task_ledger_json_and_terminal_workspace_changes_are_stable() {
 }
 
 #[test]
+fn task_event_matrix_covers_each_constructible_projection_variant_and_reverse_class() {
+    use kuku::event::{
+        ActivityFact, ActivityKindFact, ActivityStatusFact, MessageFact, MessageRoleFact,
+        SkillsChangedFact,
+    };
+    let mut queued = run();
+    queued.state = RunState::Queued;
+    let mut terminal = run();
+    terminal.state = RunState::Completed;
+    terminal.summary = Some("done".into());
+    let message = MessageFact {
+        message_id: "msg_1".into(),
+        task_id: task_id(),
+        run_id: None,
+        role: MessageRoleFact::User,
+        text: "hi".into(),
+        finalized: true,
+        request_ids: vec![],
+        file_references: vec![],
+    };
+    let activity = ActivityFact {
+        activity_id: "act_1".into(),
+        run_id: run().run_id,
+        kind: ActivityKindFact::System,
+        title: "work".into(),
+        status: ActivityStatusFact::Completed,
+        detail: None,
+        file_references: vec![],
+    };
+    let controls = vec![
+        TaskEvent::TaskCreated {
+            task_id: task_id(),
+            workspace_id: workspace_id(),
+            title: "x".into(),
+            created_at: "t".into(),
+        },
+        TaskEvent::TaskTitleChanged { title: "y".into() },
+        TaskEvent::RunQueued {
+            run: queued.clone(),
+        },
+        TaskEvent::RunStopping {
+            run: {
+                let mut r = queued.clone();
+                r.state = RunState::Stopping;
+                r
+            },
+        },
+        TaskEvent::InteractionResolved {
+            interaction_id: "int_0123456789abcdef01234567".parse().unwrap(),
+            choice_id: "yes".into(),
+        },
+        TaskEvent::MessageAppended {
+            message: message.clone(),
+        },
+        TaskEvent::SkillsChanged {
+            selection: SkillsChangedFact {
+                tier_id: "tier:default".into(),
+                skill_ids: vec![],
+            },
+        },
+    ];
+    let activities = vec![
+        TaskEvent::RunStarted { run: run() },
+        TaskEvent::RunNeedsAttention {
+            run: {
+                let mut r = run();
+                r.state = RunState::NeedsAttention;
+                r
+            },
+        },
+        TaskEvent::RunCompleted {
+            run: terminal.clone(),
+        },
+        TaskEvent::MessagePatched {
+            message_id: "msg_1".into(),
+            append_text: "!".into(),
+            finalized: true,
+            request_ids: None,
+        },
+        TaskEvent::ActivityUpserted { activity },
+        TaskEvent::InteractionCancelled {
+            interaction_id: "int_0123456789abcdef01234567".parse().unwrap(),
+        },
+    ];
+    for event in controls {
+        assert_eq!(event.record_class(), TaskRecordClass::Control);
+        assert!(TaskActivityBatch::try_new(vec![event]).is_err());
+    }
+    for event in activities {
+        assert_eq!(event.record_class(), TaskRecordClass::Activity);
+        assert!(TaskTransaction::try_new(
+            TaskRevision::try_new(0).unwrap(),
+            receipt(),
+            vec![event]
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn task_event_record_class_table_names_every_variant() {
     let control = [
         "task_created",
