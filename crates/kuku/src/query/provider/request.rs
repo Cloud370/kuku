@@ -60,7 +60,7 @@ fn append_activity(events_path: &Path, event: TaskEvent) -> Result<()> {
         Error::InvalidEventStream(format!("invalid request lifecycle activity: {error}"))
     })?;
     EventStore::open(events_path)?
-        .append(EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)))?;
+        .append_synced(EventPayload::TaskLedger(TaskLedgerRecord::Activity(batch)))?;
     Ok(())
 }
 
@@ -156,6 +156,7 @@ fn failure_kind(kind: crate::provider::types::ProviderFailureKind) -> ProviderFa
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     use super::*;
     use crate::event::{RequestCause, RequestStarted};
@@ -177,6 +178,34 @@ mod tests {
         fn record_failed(&self, _failed: RequestFailed) -> Result<()> {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn lifecycle_recorder_notifies_durable_event_observers() {
+        let directory = tempfile::tempdir().unwrap();
+        let events_path = directory.path().join("events.jsonl");
+        let observed = Arc::new(AtomicUsize::new(0));
+        let store = EventStore::open(&events_path).unwrap();
+        store.register_observer({
+            let observed = Arc::clone(&observed);
+            Arc::new(move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        let recorder = LifecycleOnlyRecorder::new(&events_path);
+
+        recorder
+            .record_before_provider(RequestStarted {
+                scope: crate::event::test_request_scope("durable observer"),
+                cause: RequestCause::UserSubmission,
+                provider: ProviderFact::Anthropic,
+                model: "test-model".to_string(),
+                started_at: "2026-07-20T00:00:00Z".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        assert_eq!(EventStore::replay(events_path).unwrap().len(), 1);
     }
 
     #[tokio::test]

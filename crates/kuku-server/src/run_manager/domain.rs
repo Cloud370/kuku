@@ -188,6 +188,9 @@ impl TaskAggregate {
         cursor: kuku::event::Cursor,
         record: &TaskLedgerRecord,
     ) -> Result<Vec<TaskChange>, DomainError> {
+        if cursor.get() <= self.cursor.get() {
+            return Err(DomainError::LedgerCorrupt);
+        }
         let mut next = self.clone();
         next.cursor = cursor;
         let changes = next.apply_record_inner(record)?;
@@ -231,6 +234,15 @@ impl TaskAggregate {
         event: &TaskEvent,
         changes: &mut Vec<TaskChange>,
     ) -> Result<(), DomainError> {
+        match (self.task_id.as_ref(), event_task_id(event)) {
+            (None, Some(_)) if !matches!(event, TaskEvent::TaskCreated { .. }) => {
+                return Err(DomainError::LedgerCorrupt);
+            }
+            (Some(expected), Some(actual)) if expected != actual => {
+                return Err(DomainError::LedgerCorrupt);
+            }
+            _ => {}
+        }
         match event {
             TaskEvent::TaskCreated {
                 task_id,
@@ -600,6 +612,36 @@ impl TaskAggregate {
                 latest_submission_id: self.latest_submission_id.clone(),
             },
         }
+    }
+}
+
+fn event_task_id(event: &TaskEvent) -> Option<&TaskId> {
+    match event {
+        TaskEvent::TaskCreated { task_id, .. } => Some(task_id),
+        TaskEvent::RunQueued { run }
+        | TaskEvent::RunStarted { run }
+        | TaskEvent::RunNeedsAttention { run }
+        | TaskEvent::RunStopping { run }
+        | TaskEvent::RunCompleted { run }
+        | TaskEvent::RunStopped { run }
+        | TaskEvent::RunFailed { run }
+        | TaskEvent::RunInterrupted { run } => Some(&run.task_id),
+        TaskEvent::MessageAppended { message } => Some(&message.task_id),
+        TaskEvent::SkillLoaded(skill) => Some(&skill.execution.task_id),
+        TaskEvent::ReviewSubmissionReferenced { submission } => Some(&submission.task_id),
+        TaskEvent::ReviewSubmissionRecorded(submission) => Some(&submission.task_id),
+        TaskEvent::RequestSnapshot(snapshot) => Some(&snapshot.scope.execution.task_id),
+        TaskEvent::RequestStarted(request) => Some(&request.scope.execution.task_id),
+        TaskEvent::RequestCompleted(request) => Some(&request.scope.execution.task_id),
+        TaskEvent::RequestFailed(request) => Some(&request.scope.execution.task_id),
+        TaskEvent::ObservationRecorded(observation) => Some(&observation.scope.execution.task_id),
+        TaskEvent::TaskTitleChanged { .. }
+        | TaskEvent::InteractionOpened { .. }
+        | TaskEvent::InteractionResolved { .. }
+        | TaskEvent::InteractionCancelled { .. }
+        | TaskEvent::MessagePatched { .. }
+        | TaskEvent::ActivityUpserted { .. }
+        | TaskEvent::SkillsChanged { .. } => None,
     }
 }
 
