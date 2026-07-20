@@ -26,6 +26,20 @@ fn web_home_is_private_and_single_instance() {
     assert!(ServerInstanceLock::acquire(home.path()).is_ok());
 }
 
+#[test]
+fn accepted_digest_is_sha256() {
+    let digest = accepted_digest(b"abc");
+    let encoded = digest
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        encoded,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
 #[tokio::test]
 async fn server_revision_is_one_opaque_digest_for_all_platform_files() {
     let home = tempfile::tempdir().unwrap();
