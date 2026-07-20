@@ -184,7 +184,7 @@ impl Query {
             },
         };
         self.execution_scope = Some(execution_scope.clone());
-        let store = match task_context.as_ref() {
+        let mut store = match task_context.as_ref() {
             Some(context) => context.event_store.clone(),
             None => EventStore::open(&events_path)?,
         };

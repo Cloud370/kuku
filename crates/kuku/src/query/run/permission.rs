@@ -112,25 +112,23 @@ impl Run {
             }
         };
         let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
-        waiting
-            .pending
-            .event_store
-            .append(EventPayload::ToolResult {
-                execution: waiting.pending.execution_scope().clone(),
-                turn: waiting.pending.turn,
-                ts: now_timestamp()?,
-                conversation: None,
-                tool_call_id: tool_call.id.clone(),
-                status: result.status.clone(),
-                summary: result.summary.clone(),
-                model_content: result.model_content.clone(),
-                truncated: result.truncated,
-                files_read: Vec::new(),
-                files_changed: Vec::new(),
-                commands_run: Vec::new(),
-                memory_changed: None,
-                structured: result.structured.clone(),
-            })?;
+        let mut event_store = waiting.pending.event_store.clone();
+        event_store.append(EventPayload::ToolResult {
+            execution: waiting.pending.execution_scope().clone(),
+            turn: waiting.pending.turn,
+            ts: now_timestamp()?,
+            conversation: None,
+            tool_call_id: tool_call.id.clone(),
+            status: result.status.clone(),
+            summary: result.summary.clone(),
+            model_content: result.model_content.clone(),
+            truncated: result.truncated,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
+            structured: result.structured.clone(),
+        })?;
         Ok(result)
     }
 

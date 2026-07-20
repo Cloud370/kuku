@@ -52,7 +52,7 @@ fn prompt_snapshot(
 fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     let temp = tempfile::tempdir().unwrap();
     let events_path = temp.path().join("events.jsonl");
-    let store = EventStore::open(&events_path).unwrap();
+    let mut store = EventStore::open(&events_path).unwrap();
 
     store
         .append(EventPayload::MessageUser {
@@ -321,7 +321,7 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
 fn rebuilds_multi_group_tool_history_at_crate_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let events_path = temp.path().join("events.jsonl");
-    let store = EventStore::open(&events_path).unwrap();
+    let mut store = EventStore::open(&events_path).unwrap();
 
     store
         .append(EventPayload::MessageUser {

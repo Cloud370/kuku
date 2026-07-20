@@ -464,7 +464,7 @@ async fn agent_directory_notice_lists_open_conversations() {
     let session_id = "s_notice_open_conversations";
 
     let path = env.events_path(session_id);
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".into(),
@@ -576,7 +576,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
     let session_id = "s_notice_review_only";
 
     let path = env.events_path(session_id);
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".into(),

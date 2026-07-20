@@ -9,7 +9,7 @@ async fn cancel_when_idle_produces_turn_end() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
     {
-        let store = EventStore::open(&events_path).unwrap();
+        let mut store = EventStore::open(&events_path).unwrap();
         store
             .append(EventPayload::SessionCreated {
                 ts: "2026-05-20T00:00:00Z".to_string(),
@@ -256,7 +256,7 @@ async fn cancelled_tool_result_envelope_has_correct_fields() {
 async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
-    let store = EventStore::open(&events_path).unwrap();
+    let mut store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::TurnStarted {
             execution: crate::event::test_execution_scope(),
@@ -345,7 +345,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
     {
-        let store = EventStore::open(&events_path).unwrap();
+        let mut store = EventStore::open(&events_path).unwrap();
         store
             .append(EventPayload::SessionCreated {
                 ts: "2026-05-20T00:00:00Z".to_string(),

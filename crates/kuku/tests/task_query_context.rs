@@ -46,7 +46,7 @@ fn workspace_capability(
 }
 
 fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> EventStore {
-    let store = EventStore::open(path).unwrap();
+    let mut store = EventStore::open(path).unwrap();
     let receipt = kuku::event::CommandReceipt::new(
         "create-task",
         "digest",

@@ -40,6 +40,7 @@ pub(crate) fn write_tool_result(
     event_store: &EventStore,
     turn: u64,
 ) -> crate::error::Result<Option<serde_json::Value>> {
+    let mut event_store = event_store.clone();
     let structured = finalize_persisted_tool_result(event_store.next_id(), result);
     let stored = event_store.append(crate::event::EventPayload::ToolResult {
         execution: execution.clone(),

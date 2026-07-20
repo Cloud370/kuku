@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 fn write_events(dir: &Path, payloads: &[EventPayload]) -> std::path::PathBuf {
     let path = dir.join("events.jsonl");
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
     for payload in payloads {
         store.append(payload.clone()).unwrap();
     }

@@ -23,6 +23,7 @@ pub(super) fn persist_blocked_tool_result(
     summary: &str,
 ) -> Result<()> {
     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
+    let mut store = store.clone();
     store.append(EventPayload::ToolResult {
         execution: execution.clone(),
         turn,

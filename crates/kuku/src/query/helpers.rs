@@ -183,6 +183,7 @@ pub(super) fn gate_choice(source: &crate::permission::GateSource) -> PermissionC
 // ---------- Event append helpers ----------
 
 fn append_event(store: &EventStore, payload: EventPayload) -> Result<()> {
+    let mut store = store.clone();
     store.append(payload)?;
     Ok(())
 }

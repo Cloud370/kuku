@@ -80,7 +80,7 @@ fn prompt_snapshot(turn: u64, content: &str) -> EventPayload {
 fn appends_events_with_monotonic_ids() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
 
     let first = store.append(session_created()).unwrap();
     let second = store
@@ -144,7 +144,7 @@ fn truncates_partial_tail_before_appending_after_reopen() {
     )
     .unwrap();
 
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
     let appended = store
         .append(EventPayload::TurnStarted {
             execution: common::execution_scope(),
@@ -179,7 +179,7 @@ fn open_creates_parent_directories() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("nested").join("events.jsonl");
 
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
 
     assert_eq!(store.append(session_created()).unwrap().id, 1);
 }
@@ -226,7 +226,7 @@ fn skips_blank_lines() {
 fn append_writes_newline_terminated_jsonl() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
 
     store.append(session_created()).unwrap();
 
@@ -238,8 +238,8 @@ fn append_writes_newline_terminated_jsonl() {
 fn concurrent_handles_do_not_reuse_the_same_event_id() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let left = EventStore::open(&path).unwrap();
-    let right = EventStore::open(&path).unwrap();
+    let mut left = EventStore::open(&path).unwrap();
+    let mut right = EventStore::open(&path).unwrap();
 
     let first = left.append(session_created()).unwrap();
     let second = right
@@ -264,7 +264,7 @@ fn concurrent_handles_do_not_reuse_the_same_event_id() {
 fn concurrent_processes_do_not_reuse_the_same_event_id() {
     if std::env::var("KUKU_EVENT_STORE_CHILD").ok().as_deref() == Some("1") {
         let path = std::env::var("KUKU_EVENT_STORE_PATH").unwrap();
-        let store = EventStore::open(&path).unwrap();
+        let mut store = EventStore::open(&path).unwrap();
         store.append(session_created()).unwrap();
         return;
     }
@@ -299,7 +299,7 @@ fn concurrent_processes_do_not_reuse_the_same_event_id() {
 fn fact_only_events_roundtrip_without_observability_fields() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let store = EventStore::open(&path).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
 
     store.append(session_created()).unwrap();
     store
@@ -736,7 +736,7 @@ fn concurrent_async_appends_keep_contiguous_ids_and_valid_jsonl() {
             let path = Arc::clone(&path);
             tasks.push(tokio::spawn(async move {
                 tokio::task::spawn_blocking(move || {
-                    let store = EventStore::open(&*path).unwrap();
+                    let mut store = EventStore::open(&*path).unwrap();
                     store
                         .append(EventPayload::TurnStarted {
                             execution: common::execution_scope(),

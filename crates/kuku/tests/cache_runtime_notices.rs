@@ -180,7 +180,7 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
 }
 
 fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, session_id: &str) {
-    let store = EventStore::open(events_path).unwrap();
+    let mut store = EventStore::open(events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".into(),
