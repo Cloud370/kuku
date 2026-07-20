@@ -6,6 +6,7 @@ pub mod replay;
 mod request_evidence;
 mod request_snapshot;
 pub mod revert;
+mod usage;
 
 pub use assembly::{
     assemble_context, restore_prompt_snapshot, ContextAssembly, ContextInput, EnvironmentSource,
@@ -30,3 +31,4 @@ pub use revert::{
     list_user_turns, rollback_turn, undo_rollback, ActiveRollback, FileRestore, RevertPlan,
     RollbackResult, UndoRollbackResult, UserTurnEntry,
 };
+pub use usage::{UsageAggregate, UsageAggregateSummary, UsageReductionError};
