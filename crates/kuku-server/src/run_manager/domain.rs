@@ -19,6 +19,7 @@ use crate::api::{
 pub enum DomainError {
     TaskNotCreated,
     TaskNotFound,
+    WorkspaceNotFound,
     InvalidTransition { from: RunState, to: RunState },
     TaskBusy,
     IdempotencyConflict,
@@ -28,6 +29,7 @@ pub enum DomainError {
     StorageExhausted,
     InvalidRequest,
     PayloadTooLarge,
+    RunNotActive,
 }
 
 impl std::fmt::Display for DomainError {
@@ -35,6 +37,7 @@ impl std::fmt::Display for DomainError {
         match self {
             Self::TaskNotCreated => formatter.write_str("task has not been created"),
             Self::TaskNotFound => formatter.write_str("task does not exist"),
+            Self::WorkspaceNotFound => formatter.write_str("workspace does not exist"),
             Self::InvalidTransition { from, to } => {
                 write!(
                     formatter,
@@ -51,6 +54,7 @@ impl std::fmt::Display for DomainError {
             Self::StorageExhausted => formatter.write_str("storage exhausted"),
             Self::InvalidRequest => formatter.write_str("invalid request"),
             Self::PayloadTooLarge => formatter.write_str("payload too large"),
+            Self::RunNotActive => formatter.write_str("run is not active"),
         }
     }
 }
@@ -61,6 +65,7 @@ impl DomainError {
     pub fn code(&self) -> ApiErrorCode {
         match self {
             Self::TaskNotCreated | Self::TaskNotFound => ApiErrorCode::TaskNotFound,
+            Self::WorkspaceNotFound => ApiErrorCode::WorkspaceNotFound,
             Self::InvalidTransition { .. } | Self::LedgerCorrupt => ApiErrorCode::Internal,
             Self::TaskBusy => ApiErrorCode::TaskBusy,
             Self::IdempotencyConflict => ApiErrorCode::IdempotencyConflict,
@@ -69,6 +74,7 @@ impl DomainError {
             Self::StorageExhausted => ApiErrorCode::StorageExhausted,
             Self::InvalidRequest => ApiErrorCode::InvalidRequest,
             Self::PayloadTooLarge => ApiErrorCode::PayloadTooLarge,
+            Self::RunNotActive => ApiErrorCode::RunNotActive,
         }
     }
 
@@ -88,6 +94,7 @@ pub struct TaskAggregate {
     workspace_id: Option<WorkspaceId>,
     title: String,
     created_at: String,
+    updated_at: String,
     revision: TaskRevision,
     cursor: kuku::event::Cursor,
     runs: BTreeMap<RunId, RunEntry>,
@@ -106,6 +113,7 @@ impl Default for TaskAggregate {
             workspace_id: None,
             title: String::new(),
             created_at: String::new(),
+            updated_at: String::new(),
             revision: TaskRevision::try_new(0).expect("zero is valid"),
             cursor: kuku::event::Cursor::try_new(0).expect("zero is valid"),
             runs: BTreeMap::new(),
@@ -136,14 +144,45 @@ impl TaskAggregate {
         &self.timeline
     }
 
+    pub fn interaction_is_pending(&self, interaction_id: &InteractionId) -> bool {
+        self.interactions
+            .get(interaction_id)
+            .is_some_and(|interaction| interaction.selected_choice_id.is_none())
+    }
+
+    pub fn set_updated_at(&mut self, updated_at: String) {
+        self.updated_at = updated_at;
+    }
+
     pub fn apply_record(
         &mut self,
         cursor: kuku::event::Cursor,
         record: &TaskLedgerRecord,
     ) -> Result<Vec<TaskChange>, DomainError> {
+        let mut next = self.clone();
+        next.cursor = cursor;
+        let changes = next.apply_record_inner(record)?;
+        *self = next;
+        Ok(changes)
+    }
+
+    fn apply_record_inner(
+        &mut self,
+        record: &TaskLedgerRecord,
+    ) -> Result<Vec<TaskChange>, DomainError> {
         let mut changes = Vec::new();
         match record {
             TaskLedgerRecord::Control(transaction) => {
+                let expected = if self.task_id.is_none() {
+                    TaskRevision::try_new(0).map_err(|_| DomainError::StorageExhausted)?
+                } else {
+                    self.revision
+                        .checked_next()
+                        .map_err(|_| DomainError::StorageExhausted)?
+                };
+                if transaction.task_revision() != expected {
+                    return Err(DomainError::LedgerCorrupt);
+                }
                 self.revision = transaction.task_revision();
                 for event in transaction.events() {
                     self.apply_event(event, &mut changes)?;
@@ -155,7 +194,6 @@ impl TaskAggregate {
                 }
             }
         }
-        self.cursor = cursor;
         Ok(changes)
     }
 
@@ -178,6 +216,7 @@ impl TaskAggregate {
                 self.workspace_id = Some(workspace_id.clone());
                 self.title = title.clone();
                 self.created_at = created_at.clone();
+                self.updated_at = created_at.clone();
             }
             TaskEvent::TaskTitleChanged { title } => self.title = title.clone(),
             TaskEvent::RunQueued { run }
@@ -192,6 +231,7 @@ impl TaskAggregate {
                 self.interactions
                     .insert(interaction.interaction_id.clone(), interaction.clone());
                 self.set_run_state(&interaction.run_id, RunState::NeedsAttention)?;
+                changes.push(self.run_state_change());
                 changes.push(TaskChange::InteractionUpserted {
                     interaction: interaction_projection(interaction, self.cursor),
                 });
@@ -217,6 +257,7 @@ impl TaskAggregate {
                     .any(|value| value.run_id == run_id && value.selected_choice_id.is_none())
                 {
                     self.set_run_state(&run_id, RunState::Running)?;
+                    changes.push(self.run_state_change());
                 }
                 changes.push(TaskChange::InteractionUpserted {
                     interaction: interaction_projection(&interaction, self.cursor),
@@ -236,6 +277,11 @@ impl TaskAggregate {
                 });
             }
             TaskEvent::MessageAppended { message } => {
+                if self.title == "New task" && message.role == MessageRoleFact::User {
+                    if let Some(title) = first_message_title(&message.text) {
+                        self.title = title;
+                    }
+                }
                 let item =
                     TimelineItemProjection::Message(message_projection(message, self.cursor));
                 self.timeline.push(item.clone());
@@ -374,6 +420,14 @@ impl TaskAggregate {
         Ok(())
     }
 
+    fn run_state_change(&self) -> TaskChange {
+        TaskChange::RunStateChanged {
+            task: self.summary(),
+            active_run: self.active_run_projection().map(Box::new),
+            latest_run: self.latest_run_projection().map(Box::new),
+        }
+    }
+
     pub fn summary(&self) -> TaskSummary {
         let state = self
             .active_run_projection()
@@ -390,7 +444,7 @@ impl TaskAggregate {
             }),
             title: self.title.clone(),
             state,
-            updated_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
             active_run_id: self.active_run_projection().map(|run| run.run_id),
             latest_run_id: self.latest_run_projection().map(|run| run.run_id),
         }
@@ -400,27 +454,44 @@ impl TaskAggregate {
         if self.task_id.is_none() {
             return Err(DomainError::TaskNotCreated);
         }
-        let timeline_next_cursor = if self.timeline.len() > 500 {
-            crate::api::PageCursor::try_new(format!(
-                "timeline:{}:500:{}:{}",
-                self.task_id.as_ref().expect("created task has an id"),
-                self.timeline.len(),
-                self.timeline.len() - 500
-            ))
-            .ok()
-        } else {
-            None
-        };
-        let timeline = if self.timeline.len() > 500 {
-            self.timeline[self.timeline.len() - 500..].to_vec()
-        } else {
-            self.timeline.clone()
-        };
-        let encoded_size = serde_json::to_vec(&timeline).map_err(|_| DomainError::LedgerCorrupt)?.len();
-        if encoded_size > 16 * 1024 * 1024 {
-            return Err(DomainError::PayloadTooLarge);
+        let (start, timeline) = bounded_timeline_suffix(
+            &self.timeline,
+            self.timeline.len(),
+            500,
+            |candidate_start| {
+                let cursor = self.timeline_cursor(candidate_start)?;
+                serde_json::to_vec(&self.projection_value(Vec::new(), cursor))
+                    .map(|encoded| encoded.len())
+                    .map_err(|_| DomainError::LedgerCorrupt)
+            },
+        )?;
+        Ok(self.projection_value(timeline, self.timeline_cursor(start)?))
+    }
+
+    fn timeline_cursor(&self, start: usize) -> Result<Option<PageCursor>, DomainError> {
+        if start == 0 {
+            return Ok(None);
         }
-        Ok(TaskProjection {
+        Ok(Some(super::store::timeline_cursor(
+            super::store::TimelineCursor {
+                task_id: self
+                    .task_id
+                    .as_ref()
+                    .expect("created task has an id")
+                    .clone(),
+                limit: 500,
+                snapshot_cursor: self.cursor.get(),
+                end: start,
+            },
+        )?))
+    }
+
+    fn projection_value(
+        &self,
+        timeline: Vec<TimelineItemProjection>,
+        timeline_next_cursor: Option<PageCursor>,
+    ) -> TaskProjection {
+        TaskProjection {
             api_version: ApiVersion,
             task_revision: self.revision,
             cursor: self.cursor,
@@ -436,8 +507,80 @@ impl TaskAggregate {
                 total_submissions: self.review_total,
                 latest_submission_id: self.latest_submission_id.clone(),
             },
-        })
+        }
     }
+}
+
+pub(super) fn bounded_timeline_suffix(
+    items: &[TimelineItemProjection],
+    end: usize,
+    limit: usize,
+    mut envelope_size: impl FnMut(usize) -> Result<usize, DomainError>,
+) -> Result<(usize, Vec<TimelineItemProjection>), DomainError> {
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    if end > items.len() {
+        return Err(DomainError::InvalidRequest);
+    }
+    let mut start = end;
+    let mut encoded_bytes = 2_usize;
+    while start > 0 && end - start < limit {
+        let item_bytes = serde_json::to_vec(&items[start - 1])
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .len();
+        let separator = usize::from(start < end);
+        let candidate_start = start - 1;
+        let candidate_bytes = encoded_bytes + separator + item_bytes;
+        let envelope_bytes = envelope_size(candidate_start)?;
+        if envelope_bytes - 2 + candidate_bytes > MAX_BYTES {
+            break;
+        }
+        encoded_bytes = candidate_bytes;
+        start = candidate_start;
+    }
+    if start == end && end > 0 {
+        return Err(DomainError::PayloadTooLarge);
+    }
+    Ok((start, items[start..end].to_vec()))
+}
+
+fn first_message_title(message: &str) -> Option<String> {
+    let line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    Some(line.chars().take(80).collect())
+}
+
+pub(super) fn system_time_rfc3339(time: std::time::SystemTime) -> Result<String, DomainError> {
+    let elapsed = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| DomainError::StorageExhausted)?;
+    let seconds = elapsed.as_secs();
+    let days = (seconds / 86_400) as i64;
+    let second_of_day = seconds % 86_400;
+    let (year, month, day) = civil_date(days);
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:09}Z",
+        second_of_day / 3_600,
+        second_of_day % 3_600 / 60,
+        second_of_day % 60,
+        elapsed.subsec_nanos()
+    ))
+}
+
+fn civil_date(days_since_epoch: i64) -> (i64, u32, u32) {
+    let days = days_since_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year, month as u32, day as u32)
 }
 
 fn legal_transition(from: RunState, to: RunState) -> bool {

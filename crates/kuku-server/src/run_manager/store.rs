@@ -1,22 +1,25 @@
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use kuku::event::{
-    CommandReceipt, CommandResult, MessageFact, MessageRoleFact, RunFact, RunState, TaskEvent,
-    TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
+    CommandIntent, CommandReceipt, CommandResult, MessageFact, MessageRoleFact, RunFact, RunState,
+    TaskEvent, TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction,
 };
 
-use super::domain::{DomainError, TaskAggregate};
-use super::idempotency::IdempotencyIndex;
+use crate::api::{
+    ApiErrorCode, ApiVersion, CommandAccepted, CreateTaskRequest, CreateTaskResponse,
+    ListTasksQuery, PageCursor, SubmitRunResponse, TaskPage, TaskProjection, TimelinePage,
+    TimelineQuery,
+};
+use crate::platform::WorkspaceRegistry;
+
+use super::domain::{bounded_timeline_suffix, DomainError, TaskAggregate};
+use super::idempotency::DurableReceipt;
 use super::repository::TaskRepository;
 
-#[derive(Debug, Clone)]
-pub struct CreateTaskCommand {
-    pub workspace_id: WorkspaceId,
-    pub idempotency_key: String,
-    pub title: String,
-}
+pub type CreateTaskCommand = CreateTaskRequest;
 
 #[derive(Debug, Clone)]
 pub struct SubmitRunCommand {
@@ -44,57 +47,66 @@ pub struct ResolveInteractionCommand {
     pub idempotency_key: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskCommandService {
     repository: TaskRepository,
-    gate: Arc<Mutex<()>>,
-    idempotency: Arc<Mutex<IdempotencyIndex>>,
+    workspaces: Option<Arc<WorkspaceRegistry>>,
+}
+
+impl std::fmt::Debug for TaskCommandService {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TaskCommandService")
+            .finish_non_exhaustive()
+    }
 }
 
 impl TaskCommandService {
-    pub fn new(repository: TaskRepository) -> Self {
-        let mut idempotency = IdempotencyIndex::default();
-        if let Ok(task_ids) = repository.task_ids() {
-            for task_id in task_ids {
-                if let Ok(events) = repository.replay(&task_id) {
-                    for event in events {
-                        if let kuku::event::EventPayload::TaskLedger(TaskLedgerRecord::Control(transaction)) = event.payload {
-                            idempotency.insert(
-                                transaction.command().idempotency_key().to_owned(),
-                                transaction.command().intent_digest().to_owned(),
-                                task_id.clone(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
+    pub fn new(repository: TaskRepository, workspaces: Arc<WorkspaceRegistry>) -> Self {
         Self {
             repository,
-            gate: Arc::new(Mutex::new(())),
-            idempotency: Arc::new(Mutex::new(idempotency)),
+            workspaces: Some(workspaces),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_unchecked(repository: TaskRepository) -> Self {
+        Self {
+            repository,
+            workspaces: None,
         }
     }
 
     pub async fn create_task(
         &self,
         command: CreateTaskCommand,
-    ) -> Result<TaskAggregate, DomainError> {
-        let _gate = self.gate.lock().await;
-        let digest = format!("{}:{}", command.workspace_id, command.title);
-        if let Some(task_id) = self
-            .idempotency
-            .lock()
-            .await
-            .lookup(&command.idempotency_key, &digest)
-            .map_err(|_| DomainError::LedgerCorrupt)?
-        {
-            return self.repository.rebuild(&task_id);
+    ) -> Result<CreateTaskResponse, DomainError> {
+        let _create = self.repository.create_guard().await;
+        let _key = self.repository.key_guard(&command.idempotency_key).await;
+        let intent = CommandIntent::CreateTask {
+            workspace_id: command.workspace_id.clone(),
+        };
+        let digest = intent_digest(None, &intent)?;
+        if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
+            return self.replay_create(receipt);
         }
+        let _lease = if let Some(workspaces) = &self.workspaces {
+            Some(
+                workspaces
+                    .lease_for_task(&command.workspace_id)
+                    .await
+                    .map_err(|error| match error.code() {
+                        ApiErrorCode::WorkspaceNotFound => DomainError::WorkspaceNotFound,
+                        _ => DomainError::LedgerCorrupt,
+                    })?,
+            )
+        } else {
+            None
+        };
         let task_id = TaskId::try_new().map_err(|_| DomainError::StorageExhausted)?;
         let receipt = CommandReceipt::new(
-            command.idempotency_key.clone(),
-            digest.clone(),
+            command.idempotency_key,
+            digest,
             CommandResult::TaskCreated {
                 task_id: task_id.clone(),
             },
@@ -106,43 +118,55 @@ impl TaskCommandService {
             vec![TaskEvent::TaskCreated {
                 task_id: task_id.clone(),
                 workspace_id: command.workspace_id,
-                title: command.title,
-                created_at: "1970-01-01T00:00:00Z".to_string(),
+                title: "New task".to_owned(),
+                created_at: current_timestamp()?,
             }],
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
-            .append(&task_id, TaskLedgerRecord::Control(transaction))?;
-        self.idempotency
-            .lock()
-            .await
-            .insert(command.idempotency_key, digest, task_id.clone());
-        self.repository.rebuild(&task_id)
+            .append_initial(&task_id, TaskLedgerRecord::Control(transaction))?;
+        let aggregate = self.repository.publish(&task_id)?;
+        Ok(CreateTaskResponse {
+            api_version: ApiVersion,
+            projection: aggregate.projection()?,
+            replayed: false,
+        })
     }
 
-    pub async fn projection(
-        &self,
-        task_id: &TaskId,
-    ) -> Result<crate::api::TaskProjection, DomainError> {
+    fn replay_create(&self, receipt: DurableReceipt) -> Result<CreateTaskResponse, DomainError> {
+        let CommandResult::TaskCreated { task_id } = receipt.result else {
+            return Err(DomainError::LedgerCorrupt);
+        };
+        if task_id != receipt.task_id {
+            return Err(DomainError::LedgerCorrupt);
+        }
+        Ok(CreateTaskResponse {
+            api_version: ApiVersion,
+            projection: self.repository.rebuild(&task_id)?.projection()?,
+            replayed: true,
+        })
+    }
+
+    pub async fn projection(&self, task_id: &TaskId) -> Result<TaskProjection, DomainError> {
         self.repository.rebuild(task_id)?.projection()
     }
 
-    pub async fn submit(&self, command: SubmitRunCommand) -> Result<TaskAggregate, DomainError> {
-        let _gate = self.gate.lock().await;
-        let aggregate = self.repository.rebuild(&command.task_id)?;
-        let digest = format!(
-            "{}:{}:{}:{:?}",
-            command.task_id, command.message, command.tier_id, command.skill_ids
-        );
-        if let Some(task_id) = self
-            .idempotency
-            .lock()
-            .await
-            .lookup(&command.idempotency_key, &digest)
-            .map_err(|_| DomainError::IdempotencyConflict)?
-        {
-            return self.repository.rebuild(&task_id);
+    pub async fn submit(
+        &self,
+        command: SubmitRunCommand,
+    ) -> Result<SubmitRunResponse, DomainError> {
+        let intent = CommandIntent::SubmitMessage {
+            message: command.message.clone(),
+            tier_id: command.tier_id.clone(),
+            skill_ids: command.skill_ids.clone(),
+        };
+        let digest = intent_digest(Some(&command.task_id), &intent)?;
+        let _key = self.repository.key_guard(&command.idempotency_key).await;
+        let _task = self.repository.task_guard(&command.task_id).await;
+        if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
+            return replay_submit(receipt, &command.task_id);
         }
+        let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
             return Err(DomainError::StaleCommand);
         }
@@ -150,19 +174,21 @@ impl TaskCommandService {
             return Err(DomainError::TaskBusy);
         }
         let run_id = kuku::event::RunId::try_new().map_err(|_| DomainError::StorageExhausted)?;
+        let next_revision = command
+            .expected_task_revision
+            .checked_next()
+            .map_err(|_| DomainError::StorageExhausted)?;
         let receipt = CommandReceipt::new(
-            command.idempotency_key.clone(),
-            digest.clone(),
+            command.idempotency_key,
+            digest,
             CommandResult::RunSubmitted {
                 run_id: run_id.clone(),
             },
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
+        let started_at = current_timestamp()?;
         let transaction = TaskTransaction::try_new(
-            command
-                .expected_task_revision
-                .checked_next()
-                .map_err(|_| DomainError::StorageExhausted)?,
+            next_revision,
             receipt,
             vec![
                 TaskEvent::MessageAppended {
@@ -185,10 +211,10 @@ impl TaskCommandService {
                 },
                 TaskEvent::RunQueued {
                     run: RunFact {
-                        run_id,
+                        run_id: run_id.clone(),
                         task_id: command.task_id.clone(),
                         state: RunState::Queued,
-                        started_at: "1970-01-01T00:00:00Z".into(),
+                        started_at,
                         finished_at: None,
                         summary: None,
                         checks: None,
@@ -201,109 +227,151 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(transaction))?;
-        self.idempotency.lock().await.insert(
-            command.idempotency_key,
-            digest,
-            command.task_id.clone(),
-        );
-        self.repository.rebuild(&command.task_id)
+        self.repository.publish(&command.task_id)?;
+        Ok(SubmitRunResponse {
+            api_version: ApiVersion,
+            task_id: command.task_id,
+            run_id,
+            task_revision: next_revision,
+            replayed: false,
+        })
     }
 
     pub async fn list_tasks(
         &self,
-        workspace_id: &WorkspaceId,
+        workspace_id: &kuku::event::WorkspaceId,
         search: Option<&str>,
-    ) -> Result<crate::api::TaskPage, DomainError> {
-        let search = search
-            .map(|value| value.trim().to_lowercase())
-            .filter(|value| !value.is_empty());
-        let mut items = Vec::new();
-        for task_id in self.repository.task_ids()? {
-            let summary = self.repository.rebuild(&task_id)?.summary();
-            if &summary.workspace_id != workspace_id {
-                continue;
-            }
-            if search
-                .as_ref()
-                .is_some_and(|query| !summary.title.to_lowercase().contains(query))
-            {
-                continue;
-            }
-            items.push(summary);
+    ) -> Result<TaskPage, DomainError> {
+        self.list_tasks_query(ListTasksQuery {
+            workspace_id: workspace_id.clone(),
+            search: search.map(str::to_owned),
+            cursor: None,
+            limit: 100,
+        })
+        .await
+    }
+
+    pub async fn list_tasks_query(&self, query: ListTasksQuery) -> Result<TaskPage, DomainError> {
+        if query.limit == 0 || query.limit > 100 {
+            return Err(DomainError::InvalidRequest);
         }
+        let normalized = normalize_search(query.search.as_deref())?;
+        let mut items: Vec<_> = self
+            .repository
+            .summaries()?
+            .into_iter()
+            .filter(|summary| summary.workspace_id == query.workspace_id)
+            .filter(|summary| {
+                normalized
+                    .as_ref()
+                    .is_none_or(|search| summary.title.to_lowercase().contains(search))
+            })
+            .collect();
         items.sort_by(|left, right| {
             right
                 .updated_at
                 .cmp(&left.updated_at)
                 .then_with(|| right.task_id.cmp(&left.task_id))
         });
-        Ok(crate::api::TaskPage {
-            api_version: crate::api::ApiVersion,
-            items,
-            next_cursor: None,
-        })
-    }
-
-    pub async fn list_tasks_query(
-        &self,
-        query: crate::api::ListTasksQuery,
-    ) -> Result<crate::api::TaskPage, DomainError> {
-        if query.limit == 0 || query.limit > 100 {
-            return Err(DomainError::InvalidRequest);
-        }
-        let mut page = self.list_tasks(&query.workspace_id, query.search.as_deref()).await?;
-        let normalized = query.search.clone().unwrap_or_default().trim().to_lowercase();
         if let Some(cursor) = &query.cursor {
-            let prefix = format!("task-list:v1:{}:{}:{}:", query.workspace_id, normalized, query.limit);
-            let boundary = cursor.as_str().strip_prefix(&prefix).ok_or(DomainError::InvalidRequest)?;
-            let boundary = TaskId::parse(boundary).map_err(|_| DomainError::InvalidRequest)?;
-            let position = page.items.iter().position(|item| item.task_id == boundary).ok_or(DomainError::InvalidRequest)?;
-            page.items.drain(..=position);
+            let cursor = parse_list_cursor(cursor)?;
+            if cursor.workspace_id != query.workspace_id
+                || cursor.search != normalized
+                || cursor.limit != query.limit
+            {
+                return Err(DomainError::InvalidRequest);
+            }
+            items.retain(|summary| {
+                (&summary.updated_at, &summary.task_id) < (&cursor.updated_at, &cursor.task_id)
+            });
         }
-        let has_more = page.items.len() > query.limit as usize;
-        page.items.truncate(query.limit as usize);
-        if has_more {
-            page.next_cursor = crate::api::PageCursor::try_new(format!(
-                "task-list:v1:{}:{}:{}:{}",
-                query.workspace_id,
-                normalized,
-                query.limit,
-                page.items.last().map(|item| item.task_id.as_str()).unwrap_or_default()
-            )).ok();
-        }
-        Ok(page)
+        let has_more = items.len() > usize::from(query.limit);
+        items.truncate(usize::from(query.limit));
+        let next_cursor = if has_more {
+            let boundary = items.last().ok_or(DomainError::LedgerCorrupt)?;
+            Some(list_cursor(ListCursor {
+                workspace_id: query.workspace_id,
+                search: normalized,
+                limit: query.limit,
+                updated_at: boundary.updated_at.clone(),
+                task_id: boundary.task_id.clone(),
+            })?)
+        } else {
+            None
+        };
+        Ok(TaskPage {
+            api_version: ApiVersion,
+            items,
+            next_cursor,
+        })
     }
 
     pub async fn timeline(
         &self,
         task_id: &TaskId,
-        query: crate::api::TimelineQuery,
-    ) -> Result<crate::api::TimelinePage, DomainError> {
+        query: TimelineQuery,
+    ) -> Result<TimelinePage, DomainError> {
         if query.limit == 0 || query.limit > 500 {
             return Err(DomainError::InvalidRequest);
         }
-        let aggregate = self.repository.rebuild(task_id)?;
-        let all = aggregate.timeline_items();
-        let (snapshot_len, end) = if let Some(cursor) = &query.before {
-            let prefix = format!("timeline:{}:{}:", task_id, query.limit);
-            let suffix = cursor.as_str().strip_prefix(&prefix).ok_or(DomainError::InvalidRequest)?;
-            let (snapshot, end) = suffix.split_once(':').ok_or(DomainError::InvalidRequest)?;
-            let snapshot = snapshot.parse::<usize>().map_err(|_| DomainError::InvalidRequest)?;
-            let end = end.parse::<usize>().map_err(|_| DomainError::InvalidRequest)?;
-            if end > snapshot || snapshot > all.len() { return Err(DomainError::InvalidRequest); }
-            (snapshot, end)
+        let (aggregate, end) = if let Some(cursor) = &query.before {
+            let cursor = parse_timeline_cursor(cursor)?;
+            if cursor.task_id != *task_id || cursor.limit != query.limit {
+                return Err(DomainError::InvalidRequest);
+            }
+            let aggregate = self
+                .repository
+                .rebuild_at(task_id, cursor.snapshot_cursor)?;
+            if cursor.end > aggregate.timeline_items().len() {
+                return Err(DomainError::InvalidRequest);
+            }
+            (aggregate, cursor.end)
         } else {
-            (all.len(), all.len())
+            let aggregate = self.repository.rebuild(task_id)?;
+            let end = aggregate.timeline_items().len();
+            (aggregate, end)
         };
-        let start = end.saturating_sub(query.limit as usize);
-        let items = all[start..end].to_vec();
-        Ok(crate::api::TimelinePage {
-            api_version: crate::api::ApiVersion,
+        let snapshot_cursor = aggregate.cursor().get();
+        let (start, items) = bounded_timeline_suffix(
+            aggregate.timeline_items(),
+            end,
+            usize::from(query.limit),
+            |candidate_start| {
+                let next_cursor = if candidate_start > 0 {
+                    Some(timeline_cursor(TimelineCursor {
+                        task_id: task_id.clone(),
+                        limit: query.limit,
+                        snapshot_cursor,
+                        end: candidate_start,
+                    })?)
+                } else {
+                    None
+                };
+                serde_json::to_vec(&TimelinePage {
+                    api_version: ApiVersion,
+                    task_id: task_id.clone(),
+                    items: Vec::new(),
+                    next_cursor,
+                })
+                .map(|encoded| encoded.len())
+                .map_err(|_| DomainError::LedgerCorrupt)
+            },
+        )?;
+        let next_cursor = if start > 0 {
+            Some(timeline_cursor(TimelineCursor {
+                task_id: task_id.clone(),
+                limit: query.limit,
+                snapshot_cursor,
+                end: start,
+            })?)
+        } else {
+            None
+        };
+        Ok(TimelinePage {
+            api_version: ApiVersion,
             task_id: task_id.clone(),
             items,
-            next_cursor: if start > 0 {
-                crate::api::PageCursor::try_new(format!("timeline:{}:{}:{}:{}", task_id, query.limit, snapshot_len, start)).ok()
-            } else { None },
+            next_cursor,
         })
     }
 
@@ -312,16 +380,22 @@ impl TaskCommandService {
         task_id: &TaskId,
         events: Vec<TaskEvent>,
     ) -> Result<TaskAggregate, DomainError> {
-        let _gate = self.gate.lock().await;
+        let _task = self.repository.task_guard(task_id).await;
         let batch = kuku::event::TaskActivityBatch::try_new(events)
             .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(task_id, TaskLedgerRecord::Activity(batch))?;
-        self.repository.rebuild(task_id)
+        self.repository.publish(task_id)
     }
 
-    pub async fn stop(&self, command: StopRunCommand) -> Result<TaskAggregate, DomainError> {
-        let _gate = self.gate.lock().await;
+    pub async fn stop(&self, command: StopRunCommand) -> Result<CommandAccepted, DomainError> {
+        let intent = CommandIntent::Stop;
+        let digest = intent_digest(Some(&command.task_id), &intent)?;
+        let _key = self.repository.key_guard(&command.idempotency_key).await;
+        let _task = self.repository.task_guard(&command.task_id).await;
+        if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
+            return replay_accepted(receipt, &command.task_id, CommandResult::Stopped);
+        }
         let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
             return Err(DomainError::StaleCommand);
@@ -329,18 +403,15 @@ impl TaskCommandService {
         let active = aggregate
             .projection()?
             .active_run
-            .ok_or(DomainError::TaskNotFound)?;
-        let receipt = CommandReceipt::new(
-            command.idempotency_key,
-            format!("stop:{}", command.task_id),
-            CommandResult::Stopped,
-        )
-        .map_err(|_| DomainError::LedgerCorrupt)?;
+            .ok_or(DomainError::RunNotActive)?;
+        let next_revision = command
+            .expected_task_revision
+            .checked_next()
+            .map_err(|_| DomainError::StorageExhausted)?;
+        let receipt = CommandReceipt::new(command.idempotency_key, digest, CommandResult::Stopped)
+            .map_err(|_| DomainError::LedgerCorrupt)?;
         let record = TaskTransaction::try_new(
-            command
-                .expected_task_revision
-                .checked_next()
-                .map_err(|_| DomainError::StorageExhausted)?,
+            next_revision,
             receipt,
             vec![TaskEvent::RunStopping {
                 run: RunFact {
@@ -359,29 +430,52 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        self.repository.rebuild(&command.task_id)
+        self.repository.publish(&command.task_id)?;
+        Ok(CommandAccepted {
+            api_version: ApiVersion,
+            task_id: command.task_id,
+            task_revision: next_revision,
+            replayed: false,
+        })
     }
 
     pub async fn resolve_interaction(
         &self,
         command: ResolveInteractionCommand,
-    ) -> Result<TaskAggregate, DomainError> {
-        let _gate = self.gate.lock().await;
+    ) -> Result<CommandAccepted, DomainError> {
+        let intent = CommandIntent::ResolveInteraction {
+            interaction_id: command.interaction_id.clone(),
+            choice_id: command.choice_id.clone(),
+        };
+        let digest = intent_digest(Some(&command.task_id), &intent)?;
+        let _key = self.repository.key_guard(&command.idempotency_key).await;
+        let _task = self.repository.task_guard(&command.task_id).await;
+        if let Some(receipt) = self.repository.receipt(&command.idempotency_key, &digest)? {
+            return replay_accepted(
+                receipt,
+                &command.task_id,
+                CommandResult::InteractionResolved,
+            );
+        }
         let aggregate = self.repository.rebuild(&command.task_id)?;
         if aggregate.revision() != command.expected_task_revision {
             return Err(DomainError::StaleCommand);
         }
+        if !aggregate.interaction_is_pending(&command.interaction_id) {
+            return Err(DomainError::InteractionNotPending);
+        }
+        let next_revision = command
+            .expected_task_revision
+            .checked_next()
+            .map_err(|_| DomainError::StorageExhausted)?;
         let receipt = CommandReceipt::new(
             command.idempotency_key,
-            format!("resolve:{}:{}", command.interaction_id, command.choice_id),
+            digest,
             CommandResult::InteractionResolved,
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
         let record = TaskTransaction::try_new(
-            command
-                .expected_task_revision
-                .checked_next()
-                .map_err(|_| DomainError::StorageExhausted)?,
+            next_revision,
             receipt,
             vec![TaskEvent::InteractionResolved {
                 interaction_id: command.interaction_id,
@@ -391,10 +485,118 @@ impl TaskCommandService {
         .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(&command.task_id, TaskLedgerRecord::Control(record))?;
-        self.repository.rebuild(&command.task_id)
+        self.repository.publish(&command.task_id)?;
+        Ok(CommandAccepted {
+            api_version: ApiVersion,
+            task_id: command.task_id,
+            task_revision: next_revision,
+            replayed: false,
+        })
     }
 
     pub fn repository(&self) -> &TaskRepository {
         &self.repository
     }
+}
+
+fn replay_submit(
+    receipt: DurableReceipt,
+    task_id: &TaskId,
+) -> Result<SubmitRunResponse, DomainError> {
+    if &receipt.task_id != task_id {
+        return Err(DomainError::LedgerCorrupt);
+    }
+    let CommandResult::RunSubmitted { run_id } = receipt.result else {
+        return Err(DomainError::LedgerCorrupt);
+    };
+    Ok(SubmitRunResponse {
+        api_version: ApiVersion,
+        task_id: task_id.clone(),
+        run_id,
+        task_revision: receipt.task_revision,
+        replayed: true,
+    })
+}
+
+fn replay_accepted(
+    receipt: DurableReceipt,
+    task_id: &TaskId,
+    expected: CommandResult,
+) -> Result<CommandAccepted, DomainError> {
+    if &receipt.task_id != task_id || receipt.result != expected {
+        return Err(DomainError::LedgerCorrupt);
+    }
+    Ok(CommandAccepted {
+        api_version: ApiVersion,
+        task_id: task_id.clone(),
+        task_revision: receipt.task_revision,
+        replayed: true,
+    })
+}
+
+fn intent_digest(task_id: Option<&TaskId>, intent: &CommandIntent) -> Result<String, DomainError> {
+    #[derive(Serialize)]
+    struct DigestInput<'a> {
+        task_id: Option<&'a TaskId>,
+        intent: &'a CommandIntent,
+    }
+    let bytes = serde_json::to_vec(&DigestInput { task_id, intent })
+        .map_err(|_| DomainError::LedgerCorrupt)?;
+    let digest = Sha256::digest(bytes);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn current_timestamp() -> Result<String, DomainError> {
+    super::domain::system_time_rfc3339(std::time::SystemTime::now())
+}
+
+fn normalize_search(search: Option<&str>) -> Result<Option<String>, DomainError> {
+    let search = search.map(str::trim).filter(|value| !value.is_empty());
+    if search.is_some_and(|value| value.len() > 256) {
+        return Err(DomainError::InvalidRequest);
+    }
+    Ok(search.map(str::to_lowercase))
+}
+
+#[derive(Serialize, Deserialize)]
+struct ListCursor {
+    workspace_id: kuku::event::WorkspaceId,
+    search: Option<String>,
+    limit: u16,
+    updated_at: String,
+    task_id: TaskId,
+}
+
+fn list_cursor(cursor: ListCursor) -> Result<PageCursor, DomainError> {
+    let value = serde_json::to_string(&cursor).map_err(|_| DomainError::LedgerCorrupt)?;
+    PageCursor::try_new(format!("task-list:v2:{value}")).map_err(|_| DomainError::LedgerCorrupt)
+}
+
+fn parse_list_cursor(cursor: &PageCursor) -> Result<ListCursor, DomainError> {
+    let value = cursor
+        .as_str()
+        .strip_prefix("task-list:v2:")
+        .ok_or(DomainError::InvalidRequest)?;
+    serde_json::from_str(value).map_err(|_| DomainError::InvalidRequest)
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct TimelineCursor {
+    pub task_id: TaskId,
+    pub limit: u16,
+    pub snapshot_cursor: u64,
+    pub end: usize,
+}
+
+pub(super) fn timeline_cursor(cursor: TimelineCursor) -> Result<PageCursor, DomainError> {
+    let value = serde_json::to_string(&cursor).map_err(|_| DomainError::LedgerCorrupt)?;
+    PageCursor::try_new(format!("timeline:v2:{value}")).map_err(|_| DomainError::LedgerCorrupt)
+}
+
+fn parse_timeline_cursor(cursor: &PageCursor) -> Result<TimelineCursor, DomainError> {
+    let value = cursor
+        .as_str()
+        .strip_prefix("timeline:v2:")
+        .ok_or(DomainError::InvalidRequest)?;
+    serde_json::from_str(value).map_err(|_| DomainError::InvalidRequest)
 }
