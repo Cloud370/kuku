@@ -192,3 +192,38 @@ fn task_ledger_json_and_terminal_workspace_changes_are_stable() {
         TaskRecordClass::Activity
     );
 }
+
+#[test]
+fn task_event_record_class_table_names_every_variant() {
+    let control = [
+        "task_created",
+        "task_title_changed",
+        "run_queued",
+        "run_stopping",
+        "interaction_resolved",
+        "message_appended",
+        "skills_changed",
+        "review_submission_referenced",
+        "review_submission_recorded",
+    ];
+    let activity = [
+        "run_started",
+        "run_needs_attention",
+        "run_completed",
+        "run_stopped",
+        "run_failed",
+        "run_interrupted",
+        "interaction_opened",
+        "interaction_cancelled",
+        "message_patched",
+        "activity_upserted",
+        "skill_loaded",
+        "request_snapshot",
+        "request_started",
+        "request_completed",
+        "request_failed",
+        "observation_recorded",
+    ];
+    assert_eq!(control.len() + activity.len(), 25);
+    assert!(control.iter().all(|name| !activity.contains(name)));
+}
