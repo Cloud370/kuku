@@ -83,11 +83,8 @@ async fn setup_server(
     ),
     Box<dyn std::error::Error>,
 > {
-    use kuku_server::run_manager::RunManager;
     use std::net::SocketAddr;
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -97,10 +94,6 @@ async fn setup_server(
         .init();
 
     let listen_addr: SocketAddr = args.listen.parse()?;
-
-    if !listen_addr.ip().is_loopback() && args.password.is_none() {
-        return Err("--password is required for non-loopback addresses".into());
-    }
 
     let config_path = args
         .config
@@ -112,26 +105,32 @@ async fn setup_server(
                 .join("config.toml")
         });
 
-    if !config_path.exists() {
-        return Err(format!("config file not found: {}", config_path.display()).into());
-    }
+    let config = config_path
+        .exists()
+        .then(|| kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve()))
+        .transpose()?;
 
-    let config = kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve())?;
-
-    let config_store = Arc::new(arc_swap::ArcSwap::from_pointee(config));
-    let _watcher =
-        kuku_server::config_watcher::ConfigWatcher::start(config_path, config_store.clone());
     let kuku_home = std::env::var_os("KUKU_HOME")
         .map(PathBuf::from)
         .or_else(|| home::home_dir().map(|dir| dir.join(".kuku")))
         .unwrap_or_else(|| PathBuf::from(".kuku"));
 
-    let state = Arc::new(kuku_server::AppState {
-        run_manager: Mutex::new(RunManager::new(args.max_concurrent_runs)),
-        config: config_store,
-        password: args.password,
-        kuku_home,
-    });
+    let state = kuku_server::AppState::open(
+        &kuku_home,
+        config,
+        args.auth_token_file
+            .map(std::path::PathBuf::from)
+            .map(std::fs::read_to_string)
+            .transpose()?,
+        vec![kuku_server::platform::RegistrationRootSpec {
+            label: "Current directory".to_owned(),
+            path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        }],
+        format!("http://{listen_addr}"),
+        args.max_concurrent_runs,
+    )
+    .await
+    .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
 
     let app = kuku_server::build_app(state.clone());
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;

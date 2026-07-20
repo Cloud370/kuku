@@ -6,10 +6,6 @@ pub mod mock_provider;
 pub mod stream;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
-use tokio::sync::Mutex;
 
 #[allow(dead_code)]
 pub struct TestServer {
@@ -32,14 +28,20 @@ impl TestServer {
         let workspace = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
 
-        let config_store = Arc::new(ArcSwap::from_pointee(config));
-
-        let state = Arc::new(kuku_server::AppState {
-            run_manager: Mutex::new(kuku_server::run_manager::RunManager::new(16)),
-            config: config_store,
+        let registration_root = workspace.path().parent().unwrap().to_path_buf();
+        let state = kuku_server::AppState::open(
+            home.path(),
+            Some(config),
             password,
-            kuku_home: home.path().to_path_buf(),
-        });
+            vec![kuku_server::platform::RegistrationRootSpec {
+                label: "Test workspaces".to_owned(),
+                path: registration_root,
+            }],
+            "http://127.0.0.1".to_owned(),
+            16,
+        )
+        .await
+        .unwrap();
 
         let app = kuku_server::build_app(state);
 
@@ -70,6 +72,16 @@ impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(h) = self.handle.take() {
             h.abort();
+        }
+    }
+}
+
+impl TestServer {
+    #[allow(dead_code)]
+    pub async fn shutdown(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let _ = handle.await;
         }
     }
 }

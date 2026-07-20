@@ -31,6 +31,16 @@ pub struct BearerTokenStore {
 }
 
 impl BearerTokenStore {
+    pub fn from_token(token: String) -> Result<Arc<Self>, ApiError> {
+        if !valid_token(&token) {
+            return Err(internal_error("bearer credential has invalid format"));
+        }
+        Ok(Arc::new(Self {
+            token: SecretString::new(token),
+            source: BearerTokenSource::ExplicitFile,
+        }))
+    }
+
     /// Loads an explicit or persisted token, generating one when absent.
     pub fn open(kuku_home: &Path, explicit_file: Option<&Path>) -> Result<Arc<Self>, ApiError> {
         if let Some(path) = explicit_file {

@@ -10,7 +10,7 @@ pub struct ServerArgs {
     pub config: Option<String>,
 
     #[arg(long)]
-    pub password: Option<String>,
+    pub auth_token_file: Option<String>,
 
     #[arg(long, default_value = "16")]
     pub max_concurrent_runs: usize,

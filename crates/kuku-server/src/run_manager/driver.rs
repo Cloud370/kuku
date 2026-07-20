@@ -135,12 +135,30 @@ pub trait RunDriverFactory: Send + Sync {
 
 pub struct KukuDriverFactory {
     workspaces: Arc<WorkspaceRegistry>,
-    config: Arc<kuku::config::Config>,
+    config: DriverConfig,
+}
+
+enum DriverConfig {
+    Static(Arc<kuku::config::Config>),
+    Platform(Arc<crate::platform::ConfigService>),
 }
 
 impl KukuDriverFactory {
     pub fn new(workspaces: Arc<WorkspaceRegistry>, config: Arc<kuku::config::Config>) -> Self {
-        Self { workspaces, config }
+        Self {
+            workspaces,
+            config: DriverConfig::Static(config),
+        }
+    }
+
+    pub fn from_platform(
+        workspaces: Arc<WorkspaceRegistry>,
+        config: Arc<crate::platform::ConfigService>,
+    ) -> Self {
+        Self {
+            workspaces,
+            config: DriverConfig::Platform(config),
+        }
     }
 }
 
@@ -214,8 +232,20 @@ impl RunDriverFactory for KukuDriverFactory {
         start: DriverStart,
     ) -> Pin<Box<dyn Future<Output = Result<DriverHandle, DomainError>> + Send>> {
         let workspaces = self.workspaces.clone();
-        let config = self.config.clone();
+        let config = match &self.config {
+            DriverConfig::Static(config) => DriverConfig::Static(config.clone()),
+            DriverConfig::Platform(config) => DriverConfig::Platform(config.clone()),
+        };
         Box::pin(async move {
+            let config = match config {
+                DriverConfig::Static(config) => config,
+                DriverConfig::Platform(config) => config
+                    .snapshot()
+                    .await
+                    .map_err(|_| DomainError::InvalidRequest)?
+                    .resolved
+                    .ok_or(DomainError::InvalidRequest)?,
+            };
             let tier = resolve_product_tier(&config, &start.tier_id)?;
             let capability = workspaces
                 .capability(&start.workspace_id)

@@ -1,11 +1,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
-use kuku_server::run_manager::RunManager;
 use kuku_server::server_args::ServerArgs;
-use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
@@ -26,11 +23,6 @@ async fn main() {
         }
     };
 
-    if !listen_addr.ip().is_loopback() && args.password.is_none() {
-        eprintln!("error: --password is required for non-loopback addresses");
-        std::process::exit(1);
-    }
-
     let config_path = args
         .config
         .map(std::path::PathBuf::from)
@@ -41,12 +33,11 @@ async fn main() {
                 .join("config.toml")
         });
 
-    if !config_path.exists() {
-        eprintln!("error: config file not found: {}", config_path.display());
-        std::process::exit(1);
-    }
-
-    let config = match kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve()) {
+    let config = match config_path
+        .exists()
+        .then(|| kuku::config::load_and_patch_config(&config_path).and_then(|f| f.resolve()))
+        .transpose()
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: failed to load config: {e}");
@@ -54,21 +45,33 @@ async fn main() {
         }
     };
 
-    let config_store = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(config));
-    let _watcher = kuku_server::config_watcher::ConfigWatcher::start(
-        config_path.clone(),
-        config_store.clone(),
-    );
     let kuku_home = std::env::var_os("KUKU_HOME")
         .map(PathBuf::from)
         .or_else(|| home::home_dir().map(|dir| dir.join(".kuku")))
         .unwrap_or_else(|| PathBuf::from(".kuku"));
 
-    let state = Arc::new(kuku_server::AppState {
-        run_manager: Mutex::new(RunManager::new(args.max_concurrent_runs)),
-        config: config_store,
-        password: args.password,
-        kuku_home,
+    let state = kuku_server::AppState::open(
+        &kuku_home,
+        config,
+        args.auth_token_file
+            .map(std::path::PathBuf::from)
+            .map(std::fs::read_to_string)
+            .transpose()
+            .unwrap_or_else(|error| {
+                eprintln!("error: failed to read auth token: {error}");
+                std::process::exit(1)
+            }),
+        vec![kuku_server::platform::RegistrationRootSpec {
+            label: "Current directory".to_owned(),
+            path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        }],
+        format!("http://{listen_addr}"),
+        args.max_concurrent_runs,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("error: failed to initialize server: {e:?}");
+        std::process::exit(1);
     });
 
     let app = kuku_server::build_app(state.clone());

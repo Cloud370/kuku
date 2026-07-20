@@ -461,6 +461,7 @@ impl TaskRepository {
             .map_err(|_| DomainError::LedgerCorrupt)?
             .get(task_id)
             .cloned();
+        let cache_missing = cached.is_none();
         let needs_rebuild = dirty
             || cached
                 .as_ref()
@@ -503,7 +504,7 @@ impl TaskRepository {
         };
         aggregate.set_updated_at(updated_at(&self.events_path(task_id))?);
         let projection = aggregate.projection()?;
-        if needs_rebuild || force_replacement {
+        if dirty || cache_missing || force_replacement {
             delta = TaskDelta::ProjectionReplaced {
                 projection: Box::new(projection.clone()),
             };
