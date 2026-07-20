@@ -21,6 +21,7 @@ export interface WorkbenchEntryProps {
   onOpenLoadedSkills: (taskId: string) => void;
   onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
+  onNavigateTask?: (taskId: string) => void;
   onTaskDeltaCommitted?: (taskId: string, delta: TaskDelta) => void;
   onStop?: () => void;
   route?: WorkbenchRoute;
@@ -35,6 +36,7 @@ export function WorkbenchEntry({
   onOpenLoadedSkills,
   onOpenRequestContext,
   onOpenReview,
+  onNavigateTask,
   onStop,
   onTaskDeltaCommitted,
   route,
@@ -150,7 +152,11 @@ export function WorkbenchEntry({
                     }}
                     initialWorkspaceId={view.workspace?.workspace_id ?? null}
                     onSelectTask={(selectedTaskId) => {
-                      void view.selectTask(selectedTaskId);
+                      if (onNavigateTask === undefined) {
+                        void view.selectTask(selectedTaskId);
+                      } else {
+                        onNavigateTask(selectedTaskId);
+                      }
                     }}
                     onWorkspaceChange={(workspaceId) => {
                       view.selectWorkspace(workspaceId);
