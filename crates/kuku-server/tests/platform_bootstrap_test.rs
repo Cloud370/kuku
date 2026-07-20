@@ -164,6 +164,57 @@ credential = { source = "direct_value", value = "key" }
 }
 
 #[tokio::test]
+async fn concurrent_commit_and_reload_never_install_the_stale_snapshot() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let expected = service.revision().await.unwrap();
+    std::fs::write(
+        &path,
+        r#"default_model = "external"
+[model.external]
+provider = "local"
+model = "model-z"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let (reload, commit) = tokio::join!(
+        service.reload_from_disk(),
+        service.commit_config(ConfigPatch::replace(valid_config()), expected)
+    );
+    assert!(reload.is_ok());
+    assert!(commit.is_err());
+    assert_eq!(
+        service
+            .snapshot()
+            .await
+            .unwrap()
+            .resolved
+            .unwrap()
+            .default_tier(),
+        "external"
+    );
+}
+
+#[tokio::test]
 async fn invalid_reload_keeps_last_good_snapshot() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("config.toml");
