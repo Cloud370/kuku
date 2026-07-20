@@ -157,7 +157,7 @@ impl ConfigService {
         let encoded =
             toml::to_string_pretty(&patch.file).map_err(|error| config_error(error.to_string()))?;
         let mut state = self.inner.write().await;
-        if state.disk_digest.is_some() {
+        if state.disk_digest.is_some() || self.path.exists() {
             let current = std::fs::read(&self.path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     ApiError::new(
@@ -195,9 +195,13 @@ impl ConfigService {
 
     pub async fn reload_from_disk(&self) -> Result<PlatformState, ApiError> {
         let (raw, last_good, disk_state, disk_digest) = read_state(&self.path);
-        let changed = {
+        let (old_digest, old_state, changed) = {
             let state = self.inner.read().await;
-            state.disk_digest != disk_digest || state.disk_state != disk_state
+            (
+                state.disk_digest.clone(),
+                state.disk_state.clone(),
+                state.disk_digest != disk_digest || state.disk_state != disk_state,
+            )
         };
         if changed && matches!(disk_state, PlatformState::Ready | PlatformState::Missing) {
             let digest = disk_digest
@@ -210,7 +214,7 @@ impl ConfigService {
                 return Ok(self.state().await);
             }
             let mut state = self.inner.write().await;
-            if state.disk_digest != disk_digest {
+            if state.disk_digest != old_digest || state.disk_state != old_state {
                 return Ok(state.disk_state.clone());
             }
             guard.finish(RevisionDomain::Config, digest).await?;
@@ -223,6 +227,7 @@ impl ConfigService {
         if matches!(disk_state, PlatformState::Invalid { .. }) {
             let mut state = self.inner.write().await;
             state.disk_state = disk_state.clone();
+            state.disk_digest = disk_digest;
             return Ok(state.disk_state.clone());
         }
         Ok(self.state().await)
@@ -262,7 +267,7 @@ fn read_state(
             Some(raw),
             Some(Arc::new(config)),
             PlatformState::Ready,
-            Some(accepted_digest(b"invalid-config")),
+            Some(digest),
         ),
         Err(error) => (
             Some(raw),
@@ -270,7 +275,7 @@ fn read_state(
             PlatformState::Invalid {
                 diagnostics: vec![error.to_string()],
             },
-            Some(digest),
+            Some(accepted_digest(b"invalid-config")),
         ),
     }
 }

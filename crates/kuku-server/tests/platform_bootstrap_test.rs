@@ -104,6 +104,66 @@ credential = { source = "direct_value", value = "key" }
 }
 
 #[tokio::test]
+async fn creating_config_after_missing_startup_is_a_disk_conflict() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let expected = service.revision().await.unwrap();
+    std::fs::write(&path, "external = true\n").unwrap();
+    let error = service
+        .commit_config(ConfigPatch::replace(valid_config()), expected)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), kuku_server::api::ApiErrorCode::Outdated);
+}
+
+#[tokio::test]
+async fn valid_reload_replaces_snapshot_by_content_digest() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    std::fs::write(
+        &path,
+        r#"default_model = "next"
+[model.next]
+provider = "local"
+model = "model-y"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    service.reload_from_disk().await.unwrap();
+    assert_eq!(
+        service
+            .snapshot()
+            .await
+            .unwrap()
+            .resolved
+            .unwrap()
+            .default_tier(),
+        "next"
+    );
+}
+
+#[tokio::test]
 async fn invalid_reload_keeps_last_good_snapshot() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("config.toml");
