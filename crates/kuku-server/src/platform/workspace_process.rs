@@ -351,6 +351,7 @@ fn run_process(
             .try_wait()
             .map_err(|_| unavailable("workspace process status is unavailable"))?
         {
+            process_tree.terminate(&mut child);
             break (exit, false);
         }
         if exceeded.load(Ordering::SeqCst) || cancelled.load(Ordering::SeqCst) {

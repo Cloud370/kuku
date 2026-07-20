@@ -425,6 +425,18 @@ async fn process_timeout_and_stream_cancellation_reap_descendants() {
     let started = std::time::Instant::now();
     let output = capability
         .run_at_root(
+            RootCommand::new("sh").args(["-c", "sleep 30 & printf ready"]),
+            ProcessLimits::new(std::time::Duration::from_secs(1), 4096).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(output.status().success());
+    assert_eq!(b"ready", output.stdout());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+    let started = std::time::Instant::now();
+    let output = capability
+        .run_at_root(
             command(),
             ProcessLimits::new(std::time::Duration::from_millis(100), 4096).unwrap(),
         )
