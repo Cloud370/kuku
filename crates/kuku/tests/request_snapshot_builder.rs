@@ -7,10 +7,12 @@ use kuku::context::{
 };
 use kuku::event::{
     CapabilityFact, CapabilityKind, CapabilityState, ContextBreakdown, ConversationContextFact,
-    ConversationId, EventPayload, EventStore, ExactRequestParameters, ExecutionScope, MessageRole,
-    ProviderFact, RequestCause, RequestId, RequestScope, RequestStarted, RevisionToken, RunId,
-    TaskEvent, TaskId, TaskLedgerRecord, ThinkingConfig, TurnId, WorkspaceId,
+    ConversationId, EventPayload, EventStore, ExactContentBlock, ExactMessage, ExactRequest,
+    ExactRequestParameters, ExactTool, ExecutionScope, MessageRole, ProviderFact, RequestCause,
+    RequestId, RequestScope, RequestStarted, RevisionToken, RunId, TaskEvent, TaskId,
+    TaskLedgerRecord, ThinkingConfig, TurnId, WorkspaceId,
 };
+use sha2::{Digest, Sha256};
 
 fn request_scope(_seed: &str) -> RequestScope {
     RequestScope {
@@ -96,6 +98,7 @@ fn build_snapshot(
         tier_id: "tier:default",
         assembly,
         current_input,
+        handoff_context_template: None,
         allowlisted_provider_parameters: parameters(),
         breakdown: breakdown(),
         catalog_revision: RevisionToken::parse(
@@ -103,6 +106,33 @@ fn build_snapshot(
         )
         .unwrap(),
     })
+}
+
+fn canonical_hash(exact: &ExactRequest) -> String {
+    fn canonicalize(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(canonicalize).collect())
+            }
+            serde_json::Value::Object(values) => {
+                let mut entries = values.into_iter().collect::<Vec<_>>();
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                serde_json::Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, canonicalize(value)))
+                        .collect(),
+                )
+            }
+            scalar => scalar,
+        }
+    }
+
+    let canonical = canonicalize(serde_json::to_value(exact).unwrap());
+    format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical).unwrap())
+    )
 }
 
 #[test]
@@ -175,6 +205,80 @@ fn canonical_hash_sorts_map_keys_without_reordering_arrays() {
     )
     .unwrap();
     assert_ne!(first.exact_payload_hash, reversed.exact_payload_hash);
+}
+
+#[test]
+fn snapshot_matches_transport_order_with_handoff_and_current_input_in_history() {
+    let current_input = CanonicalMessage::user_text("current request");
+    let mut assembly = assembly("system".to_string(), serde_json::json!({"type": "object"}));
+    assembly.handoff_summary = Some("prior work".to_string());
+    assembly.history.push(current_input.clone());
+    let snapshot = RequestSnapshotBuilder::build(SnapshotInput {
+        scope: request_scope("handoff exactness"),
+        cause: RequestCause::UserSubmission,
+        provider: ProviderFact::Anthropic,
+        tier_id: "tier:default",
+        assembly: &assembly,
+        current_input: &current_input,
+        handoff_context_template: Some("<handoff>{{handoff_summary}}</handoff>"),
+        allowlisted_provider_parameters: parameters(),
+        breakdown: breakdown(),
+        catalog_revision: RevisionToken::parse(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap(),
+    })
+    .unwrap();
+    let expected = ExactRequest {
+        messages: vec![
+            ExactMessage {
+                role: MessageRole::System,
+                content: vec![ExactContentBlock::Text {
+                    text: "system".to_string(),
+                }],
+            },
+            ExactMessage {
+                role: MessageRole::User,
+                content: vec![ExactContentBlock::Text {
+                    text: "project policy".to_string(),
+                }],
+            },
+            ExactMessage {
+                role: MessageRole::User,
+                content: vec![ExactContentBlock::Text {
+                    text: "<handoff>prior work</handoff>".to_string(),
+                }],
+            },
+            ExactMessage {
+                role: MessageRole::Assistant,
+                content: vec![ExactContentBlock::Text {
+                    text: "prior answer".to_string(),
+                }],
+            },
+            ExactMessage {
+                role: MessageRole::User,
+                content: vec![ExactContentBlock::Text {
+                    text: "current request".to_string(),
+                }],
+            },
+        ],
+        tools: vec![
+            ExactTool {
+                name: "read_file".to_string(),
+                description: "read a contained file".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+            ExactTool {
+                name: "run_command".to_string(),
+                description: "run a command".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+        ],
+        parameters: parameters(),
+    };
+
+    assert_eq!(expected, snapshot.exact);
+    assert_eq!(canonical_hash(&expected), snapshot.exact_payload_hash);
 }
 
 #[test]

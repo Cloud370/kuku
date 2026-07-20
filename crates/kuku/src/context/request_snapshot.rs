@@ -23,8 +23,10 @@ pub struct SnapshotInput<'a> {
     pub tier_id: &'a str,
     /// Provider-neutral assembled prompt and tools.
     pub assembly: &'a ContextAssembly,
-    /// Current provider input appended after assembled history.
+    /// Current provider input appended only when assembled history does not already contain it.
     pub current_input: &'a CanonicalMessage,
+    /// Transport's handoff-context template when the assembly carries a handoff summary.
+    pub handoff_context_template: Option<&'a str>,
     /// Explicit non-secret request parameters.
     pub allowlisted_provider_parameters: ExactRequestParameters,
     /// Structured context provenance for this request.
@@ -39,6 +41,9 @@ pub enum SnapshotBuildError {
     /// Exact request serialization failed without rendering sensitive values.
     #[error("request snapshot serialization failed")]
     Serialization(#[source] serde_json::Error),
+    /// A handoff summary cannot be rendered exactly without the transport template.
+    #[error("request snapshot handoff context template is missing")]
+    MissingHandoffContextTemplate,
     /// The serialized snapshot exceeded the hard persistence limit.
     #[error("request snapshot is {size} bytes, exceeding the {limit}-byte limit")]
     TooLarge { size: usize, limit: usize },
@@ -53,8 +58,9 @@ impl RequestSnapshotBuilder {
         let exact = exact_request(
             input.assembly,
             input.current_input,
+            input.handoff_context_template,
             input.allowlisted_provider_parameters,
-        );
+        )?;
         let exact_payload_hash = exact_payload_hash(&exact)?;
         let snapshot = RequestSnapshot {
             scope: input.scope,
@@ -110,8 +116,9 @@ impl RequestIdAccumulator {
 fn exact_request(
     assembly: &ContextAssembly,
     current_input: &CanonicalMessage,
+    handoff_context_template: Option<&str>,
     parameters: ExactRequestParameters,
-) -> ExactRequest {
+) -> Result<ExactRequest, SnapshotBuildError> {
     let mut messages =
         Vec::with_capacity(2 + assembly.prelude_messages.len() + assembly.history.len());
     messages.push(ExactMessage {
@@ -121,8 +128,17 @@ fn exact_request(
         }],
     });
     messages.extend(assembly.prelude_messages.iter().map(exact_message));
+    if let Some(summary) = &assembly.handoff_summary {
+        let template =
+            handoff_context_template.ok_or(SnapshotBuildError::MissingHandoffContextTemplate)?;
+        messages.push(exact_message(&CanonicalMessage::user_text(
+            template.replace("{{handoff_summary}}", summary),
+        )));
+    }
     messages.extend(assembly.history.iter().map(exact_message));
-    messages.push(exact_message(current_input));
+    if assembly.history.last() != Some(current_input) {
+        messages.push(exact_message(current_input));
+    }
 
     let tools = assembly
         .tools
@@ -134,11 +150,11 @@ fn exact_request(
         })
         .collect();
 
-    ExactRequest {
+    Ok(ExactRequest {
         messages,
         tools,
         parameters,
-    }
+    })
 }
 
 fn exact_message(message: &CanonicalMessage) -> ExactMessage {

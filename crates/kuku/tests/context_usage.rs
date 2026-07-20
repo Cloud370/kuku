@@ -131,7 +131,7 @@ fn restart_failure_has_no_invented_elapsed_time() {
 }
 
 #[test]
-fn task_summary_sums_reported_values_without_zero_filling_missing_metrics() {
+fn task_summary_is_none_for_each_metric_missing_from_any_counted_request() {
     let aggregate = UsageAggregate::from_lifecycle([
         completed(1, Some(100), Some(20), Some(25), None, Some(40), Some(5)),
         failed(
@@ -151,18 +151,37 @@ fn task_summary_sums_reported_values_without_zero_filling_missing_metrics() {
 
     assert_eq!(2, summary.request_count);
     assert_eq!(Some(150), summary.input_tokens);
-    assert_eq!(Some(20), summary.output_tokens);
+    assert_eq!(None, summary.output_tokens);
     assert_eq!(Some(30), summary.cached_input_tokens);
-    assert_eq!(Some(10), summary.cache_creation_input_tokens);
+    assert_eq!(None, summary.cache_creation_input_tokens);
     assert_eq!(Some(0.2), summary.cached_input_ratio);
-    assert_eq!(Some(40), summary.elapsed_ms);
+    assert_eq!(None, summary.elapsed_ms);
+    assert_eq!(None, summary.cost);
+}
+
+#[test]
+fn task_summary_preserves_reported_zero_when_every_request_reports_zero() {
+    let aggregate = UsageAggregate::from_lifecycle([
+        completed(1, Some(0), Some(0), Some(0), Some(0), Some(0), Some(0)),
+        completed(2, Some(0), Some(0), Some(0), Some(0), Some(0), Some(0)),
+    ])
+    .unwrap();
+
+    let summary = aggregate.summary().unwrap();
+
+    assert_eq!(Some(0), summary.input_tokens);
+    assert_eq!(Some(0), summary.output_tokens);
+    assert_eq!(Some(0), summary.cached_input_tokens);
+    assert_eq!(Some(0), summary.cache_creation_input_tokens);
+    assert_eq!(Some(0), summary.elapsed_ms);
     assert_eq!(
         Some(DecimalCost {
             currency: CurrencyCode::Usd,
-            micros: 5,
+            micros: 0,
         }),
         summary.cost
     );
+    assert_eq!(None, summary.cached_input_ratio);
 }
 
 #[test]

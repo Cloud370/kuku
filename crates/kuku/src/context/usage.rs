@@ -124,66 +124,91 @@ impl RequestTerminal {
 
 #[derive(Default)]
 struct SummaryBuilder {
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_input_tokens: Option<u64>,
-    cache_creation_input_tokens: Option<u64>,
+    input_tokens: MetricTotal,
+    output_tokens: MetricTotal,
+    cached_input_tokens: MetricTotal,
+    cache_creation_input_tokens: MetricTotal,
     request_count: u64,
-    elapsed_ms: Option<u64>,
-    cost_micros: Option<u64>,
+    elapsed_ms: MetricTotal,
+    cost_micros: MetricTotal,
 }
 
 impl SummaryBuilder {
     fn record(&mut self, terminal: &RequestTerminal) -> Result<(), UsageReductionError> {
-        self.request_count = checked_sum(Some(self.request_count), Some(1), "request count")?
-            .expect("request count is present");
-        if let Some(usage) = terminal.usage() {
-            self.input_tokens =
-                checked_sum(self.input_tokens, usage.input_tokens, "input token total")?;
-            self.output_tokens = checked_sum(
-                self.output_tokens,
-                usage.output_tokens,
-                "output token total",
-            )?;
-            self.cached_input_tokens = checked_sum(
-                self.cached_input_tokens,
-                usage.cached_input_tokens,
-                "cached input token total",
-            )?;
-            self.cache_creation_input_tokens = checked_sum(
-                self.cache_creation_input_tokens,
-                usage.cache_creation_input_tokens,
-                "cache creation input token total",
-            )?;
-        }
-        self.elapsed_ms =
-            checked_sum(self.elapsed_ms, terminal.elapsed_ms(), "elapsed time total")?;
-        self.cost_micros = checked_sum(
-            self.cost_micros,
-            terminal.cost().map(|cost| cost.micros),
-            "cost total",
+        self.request_count = checked_sum(self.request_count, 1, "request count")?;
+        let usage = terminal.usage();
+        self.input_tokens.record(
+            usage.and_then(|value| value.input_tokens),
+            "input token total",
         )?;
+        self.output_tokens.record(
+            usage.and_then(|value| value.output_tokens),
+            "output token total",
+        )?;
+        self.cached_input_tokens.record(
+            usage.and_then(|value| value.cached_input_tokens),
+            "cached input token total",
+        )?;
+        self.cache_creation_input_tokens.record(
+            usage.and_then(|value| value.cache_creation_input_tokens),
+            "cache creation input token total",
+        )?;
+        self.elapsed_ms
+            .record(terminal.elapsed_ms(), "elapsed time total")?;
+        self.cost_micros
+            .record(terminal.cost().map(|cost| cost.micros), "cost total")?;
         Ok(())
     }
 
     fn finish(self) -> UsageAggregateSummary {
-        let cached_input_ratio = match (self.cached_input_tokens, self.input_tokens) {
+        let input_tokens = self.input_tokens.finish(self.request_count);
+        let output_tokens = self.output_tokens.finish(self.request_count);
+        let cached_input_tokens = self.cached_input_tokens.finish(self.request_count);
+        let cache_creation_input_tokens =
+            self.cache_creation_input_tokens.finish(self.request_count);
+        let elapsed_ms = self.elapsed_ms.finish(self.request_count);
+        let cost_micros = self.cost_micros.finish(self.request_count);
+        let cached_input_ratio = match (cached_input_tokens, input_tokens) {
             (Some(cached), Some(input)) if input > 0 => Some(cached as f64 / input as f64),
             (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) | (None, None) => None,
         };
         UsageAggregateSummary {
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_input_tokens: self.cached_input_tokens,
-            cache_creation_input_tokens: self.cache_creation_input_tokens,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            cache_creation_input_tokens,
             request_count: self.request_count,
-            elapsed_ms: self.elapsed_ms,
-            cost: self.cost_micros.map(|micros| DecimalCost {
+            elapsed_ms,
+            cost: cost_micros.map(|micros| DecimalCost {
                 currency: CurrencyCode::Usd,
                 micros,
             }),
             cached_input_ratio,
         }
+    }
+}
+
+#[derive(Default)]
+struct MetricTotal {
+    sum: u64,
+    reported_count: u64,
+}
+
+impl MetricTotal {
+    fn record(
+        &mut self,
+        reported: Option<u64>,
+        metric: &'static str,
+    ) -> Result<(), UsageReductionError> {
+        if let Some(reported) = reported {
+            self.sum = checked_sum(self.sum, reported, metric)?;
+            self.reported_count = checked_sum(self.reported_count, 1, "metric report count")?;
+        }
+        Ok(())
+    }
+
+    fn finish(self, request_count: u64) -> Option<u64> {
+        (request_count > 0 && self.reported_count == request_count).then_some(self.sum)
     }
 }
 
@@ -198,17 +223,13 @@ fn summarize<'a>(
 }
 
 fn checked_sum(
-    current: Option<u64>,
-    reported: Option<u64>,
+    current: u64,
+    reported: u64,
     metric: &'static str,
-) -> Result<Option<u64>, UsageReductionError> {
-    let Some(reported) = reported else {
-        return Ok(current);
-    };
+) -> Result<u64, UsageReductionError> {
     let total = current
-        .unwrap_or(0)
         .checked_add(reported)
         .filter(|value| *value <= JSON_SAFE_INTEGER_MAX)
         .ok_or(UsageReductionError::MetricOverflow { metric })?;
-    Ok(Some(total))
+    Ok(total)
 }

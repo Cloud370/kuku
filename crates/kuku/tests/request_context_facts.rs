@@ -74,6 +74,7 @@ fn snapshot(index: u8, cause: RequestCause, assembly: &ContextAssembly) -> Reque
         tier_id: "tier:default",
         assembly,
         current_input: &CanonicalMessage::user_text(format!("input {index}")),
+        handoff_context_template: None,
         allowlisted_provider_parameters: ExactRequestParameters {
             model: "model-a".to_string(),
             max_output_tokens: Some(1_024),
@@ -209,6 +210,7 @@ async fn oversized_exact_request_never_reaches_provider_transport() {
         tier_id: "tier:default",
         assembly: &oversized,
         current_input: &CanonicalMessage::user_text("input"),
+        handoff_context_template: None,
         allowlisted_provider_parameters: ExactRequestParameters {
             model: "model-a".to_string(),
             max_output_tokens: None,
