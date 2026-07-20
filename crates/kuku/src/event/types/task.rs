@@ -513,7 +513,43 @@ pub enum TaskEvent {
 
 impl Eq for TaskEvent {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskRecordClass {
+    Control,
+    Activity,
+}
+
 impl TaskEvent {
+    pub fn record_class(&self) -> TaskRecordClass {
+        match self {
+            Self::TaskCreated { .. }
+            | Self::TaskTitleChanged { .. }
+            | Self::RunQueued { .. }
+            | Self::RunStopping { .. }
+            | Self::InteractionResolved { .. }
+            | Self::MessageAppended { .. }
+            | Self::SkillsChanged { .. }
+            | Self::ReviewSubmissionReferenced { .. }
+            | Self::ReviewSubmissionRecorded(_) => TaskRecordClass::Control,
+            Self::RunStarted { .. }
+            | Self::RunNeedsAttention { .. }
+            | Self::RunCompleted { .. }
+            | Self::RunStopped { .. }
+            | Self::RunFailed { .. }
+            | Self::RunInterrupted { .. }
+            | Self::InteractionOpened { .. }
+            | Self::InteractionCancelled { .. }
+            | Self::MessagePatched { .. }
+            | Self::ActivityUpserted { .. }
+            | Self::SkillLoaded(_)
+            | Self::RequestSnapshot(_)
+            | Self::RequestStarted(_)
+            | Self::RequestCompleted(_)
+            | Self::RequestFailed(_)
+            | Self::ObservationRecorded(_) => TaskRecordClass::Activity,
+        }
+    }
+
     fn validate(&self) -> Result<(), TaskLedgerError> {
         let expected = match self {
             Self::RunQueued { run } => Some((RunState::Queued, run)),
@@ -548,40 +584,11 @@ impl TaskEvent {
     }
 
     fn allowed_in_control(&self) -> bool {
-        matches!(
-            self,
-            Self::TaskCreated { .. }
-                | Self::TaskTitleChanged { .. }
-                | Self::RunQueued { .. }
-                | Self::RunStopping { .. }
-                | Self::InteractionResolved { .. }
-                | Self::MessageAppended { .. }
-                | Self::SkillsChanged { .. }
-                | Self::ReviewSubmissionReferenced { .. }
-                | Self::ReviewSubmissionRecorded(_)
-        )
+        self.record_class() == TaskRecordClass::Control
     }
 
     fn allowed_in_activity(&self) -> bool {
-        matches!(
-            self,
-            Self::RunStarted { .. }
-                | Self::RunNeedsAttention { .. }
-                | Self::RunCompleted { .. }
-                | Self::RunStopped { .. }
-                | Self::RunFailed { .. }
-                | Self::RunInterrupted { .. }
-                | Self::InteractionOpened { .. }
-                | Self::InteractionCancelled { .. }
-                | Self::MessagePatched { .. }
-                | Self::ActivityUpserted { .. }
-                | Self::SkillLoaded(_)
-                | Self::RequestSnapshot(_)
-                | Self::RequestStarted(_)
-                | Self::RequestCompleted(_)
-                | Self::RequestFailed(_)
-                | Self::ObservationRecorded(_)
-        )
+        self.record_class() == TaskRecordClass::Activity
     }
 }
 

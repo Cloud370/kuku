@@ -2,7 +2,8 @@ use kuku::event::{
     ChangeEntryFact, ChangeKindFact, ChangesAvailabilityFact, CommandIntent, CommandReceipt,
     CommandResult, EventPayload, FiniteMetricValue, InteractionChoiceFact, InteractionFact,
     RevisionToken, RunFact, RunState, TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord,
-    TaskRevision, TaskTransaction, WorkspaceChangesFact, WorkspaceId, WorkspaceRelativePath,
+    TaskRecordClass, TaskRevision, TaskTransaction, WorkspaceChangesFact, WorkspaceId,
+    WorkspaceRelativePath,
 };
 
 fn task_id() -> TaskId {
@@ -136,12 +137,18 @@ fn task_ledger_json_and_terminal_workspace_changes_are_stable() {
         transaction,
     )))
     .unwrap();
-    assert!(json.contains(r#""kind":"task.ledger""#), "{json}");
-    assert!(json.contains(r#""record_type":"control""#), "{json}");
-    assert!(json.contains(r#""event_type":"task_created""#), "{json}");
+    let expected = serde_json::json!({"kind":"task.ledger","record_type":"control","record":{"task_revision":0,"command":{"idempotency_key":"create-1","intent_digest":"digest-1","result":{"kind":"task_created","task_id":"tsk_0123456789abcdef01234567"}},"events":[{"event_type":"task_created","event":{"task_id":"tsk_0123456789abcdef01234567","workspace_id":"wsp_0123456789abcdef01234567","title":"A task","created_at":"2026-07-20T00:00:00Z"}}]}});
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+        expected
+    );
     let invalid =
         serde_json::json!({"kind":"task.ledger","record_type":"activity","record":{"events":[]}});
     assert!(serde_json::from_value::<EventPayload>(invalid).is_err());
+    let wrong_class = serde_json::json!({"kind":"task.ledger","record_type":"activity","record":{"events":[{"event_type":"task_created","event":{"task_id":"tsk_0123456789abcdef01234567","workspace_id":"wsp_0123456789abcdef01234567","title":"x","created_at":"t"}}]}});
+    assert!(serde_json::from_value::<EventPayload>(wrong_class).is_err());
+    let contradictory = serde_json::json!({"kind":"task.ledger","record_type":"activity","record":{"events":[{"event_type":"run_started","event":{"run":{"run_id":"run_0123456789abcdef01234567","task_id":"tsk_0123456789abcdef01234567","state":"queued","started_at":"x","finished_at":null,"summary":null,"checks":null,"metrics":null,"workspace_changes":null}}}]}});
+    assert!(serde_json::from_value::<EventPayload>(contradictory).is_err());
 
     let revision =
         RevisionToken::parse("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -170,4 +177,18 @@ fn task_ledger_json_and_terminal_workspace_changes_are_stable() {
     let round_trip: RunFact =
         serde_json::from_value(serde_json::to_value(&terminal).unwrap()).unwrap();
     assert_eq!(round_trip.workspace_changes, Some(snapshot));
+    assert_eq!(
+        TaskEvent::TaskCreated {
+            task_id: task_id(),
+            workspace_id: workspace_id(),
+            title: "x".into(),
+            created_at: "t".into()
+        }
+        .record_class(),
+        TaskRecordClass::Control
+    );
+    assert_eq!(
+        TaskEvent::RunStarted { run: run() }.record_class(),
+        TaskRecordClass::Activity
+    );
 }

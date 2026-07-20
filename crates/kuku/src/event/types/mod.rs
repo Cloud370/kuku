@@ -35,8 +35,8 @@ pub use task::{
     FileReferenceFact, FiniteMetricValue, InteractionChoiceFact, InteractionFact, MessageFact,
     MessageRoleFact, MetricFact, MetricValueError, ReviewSubmissionReference, RevisionToken,
     RevisionTokenError, RunFact, RunState, SkillsChangedFact, StorageExhaustionError,
-    TaskActivityBatch, TaskEvent, TaskLedgerError, TaskLedgerRecord, TaskRevision, TaskState,
-    TaskTransaction, WorkspaceChangesFact, JSON_SAFE_INTEGER_MAX,
+    TaskActivityBatch, TaskEvent, TaskLedgerError, TaskLedgerRecord, TaskRecordClass, TaskRevision,
+    TaskState, TaskTransaction, WorkspaceChangesFact, JSON_SAFE_INTEGER_MAX,
 };
 
 #[cfg(test)]
