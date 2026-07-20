@@ -1,7 +1,8 @@
 use kuku::event::{
-    CommandIntent, CommandReceipt, CommandResult, EventPayload, FiniteMetricValue,
-    InteractionChoiceFact, InteractionFact, RunFact, RunState, TaskActivityBatch, TaskEvent,
-    TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
+    ChangeEntryFact, ChangeKindFact, ChangesAvailabilityFact, CommandIntent, CommandReceipt,
+    CommandResult, EventPayload, FiniteMetricValue, InteractionChoiceFact, InteractionFact,
+    RevisionToken, RunFact, RunState, TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord,
+    TaskRevision, TaskTransaction, WorkspaceChangesFact, WorkspaceId, WorkspaceRelativePath,
 };
 
 fn task_id() -> TaskId {
@@ -108,4 +109,65 @@ fn run_variant_state_and_metric_values_are_checked() {
     assert!(TaskActivityBatch::try_new(vec![TaskEvent::RunStarted { run: value }]).is_err());
     assert!(FiniteMetricValue::try_new(f64::NAN).is_err());
     assert!(FiniteMetricValue::try_new(f64::INFINITY).is_err());
+    let mut active_with_completion = run();
+    active_with_completion.checks = Some(Vec::new());
+    assert!(matches!(
+        TaskActivityBatch::try_new(vec![TaskEvent::RunStarted {
+            run: active_with_completion
+        }]),
+        Err(kuku::event::TaskLedgerError::InvalidRunCompletion)
+    ));
+}
+
+#[test]
+fn task_ledger_json_and_terminal_workspace_changes_are_stable() {
+    let transaction = TaskTransaction::try_new(
+        TaskRevision::try_new(0).unwrap(),
+        receipt(),
+        vec![TaskEvent::TaskCreated {
+            task_id: task_id(),
+            workspace_id: workspace_id(),
+            title: "A task".to_owned(),
+            created_at: "2026-07-20T00:00:00Z".to_owned(),
+        }],
+    )
+    .unwrap();
+    let json = serde_json::to_string(&EventPayload::TaskLedger(TaskLedgerRecord::Control(
+        transaction,
+    )))
+    .unwrap();
+    assert!(json.contains(r#""kind":"task.ledger""#), "{json}");
+    assert!(json.contains(r#""record_type":"control""#), "{json}");
+    assert!(json.contains(r#""event_type":"task_created""#), "{json}");
+    let invalid =
+        serde_json::json!({"kind":"task.ledger","record_type":"activity","record":{"events":[]}});
+    assert!(serde_json::from_value::<EventPayload>(invalid).is_err());
+
+    let revision =
+        RevisionToken::parse("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            .unwrap();
+    let snapshot = WorkspaceChangesFact {
+        workspace_id: workspace_id(),
+        revision: revision.clone(),
+        availability: ChangesAvailabilityFact::Available,
+        entries: vec![ChangeEntryFact {
+            path: WorkspaceRelativePath::parse("src/lib.rs").unwrap(),
+            old_path: None,
+            kind: ChangeKindFact::Modified,
+            staged: false,
+            worktree: true,
+            binary: false,
+            additions: Some(1),
+            deletions: Some(0),
+            revision,
+        }],
+        next_cursor: None,
+    };
+    let mut terminal = run();
+    terminal.state = RunState::Completed;
+    terminal.summary = Some("done".to_owned());
+    terminal.workspace_changes = Some(snapshot.clone());
+    let round_trip: RunFact =
+        serde_json::from_value(serde_json::to_value(&terminal).unwrap()).unwrap();
+    assert_eq!(round_trip.workspace_changes, Some(snapshot));
 }

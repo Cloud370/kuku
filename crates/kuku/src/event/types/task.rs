@@ -533,6 +533,13 @@ impl TaskEvent {
             if state.is_active() && run.summary.is_some() {
                 return Err(TaskLedgerError::InvalidRunCompletion);
             }
+            if state.is_active()
+                && (run.checks.is_some()
+                    || run.metrics.is_some()
+                    || run.workspace_changes.is_some())
+            {
+                return Err(TaskLedgerError::InvalidRunCompletion);
+            }
             if !state.is_active() && run.summary.is_none() {
                 return Err(TaskLedgerError::InvalidRunCompletion);
             }
@@ -686,11 +693,11 @@ impl TaskTransaction {
         if events.is_empty() {
             return Err(TaskLedgerError::Empty);
         }
-        if events
-            .iter()
-            .any(|event| event.validate().is_err() || !event.allowed_in_control())
-        {
-            return Err(TaskLedgerError::InvalidControlEvent);
+        for event in &events {
+            event.validate()?;
+            if !event.allowed_in_control() {
+                return Err(TaskLedgerError::InvalidControlEvent);
+            }
         }
         Ok(Self {
             task_revision,
@@ -715,11 +722,11 @@ impl TaskActivityBatch {
         if events.is_empty() {
             return Err(TaskLedgerError::Empty);
         }
-        if events
-            .iter()
-            .any(|event| event.validate().is_err() || !event.allowed_in_activity())
-        {
-            return Err(TaskLedgerError::InvalidActivityEvent);
+        for event in &events {
+            event.validate()?;
+            if !event.allowed_in_activity() {
+                return Err(TaskLedgerError::InvalidActivityEvent);
+            }
         }
         Ok(Self { events })
     }
