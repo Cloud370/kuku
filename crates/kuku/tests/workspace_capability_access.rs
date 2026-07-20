@@ -114,10 +114,10 @@ impl WorkspaceQueryCapability for ReplacingCapability {
                 .output()
                 .await?;
             if let Some(events) = events {
-                for index in 0..130 {
+                for index in 0..1024 {
                     events
                         .send(kuku::WorkspaceCommandEvent::Stdout(
-                            format!("{index:03},").into_bytes(),
+                            format!("{index:04},").into_bytes(),
                         ))
                         .await
                         .map_err(|_| {
@@ -304,8 +304,8 @@ async fn task_command_never_executes_in_a_replacement_workspace_root() {
     assert!(!root.join("command-marker.txt").exists());
     assert_eq!(
         streamed,
-        (0..130)
-            .map(|index| format!("{index:03},"))
+        (0..1024)
+            .map(|index| format!("{index:04},"))
             .collect::<String>()
     );
 }
