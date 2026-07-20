@@ -157,8 +157,18 @@ impl ConfigService {
         let encoded =
             toml::to_string_pretty(&patch.file).map_err(|error| config_error(error.to_string()))?;
         let mut state = self.inner.write().await;
-        if self.path.exists() {
-            let current = std::fs::read(&self.path).map_err(io_error)?;
+        if state.disk_digest.is_some() {
+            let current = std::fs::read(&self.path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ApiError::new(
+                        ApiErrorCode::Outdated,
+                        "config changed on disk",
+                        "platform-config",
+                    )
+                } else {
+                    io_error(error)
+                }
+            })?;
             let current_digest = accepted_digest(&current);
             if state.disk_digest.as_ref() != Some(&current_digest) {
                 return Err(ApiError::new(
@@ -195,8 +205,15 @@ impl ConfigService {
                 .unwrap_or_else(|| accepted_digest(b"missing-config"));
             let current = self.revision.current().await?;
             let guard = self.revision.begin(&current).await?;
-            guard.finish(RevisionDomain::Config, digest).await?;
+            let (_, _, _, latest_digest) = read_state(&self.path);
+            if latest_digest != disk_digest {
+                return Ok(self.state().await);
+            }
             let mut state = self.inner.write().await;
+            if state.disk_digest != disk_digest {
+                return Ok(state.disk_state.clone());
+            }
+            guard.finish(RevisionDomain::Config, digest).await?;
             state.raw = raw;
             state.last_good = last_good;
             state.disk_state = disk_state.clone();
@@ -224,7 +241,10 @@ fn read_state(
         return (None, None, PlatformState::Missing, None);
     };
     let digest = accepted_digest(&bytes);
-    let raw = match kuku::config::load_config(path) {
+    let raw = match std::str::from_utf8(&bytes)
+        .map_err(|error| kuku::Error::ConfigLoad(format!("invalid UTF-8 config: {error}")))
+        .and_then(kuku::config::parse_config_file)
+    {
         Ok(raw) => raw,
         Err(error) => {
             return (
@@ -233,7 +253,7 @@ fn read_state(
                 PlatformState::Invalid {
                     diagnostics: vec![error.to_string()],
                 },
-                Some(digest),
+                Some(accepted_digest(b"invalid-config")),
             )
         }
     };
@@ -242,7 +262,7 @@ fn read_state(
             Some(raw),
             Some(Arc::new(config)),
             PlatformState::Ready,
-            Some(digest),
+            Some(accepted_digest(b"invalid-config")),
         ),
         Err(error) => (
             Some(raw),

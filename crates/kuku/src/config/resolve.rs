@@ -28,7 +28,7 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
     parse_config_file(&text)
 }
 
-pub(crate) fn parse_config_file(raw: &str) -> Result<ConfigFile> {
+pub fn parse_config_file(raw: &str) -> Result<ConfigFile> {
     let mut value = toml::from_str::<toml::Value>(raw)
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
     resolve_env_refs(&mut value, "")?;

@@ -40,6 +40,20 @@ async fn missing_config_is_state_not_startup_failure() {
 }
 
 #[tokio::test]
+async fn invalid_startup_uses_stable_invalid_revision_sentinel() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(&path, "not valid [[[\n").unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let first = service.revision().await.unwrap();
+    std::fs::write(&path, "still invalid [[\n").unwrap();
+    service.reload_from_disk().await.unwrap();
+    let second = service.revision().await.unwrap();
+    assert_eq!(first, second);
+}
+
+#[tokio::test]
 async fn stale_revision_returns_server_revision_conflict() {
     let home = tempfile::tempdir().unwrap();
     let revisions = ServerRevisionCoordinator::open(home.path());
@@ -59,6 +73,34 @@ async fn stale_revision_returns_server_revision_conflict() {
         error.code(),
         kuku_server::api::ApiErrorCode::StaleServerRevision
     );
+}
+
+#[tokio::test]
+async fn deleting_config_before_commit_is_a_disk_conflict() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let expected = service.revision().await.unwrap();
+    std::fs::remove_file(path).unwrap();
+    let error = service
+        .commit_config(ConfigPatch::replace(valid_config()), expected)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), kuku_server::api::ApiErrorCode::Outdated);
 }
 
 #[tokio::test]
@@ -97,4 +139,31 @@ async fn watcher_shutdown_is_sticky_and_joined() {
     let service = ConfigService::open(path.clone(), revisions).await.unwrap();
     let watcher = kuku_server::config_watcher::ConfigWatcherHandle::start(path, service);
     watcher.shutdown().await;
+}
+
+#[tokio::test]
+async fn watcher_does_not_reload_after_shutdown() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"default_model = "custom"
+[model.custom]
+provider = "local"
+model = "model-x"
+[provider.local]
+format = "openai-responses"
+base_url = "http://127.0.0.1:9000"
+credential = { source = "direct_value", value = "key" }
+"#,
+    )
+    .unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    let service = ConfigService::open(path.clone(), revisions).await.unwrap();
+    let watcher =
+        kuku_server::config_watcher::ConfigWatcherHandle::start(path.clone(), service.clone());
+    watcher.shutdown().await;
+    std::fs::write(path, "default_model = [").unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(service.state().await, PlatformState::Ready);
 }

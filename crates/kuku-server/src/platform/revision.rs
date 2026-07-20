@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::api::{ApiError, ApiErrorCode, RevisionToken};
@@ -28,14 +28,7 @@ impl AcceptedDigest {
 }
 
 pub fn accepted_digest(bytes: &[u8]) -> AcceptedDigest {
-    let mut output = [0u8; 32];
-    for (index, slot) in output.chunks_exact_mut(8).enumerate() {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        index.hash(&mut hasher);
-        bytes.hash(&mut hasher);
-        slot.copy_from_slice(&hasher.finish().to_le_bytes());
-    }
-    AcceptedDigest(output)
+    AcceptedDigest(Sha256::digest(bytes).into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +99,11 @@ impl ServerRevisionCoordinator {
     }
 
     pub async fn probe_inputs(&self) -> Result<ProbeInputRevision, ApiError> {
-        Ok(ProbeInputRevision(self.current().await?))
+        let accepted = self.inner.accepted.lock().await;
+        Ok(ProbeInputRevision(token_for_domains(
+            &accepted,
+            &[RevisionDomain::Config, RevisionDomain::Workspace],
+        )))
     }
 }
 
@@ -132,10 +129,27 @@ impl ServerRevisionGuard {
 }
 
 fn token_for(accepted: &BTreeMap<RevisionDomain, AcceptedDigest>) -> RevisionToken {
+    token_for_domains(
+        accepted,
+        &[
+            RevisionDomain::Config,
+            RevisionDomain::Init,
+            RevisionDomain::Workspace,
+            RevisionDomain::Settings,
+        ],
+    )
+}
+
+fn token_for_domains(
+    accepted: &BTreeMap<RevisionDomain, AcceptedDigest>,
+    domains: &[RevisionDomain],
+) -> RevisionToken {
     let mut bytes = Vec::new();
-    for (domain, digest) in accepted {
-        bytes.push(*domain as u8);
-        bytes.extend_from_slice(digest.as_bytes());
+    for domain in domains {
+        if let Some(digest) = accepted.get(domain) {
+            bytes.push(*domain as u8);
+            bytes.extend_from_slice(digest.as_bytes());
+        }
     }
     let digest = accepted_digest(&bytes);
     RevisionToken::parse(

@@ -64,3 +64,24 @@ async fn stale_guard_does_not_change_accepted_revision() {
     let current = revisions.current().await.unwrap();
     assert_ne!(before, current);
 }
+
+#[tokio::test]
+async fn probe_revision_excludes_init_and_settings_domains() {
+    let home = tempfile::tempdir().unwrap();
+    let revisions = ServerRevisionCoordinator::open(home.path());
+    revisions
+        .register_initial(RevisionDomain::Config, accepted_digest(b"config"))
+        .await;
+    revisions
+        .register_initial(RevisionDomain::Workspace, accepted_digest(b"workspace"))
+        .await;
+    let before = revisions.probe_inputs().await.unwrap().token().clone();
+    revisions
+        .register_initial(RevisionDomain::Init, accepted_digest(b"init"))
+        .await;
+    revisions
+        .register_initial(RevisionDomain::Settings, accepted_digest(b"settings"))
+        .await;
+    let after = revisions.probe_inputs().await.unwrap().token().clone();
+    assert_eq!(before, after);
+}

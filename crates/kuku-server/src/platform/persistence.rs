@@ -31,6 +31,11 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let result = (|| {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
         let mut file = options.open(&temporary)?;
         private_file(&file)?;
         file.write_all(bytes)?;
