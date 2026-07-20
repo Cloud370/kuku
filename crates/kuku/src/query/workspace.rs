@@ -6,6 +6,15 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::event::{ExecutionScope, SkillContextFact};
 
+/// Returns whether a directory is excluded from default recursive workspace traversal.
+#[doc(hidden)]
+pub fn is_default_excluded_workspace_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
+    )
+}
+
 pub trait WorkspaceQueryCapability: std::fmt::Debug + Send + Sync {
     fn workspace_id(&self) -> &str;
 

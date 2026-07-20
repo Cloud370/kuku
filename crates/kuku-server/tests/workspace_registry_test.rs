@@ -288,7 +288,17 @@ async fn query_capability_prunes_large_generated_directories_before_budgeting_en
     let root = allowed.path().join("project");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("visible.txt"), "visible").unwrap();
-    for excluded in [".git", "target", "node_modules"] {
+    let excluded_directories = [
+        ".git",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+    ];
+    for excluded in excluded_directories {
         let directory = root.join(excluded);
         std::fs::create_dir(&directory).unwrap();
         for index in 0..64 {
@@ -309,11 +319,12 @@ async fn query_capability_prunes_large_generated_directories_before_budgeting_en
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].path, "visible.txt");
-    assert!(!entries.iter().any(|entry| {
-        entry.path.starts_with(".git/")
-            || entry.path.starts_with("target/")
-            || entry.path.starts_with("node_modules/")
-    }));
+    assert!(!entries.iter().any(
+        |entry| excluded_directories
+            .iter()
+            .any(|excluded| entry.path == *excluded
+                || entry.path.starts_with(&format!("{excluded}/")))
+    ));
 }
 
 #[tokio::test]

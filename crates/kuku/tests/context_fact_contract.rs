@@ -12,6 +12,36 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+const INVALID_WORKSPACE_RELATIVE_PATHS: &[&str] = &[
+    "",
+    "/a",
+    "a//b",
+    "a/",
+    ".",
+    "..",
+    "a/.",
+    "a/..",
+    "a\\b",
+    "C:/a",
+    "report.txt:secret",
+    "nested/file:stream",
+    "CON",
+    "con.txt",
+    "con .txt",
+    "nested/PrN.log",
+    "AUX",
+    "nul.json",
+    "NUL...log",
+    "COM1",
+    "com9.txt",
+    "LPT1",
+    "lpt9.log",
+    "file.",
+    "file ",
+    "nested./file",
+    "nested /file",
+];
+
 fn execution_scope() -> ExecutionScope {
     ExecutionScope {
         workspace_id: WorkspaceId::parse("wsp_0123456789abcdef01234567").unwrap(),
@@ -59,9 +89,18 @@ fn workspace_path_schema_accepts(schema: &serde_json::Value, value: &str) -> boo
     let pattern = schema["pattern"].as_str().unwrap();
     let max_characters = schema["maxLength"].as_u64().unwrap() as usize;
     let max_utf8_bytes = schema["x-kuku-max-utf8-bytes"].as_u64().unwrap() as usize;
-    value.chars().count() <= max_characters
+    let satisfies_base = value.chars().count() <= max_characters
         && value.len() <= max_utf8_bytes
-        && regex::Regex::new(pattern).unwrap().is_match(value)
+        && regex::Regex::new(pattern).unwrap().is_match(value);
+    let satisfies_exclusions = schema["allOf"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|constraint| {
+            let excluded = constraint["not"]["pattern"].as_str().unwrap();
+            !regex::Regex::new(excluded).unwrap().is_match(value)
+        });
+    satisfies_base && satisfies_exclusions
 }
 
 #[test]
@@ -369,23 +408,7 @@ fn workspace_relative_path_is_normalized_contained_and_size_bounded() {
 
 #[test]
 fn workspace_relative_path_rejects_portable_windows_aliases_on_every_platform() {
-    for invalid in [
-        "report.txt:secret",
-        "nested/file:stream",
-        "CON",
-        "con.txt",
-        "nested/PrN.log",
-        "AUX",
-        "nul.json",
-        "COM1",
-        "com9.txt",
-        "LPT1",
-        "lpt9.log",
-        "file.",
-        "file ",
-        "nested./file",
-        "nested /file",
-    ] {
+    for invalid in INVALID_WORKSPACE_RELATIVE_PATHS {
         assert!(WorkspaceRelativePath::parse(invalid).is_err(), "{invalid}");
     }
 
@@ -408,9 +431,7 @@ fn workspace_relative_path_schema_matches_parser_semantics() {
         assert!(workspace_path_schema_accepts(&schema, valid), "{valid}");
     }
 
-    for invalid in [
-        "", "/a", "a//b", "a/", ".", "..", "a/.", "a/..", "a\\b", "C:/a",
-    ] {
+    for invalid in INVALID_WORKSPACE_RELATIVE_PATHS {
         assert!(WorkspaceRelativePath::parse(invalid).is_err(), "{invalid}");
         assert!(
             !workspace_path_schema_accepts(&schema, invalid),

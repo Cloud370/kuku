@@ -176,10 +176,7 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
 }
 
 pub(super) fn is_default_excluded_dir(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
-    )
+    crate::query::is_default_excluded_workspace_directory(name)
 }
 
 // ---------- File I/O helpers ----------

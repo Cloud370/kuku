@@ -372,7 +372,9 @@ fn collect_capability_entries(
     for entry in read_dir {
         let entry = entry.map_err(|_| unavailable("workspace entry is unavailable"))?;
         let name = entry.file_name();
-        if name.to_str().is_some_and(is_default_excluded_directory)
+        if name
+            .to_str()
+            .is_some_and(kuku::query::is_default_excluded_workspace_directory)
             && entry
                 .file_type()
                 .map_err(|_| unavailable("workspace entry metadata is unavailable"))?
@@ -425,8 +427,4 @@ fn collect_capability_entries(
         }
     }
     Ok(())
-}
-
-fn is_default_excluded_directory(name: &str) -> bool {
-    matches!(name, ".git" | "target" | "node_modules")
 }

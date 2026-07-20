@@ -15,8 +15,9 @@ pub use types::{
     UiEvent,
 };
 pub use workspace::{
-    TaskQueryContext, WorkspaceCommandCancellation, WorkspaceCommandEvent, WorkspaceCommandOutput,
-    WorkspaceCommandRequest, WorkspaceEntry, WorkspaceQueryCapability,
+    is_default_excluded_workspace_directory, TaskQueryContext, WorkspaceCommandCancellation,
+    WorkspaceCommandEvent, WorkspaceCommandOutput, WorkspaceCommandRequest, WorkspaceEntry,
+    WorkspaceQueryCapability,
 };
 
 /// Start building a new query for the given prompt.
