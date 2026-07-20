@@ -3,6 +3,25 @@ use std::time::Duration;
 use kuku_cli::display::{filter_events_for_conversation, render_event_brief};
 use kuku_cli::display::{Display, OutputLine};
 
+fn execution_scope() -> kuku::event::ExecutionScope {
+    kuku::event::ExecutionScope {
+        workspace_id: kuku::event::WorkspaceId::parse("wsp_111111111111111111111111").unwrap(),
+        task_id: kuku::event::TaskId::parse("tsk_222222222222222222222222").unwrap(),
+        run_id: kuku::event::RunId::parse("run_333333333333333333333333").unwrap(),
+        turn_id: kuku::event::TurnId::parse("trn_444444444444444444444444").unwrap(),
+        conversation_id: kuku::event::ConversationId::parse("con_555555555555555555555555")
+            .unwrap(),
+        turn_index: 1,
+    }
+}
+
+fn request_scope(request_id: &str) -> kuku::event::RequestScope {
+    kuku::event::RequestScope {
+        execution: execution_scope(),
+        request_id: kuku::event::RequestId::parse(request_id).unwrap(),
+    }
+}
+
 #[test]
 fn thinking_default_hides_text() {
     let mut d = Display::new(false, "medium");
@@ -143,6 +162,7 @@ fn derive_final_output_defaults_to_main_conversation() {
         kuku::event::StoredEvent {
             id: 1,
             payload: kuku::event::EventPayload::MessageAssistant {
+                execution: execution_scope(),
                 ts: "t0".into(),
                 conversation: "review".into(),
                 turn: 1,
@@ -153,9 +173,9 @@ fn derive_final_output_defaults_to_main_conversation() {
         kuku::event::StoredEvent {
             id: 2,
             payload: kuku::event::EventPayload::ModelResponse {
+                request: request_scope("req_111111111111111111111111"),
                 turn: 1,
                 ts: "t1".into(),
-                request_id: "req_main".into(),
                 text: "main answer".into(),
                 thinking: None,
                 input_tokens_total: None,
@@ -164,6 +184,7 @@ fn derive_final_output_defaults_to_main_conversation() {
         kuku::event::StoredEvent {
             id: 3,
             payload: kuku::event::EventPayload::TurnCompleted {
+                execution: execution_scope(),
                 ts: "t2".into(),
                 conversation: "review".into(),
                 turn: 1,
@@ -172,6 +193,7 @@ fn derive_final_output_defaults_to_main_conversation() {
         kuku::event::StoredEvent {
             id: 4,
             payload: kuku::event::EventPayload::TurnCompleted {
+                execution: execution_scope(),
                 conversation: "main".into(),
                 turn: 1,
                 ts: "t3".into(),
@@ -252,6 +274,7 @@ fn event_brief_renders_permission_requested() {
     let event = kuku::event::StoredEvent {
         id: 5,
         payload: kuku::event::EventPayload::PermissionRequested {
+            execution: execution_scope(),
             turn: 1,
             ts: "t".to_string(),
             tool_call_id: "toolu_cmd".to_string(),
@@ -286,6 +309,7 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
         kuku::event::StoredEvent {
             id: 2,
             payload: kuku::event::EventPayload::MessageUser {
+                execution: execution_scope(),
                 ts: "t".into(),
                 conversation: "review".into(),
                 turn: 1,
@@ -297,9 +321,9 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
         kuku::event::StoredEvent {
             id: 3,
             payload: kuku::event::EventPayload::ModelResponse {
+                request: request_scope("req_111111111111111111111111"),
                 turn: 1,
                 ts: "t".into(),
-                request_id: "req_main".into(),
                 text: "main response".into(),
                 thinking: None,
                 input_tokens_total: None,
@@ -314,6 +338,24 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
 
     assert_eq!(review_ids, vec![1, 2]);
     assert_eq!(main_ids, vec![1, 3]);
+}
+
+#[test]
+fn event_brief_renders_scoped_context_request_identity() {
+    let event = kuku::event::StoredEvent {
+        id: 6,
+        payload: kuku::event::EventPayload::ContextSources {
+            request: request_scope("req_666666666666666666666666"),
+            turn: 1,
+            ts: "t".into(),
+            project_instruction_sources: Vec::new(),
+            memory_sources: Vec::new(),
+        },
+    };
+
+    let line = render_event_brief(&event, 1);
+
+    assert!(line.contains("req=req_666666666666666666666666"));
 }
 
 #[test]

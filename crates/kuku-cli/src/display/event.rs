@@ -56,14 +56,15 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
     match payload {
         EventPayload::MessageUser { text, .. } => text.chars().take(60).collect(),
         EventPayload::ContextSources {
-            request_id,
+            request,
             project_instruction_sources,
             memory_sources,
             ..
         } => {
             if verbose {
                 format!(
-                    "req={request_id}  project={}  memory={}",
+                    "req={}  project={}  memory={}",
+                    request.request_id,
                     project_instruction_sources.len(),
                     memory_sources.len()
                 )
@@ -289,7 +290,28 @@ pub fn derive_final_output_for_conversation(
 #[cfg(test)]
 mod tests {
     use super::{derive_final_output, render_event_brief};
-    use kuku::event::{EventPayload, StoredEvent};
+    use kuku::event::{
+        ConversationId, EventPayload, ExecutionScope, RequestId, RequestScope, RunId, StoredEvent,
+        TaskId, TurnId, WorkspaceId,
+    };
+
+    fn execution_scope() -> ExecutionScope {
+        ExecutionScope {
+            workspace_id: WorkspaceId::parse("wsp_111111111111111111111111").unwrap(),
+            task_id: TaskId::parse("tsk_222222222222222222222222").unwrap(),
+            run_id: RunId::parse("run_333333333333333333333333").unwrap(),
+            turn_id: TurnId::parse("trn_444444444444444444444444").unwrap(),
+            conversation_id: ConversationId::parse("con_555555555555555555555555").unwrap(),
+            turn_index: 1,
+        }
+    }
+
+    fn request_scope(request_id: &str) -> RequestScope {
+        RequestScope {
+            execution: execution_scope(),
+            request_id: RequestId::parse(request_id).unwrap(),
+        }
+    }
 
     #[test]
     fn derive_final_output_uses_last_model_response_before_turn_end() {
@@ -297,6 +319,7 @@ mod tests {
             StoredEvent {
                 id: 1,
                 payload: EventPayload::TurnStarted {
+                    execution: execution_scope(),
                     conversation: "main".to_string(),
                     turn: 1,
                     ts: "t0".to_string(),
@@ -305,9 +328,9 @@ mod tests {
             StoredEvent {
                 id: 2,
                 payload: EventPayload::ModelResponse {
+                    request: request_scope("req_111111111111111111111111"),
                     turn: 1,
                     ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
                     text: "tool phase".to_string(),
                     thinking: None,
                     input_tokens_total: Some(5),
@@ -316,11 +339,11 @@ mod tests {
             StoredEvent {
                 id: 2,
                 payload: EventPayload::ToolCall {
+                    request: request_scope("req_111111111111111111111111"),
                     turn: 1,
                     ts: "t2".to_string(),
                     conversation: None,
                     tool_call_id: "tool_1".to_string(),
-                    request_id: "req_1".to_string(),
                     index: 0,
                     tool: "read_file".to_string(),
                     args: serde_json::json!({"path": "README.md"}),
@@ -329,9 +352,9 @@ mod tests {
             StoredEvent {
                 id: 3,
                 payload: EventPayload::ModelResponse {
+                    request: request_scope("req_222222222222222222222222"),
                     turn: 1,
                     ts: "t3".to_string(),
-                    request_id: "req_2".to_string(),
                     text: "final answer".to_string(),
                     thinking: None,
                     input_tokens_total: Some(7),
@@ -340,6 +363,7 @@ mod tests {
             StoredEvent {
                 id: 4,
                 payload: EventPayload::TurnCompleted {
+                    execution: execution_scope(),
                     conversation: "main".to_string(),
                     turn: 1,
                     ts: "t4".to_string(),
@@ -358,6 +382,7 @@ mod tests {
         let allow = StoredEvent {
             id: 1,
             payload: EventPayload::PermissionAllow {
+                execution: execution_scope(),
                 turn: 1,
                 ts: "t".to_string(),
                 tool_call_id: "tool_1".to_string(),
@@ -370,6 +395,7 @@ mod tests {
         let handoff = StoredEvent {
             id: 2,
             payload: EventPayload::Handoff {
+                execution: execution_scope(),
                 turn: 2,
                 ts: "t".to_string(),
                 request_id: "req_2".to_string(),
@@ -388,9 +414,9 @@ mod tests {
             StoredEvent {
                 id: 1,
                 payload: EventPayload::ModelResponse {
+                    request: request_scope("req_111111111111111111111111"),
                     turn: 1,
                     ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
                     text: "keep me".to_string(),
                     thinking: None,
                     input_tokens_total: Some(5),
@@ -399,6 +425,7 @@ mod tests {
             StoredEvent {
                 id: 3,
                 payload: EventPayload::TurnCompleted {
+                    execution: execution_scope(),
                     conversation: "main".to_string(),
                     turn: 1,
                     ts: "t2".to_string(),
@@ -407,6 +434,7 @@ mod tests {
             StoredEvent {
                 id: 4,
                 payload: EventPayload::TurnStarted {
+                    execution: execution_scope(),
                     conversation: "main".to_string(),
                     turn: 2,
                     ts: "t2.5".to_string(),
@@ -415,9 +443,9 @@ mod tests {
             StoredEvent {
                 id: 5,
                 payload: EventPayload::ModelResponse {
+                    request: request_scope("req_222222222222222222222222"),
                     turn: 2,
                     ts: "t3".to_string(),
-                    request_id: "req_2".to_string(),
                     text: "rolled back answer".to_string(),
                     thinking: None,
                     input_tokens_total: Some(7),
@@ -426,6 +454,7 @@ mod tests {
             StoredEvent {
                 id: 6,
                 payload: EventPayload::TurnCompleted {
+                    execution: execution_scope(),
                     conversation: "main".to_string(),
                     turn: 2,
                     ts: "t4".to_string(),
