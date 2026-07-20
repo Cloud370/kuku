@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -315,6 +315,7 @@ fn run_process(
     let mut child = command
         .spawn()
         .map_err(|_| unavailable("workspace process cannot be started"))?;
+    let process_tree = ProcessTree::attach(&child)?;
     let stdout = child
         .stdout
         .take()
@@ -353,14 +354,14 @@ fn run_process(
             break (exit, false);
         }
         if exceeded.load(Ordering::SeqCst) || cancelled.load(Ordering::SeqCst) {
-            let _ = child.kill();
+            process_tree.terminate(&mut child);
             let exit = child
                 .wait()
                 .map_err(|_| unavailable("workspace process cannot be reaped"))?;
             break (exit, false);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            process_tree.terminate(&mut child);
             let exit = child
                 .wait()
                 .map_err(|_| unavailable("workspace process cannot be reaped"))?;
@@ -445,9 +446,12 @@ fn set_process_root(
         .try_clone()
         .map_err(|_| unavailable("workspace process root cannot be cloned"))?
         .into_std_file();
-    // SAFETY: the closure only invokes async-signal-safe fchdir on an inherited directory fd.
+    // SAFETY: the closure only invokes async-signal-safe process setup operations.
     unsafe {
-        command.pre_exec(move || rustix::process::fchdir(&directory).map_err(io::Error::from));
+        command.pre_exec(move || {
+            rustix::process::setpgid(None, None).map_err(io::Error::from)?;
+            rustix::process::fchdir(&directory).map_err(io::Error::from)
+        });
     }
     Ok(())
 }
@@ -477,6 +481,92 @@ fn apply_platform_environment(command: &mut Command) {
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system_root);
+    }
+}
+
+#[cfg(unix)]
+struct ProcessTree;
+
+#[cfg(unix)]
+impl ProcessTree {
+    fn attach(_child: &Child) -> Result<Self, ApiError> {
+        Ok(Self)
+    }
+
+    fn terminate(&self, child: &mut Child) {
+        if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        let _ = child.kill();
+    }
+}
+
+#[cfg(windows)]
+struct ProcessTree(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl ProcessTree {
+    fn attach(child: &Child) -> Result<Self, ApiError> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        // SAFETY: Windows initializes the job object and the zeroed limit structure is valid.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(unavailable("workspace process job cannot be created"));
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            ) == 0
+                || AssignProcessToJobObject(job, child.as_raw_handle()) == 0
+            {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                return Err(unavailable("workspace process job cannot be configured"));
+            }
+            Ok(Self(job))
+        }
+    }
+
+    fn terminate(&self, child: &mut Child) {
+        // SAFETY: the handle is a live job object owned by this value.
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1);
+        }
+        let _ = child.kill();
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned by this value and closed exactly once.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+struct ProcessTree;
+
+#[cfg(not(any(unix, windows)))]
+impl ProcessTree {
+    fn attach(_child: &Child) -> Result<Self, ApiError> {
+        Ok(Self)
+    }
+
+    fn terminate(&self, child: &mut Child) {
+        let _ = child.kill();
     }
 }
 

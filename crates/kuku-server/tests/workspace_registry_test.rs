@@ -20,6 +20,8 @@ struct ChunkFixture {
     chunks: Vec<ProcessChunk>,
 }
 
+struct RejectingChunkFixture;
+
 impl ProcessChunkSink for ChunkFixture {
     fn push<'a>(
         &'a mut self,
@@ -28,6 +30,21 @@ impl ProcessChunkSink for ChunkFixture {
         Box::pin(async move {
             self.chunks.push(chunk);
             Ok(())
+        })
+    }
+}
+
+impl ProcessChunkSink for RejectingChunkFixture {
+    fn push<'a>(
+        &'a mut self,
+        _chunk: ProcessChunk,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ApiError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(ApiError::new(
+                ApiErrorCode::Internal,
+                "stream rejected",
+                "workspace-test",
+            ))
         })
     }
 }
@@ -389,6 +406,45 @@ async fn process_boundary_is_identity_bound_and_projects_git_branch() {
         Some("feature"),
         registry.list().await.unwrap().items[0].branch.as_deref()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn process_timeout_and_stream_cancellation_reap_descendants() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    std::fs::create_dir(allowed.path().join("project")).unwrap();
+    let usage = Arc::new(UsageFixture {
+        in_use: AtomicBool::new(false),
+    });
+    let registry = open_registry(home.path(), allowed.path(), usage);
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+    let command = || RootCommand::new("sh").args(["-c", "sleep 30 & printf ready; wait"]);
+
+    let started = std::time::Instant::now();
+    let output = capability
+        .run_at_root(
+            command(),
+            ProcessLimits::new(std::time::Duration::from_millis(100), 4096).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(output.status().timed_out());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+    let mut sink = RejectingChunkFixture;
+    let started = std::time::Instant::now();
+    let error = capability
+        .stream_at_root(
+            command(),
+            ProcessLimits::new(std::time::Duration::from_secs(10), 4096).unwrap(),
+            &mut sink,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::Internal, error.code());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
 
 #[tokio::test]

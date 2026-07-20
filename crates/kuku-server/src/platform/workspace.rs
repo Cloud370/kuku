@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, File, ReadDir};
+use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt, ReadDir};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::{OnceCell, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use typed_path::{Utf8Component, Utf8UnixPath, Utf8WindowsPath};
@@ -210,8 +210,7 @@ impl WorkspaceCapability {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(unavailable("workspace path is not a regular file"));
         }
-        let file = parent
-            .open(segment)
+        let file = open_file_no_follow(&parent, segment)
             .map_err(|_| unavailable("workspace file is unavailable"))?;
         let opened = file
             .metadata()
@@ -402,6 +401,7 @@ impl WorkspaceRegistry {
     /// Lists all persisted workspaces without exposing ambient paths.
     pub async fn list(&self) -> Result<WorkspacePage, ApiError> {
         self.ensure_revision_registered().await;
+        let _registry_gate = self.gate.read().await;
         let (records, default_workspace_id) = {
             let state = self
                 .state
@@ -526,10 +526,8 @@ impl WorkspaceRegistry {
         let guard = self.revision.begin(&expected).await?;
         let prepared = self.prepare_default(id).await?;
         let digest = self.apply_prepared_default(prepared)?;
-        let server_revision = guard.finish(RevisionDomain::Workspace, digest).await?;
-        let mut page = self.list().await?;
-        page.server_revision = server_revision;
-        Ok(page)
+        guard.finish(RevisionDomain::Workspace, digest).await?;
+        self.list().await
     }
 
     pub(crate) async fn prepare_default(
@@ -850,6 +848,16 @@ fn open_directory_components(
         current = opened;
     }
     Ok(current)
+}
+
+fn open_file_no_follow(parent: &Dir, segment: &std::ffi::OsStr) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    #[cfg(windows)]
+    options.custom_flags(0x0020_0000);
+    parent.open_with(segment, &options)
 }
 
 fn generate_root_id() -> Result<RegistrationRootId, ApiError> {
