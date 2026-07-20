@@ -587,6 +587,12 @@
         "summary": {
           "type": "string"
         },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "workspace_changes": {
           "anyOf": [
             {
@@ -602,6 +608,7 @@
         "checks",
         "metrics",
         "summary",
+        "warnings",
         "workspace_changes"
       ],
       "type": "object"

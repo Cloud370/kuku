@@ -1515,6 +1515,7 @@ export interface CompletionProjection {
   checks: CheckProjection[] | null;
   metrics: MetricProjection[] | null;
   summary: string;
+  warnings: string[];
   workspace_changes: ReviewSnapshot | null;
   [k: string]: unknown;
 }
