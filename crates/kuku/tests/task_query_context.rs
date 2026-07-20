@@ -157,12 +157,25 @@ fn selected_project_skill(
         skill_id: skill_id.to_string(),
         source: kuku::event::SourceFact {
             scope: kuku::event::SourceScope::Project,
-            id: format!("source:project:{name}"),
+            id: "source:project".to_string(),
             relative_path: Some(kuku::event::WorkspaceRelativePath::parse(relative_path).unwrap()),
         },
         origin: kuku::event::SkillLoadOrigin::You,
         content_hash: registry.get(name).unwrap().hash.clone(),
     }
+}
+
+fn selected_workspace_skill(
+    workspace: &std::path::Path,
+    skill_id: &str,
+    relative_path: &str,
+) -> kuku::event::SkillContextFact {
+    let project_id = skill_id.replacen("skill:workspace:", "skill:project:", 1);
+    let mut selected = selected_project_skill(workspace, &project_id, relative_path);
+    selected.skill_id = skill_id.to_string();
+    selected.source.scope = kuku::event::SourceScope::Workspace;
+    selected.source.id = "source:workspace".to_string();
+    selected
 }
 
 fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> EventStore {
@@ -483,6 +496,61 @@ async fn unavailable_selected_skill_is_rejected_before_query_facts_append() {
 
     assert_eq!(error.code(), "invalid_task_context");
     assert_eq!(store.read_all().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn task_query_accepts_workspace_skills_sharing_a_catalog_source() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    for name in ["one", "two"] {
+        let directory = workspace.path().join(format!("catalog/skills/{name}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n\n{name} instructions\n"),
+        )
+        .unwrap();
+    }
+    let scope = common::execution_scope();
+    let store = task_store(&home.path().join("events.jsonl"), &scope);
+    let selected = ["one", "two"]
+        .into_iter()
+        .map(|name| {
+            selected_workspace_skill(
+                workspace.path(),
+                &format!("skill:workspace:{name}"),
+                &format!("catalog/skills/{name}/SKILL.md"),
+            )
+        })
+        .collect();
+
+    let run = configured_query("hello")
+        .kuku_home(home.path())
+        .task_context(
+            TaskQueryContext::new(
+                scope,
+                store.clone(),
+                workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
+            )
+            .with_selected_skills(selected),
+        )
+        .start()
+        .await
+        .unwrap();
+    drop(run);
+
+    let registry = store
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ContextSkills { registry, .. } => Some(registry.to_string()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(registry.contains("one"));
+    assert!(registry.contains("two"));
+    assert!(registry.contains("workspace"));
 }
 
 #[tokio::test]

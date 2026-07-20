@@ -114,18 +114,17 @@ impl WorkspaceQueryCapability for ReplacingCapability {
                 .output()
                 .await?;
             if let Some(events) = events {
-                let midpoint = output.stdout.len() / 2;
-                for chunk in [&output.stdout[..midpoint], &output.stdout[midpoint..]] {
-                    if !chunk.is_empty() {
-                        events
-                            .send(kuku::WorkspaceCommandEvent::Stdout(chunk.to_vec()))
-                            .await
-                            .map_err(|_| {
-                                kuku::Error::WorkspaceUnavailable(
-                                    "command output receiver closed".to_string(),
-                                )
-                            })?;
-                    }
+                for index in 0..130 {
+                    events
+                        .send(kuku::WorkspaceCommandEvent::Stdout(
+                            format!("{index:03},").into_bytes(),
+                        ))
+                        .await
+                        .map_err(|_| {
+                            kuku::Error::WorkspaceUnavailable(
+                                "command output receiver closed".to_string(),
+                            )
+                        })?;
                 }
             }
             Ok(kuku::WorkspaceCommandOutput {
@@ -279,7 +278,7 @@ async fn task_command_never_executes_in_a_replacement_workspace_root() {
         home.path(),
         "run_command",
         serde_json::json!({
-            "command": "printf first; printf second; printf replacement > command-marker.txt",
+            "command": "printf replacement > command-marker.txt",
             "timeout": 5,
             "brief": "write marker"
         }),
@@ -303,7 +302,12 @@ async fn task_command_never_executes_in_a_replacement_workspace_root() {
     }
 
     assert!(!root.join("command-marker.txt").exists());
-    assert_eq!(streamed, "firstsecond");
+    assert_eq!(
+        streamed,
+        (0..130)
+            .map(|index| format!("{index:03},"))
+            .collect::<String>()
+    );
 }
 
 #[tokio::test]

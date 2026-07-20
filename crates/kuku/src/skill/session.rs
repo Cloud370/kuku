@@ -57,7 +57,6 @@ pub(crate) fn build_registry_snapshot_with_capability(
     let mut seen_ids = BTreeSet::new();
     let mut seen_names = BTreeSet::new();
     let mut seen_paths = BTreeSet::new();
-    let mut seen_sources = BTreeSet::new();
     for selected in selected_skills {
         let (scope_name, definition_source) = match selected.source.scope {
             crate::event::SourceScope::Project => {
@@ -93,11 +92,9 @@ pub(crate) fn build_registry_snapshot_with_capability(
                 selected.skill_id
             )));
         };
-        let source_key = format!("{scope_name}:{}", selected.source.id);
         if !seen_ids.insert(selected.skill_id.as_str())
             || !seen_names.insert(name)
             || !seen_paths.insert(relative_path.as_str())
-            || !seen_sources.insert(source_key)
         {
             return Err(crate::error::Error::InvalidTaskContext(format!(
                 "selected skill source is duplicated: {}",
