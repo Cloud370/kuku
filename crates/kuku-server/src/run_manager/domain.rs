@@ -26,6 +26,8 @@ pub enum DomainError {
     InteractionNotPending,
     LedgerCorrupt,
     StorageExhausted,
+    InvalidRequest,
+    PayloadTooLarge,
 }
 
 impl std::fmt::Display for DomainError {
@@ -47,6 +49,8 @@ impl std::fmt::Display for DomainError {
             Self::InteractionNotPending => formatter.write_str("interaction is not pending"),
             Self::LedgerCorrupt => formatter.write_str("task ledger is corrupt"),
             Self::StorageExhausted => formatter.write_str("storage exhausted"),
+            Self::InvalidRequest => formatter.write_str("invalid request"),
+            Self::PayloadTooLarge => formatter.write_str("payload too large"),
         }
     }
 }
@@ -63,6 +67,8 @@ impl DomainError {
             Self::StaleCommand => ApiErrorCode::StaleCommand,
             Self::InteractionNotPending => ApiErrorCode::InteractionNotPending,
             Self::StorageExhausted => ApiErrorCode::StorageExhausted,
+            Self::InvalidRequest => ApiErrorCode::InvalidRequest,
+            Self::PayloadTooLarge => ApiErrorCode::PayloadTooLarge,
         }
     }
 
@@ -390,13 +396,22 @@ impl TaskAggregate {
         if self.task_id.is_none() {
             return Err(DomainError::TaskNotCreated);
         }
+        let timeline = if self.timeline.len() > 500 {
+            self.timeline[self.timeline.len() - 500..].to_vec()
+        } else {
+            self.timeline.clone()
+        };
+        let encoded_size = serde_json::to_vec(&timeline).map_err(|_| DomainError::LedgerCorrupt)?.len();
+        if encoded_size > 16 * 1024 * 1024 {
+            return Err(DomainError::PayloadTooLarge);
+        }
         Ok(TaskProjection {
             api_version: ApiVersion,
             task_revision: self.revision,
             cursor: self.cursor,
             task: self.summary(),
             selected_tier_id: self.selected_tier_id.clone(),
-            timeline: self.timeline.clone(),
+            timeline,
             timeline_next_cursor: None,
             loaded_skills: self.loaded_skills.clone(),
             active_run: self.active_run_projection(),

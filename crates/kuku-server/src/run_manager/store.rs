@@ -229,16 +229,50 @@ impl TaskCommandService {
         })
     }
 
+    pub async fn list_tasks_query(
+        &self,
+        query: crate::api::ListTasksQuery,
+    ) -> Result<crate::api::TaskPage, DomainError> {
+        if query.limit == 0 || query.limit > 100 {
+            return Err(DomainError::InvalidRequest);
+        }
+        if let Some(cursor) = &query.cursor {
+            let expected = format!("task-list:{}:{}", query.workspace_id, query.search.clone().unwrap_or_default().trim().to_lowercase());
+            if !cursor.as_str().starts_with(&expected) {
+                return Err(DomainError::InvalidRequest);
+            }
+        }
+        let mut page = self.list_tasks(&query.workspace_id, query.search.as_deref()).await?;
+        let has_more = page.items.len() > query.limit as usize;
+        page.items.truncate(query.limit as usize);
+        if has_more {
+            page.next_cursor = crate::api::PageCursor::try_new(format!(
+                "task-list:{}:{}:{}",
+                query.workspace_id,
+                query.search.clone().unwrap_or_default().trim().to_lowercase(),
+                page.items.last().map(|item| item.task_id.as_str()).unwrap_or_default()
+            )).ok();
+        }
+        Ok(page)
+    }
+
     pub async fn timeline(
         &self,
         task_id: &TaskId,
         query: crate::api::TimelineQuery,
     ) -> Result<crate::api::TimelinePage, DomainError> {
         if query.limit == 0 || query.limit > 500 {
-            return Err(DomainError::LedgerCorrupt);
+            return Err(DomainError::InvalidRequest);
+        }
+        if let Some(cursor) = &query.before {
+            let expected = format!("timeline:{}:{}", task_id, query.limit);
+            if !cursor.as_str().starts_with(&expected) {
+                return Err(DomainError::InvalidRequest);
+            }
         }
         let projection = self.projection(task_id).await?;
         let mut items = projection.timeline;
+        let has_more = items.len() > query.limit as usize;
         if items.len() > query.limit as usize {
             items = items[items.len() - query.limit as usize..].to_vec();
         }
@@ -246,8 +280,23 @@ impl TaskCommandService {
             api_version: crate::api::ApiVersion,
             task_id: task_id.clone(),
             items,
-            next_cursor: None,
+            next_cursor: if has_more {
+                crate::api::PageCursor::try_new(format!("timeline:{}:{}", task_id, query.limit)).ok()
+            } else { None },
         })
+    }
+
+    pub async fn append_activity(
+        &self,
+        task_id: &TaskId,
+        events: Vec<TaskEvent>,
+    ) -> Result<TaskAggregate, DomainError> {
+        let _gate = self.gate.lock().await;
+        let batch = kuku::event::TaskActivityBatch::try_new(events)
+            .map_err(|_| DomainError::LedgerCorrupt)?;
+        self.repository
+            .append(task_id, TaskLedgerRecord::Activity(batch))?;
+        self.repository.rebuild(task_id)
     }
 
     pub async fn stop(&self, command: StopRunCommand) -> Result<TaskAggregate, DomainError> {
