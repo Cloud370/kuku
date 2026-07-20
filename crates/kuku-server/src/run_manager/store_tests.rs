@@ -194,3 +194,77 @@ async fn task_list_cursor_is_bound_to_workspace_search_and_limit() {
         workspace_id: workspace_id(), search: Some("different".into()), cursor: Some(cursor), limit: 1,
     }).await, Err(super::DomainError::InvalidRequest)));
 }
+
+#[tokio::test]
+async fn full_index_pages_search_and_reopens_without_gaps() {
+    let dir = tempdir().unwrap();
+    let service = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
+    for index in 0..105 {
+        let title = if index == 0 { "Needle older".to_string() } else { format!("Task {index:03}") };
+        service.create_task(CreateTaskCommand {
+            workspace_id: workspace_id(), idempotency_key: format!("create-{index}"), title,
+        }).await.unwrap();
+    }
+    let first = service.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: None, cursor: None, limit: 100,
+    }).await.unwrap();
+    let cursor = first.next_cursor.clone().expect("page one has a continuation");
+    let reopened = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
+    let second = reopened.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: None, cursor: Some(cursor), limit: 100,
+    }).await.unwrap();
+    assert_eq!(first.items.len(), 100);
+    assert_eq!(second.items.len(), 5);
+    assert!(first.items.iter().all(|left| second.items.iter().all(|right| left.task_id != right.task_id)));
+    let search = reopened.list_tasks_query(crate::api::ListTasksQuery {
+        workspace_id: workspace_id(), search: Some("needle".into()), cursor: None, limit: 20,
+    }).await.unwrap();
+    assert_eq!(search.items.len(), 1);
+    assert_eq!(search.items[0].title, "Needle older");
+}
+
+#[tokio::test]
+async fn timeline_multi_page_snapshot_and_single_item_payload_bound() {
+    let dir = tempdir().unwrap();
+    let repository = TaskRepository::open(dir.path()).unwrap();
+    let service = TaskCommandService::new(repository.clone());
+    let task = service.create_task(CreateTaskCommand {
+        workspace_id: workspace_id(), idempotency_key: "create-long".into(), title: "Long".into(),
+    }).await.unwrap();
+    let task_id = task.task_id().unwrap().clone();
+    let events = (0..1203).map(|index| kuku::event::TaskEvent::MessageAppended {
+        message: kuku::event::MessageFact {
+            message_id: format!("long-{index}"), task_id: task_id.clone(), run_id: None,
+            role: kuku::event::MessageRoleFact::Agent, text: index.to_string(), finalized: true,
+            request_ids: Vec::new(), file_references: Vec::new(),
+        },
+    }).collect();
+    repository.append(&task_id, kuku::event::TaskLedgerRecord::Control(
+        kuku::event::TaskTransaction::try_new(
+            kuku::event::TaskRevision::try_new(1).unwrap(),
+            kuku::event::CommandReceipt::new("long", "long", kuku::event::CommandResult::Stopped).unwrap(), events,
+        ).unwrap(),
+    )).unwrap();
+    let projection = service.projection(&task_id).await.unwrap();
+    assert_eq!(projection.timeline.len(), 500);
+    let first = service.timeline(&task_id, crate::api::TimelineQuery {
+        before: projection.timeline_next_cursor, limit: 500,
+    }).await.unwrap();
+    let second = service.timeline(&task_id, crate::api::TimelineQuery {
+        before: first.next_cursor, limit: 500,
+    }).await.unwrap();
+    assert_eq!((first.items.len(), second.items.len()), (500, 203));
+    let oversized = "x".repeat(16 * 1024 * 1024 + 1);
+    repository.append(&task_id, kuku::event::TaskLedgerRecord::Control(
+        kuku::event::TaskTransaction::try_new(
+            kuku::event::TaskRevision::try_new(2).unwrap(),
+            kuku::event::CommandReceipt::new("large", "large", kuku::event::CommandResult::Stopped).unwrap(),
+            vec![kuku::event::TaskEvent::MessageAppended { message: kuku::event::MessageFact {
+                message_id: "oversized".into(), task_id: task_id.clone(), run_id: None,
+                role: kuku::event::MessageRoleFact::Agent, text: oversized, finalized: true,
+                request_ids: Vec::new(), file_references: Vec::new(),
+            }}],
+        ).unwrap(),
+    )).unwrap();
+    assert!(matches!(service.projection(&task_id).await, Err(super::DomainError::PayloadTooLarge)));
+}
