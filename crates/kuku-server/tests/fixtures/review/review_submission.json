@@ -1,0 +1,23 @@
+{
+  "api_version": 1,
+  "submission": {
+    "submission_id": "rsub_000000000000000000000001",
+    "task_id": "tsk_000000000000000000000001",
+    "run_id": "run_000000000000000000000001",
+    "task_revision": 3,
+    "submitted_at": "2026-07-18T00:00:00Z",
+    "notes": [
+      {
+        "path": "src/lib.rs",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "side": "file",
+        "start_line": 1,
+        "end_line": 1,
+        "excerpt": "pub mod api;",
+        "comment": "Keep this public.",
+        "status": "current"
+      }
+    ]
+  },
+  "replayed": false
+}

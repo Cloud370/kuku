@@ -1,0 +1,20 @@
+{
+  "api_version": 1,
+  "workspace_id": "wsp_000000000000000000000001",
+  "revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "availability": "available",
+  "entries": [
+    {
+      "path": "src/lib.rs",
+      "old_path": null,
+      "kind": "modified",
+      "staged": false,
+      "worktree": true,
+      "binary": false,
+      "additions": 2,
+      "deletions": 1,
+      "revision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "next_cursor": null
+}
