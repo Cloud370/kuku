@@ -3088,7 +3088,7 @@ ref status, .. } if status == "ok")));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked_files() {
+async fn new_top_level_turn_uses_current_changed_instructions_without_runtime_snapshot() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
@@ -3128,12 +3128,12 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
     let specific = second_server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains("<kuku_system_notice>")
-            .body_contains("Only unacknowledged drift is reported here.")
-            .body_contains("This notice does not include the changed file contents.")
-            .body_contains("Changed tracked files:")
-            .body_contains("- AGENTS.md (updated)")
-            .body_contains("second turn");
+            .body_contains("version two")
+            .body_contains("second turn")
+            .matches(|request| {
+                !request_body_contains(request, "Only unacknowledged drift is reported here.")
+                    && !request_body_contains(request, "version one")
+            });
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_second",
@@ -3160,7 +3160,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_notice() {
+async fn new_top_level_turn_omits_deleted_instructions_without_runtime_snapshot() {
     let env = TestEnv::new();
     let server = MockServer::start();
 
@@ -3221,9 +3221,15 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
     second_server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains("Changed tracked files:")
-            .body_contains("AGENTS.md (deleted)")
-            .body_contains("second turn");
+            .body_contains("second turn")
+            .matches(|request| {
+                !request_body_contains(request, "version one")
+                    && !request_body_contains(
+                        request,
+                        "Only unacknowledged drift is reported here.",
+                    )
+                    && !request_body_contains(request, "AGENTS.md (deleted)")
+            });
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_second",
