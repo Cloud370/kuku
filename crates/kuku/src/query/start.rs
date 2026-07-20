@@ -585,7 +585,7 @@ fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
             ..
         } = &event.payload
         {
-            if *event_turn == turn && !request_ids.iter().any(|id| *id == &request.request_id) {
+            if *event_turn == turn && !request_ids.contains(&&request.request_id) {
                 request_ids.push(&request.request_id);
             }
         }

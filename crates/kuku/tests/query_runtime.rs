@@ -2222,7 +2222,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-06-06T00:00:03Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             text: String::new(),
             thinking: None,
             input_tokens_total: None,
@@ -2234,7 +2234,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             ts: "2026-06-06T00:00:04Z".to_string(),
             conversation: None,
             tool_call_id: "toolu_interrupted".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             index: 0,
             tool: "run_command".to_string(),
             args: serde_json::json!({"command": "printf side-effect", "timeout": 60, "brief": "side effect"}),

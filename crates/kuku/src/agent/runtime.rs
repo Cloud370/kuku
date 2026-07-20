@@ -20,6 +20,7 @@ pub(crate) struct PreparedDispatch {
     pub(crate) parent_request_id: crate::event::RequestId,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_dispatch(
     registry: Option<&crate::agent::registry::AgentRegistry>,
     existing_events: &[StoredEvent],

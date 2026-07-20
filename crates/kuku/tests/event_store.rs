@@ -318,7 +318,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ContextSources {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             project_instruction_sources: vec![FileSource {
                 path: "/workspace/AGENTS.md".to_string(),
                 hash: "sha256:agents".to_string(),
@@ -333,7 +333,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             text: "answer".to_string(),
             thinking: Some("reasoning".to_string()),
             input_tokens_total: Some(123),
@@ -343,7 +343,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ModelError {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             kind: "RateLimited".to_string(),
             message: "HTTP 429: rate limited".to_string(),
         })
@@ -463,7 +463,7 @@ fn fact_event_json_omits_removed_observability_fields() {
         payload: EventPayload::ModelResponse {
             turn: 2,
             ts: "2026-05-18T00:01:00Z".to_string(),
-            request: common::request_scope("req_2".to_string()),
+            request: common::request_scope("req_2"),
             text: "hi".to_string(),
             thinking: None,
             input_tokens_total: Some(7),

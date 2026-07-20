@@ -29,6 +29,7 @@ fn finalize_persisted_tool_result(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_tool_result(
     execution: &crate::event::ExecutionScope,
     slot: &ExecSlot,

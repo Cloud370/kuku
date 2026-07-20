@@ -271,7 +271,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             ts: "2026-05-20T00:00:01Z".to_string(),
             conversation: None,
             tool_call_id: "tool_cancelled".to_string(),
-            request: crate::event::test_request_scope("req_1".to_string()),
+            request: crate::event::test_request_scope("req_1"),
             index: 0,
             tool: "run_command".to_string(),
             args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
@@ -378,7 +378,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .append(EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-20T00:00:02Z".to_string(),
-                request: crate::event::test_request_scope("req_1".to_string()),
+                request: crate::event::test_request_scope("req_1"),
                 text: "partial".to_string(),
                 thinking: None,
                 input_tokens_total: None,

@@ -69,7 +69,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             text: "Done.".to_string(),
             thinking: None,
             input_tokens_total: Some(3),
@@ -338,7 +338,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             text: "I will inspect.".to_string(),
             thinking: None,
             input_tokens_total: Some(10),
@@ -349,7 +349,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             turn: 1,
             ts: "2026-05-13T00:00:02Z".to_string(),
             conversation: None,
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             tool_call_id: "tool_b".to_string(),
             index: 1,
             tool: "grep".to_string(),
@@ -361,7 +361,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             turn: 1,
             ts: "2026-05-13T00:00:03Z".to_string(),
             conversation: None,
-            request: common::request_scope("req_1".to_string()),
+            request: common::request_scope("req_1"),
             tool_call_id: "tool_a".to_string(),
             index: 0,
             tool: "read".to_string(),
@@ -390,7 +390,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-05-13T00:00:05Z".to_string(),
-            request: common::request_scope("req_2".to_string()),
+            request: common::request_scope("req_2"),
             text: "Done.".to_string(),
             thinking: None,
             input_tokens_total: Some(12),
@@ -607,7 +607,7 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
                 turn: 1,
                 ts: "2026-06-09T00:00:02Z".to_string(),
                 conversation: Some("review".to_string()),
-                request: common::request_scope("req_review_1".to_string()),
+                request: common::request_scope("req_review_1"),
                 tool_call_id: "toolu_read".to_string(),
                 index: 0,
                 tool: "read_file".to_string(),
@@ -667,7 +667,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
             payload: EventPayload::ContextSources {
                 turn: 1,
                 ts: "2026-05-18T00:00:00Z".to_string(),
-                request: common::request_scope("req_1".to_string()),
+                request: common::request_scope("req_1"),
                 project_instruction_sources: vec![FileSource {
                     path: "/workspace/AGENTS.md".to_string(),
                     hash: "sha256:before".to_string(),
@@ -692,7 +692,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
             payload: EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-18T00:00:02Z".to_string(),
-                request: common::request_scope("req_1".to_string()),
+                request: common::request_scope("req_1"),
                 text: "old answer".to_string(),
                 thinking: None,
                 input_tokens_total: Some(10),
@@ -726,7 +726,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
             payload: EventPayload::ModelResponse {
                 turn: 2,
                 ts: "2026-05-18T00:00:05Z".to_string(),
-                request: common::request_scope("req_2".to_string()),
+                request: common::request_scope("req_2"),
                 text: "new answer".to_string(),
                 thinking: None,
                 input_tokens_total: Some(12),
@@ -778,7 +778,7 @@ fn prompt_snapshot_preserves_old_agents_content_after_file_changes() {
             payload: EventPayload::ContextSources {
                 turn: 2,
                 ts: "2026-06-09T00:00:01Z".to_string(),
-                request: common::request_scope("req_2".to_string()),
+                request: common::request_scope("req_2"),
                 project_instruction_sources: vec![FileSource {
                     path: "/workspace/AGENTS.md".to_string(),
                     hash: "sha256:two".to_string(),
