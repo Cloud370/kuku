@@ -1,6 +1,6 @@
 //! Provides identity-bound, bounded Git review snapshots and diffs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io::Read;
 use std::pin::Pin;
@@ -8,35 +8,36 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+#[cfg(unix)]
+use cap_std::fs::MetadataExt;
+
 use crate::api::{
     ApiError, ApiErrorCode, ApiVersion, ChangeEntry, ChangeKind, ChangesAvailability, DiffDocument,
     DiffHunk, DiffLine, DiffLineKind, PageCursor, ReviewSnapshot, RevisionToken,
 };
 use crate::platform::{
-    ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput, ProcessStream, RootCommand,
+    ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput, ProcessStream,
     WorkspaceCapability,
 };
 use crate::review::{ReviewLimits, RevisionBudget};
 
+mod command;
 mod parser;
+use command::git_command;
 use parser::{
     index_by_path, lines_to_hunks, logical_index_records, logical_line_count, nul_strings,
     UnifiedParser,
 };
 pub(crate) use parser::{parse_numstat, parse_porcelain_v2};
 
-const GIT_PREFIX: [&str; 4] = [
-    "--no-pager",
-    "--literal-pathspecs",
-    "-c",
-    "core.fsmonitor=false",
-];
 const TRACE_ID: &str = "review-git";
 
 #[derive(Debug, Clone)]
 struct CapturedState {
     revision: RevisionToken,
     paths: BTreeMap<String, RevisionToken>,
+    filters: Vec<String>,
+    status: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -86,11 +87,11 @@ impl GitReviewService {
         limit: u16,
     ) -> Result<ReviewSnapshot, ApiError> {
         let limit = self.valid_limit(limit)?;
-        let probe = self.probe().await;
+        let mut budget = RevisionBudget::new(&self.limits);
+        let probe = self.probe(&mut budget).await;
         if !matches!(probe, GitProbe::Available) {
             return Ok(self.unavailable_snapshot(probe));
         }
-        let mut budget = RevisionBudget::new(&self.limits);
         let stable = match self.stable_snapshot(&mut budget).await {
             Ok(stable) => stable,
             Err(_) => return Ok(self.unavailable_snapshot(GitProbe::Unavailable)),
@@ -133,10 +134,10 @@ impl GitReviewService {
             .valid_limit(limit)?
             .min(self.limits.diff_lines as usize);
         self.capability.resolve(path)?;
-        if !matches!(self.probe().await, GitProbe::Available) {
+        let mut budget = RevisionBudget::new(&self.limits);
+        if !matches!(self.probe(&mut budget).await, GitProbe::Available) {
             return Err(outdated());
         }
-        let mut budget = RevisionBudget::new(&self.limits);
         for attempt in 0..2 {
             let before = self.stable_snapshot(&mut budget).await?;
             let entry = before
@@ -154,8 +155,15 @@ impl GitReviewService {
             let page = if entry.kind == ChangeKind::Untracked {
                 self.untracked_diff(path, revision, offset, limit, &mut budget)?
             } else {
-                self.tracked_diff(entry, revision, offset, limit, &mut budget)
-                    .await?
+                self.tracked_diff(
+                    entry,
+                    revision,
+                    offset,
+                    limit,
+                    &before.0.filters,
+                    &mut budget,
+                )
+                .await?
             };
             let after = self.capture_exact_git_state(&mut budget).await?;
             if before.0.revision == after.revision {
@@ -168,9 +176,12 @@ impl GitReviewService {
         Err(outdated())
     }
 
-    async fn probe(&self) -> GitProbe {
+    async fn probe(&self, budget: &mut RevisionBudget) -> GitProbe {
         let output = match self
-            .run(&["rev-parse", "--path-format=absolute", "--show-toplevel"])
+            .run(
+                &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+                budget,
+            )
             .await
         {
             Ok(output) => output,
@@ -191,27 +202,28 @@ impl GitReviewService {
     ) -> Result<StableSnapshot, ApiError> {
         for attempt in 0..2 {
             let before = self.capture_exact_git_state(budget).await?;
-            let status = self
-                .required(&["status", "--porcelain=v2", "-z", "--untracked-files=all"])
-                .await?;
             if let Some(hook) = &self.capture_hook {
                 hook();
             }
             let numstat = self
-                .required(&[
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--numstat",
-                    "-z",
-                    "HEAD",
-                    "--",
-                ])
+                .required_filtered(
+                    &[
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--numstat",
+                        "-z",
+                        "HEAD",
+                        "--",
+                    ],
+                    &before.filters,
+                    budget,
+                )
                 .await?;
-            budget.debit_git(0, (status.len() + numstat.len()) as u64)?;
+            budget.debit_git(0, numstat.len() as u64)?;
+            let entries = self.build_entries(&before.status, &numstat, &before, budget)?;
             let after = self.capture_exact_git_state(budget).await?;
             if before.revision == after.revision {
-                let entries = self.build_entries(&status, &numstat, &after, budget)?;
                 return Ok((after, entries));
             }
             if attempt == 0 {
@@ -227,23 +239,26 @@ impl GitReviewService {
     ) -> Result<CapturedState, ApiError> {
         budget.check_deadline()?;
         let head = self
-            .optional(&["rev-parse", "--verify", "HEAD^{commit}"])
+            .optional(&["rev-parse", "--verify", "HEAD^{commit}"], budget)
             .await?;
         let tree = self
-            .optional(&["rev-parse", "--verify", "HEAD^{tree}"])
+            .optional(&["rev-parse", "--verify", "HEAD^{tree}"], budget)
             .await?;
         let index = self
-            .required(&["ls-files", "--stage", "--debug", "-z", "--"])
+            .required(&["ls-files", "--stage", "--debug", "-z", "--"], budget)
             .await?;
         let listed = self
-            .required(&[
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--",
-            ])
+            .required(
+                &[
+                    "ls-files",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                    "--",
+                ],
+                budget,
+            )
             .await?;
         let logical_index = logical_index_records(&index)?;
         let mut aggregate = FramedHash::new(b"kuku.review.git.aggregate.v1");
@@ -257,17 +272,66 @@ impl GitReviewService {
         let mut names = nul_strings(&listed)?;
         names.sort();
         names.dedup();
+        let mut filters = self.attribute_filters(&names, budget)?;
+        if let Some(configured) = self
+            .optional(
+                &[
+                    "config",
+                    "--local",
+                    "--name-only",
+                    "--get-regexp",
+                    "^filter\\..*\\.(clean|smudge|process|required)$",
+                ],
+                budget,
+            )
+            .await?
+        {
+            for line in configured.split(|byte| *byte == b'\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                filters.push(configured_filter_name(line)?);
+            }
+            filters.sort();
+            filters.dedup();
+            budget.debit_git(0, configured.len() as u64)?;
+        }
+        for filter in &filters {
+            aggregate.field(filter.as_bytes());
+        }
+        let status = self
+            .required_filtered(
+                &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+                &filters,
+                budget,
+            )
+            .await?;
+        aggregate.field(&status);
         for path in names {
             let mut path_hash = FramedHash::new(b"kuku.review.git.change.v1");
             path_hash.field(path.as_bytes());
             if let Some(index_record) = index_by_path.get(path.as_str()) {
                 path_hash.field(index_record);
+                if index_record.starts_with(b"160000 ") {
+                    let gitlink = self
+                        .optional(
+                            &["-C", &path, "rev-parse", "--verify", "HEAD^{commit}"],
+                            budget,
+                        )
+                        .await?;
+                    path_hash.field(gitlink.as_deref().unwrap_or(b"missing-gitlink"));
+                    budget.debit_git(0, gitlink.as_ref().map_or(0, Vec::len) as u64)?;
+                }
             } else {
                 path_hash.field(b"untracked");
             }
             let relative = self.capability.resolve(&path)?;
             match self.capability.open_file(&relative) {
                 Ok(mut file) => {
+                    path_hash.field(b"regular");
+                    path_hash.field(&metadata_mode(
+                        &file.metadata().map_err(|_| workspace_unavailable())?,
+                    ));
                     let mut buffer = [0_u8; 64 * 1024];
                     loop {
                         let read = file
@@ -299,12 +363,62 @@ impl GitReviewService {
             (head.as_ref().map_or(0, Vec::len)
                 + tree.as_ref().map_or(0, Vec::len)
                 + index.len()
-                + listed.len()) as u64,
+                + listed.len()
+                + status.len()) as u64,
         )?;
         Ok(CapturedState {
             revision: aggregate.finish(),
             paths,
+            filters,
+            status,
         })
+    }
+
+    fn attribute_filters(
+        &self,
+        names: &[String],
+        budget: &mut RevisionBudget,
+    ) -> Result<Vec<String>, ApiError> {
+        let mut candidates = names
+            .iter()
+            .filter(|path| path.ends_with(".gitattributes"))
+            .cloned()
+            .collect::<Vec<_>>();
+        candidates.push(".git/info/attributes".to_owned());
+        let mut filters = BTreeSet::new();
+        for path in candidates {
+            let relative = match self.capability.resolve(&path) {
+                Ok(relative) => relative,
+                Err(_) => continue,
+            };
+            let file = match self.capability.open_file(&relative) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let mut bytes = Vec::new();
+            file.take(self.limits.diff_bytes as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| workspace_unavailable())?;
+            if bytes.len() > self.limits.diff_bytes {
+                return Err(payload_too_large());
+            }
+            budget.debit_git(0, bytes.len() as u64)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| invalid_git_output())?;
+            for token in text.split_whitespace() {
+                let Some(value) = token.strip_prefix("filter=") else {
+                    continue;
+                };
+                if value.is_empty()
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+                {
+                    return Err(invalid_git_output());
+                }
+                filters.insert(value.to_owned());
+            }
+        }
+        Ok(filters.into_iter().collect())
     }
 
     fn build_entries(
@@ -332,6 +446,7 @@ impl GitReviewService {
             });
             let mut hash = FramedHash::new(b"kuku.review.git.entry.v1");
             hash.field(content.as_str().as_bytes());
+            hash.field(&change.identity);
             hash.field(format!("{:?}", change.kind).as_bytes());
             hash.field(&[change.staged as u8, change.worktree as u8]);
             if let Some(old_path) = &change.old_path {
@@ -364,7 +479,7 @@ impl GitReviewService {
         path: &str,
         budget: &mut RevisionBudget,
     ) -> Result<(Option<u32>, Option<u32>, bool), ApiError> {
-        let bytes = self.read_file(path, budget)?;
+        let bytes = self.read_file(path, self.limits.diff_bytes, budget)?;
         if bytes.contains(&0) {
             return Ok((None, None, true));
         }
@@ -380,30 +495,57 @@ impl GitReviewService {
         limit: usize,
         budget: &mut RevisionBudget,
     ) -> Result<DiffDocument, ApiError> {
-        let bytes = self.read_file(path, budget)?;
+        let bytes = self.read_file(path, self.limits.diff_bytes, budget)?;
         if bytes.contains(&0) {
             return Ok(self.diff_document(path, revision, None, true, Vec::new(), None));
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| payload_too_large())?;
-        let mut lines = text
-            .split_terminator('\n')
-            .enumerate()
-            .map(|(index, text)| DiffLine {
-                kind: DiffLineKind::Addition,
-                old_line: None,
-                new_line: Some((index + 1) as u32),
-                text: text.strip_suffix('\r').unwrap_or(text).to_owned(),
-            })
-            .collect::<Vec<_>>();
-        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-            lines.push(DiffLine {
-                kind: DiffLineKind::NoNewlineMarker,
-                old_line: None,
-                new_line: None,
-                text: "No newline at end of file".to_owned(),
-            });
+        let mut lines = Vec::with_capacity(limit.min(self.limits.diff_lines as usize));
+        let mut seen = 0_usize;
+        let mut has_more = false;
+        for line in text.split_terminator('\n') {
+            if seen >= offset && lines.len() < limit {
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Addition,
+                    old_line: None,
+                    new_line: Some((seen + 1) as u32),
+                    text: line.strip_suffix('\r').unwrap_or(line).to_owned(),
+                });
+            } else if seen >= offset {
+                has_more = true;
+            }
+            seen = seen.saturating_add(1);
         }
-        self.page_diff(path, revision, lines, offset, limit)
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            if seen >= offset && lines.len() < limit {
+                lines.push(DiffLine {
+                    kind: DiffLineKind::NoNewlineMarker,
+                    old_line: None,
+                    new_line: None,
+                    text: "No newline at end of file".to_owned(),
+                });
+            } else if seen >= offset {
+                has_more = true;
+            }
+            seen = seen.saturating_add(1);
+        }
+        if offset > seen {
+            return Err(invalid_cursor());
+        }
+        let next = if has_more {
+            Some(make_cursor(
+                "git-diff-v1",
+                revision,
+                Some(&token_for(
+                    b"kuku.review.git.cursor-path.v1",
+                    path.as_bytes(),
+                )),
+                offset + lines.len(),
+            )?)
+        } else {
+            None
+        };
+        Ok(self.diff_document(path, revision, None, false, lines_to_hunks(lines), next))
     }
 
     async fn tracked_diff(
@@ -412,23 +554,30 @@ impl GitReviewService {
         revision: &RevisionToken,
         offset: usize,
         limit: usize,
+        filters: &[String],
         budget: &mut RevisionBudget,
     ) -> Result<DiffDocument, ApiError> {
-        let command = git_command(&[
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--binary",
-            "--no-color",
-            "--unified=80",
-            "HEAD",
-            "--",
-            &entry.path,
-        ]);
+        let command = git_command(
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                "--no-color",
+                "--unified=80",
+                "HEAD",
+                "--",
+                &entry.path,
+            ],
+            filters,
+        );
         let stream_limit = usize::try_from(self.limits.revision_git_hash_bytes)
             .unwrap_or(usize::MAX)
             .min(1024 * 1024 * 1024);
-        let process_limits = ProcessLimits::new(self.limits.git_deadline, stream_limit)?;
+        let process_limits = ProcessLimits::new(
+            self.limits.git_deadline.min(budget.remaining_deadline()?),
+            stream_limit,
+        )?;
         let mut sink = DiffSink::new(
             offset,
             limit,
@@ -468,41 +617,6 @@ impl GitReviewService {
         ))
     }
 
-    fn page_diff(
-        &self,
-        path: &str,
-        revision: &RevisionToken,
-        lines: Vec<DiffLine>,
-        offset: usize,
-        limit: usize,
-    ) -> Result<DiffDocument, ApiError> {
-        if offset > lines.len() {
-            return Err(invalid_cursor());
-        }
-        let end = offset.saturating_add(limit).min(lines.len());
-        let next = if end < lines.len() {
-            Some(make_cursor(
-                "git-diff-v1",
-                revision,
-                Some(&token_for(
-                    b"kuku.review.git.cursor-path.v1",
-                    path.as_bytes(),
-                )),
-                end,
-            )?)
-        } else {
-            None
-        };
-        Ok(self.diff_document(
-            path,
-            revision,
-            None,
-            false,
-            lines_to_hunks(lines[offset..end].to_vec()),
-            next,
-        ))
-    }
-
     fn diff_document(
         &self,
         path: &str,
@@ -525,36 +639,88 @@ impl GitReviewService {
         }
     }
 
-    fn read_file(&self, path: &str, budget: &mut RevisionBudget) -> Result<Vec<u8>, ApiError> {
+    fn read_file(
+        &self,
+        path: &str,
+        max_bytes: usize,
+        budget: &mut RevisionBudget,
+    ) -> Result<Vec<u8>, ApiError> {
         let relative = self.capability.resolve(path)?;
         let bytes = match self.capability.open_file(&relative) {
-            Ok(mut file) => {
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)
+            Ok(file) => {
+                let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+                file.take(max_bytes as u64 + 1)
+                    .read_to_end(&mut bytes)
                     .map_err(|_| workspace_unavailable())?;
+                if bytes.len() > max_bytes {
+                    return Err(payload_too_large());
+                }
                 bytes
             }
-            Err(_) => self.capability.read_link_target(&relative)?,
+            Err(_) => {
+                let bytes = self.capability.read_link_target(&relative)?;
+                if bytes.len() > max_bytes {
+                    return Err(payload_too_large());
+                }
+                bytes
+            }
         };
         budget.debit_git(0, bytes.len() as u64)?;
         Ok(bytes)
     }
 
-    async fn run(&self, args: &[&str]) -> Result<ProcessOutput, ApiError> {
-        let limits = ProcessLimits::new(self.limits.git_deadline, self.limits.git_stream_bytes)?;
-        self.capability.run_at_root(git_command(args), limits).await
+    async fn run(
+        &self,
+        args: &[&str],
+        budget: &mut RevisionBudget,
+    ) -> Result<ProcessOutput, ApiError> {
+        let timeout = self.limits.git_deadline.min(budget.remaining_deadline()?);
+        let limits = ProcessLimits::new(timeout, self.limits.git_stream_bytes)?;
+        self.capability
+            .run_at_root(git_command(args, &[]), limits)
+            .await
     }
 
-    async fn required(&self, args: &[&str]) -> Result<Vec<u8>, ApiError> {
-        let output = self.run(args).await?;
+    async fn required(
+        &self,
+        args: &[&str],
+        budget: &mut RevisionBudget,
+    ) -> Result<Vec<u8>, ApiError> {
+        let output = self.run(args, budget).await?;
         if !output.status().success() {
             return Err(workspace_unavailable());
         }
         Ok(output.stdout().to_vec())
     }
 
-    async fn optional(&self, args: &[&str]) -> Result<Option<Vec<u8>>, ApiError> {
-        let output = self.run(args).await?;
+    async fn required_filtered(
+        &self,
+        args: &[&str],
+        filters: &[String],
+        budget: &mut RevisionBudget,
+    ) -> Result<Vec<u8>, ApiError> {
+        let output = self
+            .capability
+            .run_at_root(
+                git_command(args, filters),
+                ProcessLimits::new(
+                    self.limits.git_deadline.min(budget.remaining_deadline()?),
+                    self.limits.git_stream_bytes,
+                )?,
+            )
+            .await?;
+        if !output.status().success() {
+            return Err(workspace_unavailable());
+        }
+        Ok(output.stdout().to_vec())
+    }
+
+    async fn optional(
+        &self,
+        args: &[&str],
+        budget: &mut RevisionBudget,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        let output = self.run(args, budget).await?;
         if output.status().success() {
             Ok(Some(output.stdout().to_vec()))
         } else {
@@ -591,18 +757,6 @@ impl GitReviewService {
             next_cursor: None,
         }
     }
-}
-
-fn git_command(args: &[&str]) -> RootCommand {
-    let mut command = RootCommand::new("git").args(GIT_PREFIX);
-    command = command.args(args.iter().copied());
-    let null_config = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", null_config)
-        .env("LC_ALL", "C")
-        .env("LANG", "C")
 }
 
 #[derive(Debug)]
@@ -744,6 +898,33 @@ fn token_for(domain: &[u8], bytes: &[u8]) -> RevisionToken {
     let mut hash = FramedHash::new(domain);
     hash.field(bytes);
     hash.finish()
+}
+
+#[cfg(unix)]
+fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
+    (metadata.mode() as u64).to_be_bytes()
+}
+
+fn configured_filter_name(line: &[u8]) -> Result<String, ApiError> {
+    let text = std::str::from_utf8(line).map_err(|_| invalid_git_output())?;
+    let rest = text
+        .strip_prefix("filter.")
+        .ok_or_else(invalid_git_output)?;
+    let (name, key) = rest.rsplit_once('.').ok_or_else(invalid_git_output)?;
+    if !matches!(key, "clean" | "smudge" | "process" | "required")
+        || name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        return Err(invalid_git_output());
+    }
+    Ok(name.to_owned())
+}
+
+#[cfg(not(unix))]
+fn metadata_mode(metadata: &cap_std::fs::Metadata) -> [u8; 8] {
+    u64::from(metadata.permissions().readonly()).to_be_bytes()
 }
 
 fn make_cursor(

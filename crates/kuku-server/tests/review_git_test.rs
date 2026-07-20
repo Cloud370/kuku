@@ -553,6 +553,93 @@ async fn hostile_git_environment_attributes_and_config_cannot_run_helpers() {
     assert!(!marker.exists());
 }
 
+#[tokio::test]
+async fn repository_local_filter_helpers_never_execute() {
+    let repo = Repository::new().await;
+    repo.write("filtered.txt", "base\n");
+    repo.commit_all("base");
+    let marker = repo.root.join("filter-ran");
+    let helper = repo.root.join("filter.sh");
+    std::fs::write(
+        &helper,
+        format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    repo.git(&["config", "filter.hostile.clean", helper.to_str().unwrap()]);
+    repo.git(&["config", "filter.hostile.smudge", helper.to_str().unwrap()]);
+    repo.write(".gitattributes", "filtered.txt filter=hostile\n");
+    repo.write("filtered.txt", "changed\n");
+
+    let snapshot = repo.service().snapshot(None, 100).await.unwrap();
+
+    assert_eq!(ChangesAvailability::Available, snapshot.availability);
+    assert!(!marker.exists(), "repository-local filter helper executed");
+}
+
+#[tokio::test]
+async fn head_side_identity_and_current_mode_change_revisions() {
+    let repo = Repository::new().await;
+    repo.write("tracked.txt", "base\n");
+    repo.commit_all("base");
+    repo.write("tracked.txt", "worktree\n");
+    let service = repo.service();
+    let first = service.snapshot(None, 100).await.unwrap();
+    let first_revision = entry(&first, "tracked.txt").revision.clone();
+    repo.write("tracked.txt", "head-two\n");
+    repo.commit_all("head two");
+    repo.write("tracked.txt", "worktree\n");
+    let second = service.snapshot(None, 100).await.unwrap();
+    assert_ne!(first.revision, second.revision);
+    assert_ne!(first_revision, entry(&second, "tracked.txt").revision);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            repo.root.join("tracked.txt"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let third = service.snapshot(None, 100).await.unwrap();
+        assert_ne!(second.revision, third.revision);
+        assert_ne!(
+            entry(&second, "tracked.txt").revision,
+            entry(&third, "tracked.txt").revision
+        );
+    }
+}
+
+#[tokio::test]
+async fn oversized_untracked_content_is_rejected_before_diff_allocation() {
+    let repo = Repository::new().await;
+    repo.write("huge.txt", "x\n".repeat(2 * 1024 * 1024 + 1));
+    let limits = ReviewLimits {
+        diff_bytes: 1024,
+        ..ReviewLimits::default()
+    };
+    let service = GitReviewService::new(repo.capability.clone(), limits);
+    let snapshot = service.snapshot(None, 100).await.unwrap();
+    assert_eq!(ChangesAvailability::GitUnavailable, snapshot.availability);
+    assert!(snapshot.entries.is_empty());
+}
+
+#[tokio::test]
+async fn revision_deadline_is_shared_by_probe_and_all_git_commands() {
+    let repo = Repository::new().await;
+    repo.write("slow.txt", "content\n");
+    let limits = ReviewLimits {
+        revision_deadline: std::time::Duration::from_millis(1),
+        ..ReviewLimits::default()
+    };
+    let service = GitReviewService::new(repo.capability.clone(), limits);
+    let snapshot = service.snapshot(None, 100).await.unwrap();
+    assert_eq!(ChangesAvailability::GitUnavailable, snapshot.availability);
+}
+
 #[test]
 fn revision_tokens_are_lowercase_sha256_without_prefixes() {
     let token = RevisionToken::parse("0123456789abcdef".repeat(4)).unwrap();

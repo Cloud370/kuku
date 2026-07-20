@@ -154,6 +154,12 @@ impl RevisionBudget {
             Ok(())
         }
     }
+
+    /// Returns the remaining request-scoped wall-clock budget.
+    pub fn remaining_deadline(&self) -> Result<Duration, ApiError> {
+        self.check_deadline()?;
+        Ok(self.deadline.saturating_duration_since(Instant::now()))
+    }
 }
 
 /// Owns hierarchical non-waiting capacity for Review scans and Git commands.

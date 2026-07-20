@@ -13,6 +13,7 @@ pub(crate) struct ParsedChange {
     pub(crate) kind: ChangeKind,
     pub(crate) staged: bool,
     pub(crate) worktree: bool,
+    pub(crate) identity: Vec<u8>,
 }
 
 type Numstat = BTreeMap<String, (Option<u32>, Option<u32>)>;
@@ -54,6 +55,7 @@ fn parse_status_record(text: &str) -> Result<(ParsedChange, bool), ApiError> {
                 kind: ChangeKind::Untracked,
                 staged: false,
                 worktree: true,
+                identity: b"untracked".to_vec(),
             },
             false,
         ));
@@ -98,6 +100,7 @@ fn parse_status_record(text: &str) -> Result<(ParsedChange, bool), ApiError> {
             kind,
             staged: xy[0] != b'.',
             worktree: xy[1] != b'.',
+            identity: fields[..field_count - 1].join(" ").into_bytes(),
         },
         record_kind == b'2',
     ))
