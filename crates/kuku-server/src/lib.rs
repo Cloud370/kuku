@@ -143,14 +143,30 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
     {
         allowed_origins.push(preferred_origin.clone());
     }
-    let state = AppState::open_with_config_path_and_origins(
+    let instance_lock = platform::ServerInstanceLock::acquire(&home).map_err(|error| {
+        if matches!(error, platform::InstanceLockError::AlreadyRunning) {
+            StartupError::AlreadyRunning
+        } else {
+            StartupError::Platform(crate::api::ApiError::new(
+                crate::api::ApiErrorCode::Internal,
+                error.to_string(),
+                "server-lock",
+            ))
+        }
+    })?;
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
+    let bound_origin = local_origin(listener.local_addr()?);
+    allowed_origins.retain(|origin| origin != &preferred_origin);
+    allowed_origins.push(bound_origin.clone());
+    let state = AppState::open_with_existing_lock(
         &home,
         &config_path,
         token,
         registration_roots,
-        preferred_origin,
+        bound_origin,
         allowed_origins,
         args.max_concurrent_runs,
+        instance_lock,
     )
     .await
     .map_err(|error| {
@@ -160,7 +176,6 @@ pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedSer
             StartupError::Platform(error)
         }
     })?;
-    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     let watcher =
         config_watcher::ConfigWatcherHandle::start(config_path, Arc::clone(&state.platform.config));
     let app = build_app(Arc::clone(&state));
@@ -378,6 +393,30 @@ impl AppState {
                 "server-lock",
             )
         })?;
+        Self::open_with_existing_lock(
+            home,
+            config_path,
+            bearer_token,
+            registration_roots,
+            preferred_origin,
+            allowed_origins,
+            max_concurrent_runs,
+            instance_lock,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_with_existing_lock(
+        home: &std::path::Path,
+        config_path: &std::path::Path,
+        bearer_token: Option<String>,
+        registration_roots: Vec<platform::RegistrationRootSpec>,
+        preferred_origin: String,
+        allowed_origins: Vec<String>,
+        max_concurrent_runs: usize,
+        instance_lock: platform::ServerInstanceLock,
+    ) -> Result<Arc<Self>, crate::api::ApiError> {
         let revisions = platform::ServerRevisionCoordinator::open(home);
         let config =
             platform::ConfigService::open(config_path.to_owned(), Arc::clone(&revisions)).await?;
