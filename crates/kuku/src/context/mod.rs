@@ -22,7 +22,8 @@ pub use replay::rebuild_history;
 pub(crate) use replay::rebuild_history_for_provider;
 pub use request_evidence::{DurableRequestEvidenceRecorder, RequestEvidenceRecorder};
 pub use request_snapshot::{
-    RequestSnapshotBuilder, SnapshotBuildError, SnapshotInput, MAX_REQUEST_SNAPSHOT_BYTES,
+    RequestIdAccumulator, RequestSnapshotBuilder, SnapshotBuildError, SnapshotInput,
+    MAX_REQUEST_SNAPSHOT_BYTES,
 };
 pub use revert::{
     apply_file_revert, compute_file_revert_plan, count_file_turns_after, find_active_rollback,

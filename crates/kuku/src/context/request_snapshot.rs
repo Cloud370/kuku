@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{
     ContextBreakdown, ExactContentBlock, ExactMessage, ExactRequest, ExactRequestParameters,
-    ExactTool, MessageRole, ProviderFact, RequestCause, RequestScope, RequestSnapshot,
+    ExactTool, MessageRole, ProviderFact, RequestCause, RequestId, RequestScope, RequestSnapshot,
     RevisionToken, ToolResultStatus,
 };
 
@@ -76,6 +76,34 @@ impl RequestSnapshotBuilder {
             });
         }
         Ok(snapshot)
+    }
+}
+
+/// Ordered unique provider request identities attached to one Agent message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RequestIdAccumulator {
+    request_ids: Vec<RequestId>,
+}
+
+impl RequestIdAccumulator {
+    /// Records an identity once while preserving first-seen order.
+    pub fn record(&mut self, request_id: RequestId) -> bool {
+        if self.request_ids.contains(&request_id) {
+            false
+        } else {
+            self.request_ids.push(request_id);
+            true
+        }
+    }
+
+    /// Returns the ordered accumulated request identities.
+    pub fn as_slice(&self) -> &[RequestId] {
+        &self.request_ids
+    }
+
+    /// Consumes the accumulator into message-ready request identities.
+    pub fn into_vec(self) -> Vec<RequestId> {
+        self.request_ids
     }
 }
 
