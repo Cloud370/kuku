@@ -1,9 +1,9 @@
 use kuku::event::{
     ChangeEntryFact, ChangeKindFact, ChangesAvailabilityFact, CommandIntent, CommandReceipt,
     CommandResult, EventPayload, FiniteMetricValue, InteractionChoiceFact, InteractionFact,
-    RevisionToken, RunFact, RunState, TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord,
-    TaskRecordClass, TaskRevision, TaskTransaction, WorkspaceChangesFact, WorkspaceId,
-    WorkspaceRelativePath,
+    ReviewSubmissionId, ReviewSubmissionReference, RevisionToken, RunFact, RunState,
+    TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord, TaskRecordClass, TaskRevision,
+    TaskTransaction, WorkspaceChangesFact, WorkspaceId, WorkspaceRelativePath,
 };
 
 fn task_id() -> TaskId {
@@ -290,6 +290,43 @@ fn task_event_matrix_covers_each_constructible_projection_variant_and_reverse_cl
             vec![event]
         )
         .is_err());
+    }
+}
+
+#[test]
+fn task_event_matrix_covers_terminal_and_review_values() {
+    let mut completed = run();
+    completed.state = RunState::Completed;
+    completed.summary = Some("done".into());
+    let mut stopped = completed.clone();
+    stopped.state = RunState::Stopped;
+    let mut failed = completed.clone();
+    failed.state = RunState::Failed;
+    let mut interrupted = completed.clone();
+    interrupted.state = RunState::Interrupted;
+    let review = TaskEvent::ReviewSubmissionReferenced {
+        submission: ReviewSubmissionReference {
+            submission_id: ReviewSubmissionId::parse("rsub_0123456789abcdef01234567").unwrap(),
+            task_id: task_id(),
+            run_id: run().run_id,
+            task_revision: TaskRevision::try_new(0).unwrap(),
+            submitted_at: "t".into(),
+        },
+    };
+    for event in [
+        TaskEvent::RunStopped { run: stopped },
+        TaskEvent::RunFailed { run: failed },
+        TaskEvent::RunInterrupted { run: interrupted },
+        review,
+    ] {
+        assert_eq!(
+            event.record_class(),
+            if matches!(event, TaskEvent::ReviewSubmissionReferenced { .. }) {
+                TaskRecordClass::Control
+            } else {
+                TaskRecordClass::Activity
+            }
+        );
     }
 }
 
