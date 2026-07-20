@@ -3,6 +3,8 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::{Arc, Mutex, Weak};
 
 use kuku::event::{EventPayload, StoredEvent, TaskId, TaskLedgerRecord};
@@ -49,6 +51,8 @@ pub(super) struct RepositoryState {
     suppress_next_publication: AtomicBool,
     #[cfg(test)]
     durability_confirmation_failures: AtomicUsize,
+    #[cfg(test)]
+    repair_snapshot_pause: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
 }
 
 type TaskPublicationObserver = Arc<dyn Fn(&TaskPublication) + Send + Sync>;
@@ -535,17 +539,22 @@ impl TaskRepository {
             delta,
         };
         if delta_has_ui_change(&publication.delta) {
-            let observers = self
-                .state
-                .publication_observers
-                .lock()
-                .map_err(|_| DomainError::LedgerCorrupt)?
-                .clone();
-            for observer in observers {
-                observer(&publication);
-            }
+            self.notify_observers(&publication)?;
         }
         Ok(publication)
+    }
+
+    fn notify_observers(&self, publication: &TaskPublication) -> Result<(), DomainError> {
+        let observers = self
+            .state
+            .publication_observers
+            .lock()
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .clone();
+        for observer in observers {
+            observer(publication);
+        }
+        Ok(())
     }
 
     pub fn replay(&self, task_id: &TaskId) -> Result<Vec<StoredEvent>, DomainError> {
@@ -702,6 +711,18 @@ impl TaskRepository {
             .scan_gate
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)?;
+        let store = kuku::event::EventStore::open(self.events_path(task_id))
+            .map_err(|_| DomainError::LedgerCorrupt)?;
+        store.with_publication_transaction(|| self.repair_task_exclusive(task_id))
+    }
+
+    fn repair_task_exclusive(&self, task_id: &TaskId) -> Result<(), DomainError> {
+        let dirty = self
+            .state
+            .dirty_tasks
+            .lock()
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .contains(task_id);
         if self
             .state
             .unconfirmed_tasks
@@ -710,6 +731,27 @@ impl TaskRepository {
             .contains(task_id)
         {
             self.confirm_durability(task_id)?;
+        }
+        let repaired_event = if dirty {
+            Some(
+                self.replay(task_id)?
+                    .into_iter()
+                    .next_back()
+                    .ok_or(DomainError::LedgerCorrupt)?,
+            )
+        } else {
+            None
+        };
+        #[cfg(test)]
+        if let Some((snapshot_reached, resume_repair)) = self
+            .state
+            .repair_snapshot_pause
+            .lock()
+            .map_err(|_| DomainError::LedgerCorrupt)?
+            .take()
+        {
+            snapshot_reached.wait();
+            resume_repair.wait();
         }
         let aggregate = self.rebuild(task_id)?;
         self.merge_task_receipts(task_id, None)?;
@@ -725,8 +767,23 @@ impl TaskRepository {
             .lock()
             .map_err(|_| DomainError::LedgerCorrupt)?
             .insert(task_id.clone(), aggregate);
+        if repaired_event
+            .as_ref()
+            .is_some_and(|event| event.id != projection.cursor.get())
+        {
+            return Err(DomainError::LedgerCorrupt);
+        }
         self.write_projection(task_id, &projection)?;
         self.clear_dirty(task_id)?;
+        if let Some(event) = repaired_event {
+            self.notify_observers(&TaskPublication {
+                event,
+                projection: projection.clone(),
+                delta: TaskDelta::ProjectionReplaced {
+                    projection: Box::new(projection),
+                },
+            })?;
+        }
         Ok(())
     }
 
@@ -874,6 +931,20 @@ impl TaskRepository {
         self.state
             .durability_confirmation_failures
             .store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn pause_next_repair_after_snapshot_for_test(
+        &self,
+        snapshot_reached: Arc<Barrier>,
+        resume_repair: Arc<Barrier>,
+    ) {
+        *self
+            .state
+            .repair_snapshot_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((snapshot_reached, resume_repair));
     }
 
     #[cfg(test)]

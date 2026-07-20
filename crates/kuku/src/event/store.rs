@@ -12,6 +12,10 @@ use crate::error::{Error, Result};
 
 use super::types::{EventPayload, StoredEvent};
 
+#[cfg(windows)]
+#[path = "store_windows.rs"]
+mod store_windows;
+
 struct ReplayScan {
     events: Vec<StoredEvent>,
     last_valid_offset: u64,
@@ -33,9 +37,9 @@ struct FileIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    volume_serial_number: Option<u32>,
+    volume_serial_number: u32,
     #[cfg(windows)]
-    file_index: Option<u64>,
+    file_index: u64,
     #[cfg(not(any(unix, windows)))]
     created: Option<SystemTime>,
 }
@@ -101,6 +105,14 @@ impl EventStore {
         mutex_lock(&self.shared.observers).push(observer);
     }
 
+    /// Run a ledger repair while appends and their observer delivery are paused.
+    ///
+    /// The transaction must not append to this event store or register an observer.
+    pub fn with_publication_transaction<T>(&self, transaction: impl FnOnce() -> T) -> T {
+        let _publication = mutex_lock(&self.shared.publication);
+        transaction()
+    }
+
     /// Append a new event to the store and return the stored event with its assigned ID.
     pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
         self.append_with_durability(payload, false)
@@ -159,7 +171,7 @@ impl EventStore {
 
             let metadata = file.metadata()?;
             tail.last_id = event.id;
-            tail.identity = Some(file_identity(&metadata));
+            tail.identity = Some(file_identity(&file, &metadata)?);
             tail.last_record = Some(RecordTail {
                 start: record_start,
                 end: record_end,
@@ -275,7 +287,7 @@ impl EventStore {
         let metadata = file.metadata()?;
         let file_len = metadata.len();
         let modified = metadata.modified().ok();
-        let identity = file_identity(&metadata);
+        let identity = file_identity(file, &metadata)?;
         let cached_tail_matches = Self::cached_tail_matches(file, tail)?;
         if !tail.initialized
             || file_len < tail.valid_offset
@@ -295,7 +307,7 @@ impl EventStore {
             Self::apply_scan(file, tail, scan, previous_id)?;
         }
         let metadata = file.metadata()?;
-        let identity = file_identity(&metadata);
+        let identity = file_identity(file, &metadata)?;
         let modified = metadata.modified().ok();
         tail.initialized = true;
         tail.identity = Some(identity);
@@ -387,28 +399,31 @@ fn open_event_file(path: &Path) -> Result<File> {
         .open(path)?)
 }
 
-fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
+fn file_identity(file: &File, metadata: &std::fs::Metadata) -> Result<FileIdentity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        FileIdentity {
+        let _ = file;
+        Ok(FileIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        }
+        })
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        FileIdentity {
-            volume_serial_number: metadata.volume_serial_number(),
-            file_index: metadata.file_index(),
-        }
+        let _ = metadata;
+        let (volume_serial_number, file_index) = store_windows::file_identity(file)?;
+        Ok(FileIdentity {
+            volume_serial_number,
+            file_index,
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {
-        FileIdentity {
+        let _ = file;
+        Ok(FileIdentity {
             created: metadata.created().ok(),
-        }
+        })
     }
 }
 

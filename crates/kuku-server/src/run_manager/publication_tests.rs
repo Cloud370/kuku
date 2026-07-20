@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 
 use tempfile::tempdir;
 
@@ -150,6 +150,173 @@ async fn cache_failure_repairs_with_a_full_projection_before_observer_delivery()
         publications[0],
         crate::api::TaskDelta::ProjectionReplaced { .. }
     ));
+}
+
+#[tokio::test]
+async fn receipt_repairs_publish_one_cache_consistent_replacement() {
+    let dir = tempdir().unwrap();
+    let repository = TaskRepository::open(dir.path()).unwrap();
+    let service = TaskCommandService::new_unchecked(repository.clone());
+    let publications = Arc::new(Mutex::new(Vec::new()));
+    let observed = publications.clone();
+    let cache_reader = repository.clone();
+    repository.register_observer(Arc::new(move |publication| {
+        let cached: crate::api::TaskProjection = serde_json::from_slice(
+            &std::fs::read(
+                cache_reader
+                    .task_path(&publication.projection.task.task_id)
+                    .join("projection.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cached, publication.projection);
+        observed.lock().unwrap().push(publication.clone());
+    }));
+
+    let publication_failure = CreateTaskCommand {
+        workspace_id: WorkspaceId::parse("wsp_0123456789abcdef01234567").unwrap(),
+        idempotency_key: "repair-publication".to_owned(),
+    };
+    repository.fail_next_publication_for_test();
+    assert!(service
+        .create_task(publication_failure.clone())
+        .await
+        .is_err());
+    assert!(publications.lock().unwrap().is_empty());
+    repository.fail_next_cache_for_test();
+    assert!(service
+        .create_task(publication_failure.clone())
+        .await
+        .is_err());
+    assert!(publications.lock().unwrap().is_empty());
+    let repaired = service
+        .create_task(publication_failure.clone())
+        .await
+        .unwrap();
+    assert!(repaired.replayed);
+
+    {
+        let publications = publications.lock().unwrap();
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].event.id, repaired.projection.cursor.get());
+        assert!(matches!(
+            &publications[0].delta,
+            crate::api::TaskDelta::ProjectionReplaced { projection }
+                if projection.as_ref() == &repaired.projection
+        ));
+    }
+
+    let healthy_replay = service.create_task(publication_failure).await.unwrap();
+    assert!(healthy_replay.replayed);
+    assert_eq!(publications.lock().unwrap().len(), 1);
+
+    let late_failure = CreateTaskCommand {
+        workspace_id: WorkspaceId::parse("wsp_0123456789abcdef01234567").unwrap(),
+        idempotency_key: "repair-late-write".to_owned(),
+    };
+    repository.fail_next_store_after_write_for_test();
+    repository.fail_durability_confirmations_for_test(2);
+    assert!(service.create_task(late_failure.clone()).await.is_err());
+    assert_eq!(publications.lock().unwrap().len(), 1);
+    assert!(service.create_task(late_failure.clone()).await.is_err());
+    assert_eq!(publications.lock().unwrap().len(), 1);
+    let late_repaired = service.create_task(late_failure).await.unwrap();
+    assert!(late_repaired.replayed);
+
+    {
+        let publications = publications.lock().unwrap();
+        assert_eq!(publications.len(), 2);
+        assert_eq!(
+            publications[1].event.id,
+            late_repaired.projection.cursor.get()
+        );
+        assert!(matches!(
+            &publications[1].delta,
+            crate::api::TaskDelta::ProjectionReplaced { projection }
+                if projection.as_ref() == &late_repaired.projection
+        ));
+    }
+
+    let appended = repository
+        .append(&repaired.projection.task.task_id, activity("after-repair"))
+        .unwrap();
+    let publications = publications.lock().unwrap();
+    assert_eq!(publications.len(), 3);
+    assert_eq!(publications[2].event.id, appended.id);
+    assert!(matches!(
+        publications[2].delta,
+        crate::api::TaskDelta::ChangesApplied { .. }
+    ));
+}
+
+#[tokio::test]
+async fn repair_and_raw_append_publish_monotonic_cache_consistent_updates() {
+    let dir = tempdir().unwrap();
+    let repository = TaskRepository::open(dir.path()).unwrap();
+    let task_id = task(&repository).await;
+    let publications = Arc::new(Mutex::new(Vec::new()));
+    let observed = publications.clone();
+    let cache_reader = repository.clone();
+    repository.register_observer(Arc::new(move |publication| {
+        let cached: crate::api::TaskProjection = serde_json::from_slice(
+            &std::fs::read(
+                cache_reader
+                    .task_path(&publication.projection.task.task_id)
+                    .join("projection.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cached, publication.projection);
+        observed.lock().unwrap().push(publication.clone());
+    }));
+
+    repository.fail_next_publication_for_test();
+    assert!(repository
+        .append(&task_id, activity("repair-tail"))
+        .is_err());
+    let repair_tail = repository.replay(&task_id).unwrap().last().unwrap().id;
+    let snapshot_reached = Arc::new(Barrier::new(2));
+    let resume_repair = Arc::new(Barrier::new(2));
+    repository
+        .pause_next_repair_after_snapshot_for_test(snapshot_reached.clone(), resume_repair.clone());
+
+    let repair_repository = repository.clone();
+    let repair = std::thread::spawn(move || repair_repository.task_ids().unwrap());
+    snapshot_reached.wait();
+
+    let mut raw_store = kuku::event::EventStore::open(repository.events_path(&task_id)).unwrap();
+    let (started, competing) = std::sync::mpsc::channel();
+    let raw_append = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        raw_store
+            .append_synced(EventPayload::TaskLedger(activity("after-repair")))
+            .unwrap()
+    });
+    competing.recv().unwrap();
+    resume_repair.wait();
+
+    repair.join().unwrap();
+    let appended = raw_append.join().unwrap();
+    let publications = publications.lock().unwrap();
+    assert_eq!(publications.len(), 2);
+    assert_eq!(publications[0].event.id, repair_tail);
+    assert!(matches!(
+        publications[0].delta,
+        crate::api::TaskDelta::ProjectionReplaced { .. }
+    ));
+    assert_eq!(publications[1].event.id, appended.id);
+    assert!(matches!(
+        publications[1].delta,
+        crate::api::TaskDelta::ChangesApplied { .. }
+    ));
+    assert!(publications[0].projection.cursor < publications[1].projection.cursor);
+    let cached: crate::api::TaskProjection = serde_json::from_slice(
+        &std::fs::read(repository.task_path(&task_id).join("projection.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cached, publications[1].projection);
 }
 
 #[tokio::test]
