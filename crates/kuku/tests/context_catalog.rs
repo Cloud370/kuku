@@ -45,6 +45,34 @@ use kuku::event::{SourceFact, SourceScope};
 use kuku::skill::definition::{SkillDefinition, SkillSource};
 use kuku::skill::registry::SkillRegistry;
 
+fn config_with_tiers(tiers: &[(&str, &str)]) -> Config {
+    Config {
+        tiers: tiers
+            .iter()
+            .map(|(name, purpose)| {
+                (
+                    (*name).to_owned(),
+                    TierConfig {
+                        provider: "anthropic".to_owned(),
+                        model: "test-model".to_owned(),
+                        think: ThinkLevel::Off,
+                        context_window: 128_000,
+                        max_output_tokens: 8_000,
+                        purpose: (*purpose).to_owned(),
+                    },
+                )
+            })
+            .collect(),
+        providers: std::collections::BTreeMap::new(),
+        default_tier: tiers[0].0.to_owned(),
+        discovery: DiscoveryConfig::default(),
+        handoff: HandoffConfig::default(),
+        logs: LogsConfig::default(),
+        plugin: PluginConfig::default(),
+        update: UpdateConfig::default(),
+    }
+}
+
 fn skill_entry(content_hash: &str) -> CatalogEntry {
     CatalogEntry::new(
         CatalogKind::Skill,
@@ -156,26 +184,11 @@ fn generation_change_revisions_the_catalog() {
 
 #[test]
 fn registries_build_typed_entries_without_ambient_paths_or_instructions() {
-    let config = Config {
-        tiers: std::collections::BTreeMap::from([(
-            "default".to_owned(),
-            TierConfig {
-                provider: "anthropic".to_owned(),
-                model: "test-model".to_owned(),
-                think: ThinkLevel::Off,
-                context_window: 128_000,
-                max_output_tokens: 8_000,
-                purpose: "General work".to_owned(),
-            },
-        )]),
-        providers: std::collections::BTreeMap::new(),
-        default_tier: "default".to_owned(),
-        discovery: DiscoveryConfig::default(),
-        handoff: HandoffConfig::default(),
-        logs: LogsConfig::default(),
-        plugin: PluginConfig::default(),
-        update: UpdateConfig::default(),
-    };
+    let config = config_with_tiers(&[
+        ("default", "General work"),
+        ("balanced", "Balanced work"),
+        ("light", "Light work"),
+    ]);
     let skill = SkillDefinition {
         name: "tdd".to_owned(),
         description: "Test-first development".to_owned(),
@@ -216,7 +229,7 @@ fn registries_build_typed_entries_without_ambient_paths_or_instructions() {
         CatalogEntries::from_registries(&config, &skills, &agents, &prompts, vec![tool], 3, 5)
             .unwrap();
 
-    assert_eq!("tier:default", catalog.tiers[0].id);
+    assert!(catalog.tiers.iter().any(|entry| entry.id == "tier:default"));
     assert_eq!("skill:project:tdd", catalog.skills[0].id);
     assert_eq!(None, catalog.skills[0].source.relative_path);
     assert_eq!("Test-first development", catalog.skills[0].preview);
@@ -235,4 +248,94 @@ fn prompt_catalog_hash_is_deterministic_and_content_sensitive() {
 
     assert_eq!(first.hash(), kuku::prompt::builtin_prompt_catalog().hash());
     assert_ne!(first.hash(), changed.hash());
+}
+
+#[test]
+fn valid_long_and_empty_metadata_produce_bounded_fallback_previews() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent_dir = workspace.path().join("agents");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("empty.md"), "Agent instructions only.\n").unwrap();
+    let prompts = kuku::prompt::builtin_prompt_catalog();
+    let agents = kuku::agent::registry::AgentRegistry::builder()
+        .load_from_dir(
+            &agent_dir,
+            kuku::agent::definition::DefinitionSource::Project,
+        )
+        .unwrap()
+        .build();
+    let long = "x".repeat(400);
+    let skill = SkillDefinition {
+        name: "tdd".to_owned(),
+        description: long.clone(),
+        instructions: "Test first".to_owned(),
+        source: SkillSource::Project,
+        hash: "sha256:skill".to_owned(),
+        source_path: None,
+        allowed_tools: None,
+        disallowed_tools: None,
+        max_turns: None,
+        model: None,
+        license: None,
+        compatibility: None,
+        metadata: serde_json::Value::Null,
+    };
+    let skills = SkillRegistry::builder().with_definition(skill).build();
+
+    let catalog = CatalogEntries::from_registries(
+        &config_with_tiers(&[("balanced", long.as_str())]),
+        &skills,
+        &agents,
+        &prompts,
+        Vec::new(),
+        1,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(280, catalog.tiers[0].preview.chars().count());
+    assert_eq!(280, catalog.skills[0].preview.chars().count());
+    assert_eq!("empty", catalog.agents[0].preview);
+}
+
+#[test]
+fn builtin_agent_asset_paths_are_not_workspace_provenance() {
+    let prompts = kuku::prompt::builtin_prompt_catalog();
+    let agents = kuku::agent::registry::AgentRegistry::builder()
+        .builtins(&prompts)
+        .build();
+    let catalog = CatalogEntries::from_registries(
+        &config_with_tiers(&[("balanced", "Balanced"), ("light", "Light")]),
+        &SkillRegistry::builder().build(),
+        &agents,
+        &prompts,
+        Vec::new(),
+        1,
+        1,
+    )
+    .unwrap();
+
+    assert!(catalog
+        .agents
+        .iter()
+        .all(|entry| entry.source.relative_path.is_none()));
+}
+
+#[test]
+fn agent_tier_must_reference_a_catalog_tier() {
+    let prompts = kuku::prompt::builtin_prompt_catalog();
+    let agents = kuku::agent::registry::AgentRegistry::builder()
+        .builtins(&prompts)
+        .build();
+    let result = CatalogEntries::from_registries(
+        &config_with_tiers(&[("default", "Default")]),
+        &SkillRegistry::builder().build(),
+        &agents,
+        &prompts,
+        Vec::new(),
+        1,
+        1,
+    );
+
+    assert!(result.is_err());
 }

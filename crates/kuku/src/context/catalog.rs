@@ -186,7 +186,7 @@ impl CatalogEntry {
         let description = description.into();
         let content_hash = content_hash.into();
         let preview = preview.into();
-        validate_entry_values(&description, &content_hash, &preview)?;
+        validate_entry_values(&content_hash, &preview)?;
         let mut entry = Self {
             id,
             kind,
@@ -357,6 +357,7 @@ impl CatalogEntries {
         agents.sort_by(|left, right| left.id.cmp(&right.id));
         tools.sort_by(|left, right| left.id.cmp(&right.id));
         validate_unique_ids([&tiers, &skills, &agents, &tools])?;
+        validate_agent_tiers(&tiers, &agents)?;
         let revision = digest(&CatalogRevisionMaterial {
             tiers: &tiers,
             skills: &skills,
@@ -428,7 +429,7 @@ fn tier_entry(
         &tier.purpose,
         source_fact(SourceScope::System, format!("tier-config:{name}"), None),
         hash,
-        &tier.purpose,
+        bounded_preview(name, &tier.purpose),
         CatalogCapabilities::selectable(),
     )?
     .with_tier_metadata(TierMetadata {
@@ -456,10 +457,10 @@ fn skill_entry(
         source_fact(
             fact_scope,
             format!("skill-source:{}:{}", source_scope.as_str(), definition.name),
-            contained_path(definition.source_path.as_deref()),
+            contained_path(source_scope, definition.source_path.as_deref()),
         ),
         &definition.hash,
-        &definition.description,
+        bounded_preview(&definition.name, &definition.description),
         CatalogCapabilities::selectable(),
     )
 }
@@ -485,10 +486,10 @@ fn agent_entry(
         source_fact(
             fact_scope,
             format!("agent-source:{}:{}", source_scope.as_str(), definition.name),
-            contained_path(definition.source_path.as_deref()),
+            contained_path(source_scope, definition.source_path.as_deref()),
         ),
         &definition.hash,
-        &definition.description,
+        bounded_preview(&definition.name, &definition.description),
         CatalogCapabilities::delegatable(),
     )?
     .with_agent_metadata(AgentMetadata { tier_id })
@@ -506,22 +507,30 @@ fn source_fact(
     }
 }
 
-fn contained_path(path: Option<&str>) -> Option<WorkspaceRelativePath> {
+fn contained_path(
+    source_scope: CatalogSource,
+    path: Option<&str>,
+) -> Option<WorkspaceRelativePath> {
+    if matches!(source_scope, CatalogSource::System | CatalogSource::User) {
+        return None;
+    }
     path.and_then(|value| WorkspaceRelativePath::parse(value).ok())
 }
 
-fn validate_entry_values(
-    description: &str,
-    content_hash: &str,
-    preview: &str,
-) -> Result<(), CatalogError> {
-    if description.is_empty()
-        || content_hash.is_empty()
-        || preview.is_empty()
-        || preview.chars().count() > MAX_PREVIEW_CHARS
+fn bounded_preview(name: &str, description: &str) -> String {
+    let value = if description.trim().is_empty() {
+        name
+    } else {
+        description.trim()
+    };
+    value.chars().take(MAX_PREVIEW_CHARS).collect()
+}
+
+fn validate_entry_values(content_hash: &str, preview: &str) -> Result<(), CatalogError> {
+    if content_hash.is_empty() || preview.is_empty() || preview.chars().count() > MAX_PREVIEW_CHARS
     {
         return Err(CatalogError::InvalidEntry(
-            "description, content hash, and compact preview are required".to_owned(),
+            "content hash and compact preview are required".to_owned(),
         ));
     }
     Ok(())
@@ -556,6 +565,29 @@ fn validate_unique_ids<'a>(
     Ok(())
 }
 
+fn validate_agent_tiers(
+    tiers: &[CatalogEntry],
+    agents: &[CatalogEntry],
+) -> Result<(), CatalogError> {
+    let tier_ids = tiers
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for agent in agents {
+        let metadata = agent
+            .agent
+            .as_ref()
+            .expect("CatalogEntries validates Agent metadata");
+        if !tier_ids.contains(metadata.tier_id.as_str()) {
+            return Err(CatalogError::InvalidEntry(format!(
+                "Agent {} references missing Tier {}",
+                agent.id, metadata.tier_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn content_digest(value: &impl Serialize) -> Result<String, CatalogError> {
     let bytes = serde_json::to_vec(value).map_err(|_| CatalogError::Hash)?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
@@ -568,4 +600,21 @@ fn digest(value: &impl Serialize) -> Result<RevisionToken, CatalogError> {
 
 fn empty_revision() -> RevisionToken {
     RevisionToken::parse("0".repeat(64)).expect("zero digest is a valid revision")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{contained_path, CatalogSource};
+
+    #[test]
+    fn system_and_user_paths_are_not_workspace_provenance() {
+        assert_eq!(
+            None,
+            contained_path(CatalogSource::System, Some("prompts/agents/review.md"))
+        );
+        assert_eq!(
+            None,
+            contained_path(CatalogSource::User, Some("skills/tdd/SKILL.md"))
+        );
+    }
 }
