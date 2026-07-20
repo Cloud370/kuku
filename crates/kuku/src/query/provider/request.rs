@@ -67,7 +67,7 @@ impl RequestEvidenceRecorder for LifecycleOnlyRecorder {
     }
 }
 
-fn append_activity(mut event_store: EventStore, event: TaskEvent) -> Result<()> {
+fn append_activity(event_store: EventStore, event: TaskEvent) -> Result<()> {
     let batch = TaskActivityBatch::try_new(vec![event]).map_err(|error| {
         Error::InvalidEventStream(format!("invalid request lifecycle activity: {error}"))
     })?;

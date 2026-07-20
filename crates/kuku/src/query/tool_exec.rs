@@ -37,12 +37,11 @@ pub(crate) fn write_tool_result(
     summary: &str,
     model_content: &str,
     result: &Option<serde_json::Value>,
-    events_path: &std::path::Path,
+    event_store: &EventStore,
     turn: u64,
 ) -> crate::error::Result<Option<serde_json::Value>> {
-    let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), result);
-    let stored = store.append(crate::event::EventPayload::ToolResult {
+    let structured = finalize_persisted_tool_result(event_store.next_id(), result);
+    let stored = event_store.append(crate::event::EventPayload::ToolResult {
         execution: execution.clone(),
         turn,
         ts: now_timestamp()?,
@@ -68,7 +67,7 @@ pub(crate) fn write_tool_result(
 }
 
 fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
-    EventStore::replay(&pending.events_path)
+    pending.event_store.read_all()
 }
 
 fn current_skill_registry(pending: &PendingRun) -> crate::skill::registry::SkillRegistry {
@@ -155,7 +154,7 @@ fn handle_use_skill(
     let skill_dir = def.source_path.as_deref().unwrap_or("").to_string();
     let result = format!("<!-- loaded: {skill_dir} -->\n\n{}", def.instructions);
 
-    let events = EventStore::replay(&pending.events_path)?;
+    let events = pending.event_store.read_all()?;
     let mut skill_names =
         crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
     if !skill_names.iter().any(|name| name == &def.name) {
@@ -171,13 +170,14 @@ fn handle_use_skill(
         &skill_names,
         &binding_sources,
     );
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ConversationBound {
-        ts: now_timestamp()?,
-        conversation: pending.conversation.as_str().to_string(),
-        binding_id: binding_id.clone(),
-    })?;
-    store.append(EventPayload::ContextSkills {
+    pending
+        .event_store
+        .append(EventPayload::ConversationBound {
+            ts: now_timestamp()?,
+            conversation: pending.conversation.as_str().to_string(),
+            binding_id: binding_id.clone(),
+        })?;
+    pending.event_store.append(EventPayload::ContextSkills {
         conversation: pending.conversation.as_str().to_string(),
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -256,8 +256,7 @@ pub(super) async fn execute_tool_call(
             _ => unreachable!(),
         };
         let result = clamp_inline_skill_tool_result(pending, &tool_call.name, result);
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::ToolResult {
+        pending.event_store.append(EventPayload::ToolResult {
             execution: pending.execution_scope().clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
@@ -276,8 +275,8 @@ pub(super) async fn execute_tool_call(
         return Ok(result);
     }
 
-    let prior_events = EventStore::replay(&pending.events_path)?;
-    let result_event_id = EventStore::open(&pending.events_path)?.next_id();
+    let prior_events = pending.event_store.read_all()?;
+    let result_event_id = pending.event_store.next_id();
     let result = crate::tool::dispatch(
         &tool_call.name,
         &tool_call.args,
@@ -288,13 +287,12 @@ pub(super) async fn execute_tool_call(
         Some(&tool_call.id),
         &pending.config,
         &pending.catalog,
-        &pending.events_path,
+        &pending.event_store,
         parent_request,
         pending.request_evidence_recorder.as_ref(),
     )
     .await;
-    let mut store = EventStore::open(&pending.events_path)?;
-    let stored = store.append(EventPayload::ToolResult {
+    let stored = pending.event_store.append(EventPayload::ToolResult {
         execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -475,6 +473,7 @@ mod tests {
             session_id: "test".to_string(),
             query,
             conversation: crate::conversation::address::ConversationAddress::MAIN,
+            event_store: EventStore::open(&events_path).unwrap(),
             events_path: events_path.clone(),
             kuku_home: workspace.clone(),
             workspace: workspace.clone(),
@@ -639,7 +638,7 @@ mod tests {
             "read README.md",
             "README contents",
             &None,
-            &events_path,
+            &EventStore::open(&events_path).unwrap(),
             1,
         )
         .unwrap();

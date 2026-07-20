@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use serde_json::{json, Value};
 
 use crate::conversation::address::ConversationAddress;
@@ -33,8 +31,11 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     }
 }
 
-pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
-    let (content, count) = match run_query(args, events_path) {
+pub(crate) fn query_session_with_store(
+    args: &Value,
+    event_store: &EventStore,
+) -> ToolResultEnvelope {
+    let (content, count) = match run_query(args, event_store) {
         Ok(pair) => pair,
         Err(e) => {
             return ToolResultEnvelope::error(
@@ -52,8 +53,22 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
     }
 }
 
-fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate::error::Error> {
-    let all_events = EventStore::replay(events_path)?;
+#[cfg(test)]
+fn query_session(args: &Value, events_path: &std::path::Path) -> ToolResultEnvelope {
+    match EventStore::open(events_path) {
+        Ok(store) => query_session_with_store(args, &store),
+        Err(error) => ToolResultEnvelope::error(
+            format!("query failed: {error}"),
+            format!("failed to read event store: {error}"),
+        ),
+    }
+}
+
+fn run_query(
+    args: &Value,
+    event_store: &EventStore,
+) -> Result<(String, usize), crate::error::Error> {
+    let all_events = event_store.read_all()?;
     if all_events.is_empty() {
         return Ok(("[]".to_string(), 0));
     }

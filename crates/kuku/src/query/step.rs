@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::event::{EventPayload, EventStore};
+use crate::event::EventPayload;
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
@@ -31,8 +31,7 @@ fn return_blocked_tool(
     reason: &str,
 ) -> Result<PendingStep> {
     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ToolResult {
+    pending.event_store.append(EventPayload::ToolResult {
         execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -77,8 +76,7 @@ fn return_tool_result(
     status: &str,
     summary: &str,
 ) -> Result<PendingStep> {
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ToolResult {
+    pending.event_store.append(EventPayload::ToolResult {
         execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -243,8 +241,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     });
 
     {
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::ModelResponse {
+        pending.event_store.append(EventPayload::ModelResponse {
             request: request.clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
@@ -263,7 +260,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             }),
         })?;
         if !pending.conversation.is_main() && !accumulated_text.is_empty() {
-            store.append(EventPayload::MessageAssistant {
+            pending.event_store.append(EventPayload::MessageAssistant {
                 execution: pending.execution_scope().clone(),
                 ts: now_timestamp()?,
                 conversation: pending.conversation.as_str().to_string(),
@@ -277,7 +274,9 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             if let Some(summary) = detector.finish() {
                 let trimmed = summary.trim().to_string();
                 let final_summary = if trimmed.is_empty() {
-                    EventStore::replay(&pending.events_path)?
+                    pending
+                        .event_store
+                        .read_all()?
                         .iter()
                         .rev()
                         .find_map(|e| match &e.payload {
@@ -292,7 +291,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 } else {
                     trimmed
                 };
-                store.append(EventPayload::Handoff {
+                pending.event_store.append(EventPayload::Handoff {
                     execution: pending.execution_scope().clone(),
                     turn: pending.turn,
                     ts: now_timestamp()?,
@@ -345,7 +344,6 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                         pending.pending_events.push_back(UiEvent::TextDelta {
                             text: String::new(),
                         });
-                        drop(store);
                         return super::provider::call_provider_step(pending).await;
                     }
                 }
@@ -353,9 +351,8 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         }
 
         if !has_tool_calls {
-            drop(store);
             append_turn_completed(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 &conversation,
                 pending.turn,
@@ -398,7 +395,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         }
 
         for tool_call in &tool_calls {
-            store.append(EventPayload::ToolCall {
+            pending.event_store.append(EventPayload::ToolCall {
                 request: request.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
@@ -473,7 +470,7 @@ pub(super) async fn advance_pending(
     };
     if is_cancelled {
         append_turn_cancelled(
-            &pending.events_path,
+            &pending.event_store,
             pending.execution_scope(),
             &pending.conversation,
             pending.turn,
@@ -551,7 +548,7 @@ pub(super) async fn advance_pending(
 
             let dispatch = match crate::agent::runtime::prepare_dispatch(
                 pending.agent_registry.as_ref(),
-                &EventStore::replay(&pending.events_path)?,
+                &pending.event_store.read_all()?,
                 &pending.conversation,
                 target,
                 prompt,
@@ -689,7 +686,7 @@ pub(super) async fn advance_pending(
                 &queued.tool_call.args,
             );
             let policy = load_project_policy(&pending.policy_path)?;
-            let prior_events = EventStore::replay(&pending.events_path)?;
+            let prior_events = pending.event_store.read_all()?;
             let session_grants = recover_session_grants(&prior_events);
             let decision = decide_tool_call(
                 &queued.tool_call.name,
@@ -714,7 +711,7 @@ pub(super) async fn advance_pending(
                         source: gate_source_name(decision.source).to_string(),
                     };
                     append_permission_request(
-                        &pending.events_path,
+                        &pending.event_store,
                         pending.execution_scope(),
                         &pending.conversation,
                         pending.turn,
@@ -730,7 +727,7 @@ pub(super) async fn advance_pending(
                     if !matches!(decision.source, GateSource::TrustPosture) {
                         let choice = gate_choice(&decision.source);
                         append_permission_decision(
-                            &pending.events_path,
+                            &pending.event_store,
                             pending.execution_scope(),
                             pending.turn,
                             &id,
@@ -788,7 +785,7 @@ pub(super) async fn advance_pending(
                         event_tx: slot_event_tx,
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
-                        events_path: pending.events_path.clone(),
+                        event_store: pending.event_store.clone(),
                         parent_request: queued.request.clone(),
                         request_evidence_recorder: pending.request_evidence_recorder.clone(),
                     });
@@ -806,7 +803,7 @@ pub(super) async fn advance_pending(
                 }
                 GateDecisionKind::Deny => {
                     append_permission_request(
-                        &pending.events_path,
+                        &pending.event_store,
                         pending.execution_scope(),
                         &pending.conversation,
                         pending.turn,
@@ -823,7 +820,7 @@ pub(super) async fn advance_pending(
                         },
                     )?;
                     append_permission_decision(
-                        &pending.events_path,
+                        &pending.event_store,
                         pending.execution_scope(),
                         pending.turn,
                         &id,

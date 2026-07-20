@@ -1,11 +1,12 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
 use serde_json::json;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn write_events(dir: &Path, payloads: &[EventPayload]) -> std::path::PathBuf {
     let path = dir.join("events.jsonl");
-    let mut store = EventStore::open(&path).unwrap();
+    let store = EventStore::open(&path).unwrap();
     for payload in payloads {
         store.append(payload.clone()).unwrap();
     }

@@ -310,7 +310,7 @@ pub(super) enum RunState {
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
     Cancelled {
-        events_path: std::path::PathBuf,
+        event_store: crate::event::EventStore,
         turn: u64,
     },
     Done(
@@ -344,6 +344,7 @@ pub(super) struct PendingRun {
     pub(super) session_id: String,
     pub(super) conversation: ConversationAddress,
     pub(super) query: Query,
+    pub(super) event_store: crate::event::EventStore,
     pub(super) events_path: PathBuf,
     pub(super) kuku_home: PathBuf,
     pub(super) workspace: PathBuf,

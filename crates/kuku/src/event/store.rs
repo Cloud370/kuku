@@ -104,7 +104,7 @@ impl EventStore {
         &self.path
     }
 
-    pub(crate) fn replay_events(&self) -> Result<Vec<StoredEvent>> {
+    pub fn read_all(&self) -> Result<Vec<StoredEvent>> {
         Self::replay(&self.path)
     }
 
@@ -129,12 +129,12 @@ impl EventStore {
     }
 
     /// Append a new event to the store and return the stored event with its assigned ID.
-    pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
+    pub fn append(&self, payload: EventPayload) -> Result<StoredEvent> {
         self.append_with_durability(payload, false)
     }
 
     /// Append one event and flush it durably before returning.
-    pub fn append_synced(&mut self, payload: EventPayload) -> Result<StoredEvent> {
+    pub fn append_synced(&self, payload: EventPayload) -> Result<StoredEvent> {
         self.append_with_durability(payload, true)
     }
 
@@ -520,7 +520,7 @@ mod tests {
                 let path = path.clone();
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
-                    let mut store = EventStore::open(path).unwrap();
+                    let store = EventStore::open(path).unwrap();
                     barrier.wait();
                     for turn in 1..=32 {
                         store
@@ -546,7 +546,7 @@ mod tests {
     fn append_synced_repairs_a_truncated_tail_before_appending() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let mut store = EventStore::open(&path).unwrap();
+        let store = EventStore::open(&path).unwrap();
         store.append_synced(turn_started(1)).unwrap();
         OpenOptions::new()
             .append(true)
@@ -579,7 +579,7 @@ mod tests {
             })
         });
         drop(registration);
-        let mut reopened = EventStore::open(&path).unwrap();
+        let reopened = EventStore::open(&path).unwrap();
 
         reopened.append_synced(turn_started(1)).unwrap();
         reopened.append_synced(turn_started(2)).unwrap();
@@ -592,7 +592,7 @@ mod tests {
     fn repeated_appends_and_reopens_do_not_rescan_the_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let mut store = EventStore::open(&path).unwrap();
+        let store = EventStore::open(&path).unwrap();
         let scans_after_open = store.full_scan_count_for_test();
 
         for turn in 1..=64 {
@@ -610,7 +610,7 @@ mod tests {
     fn same_size_replacement_invalidates_the_cached_tail() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let mut store = EventStore::open(&path).unwrap();
+        let store = EventStore::open(&path).unwrap();
         store.append_synced(turn_started(1)).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let original = std::fs::read(&path).unwrap();
@@ -639,7 +639,7 @@ mod tests {
     fn a_post_write_failure_keeps_the_cached_tail_recoverable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let mut store = EventStore::open(&path).unwrap();
+        let store = EventStore::open(&path).unwrap();
         store.append_synced(turn_started(1)).unwrap();
         store.shared.fail_after_write.store(true, Ordering::SeqCst);
 

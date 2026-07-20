@@ -45,13 +45,56 @@ fn workspace_capability(
     })
 }
 
+fn task_store(path: &std::path::Path, scope: &ExecutionScope) -> EventStore {
+    let store = EventStore::open(path).unwrap();
+    let receipt = kuku::event::CommandReceipt::new(
+        "create-task",
+        "digest",
+        kuku::event::CommandResult::TaskCreated {
+            task_id: scope.task_id.clone(),
+        },
+    )
+    .unwrap();
+    let run = kuku::event::RunFact {
+        run_id: scope.run_id.clone(),
+        task_id: scope.task_id.clone(),
+        state: kuku::event::RunState::Queued,
+        started_at: "2026-07-20T00:00:00Z".to_string(),
+        finished_at: None,
+        summary: None,
+        checks: None,
+        metrics: None,
+        workspace_changes: None,
+    };
+    let transaction = kuku::event::TaskTransaction::try_new(
+        kuku::event::TaskRevision::try_new(0).unwrap(),
+        receipt,
+        vec![
+            kuku::event::TaskEvent::TaskCreated {
+                task_id: scope.task_id.clone(),
+                workspace_id: scope.workspace_id.clone(),
+                title: "Task".to_string(),
+                created_at: "2026-07-20T00:00:00Z".to_string(),
+            },
+            kuku::event::TaskEvent::RunQueued { run },
+        ],
+    )
+    .unwrap();
+    store
+        .append_synced(EventPayload::TaskLedger(
+            kuku::event::TaskLedgerRecord::Control(transaction),
+        ))
+        .unwrap();
+    store
+}
+
 #[tokio::test]
 async fn task_query_uses_only_the_supplied_ledger_and_scope() {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let ledger_path = home.path().join("tasks/task/events.jsonl");
-    let store = EventStore::open(&ledger_path).unwrap();
     let scope = common::execution_scope();
+    let store = task_store(&ledger_path, &scope);
     let root = workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true)));
 
     let run = configured_query("hello")
@@ -91,11 +134,10 @@ async fn task_query_rejects_a_workspace_capability_that_lost_identity() {
     let valid = Arc::new(AtomicBool::new(true));
     let root = workspace_capability(workspace.path(), Arc::clone(&valid));
     valid.store(false, Ordering::SeqCst);
+    let scope = common::execution_scope();
     let context = TaskQueryContext::new(
-        ExecutionScope {
-            ..common::execution_scope()
-        },
-        EventStore::open(home.path().join("events.jsonl")).unwrap(),
+        scope.clone(),
+        task_store(&home.path().join("events.jsonl"), &scope),
         root,
     );
 
@@ -114,7 +156,8 @@ async fn task_query_and_request_lifecycle_share_the_injected_store() {
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let ledger_path = home.path().join("tasks/task/events.jsonl");
-    let store = EventStore::open(&ledger_path).unwrap();
+    let scope = common::execution_scope();
+    let store = task_store(&ledger_path, &scope);
     let durable_notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     store.register_observer({
         let durable_notifications = Arc::clone(&durable_notifications);
@@ -129,7 +172,6 @@ async fn task_query_and_request_lifecycle_share_the_injected_store() {
             .header("content-type", "text/event-stream")
             .body(concluding_anthropic_response("done"));
     });
-    let scope = common::execution_scope();
     let context = TaskQueryContext::new(
         scope.clone(),
         store,
@@ -174,6 +216,40 @@ async fn task_query_and_request_lifecycle_share_the_injected_store() {
     assert!(!events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::SessionCreated { .. })));
+}
+
+#[tokio::test]
+async fn task_query_rejects_task_workspace_or_active_run_mismatch_before_append() {
+    for mismatch in ["task", "workspace", "run"] {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let ledger_path = home.path().join(format!("{mismatch}.jsonl"));
+        let ledger_scope = common::execution_scope();
+        let store = task_store(&ledger_path, &ledger_scope);
+        let before = store.read_all().unwrap().len();
+        let mut supplied = ledger_scope.clone();
+        match mismatch {
+            "task" => supplied.task_id = kuku::TaskId::try_new().unwrap(),
+            "workspace" => supplied.workspace_id = kuku::WorkspaceId::try_new().unwrap(),
+            "run" => supplied.run_id = kuku::RunId::try_new().unwrap(),
+            _ => unreachable!(),
+        }
+        let context = TaskQueryContext::new(
+            supplied,
+            store.clone(),
+            workspace_capability(workspace.path(), Arc::new(AtomicBool::new(true))),
+        );
+
+        let error = configured_query("hello")
+            .kuku_home(home.path())
+            .task_context(context)
+            .start()
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "invalid_task_context", "{mismatch}");
+        assert_eq!(store.read_all().unwrap().len(), before, "{mismatch}");
+    }
 }
 
 fn concluding_anthropic_response(text: &str) -> String {

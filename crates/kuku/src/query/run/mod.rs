@@ -6,7 +6,7 @@ mod stream;
 #[cfg(test)]
 mod tests;
 use crate::error::{Error, Result};
-use crate::event::{EventPayload, EventStore};
+use crate::event::EventPayload;
 use crate::permission::append_project_allow_rule;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::ProviderToolCall;
@@ -78,17 +78,17 @@ impl Run {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
         }
-        let (events_path, turn) = match std::mem::replace(&mut self.state, RunState::Done(None)) {
+        let (event_store, turn) = match std::mem::replace(&mut self.state, RunState::Done(None)) {
             RunState::Pending(mut pending) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut pending);
                 pending.flush_runtime_logs();
-                (pending.events_path.clone(), pending.turn)
+                (pending.event_store.clone(), pending.turn)
             }
             RunState::Streaming(mut streaming) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
                 streaming.pending.flush_runtime_logs();
                 (
-                    streaming.pending.events_path.clone(),
+                    streaming.pending.event_store.clone(),
                     streaming.pending.turn,
                 )
             }
@@ -103,14 +103,14 @@ impl Run {
                     self.cancel_token.notify_waiters();
                     return;
                 }
-                (waiting.pending.events_path.clone(), waiting.pending.turn)
+                (waiting.pending.event_store.clone(), waiting.pending.turn)
             }
             other @ (RunState::Cancelled { .. } | RunState::Done(_)) => {
                 self.state = other;
                 return;
             }
         };
-        self.state = RunState::Cancelled { events_path, turn };
+        self.state = RunState::Cancelled { event_store, turn };
         self.cancel_token.notify_waiters();
     }
 
@@ -147,13 +147,15 @@ impl Run {
                             result,
                         } => {
                             let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
-                            let (events_path, turn) = match &self.state {
-                                RunState::Pending(p) => (&p.events_path, p.turn),
-                                RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
+                            let (event_store, turn) = match &self.state {
+                                RunState::Pending(p) => (&p.event_store, p.turn),
+                                RunState::Streaming(s) => (&s.pending.event_store, s.pending.turn),
                                 RunState::WaitingForPermission(w) => {
-                                    (&w.pending.events_path, w.pending.turn)
+                                    (&w.pending.event_store, w.pending.turn)
                                 }
-                                RunState::Cancelled { events_path, turn } => (events_path, *turn),
+                                RunState::Cancelled {
+                                    event_store, turn, ..
+                                } => (event_store, *turn),
                                 _ => {
                                     return Ok(Some(UiEvent::ToolEnd {
                                         id: slot.tool_call_id,
@@ -171,7 +173,7 @@ impl Run {
                                 &summary,
                                 &model_content,
                                 &result,
-                                events_path,
+                                event_store,
                                 turn,
                             )?;
                             let mc = if model_content.is_empty() {
@@ -207,9 +209,11 @@ impl Run {
                     self.state = RunState::WaitingForPermission(waiting);
                     return Ok(Some(UiEvent::PermissionRequested { request }));
                 }
-                RunState::Cancelled { events_path, turn } => {
+                RunState::Cancelled {
+                    event_store, turn, ..
+                } => {
                     append_turn_cancelled(
-                        &events_path,
+                        &event_store,
                         &self.execution_scope,
                         &crate::conversation::address::ConversationAddress::MAIN,
                         turn,

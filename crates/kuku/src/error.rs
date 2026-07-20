@@ -30,6 +30,9 @@ pub enum Error {
     #[error("workspace unavailable: {0}")]
     WorkspaceUnavailable(String),
 
+    #[error("invalid task query context: {0}")]
+    InvalidTaskContext(String),
+
     #[error(transparent)]
     ExecutionId(#[from] crate::event::ExecutionIdError),
 
@@ -99,6 +102,7 @@ impl Error {
             | Error::InvalidWorkspacePath(_)
             | Error::ExecutionId(_) => "internal",
             Error::WorkspaceUnavailable(_) => "workspace_unavailable",
+            Error::InvalidTaskContext(_) => "invalid_task_context",
             Error::Provider { kind, .. } => match kind {
                 ProviderFailureKind::Authentication => "provider_auth",
                 ProviderFailureKind::RateLimited => "provider_rate_limit",

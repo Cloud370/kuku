@@ -114,6 +114,8 @@ pub(crate) fn prepare_dispatch(
     }
 
     let prompt_body = render_delegated_prompt_body(message);
+    let nested_execution =
+        nested_execution_scope(execution, &conversation).map_err(|error| error.to_string())?;
 
     Ok(PreparedDispatch {
         session_id: existing_events
@@ -133,7 +135,7 @@ pub(crate) fn prepare_dispatch(
         from: from.clone(),
         via_tool_call_id: tool_call_id.to_string(),
         agent_instructions: definition.instructions.clone(),
-        execution: nested_execution_scope(execution).map_err(|error| error.to_string())?,
+        execution: nested_execution,
         parent_request_id: parent_request_id.clone(),
     })
 }
@@ -183,13 +185,21 @@ pub(crate) async fn start_run(
 
 fn nested_execution_scope(
     parent: &crate::event::ExecutionScope,
+    conversation: &ConversationAddress,
 ) -> Result<crate::event::ExecutionScope, crate::event::ExecutionIdError> {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(parent.task_id.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(conversation.as_str().as_bytes());
+    let suffix = format!("{:x}", digest.finalize());
     Ok(crate::event::ExecutionScope {
         workspace_id: parent.workspace_id.clone(),
         task_id: parent.task_id.clone(),
         run_id: parent.run_id.clone(),
         turn_id: crate::event::TurnId::try_new()?,
-        conversation_id: crate::event::ConversationId::try_new()?,
+        conversation_id: crate::event::ConversationId::parse(format!("con_{}", &suffix[..24]))?,
         turn_index: parent.turn_index,
     })
 }
@@ -203,6 +213,26 @@ mod tests {
     use super::*;
     use crate::agent::registry::AgentRegistry;
     use crate::event::EventPayload;
+
+    #[test]
+    fn delegated_conversation_identity_is_stable_per_task_and_address() {
+        let parent = crate::event::test_execution_scope();
+        let review = ConversationAddress::parse("review/api").unwrap();
+        let explore = ConversationAddress::parse("explore").unwrap();
+
+        let first = nested_execution_scope(&parent, &review).unwrap();
+        let continued = nested_execution_scope(&parent, &review).unwrap();
+        let another_address = nested_execution_scope(&parent, &explore).unwrap();
+        let mut another_task = parent.clone();
+        another_task.task_id = crate::event::TaskId::try_new().unwrap();
+        let another_task = nested_execution_scope(&another_task, &review).unwrap();
+
+        assert_eq!(first.conversation_id, continued.conversation_id);
+        assert_ne!(first.conversation_id, another_address.conversation_id);
+        assert_ne!(first.conversation_id, another_task.conversation_id);
+        assert_eq!(first.task_id, parent.task_id);
+        assert_eq!(first.run_id, parent.run_id);
+    }
 
     #[test]
     fn prepare_dispatch_rejects_reused_conversation_after_max_completed_turns() {
@@ -241,7 +271,9 @@ mod tests {
     fn delegated_execution_inherits_task_and_run_but_owns_turn_and_conversation() {
         let parent = crate::event::test_execution_scope();
 
-        let nested = nested_execution_scope(&parent).unwrap();
+        let nested =
+            nested_execution_scope(&parent, &ConversationAddress::parse("review").unwrap())
+                .unwrap();
 
         assert_eq!(parent.workspace_id, nested.workspace_id);
         assert_eq!(parent.task_id, nested.task_id);

@@ -38,7 +38,7 @@ fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
         execution_scope: test_execution_scope(),
         session_id: "test".to_string(),
         state: RunState::Cancelled {
-            events_path: events_path.clone(),
+            event_store: EventStore::open(&events_path).unwrap(),
             turn,
         },
         slots: std::collections::HashMap::new(),
@@ -62,6 +62,7 @@ fn make_test_pending(
         session_id: "test".to_string(),
         query: crate::query::types::Query::new("test").execution_scope(test_execution_scope()),
         conversation: crate::conversation::address::ConversationAddress::MAIN,
+        event_store: EventStore::open(&events_path).unwrap(),
         events_path,
         kuku_home: dir.to_path_buf(),
         workspace: dir.to_path_buf(),

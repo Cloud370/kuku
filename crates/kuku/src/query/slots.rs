@@ -26,7 +26,7 @@ pub(crate) fn spawn_simple_slot(
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
-    events_path: PathBuf,
+    event_store: crate::event::EventStore,
     parent_request: crate::event::RequestScope,
     request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
 ) -> ExecSlot {
@@ -55,7 +55,7 @@ pub(crate) fn spawn_simple_slot(
                 Some(&dispatch_tool_call_id),
                 &config,
                 &catalog,
-                &events_path,
+                &event_store,
                 &parent_request,
                 request_evidence_recorder.as_ref(),
             ) => SlotEvent::Done {
@@ -101,7 +101,7 @@ pub(crate) fn spawn_agent_slot(
     let tc_id = tool_call_id.clone();
     let tool_kind = ToolKind::Agent {
         conversation_id: dispatch.execution.conversation_id.clone(),
-        agent: dispatch.binding.binding_id.clone(),
+        agent: dispatch.binding.agent.clone(),
         tier: dispatch.binding.tier.clone(),
     };
     let dispatch_for_slot = dispatch.clone();
@@ -300,7 +300,7 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) event_tx: mpsc::Sender<(String, SlotEvent)>,
     pub(crate) config: std::sync::Arc<crate::config::Config>,
     pub(crate) catalog: crate::prompt::PromptCatalog,
-    pub(crate) events_path: PathBuf,
+    pub(crate) event_store: crate::event::EventStore,
     pub(crate) parent_request: crate::event::RequestScope,
     pub(crate) request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
 }
@@ -329,7 +329,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.event_tx,
             args.config,
             args.catalog,
-            args.events_path,
+            args.event_store,
             args.parent_request,
             args.request_evidence_recorder,
         );

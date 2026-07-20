@@ -60,7 +60,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
     let events_path =
         crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
             .unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
+    let store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-07T00:00:00Z".to_string(),
@@ -194,7 +194,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
     let events_path =
         crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
             .unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
+    let store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-07T00:00:00Z".to_string(),
@@ -304,7 +304,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
     let events_path =
         crate::session::session_events_path(kuku_home.path(), workspace.path(), session_id)
             .unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
+    let store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-07T00:00:00Z".to_string(),

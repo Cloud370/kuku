@@ -23,7 +23,7 @@ pub(crate) async fn dispatch(
     tool_call_id: Option<&str>,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
-    events_path: &Path,
+    event_store: &crate::event::EventStore,
     parent_request: &crate::event::RequestScope,
     request_evidence_recorder: &dyn crate::query::provider::RequestEvidenceRecorder,
 ) -> ToolResultEnvelope {
@@ -62,7 +62,7 @@ pub(crate) async fn dispatch(
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
-        "query_session" => builtin::query_session(args, events_path),
+        "query_session" => builtin::query_session_with_store(args, event_store),
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -154,12 +154,15 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
         let dir = tempfile::tempdir().unwrap();
+        let event_dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
         let (config, catalog) = test_config_and_catalog();
         let parent_request = crate::event::test_request_scope("dispatch read tools");
         let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
             dir.path().join("dispatch-events.jsonl"),
         );
+        let event_store =
+            crate::event::EventStore::open(event_dir.path().join("events.jsonl")).unwrap();
 
         let found = dispatch(
             "find_files",
@@ -171,7 +174,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -189,7 +192,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -208,7 +211,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -227,7 +230,7 @@ mod tests {
             Some("tool_command"),
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -245,7 +248,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -265,6 +268,7 @@ mod tests {
         let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
             dir.path().join("dispatch-events.jsonl"),
         );
+        let event_store = crate::event::EventStore::open(dir.path().join("events.jsonl")).unwrap();
 
         let edited = dispatch(
             "edit_file",
@@ -276,7 +280,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -299,7 +303,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -323,6 +327,7 @@ mod tests {
         let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
             dir.path().join("dispatch-events.jsonl"),
         );
+        let event_store = crate::event::EventStore::open(dir.path().join("events.jsonl")).unwrap();
 
         let result = dispatch(
             "edit_file",
@@ -334,7 +339,7 @@ mod tests {
             Some("tool_edit"),
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -357,7 +362,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -377,7 +382,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
-            dir.path(),
+            &event_store,
             &parent_request,
             &recorder,
         )
@@ -410,6 +415,8 @@ mod tests {
         let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
             session_home.path().join("dispatch-events.jsonl"),
         );
+        let event_store =
+            crate::event::EventStore::open(session_home.path().join("events.jsonl")).unwrap();
         let previous = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", runtime_home.path());
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -427,7 +434,7 @@ mod tests {
                 None,
                 &config,
                 &catalog,
-                workspace,
+                &event_store,
                 &parent_request,
                 &recorder,
             )

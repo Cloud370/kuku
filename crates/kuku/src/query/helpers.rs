@@ -182,21 +182,20 @@ pub(super) fn gate_choice(source: &crate::permission::GateSource) -> PermissionC
 
 // ---------- Event append helpers ----------
 
-fn append_event(events_path: &std::path::Path, payload: EventPayload) -> Result<()> {
-    let mut store = EventStore::open(events_path)?;
+fn append_event(store: &EventStore, payload: EventPayload) -> Result<()> {
     store.append(payload)?;
     Ok(())
 }
 
 pub(super) fn append_permission_request(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     _conversation: &ConversationAddress,
     turn: u64,
     request: &PermissionRequest,
 ) -> Result<()> {
     append_event(
-        events_path,
+        store,
         EventPayload::PermissionRequested {
             execution: execution.clone(),
             turn,
@@ -212,13 +211,13 @@ pub(super) fn append_permission_request(
 }
 
 pub(super) fn append_turn_started(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<()> {
     append_event(
-        events_path,
+        store,
         EventPayload::TurnStarted {
             execution: execution.clone(),
             ts: now_timestamp()?,
@@ -229,7 +228,7 @@ pub(super) fn append_turn_started(
 }
 
 pub(super) fn append_message_user_with_sender(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
@@ -238,7 +237,7 @@ pub(super) fn append_message_user_with_sender(
     via_tool_call_id: Option<&str>,
 ) -> Result<()> {
     append_event(
-        events_path,
+        store,
         EventPayload::MessageUser {
             execution: execution.clone(),
             turn,
@@ -252,7 +251,7 @@ pub(super) fn append_message_user_with_sender(
 }
 
 pub(super) fn append_permission_decision(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     turn: u64,
     tool_call_id: &str,
@@ -283,18 +282,18 @@ pub(super) fn append_permission_decision(
             }
         }
     };
-    append_event(events_path, payload)
+    append_event(store, payload)
 }
 
 pub(super) fn append_model_error(
-    events_path: &std::path::Path,
+    store: &EventStore,
     request: crate::event::RequestScope,
     turn: u64,
     kind: &str,
     message: &str,
 ) -> Result<()> {
     append_event(
-        events_path,
+        store,
         EventPayload::ModelError {
             request,
             turn,
@@ -306,43 +305,41 @@ pub(super) fn append_model_error(
 }
 
 fn has_terminal_event(
-    events_path: &std::path::Path,
+    store: &EventStore,
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<bool> {
-    Ok(EventStore::replay(events_path)?
-        .iter()
-        .any(|event| match &event.payload {
-            EventPayload::TurnCompleted {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            }
-            | EventPayload::TurnCancelled {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            }
-            | EventPayload::TurnInterrupted {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            } => *event_turn == turn && event_conversation == conversation.as_str(),
-            _ => false,
-        }))
+    Ok(store.read_all()?.iter().any(|event| match &event.payload {
+        EventPayload::TurnCompleted {
+            conversation: event_conversation,
+            turn: event_turn,
+            ..
+        }
+        | EventPayload::TurnCancelled {
+            conversation: event_conversation,
+            turn: event_turn,
+            ..
+        }
+        | EventPayload::TurnInterrupted {
+            conversation: event_conversation,
+            turn: event_turn,
+            ..
+        } => *event_turn == turn && event_conversation == conversation.as_str(),
+        _ => false,
+    }))
 }
 
 pub(super) fn append_turn_completed(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<()> {
-    if has_terminal_event(events_path, conversation, turn)? {
+    if has_terminal_event(store, conversation, turn)? {
         return Ok(());
     }
     append_event(
-        events_path,
+        store,
         EventPayload::TurnCompleted {
             execution: execution.clone(),
             ts: now_timestamp()?,
@@ -353,17 +350,17 @@ pub(super) fn append_turn_completed(
 }
 
 pub(super) fn append_turn_cancelled(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
     reason: &str,
 ) -> Result<()> {
-    if has_terminal_event(events_path, conversation, turn)? {
+    if has_terminal_event(store, conversation, turn)? {
         return Ok(());
     }
     append_event(
-        events_path,
+        store,
         EventPayload::TurnCancelled {
             execution: execution.clone(),
             ts: now_timestamp()?,
@@ -375,17 +372,17 @@ pub(super) fn append_turn_cancelled(
 }
 
 pub(super) fn append_turn_interrupted(
-    events_path: &std::path::Path,
+    store: &EventStore,
     execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
     reason: &str,
 ) -> Result<()> {
-    if has_terminal_event(events_path, conversation, turn)? {
+    if has_terminal_event(store, conversation, turn)? {
         return Ok(());
     }
     append_event(
-        events_path,
+        store,
         EventPayload::TurnInterrupted {
             execution: execution.clone(),
             ts: now_timestamp()?,
@@ -397,7 +394,7 @@ pub(super) fn append_turn_interrupted(
 }
 
 pub(super) fn append_interrupted_active_turn(
-    events_path: &std::path::Path,
+    store: &EventStore,
     events: &[crate::event::StoredEvent],
     conversation: &ConversationAddress,
     reason: &str,
@@ -415,13 +412,7 @@ pub(super) fn append_interrupted_active_turn(
             _ => None,
         });
         if let Some(execution) = execution {
-            append_turn_interrupted(
-                events_path,
-                execution,
-                conversation,
-                active_turn.turn,
-                reason,
-            )?;
+            append_turn_interrupted(store, execution, conversation, active_turn.turn, reason)?;
         }
     }
     Ok(())

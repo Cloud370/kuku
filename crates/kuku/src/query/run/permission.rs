@@ -1,8 +1,8 @@
 use super::{
     append_permission_decision, append_project_allow_rule, display_summary, execute_tool_call,
     now_timestamp, permission_candidate, permission_rule, persist_blocked_tool_result,
-    requires_ordered_simple_execution, run_tool_pre_hooks, Error, EventPayload, EventStore,
-    PendingPermission, PermissionChoice, QueuedToolCall, Result, Run, RunState, UiEvent,
+    requires_ordered_simple_execution, run_tool_pre_hooks, Error, EventPayload, PendingPermission,
+    PermissionChoice, QueuedToolCall, Result, Run, RunState, UiEvent,
 };
 
 impl Run {
@@ -112,23 +112,25 @@ impl Run {
             }
         };
         let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
-        let mut store = EventStore::open(&waiting.pending.events_path)?;
-        store.append(EventPayload::ToolResult {
-            execution: waiting.pending.execution_scope().clone(),
-            turn: waiting.pending.turn,
-            ts: now_timestamp()?,
-            conversation: None,
-            tool_call_id: tool_call.id.clone(),
-            status: result.status.clone(),
-            summary: result.summary.clone(),
-            model_content: result.model_content.clone(),
-            truncated: result.truncated,
-            files_read: Vec::new(),
-            files_changed: Vec::new(),
-            commands_run: Vec::new(),
-            memory_changed: None,
-            structured: result.structured.clone(),
-        })?;
+        waiting
+            .pending
+            .event_store
+            .append(EventPayload::ToolResult {
+                execution: waiting.pending.execution_scope().clone(),
+                turn: waiting.pending.turn,
+                ts: now_timestamp()?,
+                conversation: None,
+                tool_call_id: tool_call.id.clone(),
+                status: result.status.clone(),
+                summary: result.summary.clone(),
+                model_content: result.model_content.clone(),
+                truncated: result.truncated,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: result.structured.clone(),
+            })?;
         Ok(result)
     }
 
@@ -176,7 +178,7 @@ impl Run {
             )?;
         }
         append_permission_decision(
-            &pending.events_path,
+            &pending.event_store,
             pending.execution_scope(),
             pending.turn,
             &tool_call.id,
@@ -184,7 +186,7 @@ impl Run {
             source,
             &rule,
         )?;
-        let prior_events = EventStore::replay(&pending.events_path)?;
+        let prior_events = pending.event_store.read_all()?;
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
             let result = execute_tool_call(&mut pending, &request, &tool_call).await?;
@@ -224,7 +226,7 @@ impl Run {
             let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
             pending.record_tool_call(&tool_call.name);
             persist_blocked_tool_result(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 pending.turn,
                 &tool_call.id,
@@ -255,7 +257,7 @@ impl Run {
                 event_tx: self.slot_event_tx.clone(),
                 config: pending.config.clone(),
                 catalog: pending.catalog.clone(),
-                events_path: pending.events_path.clone(),
+                event_store: pending.event_store.clone(),
                 parent_request: request,
                 request_evidence_recorder: pending.request_evidence_recorder.clone(),
             });

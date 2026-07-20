@@ -3,9 +3,7 @@ use crate::context::{
     EnvironmentSource,
 };
 use crate::error::Result;
-use crate::event::{
-    EventPayload, EventStore, RequestCause, RequestId, RequestScope, RequestStarted,
-};
+use crate::event::{EventPayload, RequestCause, RequestId, RequestScope, RequestStarted};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::compute_context_headroom;
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
@@ -41,7 +39,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
-    let existing_events = EventStore::replay(&pending.events_path)?;
+    let existing_events = pending.event_store.read_all()?;
     let (handoff_summary, history) =
         rebuild_history_for_provider(&existing_events, &pending.conversation);
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
@@ -133,7 +131,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         Ok(assembly) => assembly,
         Err(error) => {
             append_turn_interrupted(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
@@ -312,8 +310,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     });
 
     {
-        let mut store = EventStore::open(&pending.events_path)?;
-        store.append(EventPayload::ContextSources {
+        pending.event_store.append(EventPayload::ContextSources {
             request: request_scope.clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
@@ -445,8 +442,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     _ => None,
                 })
                 .unwrap_or_default();
-            let mut store = EventStore::open(&pending.events_path)?;
-            store.append(EventPayload::Handoff {
+            pending.event_store.append(EventPayload::Handoff {
                 execution: request_scope.execution.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
@@ -454,16 +450,15 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 summary: user_input,
                 keep_turns: pending.handoff_keep_turns,
             })?;
-            store.append(EventPayload::ModelError {
+            pending.event_store.append(EventPayload::ModelError {
                 request: request_scope.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
                 kind: "context_too_large".to_string(),
                 message: failure.message.clone(),
             })?;
-            drop(store);
             append_turn_interrupted(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
@@ -492,14 +487,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         }
         Err(failure) => {
             append_model_error(
-                &pending.events_path,
+                &pending.event_store,
                 request_scope.clone(),
                 pending.turn,
                 failure.kind.as_event_kind(),
                 &failure.message,
             )?;
             append_turn_interrupted(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
@@ -595,7 +590,7 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             .map(|r| r.config.model.clone())
             .unwrap_or_else(|| "unknown".to_string());
         append_turn_interrupted(
-            &pending.events_path,
+            &pending.event_store,
             pending.execution_scope(),
             &pending.conversation,
             pending.turn,
@@ -628,7 +623,7 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         Ok(config) => config,
         Err(error) => {
             append_turn_interrupted(
-                &pending.events_path,
+                &pending.event_store,
                 pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,

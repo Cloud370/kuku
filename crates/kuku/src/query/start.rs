@@ -142,11 +142,11 @@ impl Query {
         };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = match task_context.as_ref() {
-            Some(context) => context.event_store.replay_events()?,
+            Some(context) => context.event_store.read_all()?,
             None => EventStore::replay(&events_path)?,
         };
-        if task_context.is_some() {
-            validate_task_ledger(&existing_events)?;
+        if let Some(context) = task_context.as_ref() {
+            validate_task_ledger(&existing_events, &context.execution_scope)?;
         } else {
             validate_existing_session(&existing_events)?;
         }
@@ -184,7 +184,7 @@ impl Query {
             },
         };
         self.execution_scope = Some(execution_scope.clone());
-        let mut store = match task_context.as_ref() {
+        let store = match task_context.as_ref() {
             Some(context) => context.event_store.clone(),
             None => EventStore::open(&events_path)?,
         };
@@ -235,14 +235,14 @@ impl Query {
 
         if resumed_permission.is_none() {
             append_interrupted_active_turn(
-                &events_path,
+                &store,
                 &existing_events,
                 &conversation,
                 "resume_before_new_turn",
             )?;
-            append_turn_started(&events_path, &execution_scope, &conversation, turn)?;
+            append_turn_started(&store, &execution_scope, &conversation, turn)?;
             append_message_user_with_sender(
-                &events_path,
+                &store,
                 &execution_scope,
                 &conversation,
                 turn,
@@ -384,6 +384,7 @@ impl Query {
             session_id: session_id.clone(),
             conversation: conversation.clone(),
             query: self,
+            event_store: store.clone(),
             events_path: events_path.clone(),
             kuku_home,
             workspace,
@@ -489,13 +490,69 @@ impl Query {
     }
 }
 
-fn validate_task_ledger(events: &[crate::event::StoredEvent]) -> Result<()> {
+fn validate_task_ledger(
+    events: &[crate::event::StoredEvent],
+    scope: &crate::event::ExecutionScope,
+) -> Result<()> {
     if events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::SessionCreated { .. }))
     {
         return Err(Error::InvalidEventStream(
             "task ledger must not contain legacy session records".to_string(),
+        ));
+    }
+    let mut task_identity = None;
+    let mut active_run = None;
+    for event in events {
+        let EventPayload::TaskLedger(record) = &event.payload else {
+            continue;
+        };
+        let facts = match record {
+            crate::event::TaskLedgerRecord::Control(transaction) => transaction.events(),
+            crate::event::TaskLedgerRecord::Activity(batch) => batch.events(),
+        };
+        for fact in facts {
+            match fact {
+                crate::event::TaskEvent::TaskCreated {
+                    task_id,
+                    workspace_id,
+                    ..
+                } => task_identity = Some((task_id, workspace_id)),
+                crate::event::TaskEvent::RunQueued { run }
+                | crate::event::TaskEvent::RunStarted { run }
+                | crate::event::TaskEvent::RunNeedsAttention { run }
+                | crate::event::TaskEvent::RunStopping { run } => active_run = Some(run),
+                crate::event::TaskEvent::RunCompleted { run }
+                | crate::event::TaskEvent::RunStopped { run }
+                | crate::event::TaskEvent::RunFailed { run }
+                | crate::event::TaskEvent::RunInterrupted { run } => {
+                    if active_run.is_some_and(|active| active.run_id == run.run_id) {
+                        active_run = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some((task_id, workspace_id)) = task_identity else {
+        return Err(Error::InvalidTaskContext(
+            "task ledger has no TaskCreated fact".to_string(),
+        ));
+    };
+    if task_id != &scope.task_id || workspace_id != &scope.workspace_id {
+        return Err(Error::InvalidTaskContext(
+            "task ledger identity does not match execution scope".to_string(),
+        ));
+    }
+    let Some(run) = active_run else {
+        return Err(Error::InvalidTaskContext(
+            "task ledger has no active Run".to_string(),
+        ));
+    };
+    if run.task_id != scope.task_id || run.run_id != scope.run_id {
+        return Err(Error::InvalidTaskContext(
+            "active Run does not match execution scope".to_string(),
         ));
     }
     Ok(())

@@ -652,7 +652,7 @@ pub fn rollback_turn(
         })?;
 
     let affects_files = scope.affects_files();
-    let mut store = EventStore::open(events_path)?;
+    let store = EventStore::open(events_path)?;
     let rb_event = store.append(EventPayload::ConversationRollback {
         ts: OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -726,7 +726,7 @@ pub fn undo_rollback(
             "{file_turn_count} turn(s) with file changes since rollback; files kept as-is"
         ));
     }
-    let mut store = EventStore::open(events_path)?;
+    let store = EventStore::open(events_path)?;
     store.append(EventPayload::ConversationRollbackUndone {
         ts: OffsetDateTime::now_utc()
             .format(&Rfc3339)

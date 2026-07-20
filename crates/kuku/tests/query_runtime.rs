@@ -146,7 +146,7 @@ async fn conversation_rollback_is_scoped() {
     let session_id = "s_conversation_rollback_scoped";
     let events_path = env.events_path(session_id);
     std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
+    let store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".to_string(),
@@ -875,7 +875,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
     let session_id = "s_resume_marks_interrupted";
     let events_path = env.events_path(session_id);
     std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
+    let store = EventStore::open(&events_path).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".to_string(),
@@ -2175,7 +2175,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     });
 
     let session_id = "s_interrupted_open_tool_blocks";
-    let mut store = EventStore::open(env.events_path(session_id)).unwrap();
+    let store = EventStore::open(env.events_path(session_id)).unwrap();
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-06T00:00:00Z".to_string(),
@@ -2788,7 +2788,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let first = next_permission_request(&mut run).await;
     assert_eq!(first.tool_call_id, "toolu_resume_first");
 
-    let mut store = EventStore::open(_env.events_path(session_id)).unwrap();
+    let store = EventStore::open(_env.events_path(session_id)).unwrap();
     store
         .append(EventPayload::PermissionRequested {
             execution: common::execution_scope(),

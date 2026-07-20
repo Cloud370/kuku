@@ -146,7 +146,7 @@ impl Run {
         };
 
         let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-        let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
+        let prior_events = pending.event_store.read_all()?;
         let session_grants = crate::permission::recover_session_grants(&prior_events);
 
         let definition = match find_tool_definition(pending, &queued.tool_call.name) {
@@ -181,7 +181,7 @@ impl Run {
                     let choice = crate::query::helpers::gate_choice(&decision.source);
                     if !has_permission_decision(&prior_events, &queued.tool_call.id) {
                         append_permission_decision(
-                            &pending.events_path,
+                            &pending.event_store,
                             pending.execution_scope(),
                             pending.turn,
                             &queued.tool_call.id,
@@ -212,7 +212,7 @@ impl Run {
                     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
                     pending.record_tool_call(&tool_call.name);
                     persist_blocked_tool_result(
-                        &pending.events_path,
+                        &pending.event_store,
                         pending.execution_scope(),
                         pending.turn,
                         &tool_call.id,
@@ -241,7 +241,7 @@ impl Run {
                         event_tx: self.slot_event_tx.clone(),
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
-                        events_path: pending.events_path.clone(),
+                        event_store: pending.event_store.clone(),
                         parent_request: request,
                         request_evidence_recorder: pending.request_evidence_recorder.clone(),
                     },
@@ -259,7 +259,7 @@ impl Run {
                 let QueuedToolCall { tool_call, .. } =
                     pending.queued_tool_calls.pop_front().unwrap();
                 append_permission_request(
-                    &pending.events_path,
+                    &pending.event_store,
                     pending.execution_scope(),
                     &pending.conversation,
                     pending.turn,
@@ -277,7 +277,7 @@ impl Run {
                     },
                 )?;
                 append_permission_decision(
-                    &pending.events_path,
+                    &pending.event_store,
                     pending.execution_scope(),
                     pending.turn,
                     &tool_call.id,
@@ -293,7 +293,7 @@ impl Run {
                 pending.record_tool_denied(&tool_call.name);
                 let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
                 persist_blocked_tool_result(
-                    &pending.events_path,
+                    &pending.event_store,
                     pending.execution_scope(),
                     pending.turn,
                     &tool_call.id,
