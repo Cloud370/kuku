@@ -26,6 +26,10 @@ async fn create_replays_after_reopen_and_duplicate_key_returns_same_task() {
     let reopened = TaskCommandService::new(TaskRepository::open(dir.path()).unwrap());
     let projection = reopened.projection(first.task_id().unwrap()).await.unwrap();
     assert_eq!(projection.task.title, "First task");
+    let replay_after_reopen = reopened.create_task(CreateTaskCommand {
+        workspace_id: workspace_id(), idempotency_key: "create-1".into(), title: "First task".into(),
+    }).await.unwrap();
+    assert_eq!(replay_after_reopen.task_id(), first.task_id());
 }
 
 #[tokio::test]

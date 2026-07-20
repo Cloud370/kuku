@@ -53,10 +53,26 @@ pub struct TaskCommandService {
 
 impl TaskCommandService {
     pub fn new(repository: TaskRepository) -> Self {
+        let mut idempotency = IdempotencyIndex::default();
+        if let Ok(task_ids) = repository.task_ids() {
+            for task_id in task_ids {
+                if let Ok(events) = repository.replay(&task_id) {
+                    for event in events {
+                        if let kuku::event::EventPayload::TaskLedger(TaskLedgerRecord::Control(transaction)) = event.payload {
+                            idempotency.insert(
+                                transaction.command().idempotency_key().to_owned(),
+                                transaction.command().intent_digest().to_owned(),
+                                task_id.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         Self {
             repository,
             gate: Arc::new(Mutex::new(())),
-            idempotency: Arc::new(Mutex::new(IdempotencyIndex::default())),
+            idempotency: Arc::new(Mutex::new(idempotency)),
         }
     }
 
