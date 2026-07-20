@@ -30,12 +30,13 @@ pub use request::{
 pub use review::{AnnotationSide, ReviewAnnotationFact, ReviewSubmissionRecorded};
 pub use stored::StoredEvent;
 pub use task::{
-    ActivityFact, ActivityKindFact, ActivityStatusFact, CheckFact, CommandIntent, CommandReceipt,
-    CommandResult, Cursor, FileReferenceFact, InteractionChoiceFact, InteractionFact, MessageFact,
-    MessageRoleFact, MetricFact, ReviewSubmissionReference, RevisionToken, RevisionTokenError,
-    RunFact, RunState, SkillsChangedFact, StorageExhaustionError, TaskActivityBatch, TaskEvent,
-    TaskLedgerError, TaskLedgerRecord, TaskRevision, TaskState, TaskTransaction,
-    WorkspaceChangesFact, JSON_SAFE_INTEGER_MAX,
+    ActivityFact, ActivityKindFact, ActivityStatusFact, ChangeEntryFact, ChangeKindFact,
+    ChangesAvailabilityFact, CheckFact, CommandIntent, CommandReceipt, CommandResult, Cursor,
+    FileReferenceFact, FiniteMetricValue, InteractionChoiceFact, InteractionFact, MessageFact,
+    MessageRoleFact, MetricFact, MetricValueError, ReviewSubmissionReference, RevisionToken,
+    RevisionTokenError, RunFact, RunState, SkillsChangedFact, StorageExhaustionError,
+    TaskActivityBatch, TaskEvent, TaskLedgerError, TaskLedgerRecord, TaskRevision, TaskState,
+    TaskTransaction, WorkspaceChangesFact, JSON_SAFE_INTEGER_MAX,
 };
 
 #[cfg(test)]

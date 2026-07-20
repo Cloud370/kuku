@@ -254,16 +254,103 @@ pub struct CheckFact {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct FiniteMetricValue(f64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("metric value must be finite")]
+pub struct MetricValueError;
+
+impl FiniteMetricValue {
+    pub fn try_new(value: f64) -> Result<Self, MetricValueError> {
+        value
+            .is_finite()
+            .then_some(Self(value))
+            .ok_or(MetricValueError)
+    }
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl Eq for FiniteMetricValue {}
+
+impl Serialize for FiniteMetricValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_f64(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for FiniteMetricValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::try_new(f64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for FiniteMetricValue {
+    fn schema_name() -> Cow<'static, str> {
+        "FiniteMetricValue".into()
+    }
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"number"})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MetricFact {
     pub name: String,
-    pub value: f64,
+    pub value: FiniteMetricValue,
     pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceChangesFact {
-    pub summary: String,
+    pub workspace_id: WorkspaceId,
+    pub revision: RevisionToken,
+    pub availability: ChangesAvailabilityFact,
+    pub entries: Vec<ChangeEntryFact>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangesAvailabilityFact {
+    Available,
+    NotGitRepository,
+    GitUnavailable,
+    WorkspaceRootMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKindFact {
+    Added,
+    Modified,
+    Deleted,
+    Untracked,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeEntryFact {
+    pub path: WorkspaceRelativePath,
+    pub old_path: Option<WorkspaceRelativePath>,
+    pub kind: ChangeKindFact,
+    pub staged: bool,
+    pub worktree: bool,
+    pub binary: bool,
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+    pub revision: RevisionToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -427,6 +514,32 @@ pub enum TaskEvent {
 impl Eq for TaskEvent {}
 
 impl TaskEvent {
+    fn validate(&self) -> Result<(), TaskLedgerError> {
+        let expected = match self {
+            Self::RunQueued { run } => Some((RunState::Queued, run)),
+            Self::RunStarted { run } => Some((RunState::Running, run)),
+            Self::RunNeedsAttention { run } => Some((RunState::NeedsAttention, run)),
+            Self::RunStopping { run } => Some((RunState::Stopping, run)),
+            Self::RunCompleted { run } => Some((RunState::Completed, run)),
+            Self::RunStopped { run } => Some((RunState::Stopped, run)),
+            Self::RunFailed { run } => Some((RunState::Failed, run)),
+            Self::RunInterrupted { run } => Some((RunState::Interrupted, run)),
+            _ => None,
+        };
+        if let Some((state, run)) = expected {
+            if run.state != state {
+                return Err(TaskLedgerError::ContradictoryRunState);
+            }
+            if state.is_active() && run.summary.is_some() {
+                return Err(TaskLedgerError::InvalidRunCompletion);
+            }
+            if !state.is_active() && run.summary.is_none() {
+                return Err(TaskLedgerError::InvalidRunCompletion);
+            }
+        }
+        Ok(())
+    }
+
     fn allowed_in_control(&self) -> bool {
         matches!(
             self,
@@ -513,6 +626,10 @@ pub enum TaskLedgerError {
     InvalidActivityEvent,
     #[error("idempotency key and intent digest must be non-empty")]
     EmptyReceiptField,
+    #[error("run event variant contradicts its run state")]
+    ContradictoryRunState,
+    #[error("terminal run facts require a summary and active run facts must not have one")]
+    InvalidRunCompletion,
 }
 
 impl CommandReceipt {
@@ -569,7 +686,10 @@ impl TaskTransaction {
         if events.is_empty() {
             return Err(TaskLedgerError::Empty);
         }
-        if events.iter().any(|event| !event.allowed_in_control()) {
+        if events
+            .iter()
+            .any(|event| event.validate().is_err() || !event.allowed_in_control())
+        {
             return Err(TaskLedgerError::InvalidControlEvent);
         }
         Ok(Self {
@@ -595,7 +715,10 @@ impl TaskActivityBatch {
         if events.is_empty() {
             return Err(TaskLedgerError::Empty);
         }
-        if events.iter().any(|event| !event.allowed_in_activity()) {
+        if events
+            .iter()
+            .any(|event| event.validate().is_err() || !event.allowed_in_activity())
+        {
             return Err(TaskLedgerError::InvalidActivityEvent);
         }
         Ok(Self { events })

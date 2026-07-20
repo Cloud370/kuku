@@ -1,7 +1,7 @@
 use kuku::event::{
-    CommandIntent, CommandReceipt, CommandResult, EventPayload, InteractionChoiceFact,
-    InteractionFact, RunFact, RunState, TaskActivityBatch, TaskEvent, TaskId, TaskLedgerRecord,
-    TaskRevision, TaskTransaction, WorkspaceId,
+    CommandIntent, CommandReceipt, CommandResult, EventPayload, FiniteMetricValue,
+    InteractionChoiceFact, InteractionFact, RunFact, RunState, TaskActivityBatch, TaskEvent,
+    TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
 };
 
 fn task_id() -> TaskId {
@@ -16,7 +16,7 @@ fn run() -> RunFact {
     RunFact {
         run_id: "run_0123456789abcdef01234567".parse().unwrap(),
         task_id: task_id(),
-        state: RunState::Queued,
+        state: RunState::Running,
         started_at: "2026-07-20T00:00:00Z".to_owned(),
         finished_at: None,
         summary: None,
@@ -99,4 +99,13 @@ fn interaction_facts_are_activity_values() {
         selected_choice_id: None,
     };
     TaskActivityBatch::try_new(vec![TaskEvent::InteractionOpened { interaction }]).unwrap();
+}
+
+#[test]
+fn run_variant_state_and_metric_values_are_checked() {
+    let mut value = run();
+    value.state = RunState::Queued;
+    assert!(TaskActivityBatch::try_new(vec![TaskEvent::RunStarted { run: value }]).is_err());
+    assert!(FiniteMetricValue::try_new(f64::NAN).is_err());
+    assert!(FiniteMetricValue::try_new(f64::INFINITY).is_err());
 }
