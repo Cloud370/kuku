@@ -185,12 +185,10 @@ impl std::fmt::Debug for WorkspaceCapability {
 }
 
 impl WorkspaceCapability {
-    /// Returns the opaque workspace ID associated with this capability.
     pub fn workspace_id(&self) -> &WorkspaceId {
         &self.workspace_id
     }
 
-    /// Builds a Task query bound to this workspace identity and the supplied Task ledger.
     pub fn query(
         &self,
         prompt: impl Into<String>,
