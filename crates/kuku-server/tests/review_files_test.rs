@@ -390,6 +390,23 @@ async fn file_revision_overflow_returns_no_partial_content() {
 }
 
 #[tokio::test]
+async fn sparse_huge_file_rejects_before_full_size_allocation() {
+    let workspace = TestWorkspace::new().await;
+    std::fs::create_dir(workspace.project.join("root")).unwrap();
+    File::create(workspace.project.join("root/sparse.bin"))
+        .unwrap()
+        .set_len(1_u64 << 40)
+        .unwrap();
+
+    let error = workspace
+        .service()
+        .content(&workspace.workspace_id, "root/sparse.bin", 1, 1)
+        .await
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::PayloadTooLarge, error.code());
+}
+
+#[tokio::test]
 async fn listing_entry_overflow_returns_no_partial_page() {
     let workspace = TestWorkspace::new().await;
     let root = workspace.project.join("root");
@@ -417,6 +434,26 @@ async fn listing_hash_byte_overflow_returns_no_partial_page() {
 
     let error = workspace
         .service()
+        .tree(&workspace.workspace_id, "root", None, 200)
+        .await
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::PayloadTooLarge, error.code());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn omitted_symlinks_still_consume_listing_entry_budget() {
+    let workspace = TestWorkspace::new().await;
+    std::fs::create_dir(workspace.project.join("root")).unwrap();
+    std::os::unix::fs::symlink("missing-a", workspace.project.join("root/link-a")).unwrap();
+    std::os::unix::fs::symlink("missing-b", workspace.project.join("root/link-b")).unwrap();
+    let limits = ReviewLimits {
+        revision_listing_entries: 1,
+        ..ReviewLimits::default()
+    };
+
+    let error = workspace
+        .service_with_limits(limits)
         .tree(&workspace.workspace_id, "root", None, 200)
         .await
         .unwrap_err();

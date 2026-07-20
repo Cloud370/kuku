@@ -443,9 +443,9 @@ fn capture_listing(
             None => capability.read_root(),
         }
         .map_err(redact_platform_error)?;
-        let mut children = Vec::new();
         for child in reader {
             let child = child.map_err(|_| CaptureError::Changed)?;
+            budget.debit_listing(1, 0)?;
             let Some(name) = child.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
@@ -459,10 +459,6 @@ fn capture_listing(
             if file_type.is_symlink() {
                 continue;
             }
-            children.push((path, name, file_type));
-        }
-        children.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-        for (path, name, file_type) in children {
             if file_type.is_dir() {
                 let entry = LogicalEntry {
                     path: path.clone(),
@@ -472,7 +468,7 @@ fn capture_listing(
                     binary: false,
                     revision: None,
                 };
-                budget.debit_listing(1, entry.canonical_bytes().len() as u64)?;
+                budget.debit_listing(0, entry.canonical_bytes().len() as u64)?;
                 entries.push(entry);
                 pending.push(path);
             } else if file_type.is_file() {
@@ -486,7 +482,7 @@ fn capture_listing(
                     binary: capture.binary,
                     revision: Some(capture.revision),
                 };
-                budget.debit_listing(1, entry.canonical_bytes().len() as u64)?;
+                budget.debit_listing(0, entry.canonical_bytes().len() as u64)?;
                 entries.push(entry);
             }
         }
@@ -553,11 +549,7 @@ fn capture_file(
     hasher.update(1_u32.to_be_bytes());
     hasher.update([1]);
     hasher.update(expected_size.to_be_bytes());
-    let mut bytes = if retain {
-        Vec::with_capacity(cmp::min(expected_size, usize::MAX as u64) as usize)
-    } else {
-        Vec::new()
-    };
+    let mut bytes = Vec::new();
     let mut buffer = [0_u8; READ_BUFFER_BYTES];
     let mut total = 0_u64;
     let mut binary = false;
