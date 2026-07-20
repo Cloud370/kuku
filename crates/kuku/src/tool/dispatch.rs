@@ -24,6 +24,8 @@ pub(crate) async fn dispatch(
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
     events_path: &Path,
+    parent_request: &crate::event::RequestScope,
+    request_evidence_recorder: &dyn crate::query::provider::RequestEvidenceRecorder,
 ) -> ToolResultEnvelope {
     match name {
         "agent" => ToolResultEnvelope::error(
@@ -34,7 +36,17 @@ pub(crate) async fn dispatch(
         "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
         "search_text" => builtin::search_text(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
-        "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
+        "fetch_web" => {
+            builtin::fetch_web(
+                args,
+                workspace,
+                config,
+                catalog,
+                parent_request,
+                request_evidence_recorder,
+            )
+            .await
+        }
         "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
@@ -144,6 +156,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
         let (config, catalog) = test_config_and_catalog();
+        let parent_request = crate::event::test_request_scope("dispatch read tools");
+        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
+            dir.path().join("dispatch-events.jsonl"),
+        );
 
         let found = dispatch(
             "find_files",
@@ -156,6 +172,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(found.status, "ok");
@@ -172,6 +190,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(read.status, "ok");
@@ -189,6 +209,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(searched.status, "ok");
@@ -206,6 +228,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(gated.status, "blocked");
@@ -222,6 +246,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(unknown.status, "error");
@@ -235,6 +261,10 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
         let read = read_event(17, dir.path(), "a.txt", original);
         let (config, catalog) = test_config_and_catalog();
+        let parent_request = crate::event::test_request_scope("dispatch writes");
+        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
+            dir.path().join("dispatch-events.jsonl"),
+        );
 
         let edited = dispatch(
             "edit_file",
@@ -247,6 +277,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(edited.status, "ok");
@@ -268,6 +300,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(written.status, "ok");
@@ -285,6 +319,10 @@ mod tests {
         let read = read_event(17, dir.path(), "a.txt", original);
         let denied = denied_event("tool_edit");
         let (config, catalog) = test_config_and_catalog();
+        let parent_request = crate::event::test_request_scope("dispatch denied");
+        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
+            dir.path().join("dispatch-events.jsonl"),
+        );
 
         let result = dispatch(
             "edit_file",
@@ -297,6 +335,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(result.status, "blocked");
@@ -318,6 +358,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(remember.status, "blocked");
@@ -336,6 +378,8 @@ mod tests {
             &config,
             &catalog,
             dir.path(),
+            &parent_request,
+            &recorder,
         )
         .await;
         assert_eq!(forget.status, "blocked");
@@ -362,6 +406,10 @@ mod tests {
         .unwrap();
 
         let (config, catalog) = test_config_and_catalog();
+        let parent_request = crate::event::test_request_scope("dispatch memory");
+        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
+            session_home.path().join("dispatch-events.jsonl"),
+        );
         let previous = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", runtime_home.path());
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -380,6 +428,8 @@ mod tests {
                 &config,
                 &catalog,
                 workspace,
+                &parent_request,
+                &recorder,
             )
             .await
         });

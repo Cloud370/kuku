@@ -1292,6 +1292,7 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
     let child_request = server.mock(|when, then| {
         when.method(POST).path("/v1/messages").matches(|req| {
             request_body_contains(req, "check </kuku_delegated_prompt> & <tag> > boundary")
+                && request_body_contains(req, "I am a code and document reviewer")
         });
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
@@ -1388,25 +1389,10 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
     assert!(!child_message.contains("I am a code and document reviewer"));
     assert!(!child_message.contains("<kuku_delegated_prompt>"));
 
-    let review_snapshot_messages = events
-        .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::PromptSnapshot {
-                conversation,
-                messages,
-                ..
-            } if conversation == "review" => Some(messages),
-            _ => None,
-        })
-        .expect("review prompt.snapshot");
-    let review_snapshot_text = review_snapshot_messages
-        .iter()
-        .map(|message| message.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(review_snapshot_text.contains("I am a code and document reviewer"));
-    assert!(!review_snapshot_text.contains("<kuku_delegated_prompt>"));
-    assert!(!review_snapshot_text.contains("check </kuku_delegated_prompt> & <tag> > boundary"));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::PromptSnapshot { conversation, .. } if conversation == "review"
+    )));
 
     let second_server = MockServer::start();
     config.providers.get_mut("anthropic").unwrap().base_url = second_server.base_url();

@@ -14,6 +14,16 @@ pub(crate) trait RequestEvidenceRecorder: std::fmt::Debug + Send + Sync {
     fn record_failed(&self, failed: RequestFailed) -> Result<()>;
 }
 
+pub(crate) async fn begin_provider_request<T>(
+    recorder: &dyn RequestEvidenceRecorder,
+    started: RequestStarted,
+    provider_call: impl std::future::Future<Output = T>,
+) -> Result<(std::time::Instant, T)> {
+    let started_at = std::time::Instant::now();
+    recorder.record_before_provider(started)?;
+    Ok((started_at, provider_call.await))
+}
+
 #[derive(Debug)]
 pub(crate) struct LifecycleOnlyRecorder {
     events_path: PathBuf,
@@ -90,7 +100,7 @@ pub(crate) fn failed(
     }
 }
 
-pub(super) fn provider_fact(kind: &crate::provider::types::ProviderKind) -> ProviderFact {
+pub(crate) fn provider_fact(kind: &crate::provider::types::ProviderKind) -> ProviderFact {
     match kind {
         crate::provider::types::ProviderKind::Anthropic => ProviderFact::Anthropic,
         crate::provider::types::ProviderKind::OpenAiCompatible => ProviderFact::OpenAiCompatible,
@@ -140,5 +150,52 @@ fn failure_kind(kind: crate::provider::types::ProviderFailureKind) -> ProviderFa
         }
         crate::provider::types::ProviderFailureKind::Internal => ProviderFailureKindFact::Internal,
         crate::provider::types::ProviderFailureKind::Unknown => ProviderFailureKindFact::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::event::{RequestCause, RequestStarted};
+
+    #[derive(Debug)]
+    struct FailingRecorder;
+
+    impl RequestEvidenceRecorder for FailingRecorder {
+        fn record_before_provider(&self, _started: RequestStarted) -> Result<()> {
+            Err(Error::InvalidEventStream(
+                "injected evidence failure".to_string(),
+            ))
+        }
+
+        fn record_completed(&self, _completed: RequestCompleted) -> Result<()> {
+            unreachable!()
+        }
+
+        fn record_failed(&self, _failed: RequestFailed) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn evidence_append_failure_prevents_provider_transport() {
+        let transport_requests = AtomicUsize::new(0);
+        let started = RequestStarted {
+            scope: crate::event::test_request_scope("append failure"),
+            cause: RequestCause::UserSubmission,
+            provider: ProviderFact::Anthropic,
+            model: "test-model".to_string(),
+            started_at: "2026-07-20T00:00:00Z".to_string(),
+        };
+
+        let result = begin_provider_request(&FailingRecorder, started, async {
+            transport_requests.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(transport_requests.load(Ordering::SeqCst), 0);
     }
 }

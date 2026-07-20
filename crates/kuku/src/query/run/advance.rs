@@ -197,9 +197,9 @@ impl Run {
                     }
                 }
                 let QueuedToolCall {
+                    request,
                     tool_call,
                     display_summary,
-                    ..
                 } = pending.queued_tool_calls.pop_front().unwrap();
                 let hook_result = run_tool_pre_hooks(
                     &mut *pending,
@@ -242,6 +242,8 @@ impl Run {
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
                         events_path: pending.events_path.clone(),
+                        parent_request: request,
+                        request_evidence_recorder: pending.request_evidence_recorder.clone(),
                     },
                 );
                 self.slots.insert(slot.tool_call_id.clone(), slot);

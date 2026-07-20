@@ -1,8 +1,6 @@
 use crate::context::{
-    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,
-    AgentRegistryProvenance, CanonicalMessage, ContextInput, EnvironmentSource,
-    PluginRegistryProvenance, PromptCapabilityMetadata, PromptRendererIdentity,
-    SkillRegistryProvenance, ToolRegistryProvenance,
+    assemble_context, rebuild_history_for_provider, CanonicalMessage, ContextInput,
+    EnvironmentSource,
 };
 use crate::error::Result;
 use crate::event::{
@@ -15,7 +13,7 @@ use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
 mod assembly;
-pub(super) mod request;
+pub(crate) mod request;
 
 pub(crate) use request::{LifecycleOnlyRecorder, RequestEvidenceRecorder};
 
@@ -144,28 +142,18 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         }
     };
 
-    let frozen = restore_prompt_snapshot(&existing_events, pending.conversation.as_str());
-    let is_first_request = frozen.is_none();
-    if let Some(frozen) = frozen {
-        assembly.prelude_messages = frozen;
-    }
-
-    // Layer 4: inject agent catalog + loaded skills into snapshot prelude (first turn only;
-    // subsequent turns reuse the frozen snapshot)
-    if is_first_request {
-        if let Some(catalog_text) = catalog_text {
-            if !catalog_text.is_empty() {
-                assembly
-                    .prelude_messages
-                    .push(CanonicalMessage::user_text(catalog_text));
-            }
+    if let Some(catalog_text) = catalog_text {
+        if !catalog_text.is_empty() {
+            assembly
+                .prelude_messages
+                .push(CanonicalMessage::user_text(catalog_text));
         }
-        if let Some(skills_text) = skills_text {
-            if !skills_text.is_empty() {
-                assembly
-                    .prelude_messages
-                    .push(CanonicalMessage::user_text(skills_text));
-            }
+    }
+    if let Some(skills_text) = skills_text {
+        if !skills_text.is_empty() {
+            assembly
+                .prelude_messages
+                .push(CanonicalMessage::user_text(skills_text));
         }
     }
 
@@ -217,7 +205,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         }
     };
 
-    let prelude_snapshot = assembly.snapshot_prelude();
     let dynamic_turn_prefix = assembly_runtime_prefix(
         assembly.runtime_context.as_deref(),
         pending
@@ -325,107 +312,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
-        if is_first_request {
-            let tool_registry = ToolRegistryProvenance {
-                hash: format!("count:{}", assembly.tools.len()),
-                names: assembly
-                    .tools
-                    .iter()
-                    .map(|tool| tool.name.clone())
-                    .collect(),
-                tool_count: assembly.tools.len(),
-            };
-            let agent_registry =
-                pending
-                    .agent_registry
-                    .as_ref()
-                    .map(|registry| AgentRegistryProvenance {
-                        hash: registry.hash().to_string(),
-                        names: registry.names().to_vec(),
-                    });
-            let skill_registry =
-                pending
-                    .skill_registry
-                    .as_ref()
-                    .map(|registry| SkillRegistryProvenance {
-                        hash: registry.hash().to_string(),
-                        names: registry.names().to_vec(),
-                    });
-            let plugin_registry =
-                pending
-                    .plugin_registry
-                    .as_ref()
-                    .map(|registry| PluginRegistryProvenance {
-                        hash: format!("count:{}", registry.names().len()),
-                        names: registry.names().to_vec(),
-                        count: registry.names().len(),
-                    });
-            store.append(EventPayload::PromptSnapshot {
-                ts: now_timestamp()?,
-                conversation: pending.conversation.as_str().to_string(),
-                binding_id: pending
-                    .agent_binding_id
-                    .clone()
-                    .unwrap_or_else(|| pending.conversation.as_str().to_string()),
-                snapshot_id: format!(
-                    "{}:{}:{}",
-                    pending.conversation.as_str(),
-                    pending.turn,
-                    pending.request_num
-                ),
-                turn: pending.turn,
-                messages: prelude_snapshot,
-                project_instruction_sources: assembly
-                    .project_instruction_sources
-                    .iter()
-                    .map(|source| crate::context::FileSource {
-                        path: source.path.clone(),
-                        hash: source.hash.clone(),
-                    })
-                    .collect(),
-                memory_sources: assembly
-                    .memory_sources
-                    .iter()
-                    .map(|source| crate::context::FileSource {
-                        path: source.path.clone(),
-                        hash: source.hash.clone(),
-                    })
-                    .collect(),
-                prompt_asset_sources: assembly.prompt_asset_sources.clone(),
-                skills: pending
-                    .skill_registry
-                    .as_ref()
-                    .map(serde_json::to_value)
-                    .transpose()?
-                    .unwrap_or_else(|| serde_json::json!({})),
-                bootstrap_loaded: pending
-                    .bootstrap_skill
-                    .as_ref()
-                    .and_then(|skill| skill.name.clone())
-                    .into_iter()
-                    .collect(),
-                provider: resolved_config.kind.as_str().to_string(),
-                model: resolved_config.model.clone(),
-                renderer: PromptRendererIdentity {
-                    provider: resolved_config.kind.as_str().to_string(),
-                    renderer: resolved_config.kind.as_str().to_string(),
-                },
-                tool_registry: Box::new(tool_registry),
-                agent_registry,
-                skill_registry: Box::new(skill_registry),
-                plugin_registry: Box::new(plugin_registry),
-                capabilities: PromptCapabilityMetadata {
-                    context_budget_tier: match headroom.tier {
-                        crate::notice::types::ContextBudgetTier::Tight => "tight",
-                        crate::notice::types::ContextBudgetTier::Normal => "normal",
-                        crate::notice::types::ContextBudgetTier::Roomy => "roomy",
-                    }
-                    .to_string(),
-                    max_context_tokens: Some(headroom.max_context_tokens),
-                    remaining_input_tokens: headroom.remaining_input_tokens,
-                },
-            })?;
-        }
         store.append(EventPayload::ContextSources {
             request: request_scope.clone(),
             turn: pending.turn,
@@ -501,20 +387,22 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .clone()
             .unwrap_or(RequestCause::UserSubmission),
     };
-    let request_started = std::time::Instant::now();
-    pending
-        .request_evidence_recorder
-        .record_before_provider(RequestStarted {
+    let (request_started, provider_result) = request::begin_provider_request(
+        pending.request_evidence_recorder.as_ref(),
+        RequestStarted {
             scope: request_scope.clone(),
             cause,
             provider: request::provider_fact(&resolved_config.kind),
             model: resolved_config.model.clone(),
             started_at: now_timestamp()?,
-        })?;
+        },
+        crate::provider::stream_provider(&resolved_config, &request, provider_trace),
+    )
+    .await?;
     pending.previous_request_id = Some(request_id.clone());
 
     let handoff_active = pending.handoff_triggered;
-    match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
+    match provider_result {
         Ok(stream) => {
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {

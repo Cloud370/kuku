@@ -1,7 +1,7 @@
 mod handoff;
 mod helpers;
 mod lifecycle;
-mod provider;
+pub(crate) mod provider;
 mod run;
 pub(crate) mod slots;
 mod start;

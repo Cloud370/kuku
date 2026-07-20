@@ -787,6 +787,8 @@ pub(super) async fn advance_pending(
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
                         events_path: pending.events_path.clone(),
+                        parent_request: queued.request.clone(),
+                        request_evidence_recorder: pending.request_evidence_recorder.clone(),
                     });
                     pending.record_tool_call(&queued.tool_call.name);
                     return Ok(PendingStep::Pending {

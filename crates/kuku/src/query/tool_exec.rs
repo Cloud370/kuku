@@ -277,6 +277,14 @@ pub(super) async fn execute_tool_call(
 
     let prior_events = EventStore::replay(&pending.events_path)?;
     let result_event_id = EventStore::open(&pending.events_path)?.next_id();
+    let parent_request = crate::event::RequestScope {
+        execution: pending.execution_scope().clone(),
+        request_id: pending.previous_request_id.clone().ok_or_else(|| {
+            crate::error::Error::InvalidEventStream(
+                "tool execution has no parent provider request".to_string(),
+            )
+        })?,
+    };
     let result = crate::tool::dispatch(
         &tool_call.name,
         &tool_call.args,
@@ -288,6 +296,8 @@ pub(super) async fn execute_tool_call(
         &pending.config,
         &pending.catalog,
         &pending.events_path,
+        &parent_request,
+        pending.request_evidence_recorder.as_ref(),
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;

@@ -27,6 +27,8 @@ pub(crate) fn spawn_simple_slot(
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
     events_path: PathBuf,
+    parent_request: crate::event::RequestScope,
+    request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -54,6 +56,8 @@ pub(crate) fn spawn_simple_slot(
                 &config,
                 &catalog,
                 &events_path,
+                &parent_request,
+                request_evidence_recorder.as_ref(),
             ) => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
@@ -294,6 +298,8 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) config: std::sync::Arc<crate::config::Config>,
     pub(crate) catalog: crate::prompt::PromptCatalog,
     pub(crate) events_path: PathBuf,
+    pub(crate) parent_request: crate::event::RequestScope,
+    pub(crate) request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
 }
 
 pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {
@@ -321,6 +327,8 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.config,
             args.catalog,
             args.events_path,
+            args.parent_request,
+            args.request_evidence_recorder,
         );
         (slot, ToolKind::Simple)
     }

@@ -256,6 +256,8 @@ impl Run {
                 config: pending.config.clone(),
                 catalog: pending.catalog.clone(),
                 events_path: pending.events_path.clone(),
+                parent_request: request,
+                request_evidence_recorder: pending.request_evidence_recorder.clone(),
             });
         self.slots.insert(slot.tool_call_id.clone(), slot);
         self.state = RunState::Pending(Box::new(pending));
