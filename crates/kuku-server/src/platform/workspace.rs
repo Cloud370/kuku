@@ -400,8 +400,17 @@ impl WorkspaceRegistry {
 
     /// Lists all persisted workspaces without exposing ambient paths.
     pub async fn list(&self) -> Result<WorkspacePage, ApiError> {
+        self.list_with_after_gate(|| async {}).await
+    }
+
+    async fn list_with_after_gate<F, Fut>(&self, after_gate: F) -> Result<WorkspacePage, ApiError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
         self.ensure_revision_registered().await;
         let _registry_gate = self.gate.read().await;
+        after_gate().await;
         let (records, default_workspace_id) = {
             let state = self
                 .state
@@ -430,6 +439,18 @@ impl WorkspaceRegistry {
         self: &Arc<Self>,
         request: RegisterWorkspaceRequest,
     ) -> Result<WorkspaceSummary, ApiError> {
+        self.register_with_before_finish(request, || async {}).await
+    }
+
+    async fn register_with_before_finish<F, Fut>(
+        self: &Arc<Self>,
+        request: RegisterWorkspaceRequest,
+        before_finish: F,
+    ) -> Result<WorkspaceSummary, ApiError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
         self.ensure_revision_registered().await;
         let guard = self.revision.begin(&request.expected_revision).await?;
         if request.label.trim().is_empty() {
@@ -482,8 +503,9 @@ impl WorkspaceRegistry {
             *state = next;
             (record, default_workspace_id, digest)
         };
-        drop(_registry_gate);
+        before_finish().await;
         guard.finish(RevisionDomain::Workspace, digest).await?;
+        drop(_registry_gate);
         let summary = self.summary(&record, &default_workspace_id).await;
         Ok(summary)
     }
@@ -714,6 +736,10 @@ impl WorkspaceRegistry {
         accepted_digest(&material)
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_transaction_tests.rs"]
+mod transaction_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredRootMapping {

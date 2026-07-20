@@ -561,6 +561,13 @@ fn settings_recovery_rolls_every_partial_transaction_forward() {
     let intended_config = "default_model = \"recovered\"\nsecret = \"journal-secret\"\n";
     let intended_workspaces = r#"{"format_version":1,"default_workspace_id":null,"records":[]}"#;
     let intended_settings = r#"{"format_version":1,"max_concurrent_runs":9}"#;
+    let digest = |value: &str| {
+        kuku_server::platform::accepted_digest(value.as_bytes())
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
     for applied in 0..=3 {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("config.toml"), "old-config").unwrap();
@@ -578,8 +585,11 @@ fn settings_recovery_rolls_every_partial_transaction_forward() {
         let journal = serde_json::json!({
             "format_version": 1,
             "config_toml": intended_config,
+            "config_digest": digest(intended_config),
             "workspaces_json": intended_workspaces,
+            "workspaces_digest": digest(intended_workspaces),
             "settings_json": intended_settings,
+            "settings_digest": digest(intended_settings),
         });
         std::fs::write(
             home.path().join("settings.journal.json"),

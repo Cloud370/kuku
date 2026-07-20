@@ -24,11 +24,15 @@ struct SettingsFile {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SettingsJournal {
     format_version: u8,
     config_toml: Option<String>,
+    config_digest: Option<String>,
     workspaces_json: Option<String>,
+    workspaces_digest: Option<String>,
     settings_json: String,
+    settings_digest: String,
 }
 
 pub struct SettingsService {
@@ -52,15 +56,31 @@ impl SettingsService {
         if journal.format_version != STORAGE_VERSION {
             return Err(internal_error("settings journal has an unsupported format"));
         }
+        verify_journal(&journal)?;
         if let Some(config) = journal.config_toml {
             write_private_atomic(&home.join(CONFIG_FILE), config.as_bytes()).map_err(io_error)?;
+            verify_target(
+                &home.join(CONFIG_FILE),
+                journal
+                    .config_digest
+                    .as_deref()
+                    .expect("verified journal config digest is present"),
+            )?;
         }
         if let Some(workspaces) = journal.workspaces_json {
             write_private_atomic(&home.join(WORKSPACES_FILE), workspaces.as_bytes())
                 .map_err(io_error)?;
+            verify_target(
+                &home.join(WORKSPACES_FILE),
+                journal
+                    .workspaces_digest
+                    .as_deref()
+                    .expect("verified journal workspace digest is present"),
+            )?;
         }
         write_private_atomic(&home.join(SETTINGS_FILE), journal.settings_json.as_bytes())
             .map_err(io_error)?;
+        verify_target(&home.join(SETTINGS_FILE), &journal.settings_digest)?;
         remove_journal(&journal_path)?;
         Ok(())
     }
@@ -181,7 +201,11 @@ impl SettingsService {
             .transpose()?;
         let journal = SettingsJournal {
             format_version: STORAGE_VERSION,
+            config_digest: config_bytes
+                .as_deref()
+                .map(|bytes| digest_hex(bytes.as_bytes())),
             config_toml: config_bytes,
+            workspaces_digest: workspace_bytes.as_deref().map(digest_hex),
             workspaces_json: workspace_bytes
                 .as_ref()
                 .map(|bytes| String::from_utf8(bytes.clone()))
@@ -189,6 +213,7 @@ impl SettingsService {
                 .map_err(|_| internal_error("prepared workspace state is not UTF-8"))?,
             settings_json: String::from_utf8(settings_bytes.clone())
                 .map_err(|_| internal_error("prepared settings state is not UTF-8"))?,
+            settings_digest: digest_hex(&settings_bytes),
         };
         let journal_bytes = serde_json::to_vec(&journal)
             .map_err(|_| internal_error("settings journal cannot be encoded"))?;
@@ -254,6 +279,44 @@ fn remove_journal(path: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn verify_journal(journal: &SettingsJournal) -> Result<(), ApiError> {
+    if journal.config_toml.is_some() != journal.config_digest.is_some()
+        || journal.workspaces_json.is_some() != journal.workspaces_digest.is_some()
+        || journal
+            .config_toml
+            .as_ref()
+            .zip(journal.config_digest.as_ref())
+            .is_some_and(|(bytes, digest)| digest_hex(bytes.as_bytes()) != *digest)
+        || journal
+            .workspaces_json
+            .as_ref()
+            .zip(journal.workspaces_digest.as_ref())
+            .is_some_and(|(bytes, digest)| digest_hex(bytes.as_bytes()) != *digest)
+        || digest_hex(journal.settings_json.as_bytes()) != journal.settings_digest
+    {
+        return Err(internal_error("settings journal digest is invalid"));
+    }
+    Ok(())
+}
+
+fn verify_target(path: &Path, digest: &str) -> Result<(), ApiError> {
+    let bytes = std::fs::read(path).map_err(io_error)?;
+    if digest_hex(&bytes) != digest {
+        return Err(internal_error(
+            "settings transaction target digest is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    accepted_digest(bytes)
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn invalid_request(message: &'static str) -> ApiError {
     ApiError::new(ApiErrorCode::InvalidRequest, message, "platform-settings")
 }
@@ -265,3 +328,7 @@ fn internal_error(message: &'static str) -> ApiError {
 fn io_error(_error: std::io::Error) -> ApiError {
     internal_error("settings transaction cannot be persisted")
 }
+
+#[cfg(test)]
+#[path = "settings_service_tests.rs"]
+mod tests;
