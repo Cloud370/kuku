@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::error::Result;
@@ -59,6 +59,33 @@ impl AgentRegistryBuilder {
             }
             if let Some(def) = parse_agent_from_asset(name, asset) {
                 self.add(def);
+            }
+        }
+        self
+    }
+
+    /// Loads builtin delegable agents whose configured tiers are available.
+    pub fn builtins_for_tiers<I, S>(mut self, catalog: &PromptCatalog, tiers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let tiers = tiers
+            .into_iter()
+            .map(|tier| tier.as_ref().to_owned())
+            .collect::<BTreeSet<_>>();
+        for (name, asset) in &catalog.agents {
+            if name == "main" {
+                continue;
+            }
+            if let Some(definition) = parse_agent_from_asset(name, asset) {
+                let tier = definition
+                    .tier
+                    .strip_prefix("tier:")
+                    .unwrap_or(&definition.tier);
+                if tiers.contains(tier) {
+                    self.add(definition);
+                }
             }
         }
         self
@@ -136,4 +163,20 @@ fn compute_registry_hash(defs: &BTreeMap<String, AgentDefinition>, names: &[Stri
         }
     }
     format!("sha256:{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRegistry;
+
+    #[test]
+    fn builtin_agents_are_limited_to_available_tiers() {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let registry = AgentRegistry::builder()
+            .builtins_for_tiers(&catalog, ["balanced"])
+            .build();
+
+        assert!(registry.get("review").is_some());
+        assert!(registry.get("explore").is_none());
+    }
 }

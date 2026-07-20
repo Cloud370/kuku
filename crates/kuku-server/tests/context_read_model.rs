@@ -123,7 +123,11 @@ impl TaskContextSource for StaticSource {
 struct StableHashes;
 
 impl ObservationHashProvider for StableHashes {
-    fn current_state(&self, _path: &kuku::event::WorkspaceRelativePath) -> CurrentObservationState {
+    fn current_state(
+        &self,
+        _workspace_id: &WorkspaceId,
+        _path: &kuku::event::WorkspaceRelativePath,
+    ) -> CurrentObservationState {
         CurrentObservationState::Present("sha256:observed".to_owned())
     }
 }
@@ -131,7 +135,11 @@ impl ObservationHashProvider for StableHashes {
 struct InaccessibleHashes;
 
 impl ObservationHashProvider for InaccessibleHashes {
-    fn current_state(&self, _path: &kuku::event::WorkspaceRelativePath) -> CurrentObservationState {
+    fn current_state(
+        &self,
+        _workspace_id: &WorkspaceId,
+        _path: &kuku::event::WorkspaceRelativePath,
+    ) -> CurrentObservationState {
         CurrentObservationState::Inaccessible
     }
 }

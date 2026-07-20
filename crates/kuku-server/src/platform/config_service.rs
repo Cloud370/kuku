@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use kuku::config::{Config, ConfigFile, ProviderFormat, StoredCredential};
@@ -26,6 +27,8 @@ pub struct ConfigService {
     revision: Arc<ServerRevisionCoordinator>,
     gate: Arc<RwLock<()>>,
     inner: RwLock<ConfigServiceState>,
+    resolved_sync: std::sync::RwLock<Option<Arc<Config>>>,
+    generation: AtomicU64,
 }
 
 pub(crate) struct PreparedConfig {
@@ -43,6 +46,7 @@ impl ConfigService {
     ) -> Result<Arc<Self>, ApiError> {
         let (raw, last_good, disk_state, disk_digest) = read_state(&path);
         let accepted = accepted_state_digest(&raw, &disk_state);
+        let generation = accepted_digest_generation(&accepted);
         revision
             .register_initial(RevisionDomain::Config, accepted)
             .await;
@@ -52,10 +56,12 @@ impl ConfigService {
             gate: Arc::new(RwLock::new(())),
             inner: RwLock::new(ConfigServiceState {
                 raw,
-                last_good,
+                last_good: last_good.clone(),
                 disk_state,
                 disk_digest,
             }),
+            resolved_sync: std::sync::RwLock::new(last_good.clone()),
+            generation: AtomicU64::new(generation),
         }))
     }
 
@@ -76,6 +82,21 @@ impl ConfigService {
             raw: state.raw.clone(),
             resolved: state.last_good.clone(),
         })
+    }
+
+    /// Returns the last validated config without awaiting the async read lock.
+    ///
+    /// Read-model adapters use this fast path from synchronous reducer traits;
+    /// mutations still publish through the async commit path before becoming visible.
+    pub(crate) fn resolved_now(&self) -> Option<Arc<Config>> {
+        self.resolved_sync
+            .read()
+            .expect("config sync snapshot lock is not poisoned")
+            .clone()
+    }
+
+    pub(crate) fn generation_now(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     pub async fn catalog(&self) -> PlatformCatalog {
@@ -231,9 +252,18 @@ impl ConfigService {
     ) -> super::AcceptedDigest {
         let mut state = self.inner.write().await;
         state.raw = Some(prepared.file.clone());
-        state.last_good = prepared.resolved.clone().map(Arc::new);
+        let resolved = prepared.resolved.clone().map(Arc::new);
+        state.last_good = resolved.clone();
         state.disk_state = PlatformState::Ready;
         state.disk_digest = Some(accepted_digest(&prepared.encoded));
+        *self
+            .resolved_sync
+            .write()
+            .expect("config sync snapshot lock is not poisoned") = resolved;
+        self.generation.store(
+            accepted_digest_generation(&prepared.digest),
+            Ordering::Release,
+        );
         prepared.digest.clone()
     }
 
@@ -257,6 +287,7 @@ impl ConfigService {
         };
         if changed && matches!(disk_state, PlatformState::Ready | PlatformState::Missing) {
             let digest = accepted_state_digest(&raw, &disk_state);
+            let generation = accepted_digest_generation(&digest);
             let current = self.revision.current().await?;
             let guard = self.revision.begin(&current).await?;
             let _gate = self.gate.write().await;
@@ -270,9 +301,14 @@ impl ConfigService {
             }
             guard.finish(RevisionDomain::Config, digest).await?;
             state.raw = raw;
-            state.last_good = last_good;
+            state.last_good = last_good.clone();
             state.disk_state = disk_state.clone();
             state.disk_digest = disk_digest;
+            *self
+                .resolved_sync
+                .write()
+                .expect("config sync snapshot lock is not poisoned") = last_good;
+            self.generation.store(generation, Ordering::Release);
             return Ok(state.disk_state.clone());
         }
         if matches!(disk_state, PlatformState::Invalid { .. }) {
@@ -442,6 +478,11 @@ fn io_error(error: std::io::Error) -> ApiError {
     ApiError::new(ApiErrorCode::Internal, error.to_string(), "platform-config")
 }
 
+fn accepted_digest_generation(digest: &super::AcceptedDigest) -> u64 {
+    let bytes = digest.as_bytes();
+    u64::from_be_bytes(bytes[..8].try_into().expect("digest prefix is eight bytes"))
+}
+
 #[allow(dead_code)]
 fn _provider_format_name(format: ProviderFormat) -> &'static str {
     format.as_str()
@@ -516,5 +557,18 @@ credential = { source = "direct_value", value = "key" }
                 .default_tier(),
             "committed"
         );
+    }
+
+    #[tokio::test]
+    async fn synchronous_snapshot_remains_available_while_async_state_is_write_locked() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.toml");
+        std::fs::write(&path, INITIAL).unwrap();
+        let service = ConfigService::open(path, ServerRevisionCoordinator::open(home.path()))
+            .await
+            .unwrap();
+        let _write = service.inner.write().await;
+
+        assert_eq!(service.resolved_now().unwrap().default_tier(), "initial");
     }
 }

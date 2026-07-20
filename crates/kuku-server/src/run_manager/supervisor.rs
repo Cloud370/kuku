@@ -833,8 +833,8 @@ impl TaskRuntime {
         self.supervisor.shutdown().await;
     }
 
-    #[cfg(test)]
-    pub(super) fn repository(&self) -> &TaskRepository {
+    /// Returns the durable task repository for read-only product projections.
+    pub fn repository(&self) -> &TaskRepository {
         self.commands.repository()
     }
 

@@ -3,6 +3,8 @@ pub mod config_watcher;
 #[allow(dead_code)]
 pub(crate) mod context;
 pub mod platform;
+#[allow(dead_code)]
+pub(crate) mod review;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;
@@ -23,9 +25,17 @@ use kuku::event::WorkspaceId;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
+use context::production::{LiveCatalogProvider, RuntimeContextSource, WorkspaceObservationHashes};
+use context::read_model::ContextReadModel;
 use platform::{AuthPolicy, BearerTokenStore, ProviderProbe};
+use review::annotations::AnnotationService;
+use review::files::WorkspaceReadService;
+use review::runtime::RuntimeReviewPort;
+use review::submissions::ReviewSubmissionService;
+pub use review::ReviewLimits;
+use review::{ReviewAdmission, WorkspaceCapabilityProvider};
 use run_manager::driver::RunDriverFactory;
-use run_manager::{ReviewSubmissionValidator, SkillSelectionValidator};
+use run_manager::ReviewSubmissionValidator;
 pub use server_limits::ServerLimits;
 
 pub struct AppState {
@@ -33,6 +43,8 @@ pub struct AppState {
     pub task_runtime: Arc<run_manager::TaskRuntime>,
     pub kuku_home: PathBuf,
     pub limits: ServerLimits,
+    pub(crate) context_model: Arc<ContextReadModel>,
+    pub(crate) review_routes: Arc<routes::review::ReviewRouteState>,
     _instance_lock: platform::ServerInstanceLock,
 }
 
@@ -333,7 +345,11 @@ fn initialized_route(_method: &Method, path: &str) -> bool {
 pub fn build_app(state: Arc<AppState>) -> Router {
     let health_state = state.clone();
     let api = platform::router(state.platform.clone())
-        .merge(routes::tasks::router(state.task_runtime.clone()));
+        .merge(routes::tasks::router(state.task_runtime.clone()))
+        .merge(routes::context::router::<()>(state.context_model.clone()))
+        .merge(routes::catalog::router::<()>(state.context_model.clone()))
+        .merge(routes::agents::router::<()>(state.context_model.clone()))
+        .merge(routes::review::router::<()>(state.review_routes.clone()));
     Router::new()
         .route(
             "/health",
@@ -503,12 +519,19 @@ impl AppState {
                 Arc::clone(&workspaces),
                 Arc::clone(&config),
             ));
+        let catalogs = Arc::new(LiveCatalogProvider::new(
+            home.to_owned(),
+            Arc::clone(&config),
+            Arc::clone(&workspaces),
+        ));
         let runtime = Arc::new(
             run_manager::TaskRuntime::new(
-                repository,
+                repository.clone(),
                 factory,
-                workspaces,
-                Arc::new(RuntimeSkillValidator),
+                Arc::clone(&workspaces),
+                Arc::new(context::CatalogSkillSelectionValidator::new(
+                    catalogs.clone(),
+                )),
                 Arc::new(RuntimeReviewValidator),
                 &limits,
             )
@@ -518,11 +541,54 @@ impl AppState {
             .recover_after_restart()
             .await
             .map_err(|error| error.into_api_error("task-recovery"))?;
+        let context_model = Arc::new(ContextReadModel::new(
+            Arc::new(RuntimeContextSource::new(Arc::clone(&runtime))),
+            catalogs.clone(),
+            Arc::new(WorkspaceObservationHashes::new(Arc::clone(&workspaces))),
+        ));
+        let review_limits = limits.review.clone();
+        let admission = Arc::new(ReviewAdmission::new(&review_limits));
+        let workspace_provider: Arc<dyn WorkspaceCapabilityProvider> = workspaces.clone();
+        let files = Arc::new(WorkspaceReadService::with_admission(
+            workspace_provider.clone(),
+            review_limits.clone(),
+            admission.clone(),
+        ));
+        let review_runtime = Arc::new(RuntimeReviewPort::with_limits(
+            Arc::clone(&runtime),
+            repository,
+            review_limits.clone(),
+        ));
+        let annotations = Arc::new(AnnotationService::with_services(
+            workspace_provider.clone(),
+            review_runtime.clone(),
+            files.clone(),
+            admission.clone(),
+            review_limits.clone(),
+        ));
+        let route_files = files.clone();
+        let submissions = Arc::new(ReviewSubmissionService::with_services(
+            workspace_provider.clone(),
+            review_runtime,
+            files,
+            admission.clone(),
+            review_limits.clone(),
+        ));
+        let review_routes = Arc::new(routes::review::ReviewRouteState::with_admission(
+            workspace_provider,
+            route_files,
+            annotations,
+            submissions,
+            admission,
+            review_limits,
+        ));
         Ok(Arc::new(Self {
             platform,
             task_runtime: runtime,
             kuku_home: home.to_owned(),
             limits,
+            context_model,
+            review_routes,
             _instance_lock: instance_lock,
         }))
     }
@@ -545,26 +611,6 @@ impl platform::WorkspaceUsagePort for RepositoryWorkspaceUsage {
                 .summaries()
                 .map(|summaries| summaries.iter().any(|summary| summary.workspace_id == *id))
                 .map_err(|error| error.into_api_error("workspace-usage"))
-        })
-    }
-}
-
-struct RuntimeSkillValidator;
-impl SkillSelectionValidator for RuntimeSkillValidator {
-    fn validate(
-        &self,
-        _workspace_id: &WorkspaceId,
-        tier_id: &str,
-        skill_ids: &[String],
-    ) -> Result<run_manager::ValidatedSkillSelection, run_manager::DomainError> {
-        if tier_id.trim().is_empty() || skill_ids.iter().any(|id| id.trim().is_empty()) {
-            return Err(run_manager::DomainError::InvalidRequest);
-        }
-        Ok(run_manager::ValidatedSkillSelection {
-            selection: kuku::event::SkillsChangedFact {
-                tier_id: tier_id.to_owned(),
-                skill_ids: skill_ids.to_vec(),
-            },
         })
     }
 }

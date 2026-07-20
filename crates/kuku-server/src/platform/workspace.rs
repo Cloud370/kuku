@@ -20,11 +20,14 @@ use super::{accepted_digest, write_private_atomic, RevisionDomain, ServerRevisio
 mod process;
 #[path = "workspace_query.rs"]
 mod query_access;
+#[path = "workspace_support.rs"]
+mod support;
 use process::{FileIdentity, IdentityBoundProcessRoot};
 pub use process::{
     ProcessCancellation, ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput,
     ProcessStatus, ProcessStream, RootCommand,
 };
+use support::encode_link_target;
 
 const ROOTS_FILE: &str = "registration-roots.json";
 const WORKSPACES_FILE: &str = "workspaces.json";
@@ -332,24 +335,6 @@ impl WorkspaceCapability {
         }
         Some(value.to_owned())
     }
-}
-
-#[cfg(unix)]
-fn encode_link_target(target: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-
-    target.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(windows)]
-fn encode_link_target(target: &Path) -> Vec<u8> {
-    use std::os::windows::ffi::OsStrExt;
-
-    target
-        .as_os_str()
-        .encode_wide()
-        .flat_map(u16::to_le_bytes)
-        .collect()
 }
 
 /// A validated path relative to a workspace capability.

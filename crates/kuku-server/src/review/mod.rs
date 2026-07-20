@@ -1,5 +1,11 @@
 //! Defines the internal Review service boundary and resource limits.
 
+pub(crate) mod annotations;
+pub(crate) mod files;
+pub(crate) mod git;
+pub(crate) mod runtime;
+pub(crate) mod submissions;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -12,7 +18,7 @@ use crate::api::{
     AnnotationSide, ApiError, ApiErrorCode, PageCursor, ReviewSubmissionPage,
     ReviewSubmissionResult, RevisionToken, TaskId, TaskRevision, WorkspaceId,
 };
-use crate::platform::WorkspaceCapability;
+use crate::platform::{WorkspaceCapability, WorkspaceRegistry};
 
 /// Holds every fixed Review service budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +252,12 @@ pub struct ReviewPermit {
 /// Resolves opaque workspace IDs into Platform-owned capabilities.
 pub trait WorkspaceCapabilityProvider: Send + Sync {
     fn capability(&self, workspace_id: &WorkspaceId) -> Result<WorkspaceCapability, ApiError>;
+}
+
+impl WorkspaceCapabilityProvider for WorkspaceRegistry {
+    fn capability(&self, workspace_id: &WorkspaceId) -> Result<WorkspaceCapability, ApiError> {
+        WorkspaceRegistry::capability(self, workspace_id)
+    }
 }
 
 /// Captures the Task facts required before validating a review command.

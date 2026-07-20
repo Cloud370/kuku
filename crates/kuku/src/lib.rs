@@ -19,7 +19,8 @@ pub(crate) mod provider;
 pub mod query;
 pub mod session;
 pub mod skill;
-pub(crate) mod tool;
+#[doc(hidden)]
+pub mod tool;
 pub mod util;
 pub mod wire;
 

@@ -260,6 +260,17 @@ fn prompt_catalog_hash_is_deterministic_and_content_sensitive() {
 }
 
 #[test]
+fn builtin_tools_are_exposed_as_safe_catalog_entries() {
+    let entries = kuku::tool::builtin_catalog_entries(true, true).unwrap();
+
+    assert!(entries.iter().any(|entry| entry.id == "tool:read_file"));
+    assert!(entries
+        .iter()
+        .all(|entry| entry.source.relative_path.is_none()));
+    assert!(entries.iter().all(|entry| entry.capabilities.invokable));
+}
+
+#[test]
 fn valid_long_and_empty_metadata_produce_bounded_fallback_previews() {
     let workspace = tempfile::tempdir().unwrap();
     let agent_dir = workspace.path().join("agents");

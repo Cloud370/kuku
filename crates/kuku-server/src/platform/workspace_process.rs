@@ -371,6 +371,10 @@ impl IdentityBoundProcessRoot {
         }
         Ok(())
     }
+
+    pub(super) fn process_path(&self) -> &Path {
+        self.process_path.as_ref()
+    }
 }
 
 impl super::WorkspaceCapability {

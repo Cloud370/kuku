@@ -136,6 +136,7 @@ impl ContextReadModel {
             .collect::<Vec<_>>();
         let (sections, observation_states) = sections(
             selected_snapshot,
+            &facts.workspace_id,
             &observation_facts,
             &catalog,
             &facts.agent_threads,
@@ -352,6 +353,7 @@ impl Requests {
 
 fn sections(
     snapshot: Option<&RequestSnapshot>,
+    workspace_id: &WorkspaceId,
     observations: &[ObservationFact],
     catalog: &ContextCatalog,
     agent_threads: &[AgentThreadFacts],
@@ -411,7 +413,12 @@ fn sections(
             } else {
                 observations.to_vec()
             };
-            ObservationReducer::for_request(&snapshot.scope, &request_observations, hashes)
+            ObservationReducer::for_request(
+                &snapshot.scope,
+                workspace_id,
+                &request_observations,
+                hashes,
+            )
         })
         .unwrap_or_default();
     let observation_states = projected_observations

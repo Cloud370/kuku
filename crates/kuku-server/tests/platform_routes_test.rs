@@ -117,6 +117,10 @@ fn shared_server_limits_freeze_runtime_and_transport_quotas() {
     assert_eq!(100, limits.max_tasks_per_page);
     assert_eq!(500, limits.max_timeline_items);
     assert_eq!(16 * 1024 * 1024, limits.max_timeline_bytes);
+    assert_eq!(8, limits.review.global_scan_permits);
+    assert_eq!(2, limits.review.workspace_scan_permits);
+    assert_eq!(4, limits.review.global_git_permits);
+    assert_eq!(1, limits.review.workspace_git_permits);
     assert!(ServerLimits::with_max_concurrent_runs(0).is_err());
     assert!(ServerLimits::with_max_concurrent_runs(65).is_err());
 }

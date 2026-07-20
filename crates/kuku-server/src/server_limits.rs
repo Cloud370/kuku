@@ -12,6 +12,7 @@ pub struct ServerLimits {
     pub max_delegated_messages: usize,
     pub max_delegated_bytes: usize,
     pub max_request_snapshot_bytes: usize,
+    pub review: crate::ReviewLimits,
 }
 
 impl ServerLimits {
@@ -34,6 +35,7 @@ impl ServerLimits {
             max_delegated_messages: 500,
             max_delegated_bytes: 10 * 1024 * 1024,
             max_request_snapshot_bytes: 16 * 1024 * 1024,
+            review: crate::ReviewLimits::default(),
         })
     }
 }

@@ -349,6 +349,20 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
 
     let unauthenticated = alpha.get("/api/v1/status", false).await;
     assert_eq!(unauthenticated.status().as_u16(), 401);
+    let review_unauthenticated = alpha
+        .get(
+            "/api/v1/workspaces/wsp_000000000000000000000000/files/tree?prefix=&limit=10",
+            false,
+        )
+        .await;
+    assert_eq!(review_unauthenticated.status().as_u16(), 401);
+    let review_before_init = alpha
+        .get(
+            "/api/v1/workspaces/wsp_000000000000000000000000/files/tree?prefix=&limit=10",
+            true,
+        )
+        .await;
+    assert_eq!(review_before_init.status().as_u16(), 409);
 
     let status = alpha.json("/api/v1/status").await;
     assert_eq!(status["ready"], false);
@@ -386,6 +400,30 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
         .as_str()
         .unwrap()
         .to_owned();
+    let context = alpha
+        .get(&format!("/api/v1/tasks/{task_id}/context"), true)
+        .await;
+    assert_eq!(context.status().as_u16(), 200);
+    assert_eq!(context.headers().get("cache-control").unwrap(), "no-store");
+    let _: Value = context.json().await.unwrap();
+    let catalog = alpha
+        .get(&format!("/api/v1/workspaces/{workspace_id}/catalog"), true)
+        .await;
+    assert_eq!(catalog.status().as_u16(), 200);
+    assert_eq!(catalog.headers().get("cache-control").unwrap(), "no-store");
+    let _: Value = catalog.json().await.unwrap();
+    let files = alpha
+        .get(
+            &format!("/api/v1/workspaces/{workspace_id}/files/tree?prefix=&limit=10"),
+            true,
+        )
+        .await;
+    assert_eq!(files.status().as_u16(), 200);
+    let _: Value = files.json().await.unwrap();
+    let missing_context = alpha
+        .get("/api/v1/tasks/tsk_000000000000000000000000/context", true)
+        .await;
+    assert_eq!(missing_context.status().as_u16(), 404);
     let second = alpha
         .post_json(
             "/api/v1/tasks",
@@ -493,6 +531,19 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
     assert_eq!(ahead_error["code"], "cursor_ahead");
 
     let terminal = wait_for_terminal_projection(&alpha, &task_id).await;
+    let context = alpha
+        .json(&format!("/api/v1/tasks/{task_id}/context"))
+        .await;
+    assert!(context["exact_request"].is_object());
+    assert!(!context["request_history"].as_array().unwrap().is_empty());
+    assert!(!context["sections"]["instructions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(!context["sections"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let final_stream = alpha
         .get(&format!("/api/v1/tasks/{task_id}/stream"), true)
         .await;

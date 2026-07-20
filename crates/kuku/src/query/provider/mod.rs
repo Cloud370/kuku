@@ -3,7 +3,10 @@ use crate::context::{
     EnvironmentSource,
 };
 use crate::error::Result;
-use crate::event::{EventPayload, RequestCause, RequestId, RequestScope, RequestStarted};
+use crate::event::{
+    EventPayload, RequestCause, RequestId, RequestScope, RequestStarted, SkillContextFact,
+    SourceFact, SourceScope, TaskEvent, WorkspaceRelativePath,
+};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::compute_context_headroom;
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
@@ -29,6 +32,174 @@ use super::tool_exec::record_plugin_hooks;
 use super::types::{PendingRun, PendingStep, ResolvedRuntime, StreamingChunkState, UiEvent};
 
 const MAX_REQUEST_LOOP: u64 = 20;
+
+fn request_breakdown(
+    assembly: &crate::context::ContextAssembly,
+    events: &[crate::event::StoredEvent],
+    scope: &RequestScope,
+    estimated_input: Option<u32>,
+) -> crate::event::ContextBreakdown {
+    let mut skills = Vec::<SkillContextFact>::new();
+    let mut observations = Vec::new();
+    for stored in events {
+        let EventPayload::TaskLedger(record) = &stored.payload else {
+            continue;
+        };
+        let record_events = match record {
+            crate::event::TaskLedgerRecord::Control(transaction) => transaction.events(),
+            crate::event::TaskLedgerRecord::Activity(batch) => batch.events(),
+        };
+        for event in record_events {
+            match event {
+                TaskEvent::SkillLoaded(skill)
+                    if skill.execution == scope.execution
+                        && !skills.iter().any(|fact| fact.skill_id == skill.skill_id) =>
+                {
+                    skills.push(SkillContextFact {
+                        skill_id: skill.skill_id.clone(),
+                        source: skill.source.clone(),
+                        origin: skill.origin,
+                        content_hash: skill.content_hash.clone(),
+                    });
+                }
+                TaskEvent::ObservationRecorded(observation) if observation.scope == *scope => {
+                    observations.push(observation.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    let instructions = assembly
+        .prompt_asset_sources
+        .iter()
+        .map(|source| crate::event::InstructionContextFact {
+            kind: crate::event::InstructionKind::System,
+            source: source_fact(SourceScope::System, "prompt", source),
+            content_hash: source.hash.clone(),
+        })
+        .chain(assembly.project_instruction_sources.iter().map(|source| {
+            crate::event::InstructionContextFact {
+                kind: match source.kind.as_str() {
+                    "workspace" => crate::event::InstructionKind::Workspace,
+                    "agent" => crate::event::InstructionKind::Agent,
+                    _ => crate::event::InstructionKind::Project,
+                },
+                source: source_fact(
+                    SourceScope::Project,
+                    "instruction",
+                    &crate::context::provenance::FileSource {
+                        path: source.path.clone(),
+                        hash: source.hash.clone(),
+                    },
+                ),
+                content_hash: source.hash.clone(),
+            }
+        }))
+        .collect();
+    let memory = assembly
+        .memory_sources
+        .iter()
+        .map(|source| crate::event::MemoryContextFact {
+            kind: if source.path.contains("global") {
+                crate::event::MemoryKind::Global
+            } else {
+                crate::event::MemoryKind::Project
+            },
+            source: source_fact(
+                if source.path.contains("global") {
+                    SourceScope::User
+                } else {
+                    SourceScope::Project
+                },
+                "memory",
+                &crate::context::provenance::FileSource {
+                    path: source.path.clone(),
+                    hash: source.hash.clone(),
+                },
+            ),
+            content_hash: source.hash.clone(),
+        })
+        .collect();
+    let tool_names = assembly
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let capabilities = [
+        (
+            crate::event::CapabilityKind::FileRead,
+            ["read_file", "find_files", "search_text"]
+                .iter()
+                .any(|name| tool_names.contains(name)),
+        ),
+        (
+            crate::event::CapabilityKind::FileWrite,
+            ["write_file", "edit_file"]
+                .iter()
+                .any(|name| tool_names.contains(name)),
+        ),
+        (
+            crate::event::CapabilityKind::CommandExecution,
+            tool_names.contains("run_command"),
+        ),
+        (
+            crate::event::CapabilityKind::NetworkAccess,
+            tool_names.contains("fetch_web"),
+        ),
+        (
+            crate::event::CapabilityKind::AgentDelegation,
+            tool_names.contains("agent"),
+        ),
+        (
+            crate::event::CapabilityKind::SkillDiscovery,
+            ["use_skill", "search_skills"]
+                .iter()
+                .any(|name| tool_names.contains(name)),
+        ),
+        (
+            crate::event::CapabilityKind::Memory,
+            !assembly.memory_sources.is_empty(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, available)| *available)
+    .map(|(kind, _)| crate::event::CapabilityFact {
+        kind,
+        state: crate::event::CapabilityState::Available,
+    })
+    .collect();
+    crate::event::ContextBreakdown {
+        skills,
+        instructions,
+        memory,
+        conversation: crate::event::ConversationContextFact {
+            retained_turns: assembly
+                .history
+                .iter()
+                .filter(|message| message.role == crate::context::Role::User)
+                .count() as u64,
+            handoff_boundaries: u64::from(assembly.handoff_summary.is_some()),
+            history_summarized: assembly.handoff_summary.is_some(),
+            delegated_results: Vec::new(),
+        },
+        observations,
+        delegated_results: Vec::new(),
+        capabilities,
+        token_estimate: estimated_input.map(u64::from),
+    }
+}
+
+fn source_fact(
+    scope: SourceScope,
+    prefix: &str,
+    source: &crate::context::provenance::FileSource,
+) -> SourceFact {
+    SourceFact {
+        scope,
+        id: format!("{prefix}:{}", source.hash),
+        relative_path: WorkspaceRelativePath::parse(&source.path).ok(),
+    }
+}
 
 pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     pending.verify_workspace()?;
@@ -304,7 +475,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .expect("execution scope assigned at start"),
         request_id: request_id.clone(),
     };
-    let _tier_name = pending
+    let tier_name = pending
         .query
         .tier
         .clone()
@@ -392,8 +563,51 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .clone()
             .unwrap_or(RequestCause::UserSubmission),
     };
-    let (request_started, provider_result) = request::begin_provider_request(
+    let catalog_revision = {
+        use sha2::Digest;
+        crate::event::RevisionToken::parse(format!(
+            "{:x}",
+            sha2::Sha256::digest(catalog.hash().as_bytes())
+        ))
+        .expect("sha256 digest is a valid revision")
+    };
+    let exact_parameters = crate::event::ExactRequestParameters {
+        model: resolved_config.model.clone(),
+        max_output_tokens: Some(max_output as u64),
+        temperature: pending
+            .query
+            .temperature
+            .and_then(|value| crate::event::Temperature::try_new(value).ok()),
+        stream: true,
+        thinking: match resolved_config.think_level {
+            crate::config::ThinkLevel::Off => crate::event::ThinkingConfig::Disabled,
+            _ => crate::event::ThinkingConfig::Enabled {
+                budget_tokens: None,
+            },
+        },
+    };
+    let snapshot_input = crate::context::SnapshotInput {
+        scope: request_scope.clone(),
+        cause: cause.clone(),
+        provider: request::provider_fact(&resolved_config.kind),
+        tier_id: &tier_name,
+        assembly: &request.assembly,
+        handoff_context_template: catalog
+            .runtime
+            .get("handoff-context")
+            .map(|asset| asset.text.as_str()),
+        allowlisted_provider_parameters: exact_parameters,
+        breakdown: request_breakdown(
+            &request.assembly,
+            &existing_events,
+            &request_scope,
+            estimated_input,
+        ),
+        catalog_revision,
+    };
+    let (request_started, provider_result) = request::begin_exact_provider_request(
         pending.request_evidence_recorder.as_ref(),
+        snapshot_input,
         RequestStarted {
             scope: request_scope.clone(),
             cause,

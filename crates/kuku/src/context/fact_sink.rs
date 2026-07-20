@@ -19,6 +19,9 @@ pub enum ContextFactSinkError {
     /// Snapshot and start values disagree on request identity or configuration.
     #[error("request snapshot and lifecycle start do not describe the same request")]
     MismatchedRequestEvidence,
+    /// The active query recorder cannot persist exact request evidence.
+    #[error("query recorder cannot persist exact request evidence")]
+    RecorderUnavailable,
 }
 
 /// Durable sink for Context-owned Task activity facts.

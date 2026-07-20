@@ -60,7 +60,11 @@ struct Hashes {
 }
 
 impl ObservationHashProvider for Hashes {
-    fn current_state(&self, path: &WorkspaceRelativePath) -> CurrentObservationState {
+    fn current_state(
+        &self,
+        _workspace_id: &kuku::event::WorkspaceId,
+        path: &WorkspaceRelativePath,
+    ) -> CurrentObservationState {
         self.values
             .get(path.as_str())
             .cloned()
@@ -104,8 +108,12 @@ fn changed_deleted_and_inaccessible_are_explicit() {
         ]),
     };
 
-    let projected =
-        ObservationReducer::for_request(&scope("req_000000000000000000000000"), &facts, &hashes);
+    let projected = ObservationReducer::for_request(
+        &scope("req_000000000000000000000000"),
+        &scope("req_000000000000000000000000").execution.workspace_id,
+        &facts,
+        &hashes,
+    );
 
     assert_eq!(3, projected.len());
     assert_eq!(
@@ -150,6 +158,7 @@ fn projection_filters_request_and_keeps_command_without_path() {
 
     let projected = ObservationReducer::for_request(
         &scope("req_000000000000000000000000"),
+        &scope("req_000000000000000000000000").execution.workspace_id,
         &[selected, other, command],
         &hashes,
     );

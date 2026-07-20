@@ -193,6 +193,40 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
     tools
 }
 
+pub fn builtin_catalog_entries(
+    agent_enabled: bool,
+    skills_enabled: bool,
+) -> Result<Vec<crate::context::catalog::CatalogEntry>, crate::context::catalog::CatalogError> {
+    builtin_registry(agent_enabled, skills_enabled)
+        .into_iter()
+        .map(|definition| {
+            let bytes = serde_json::to_vec(&(
+                &definition.name,
+                &definition.description,
+                &definition.input_schema,
+                definition.read_only,
+                definition.max_result_chars,
+                &definition.risk,
+            ))
+            .map_err(|_| crate::context::catalog::CatalogError::Hash)?;
+            crate::context::catalog::CatalogEntry::new(
+                crate::context::catalog::CatalogKind::Tool,
+                crate::context::catalog::CatalogSource::System,
+                &definition.name,
+                &definition.description,
+                crate::event::SourceFact {
+                    scope: crate::event::SourceScope::System,
+                    id: format!("tool-source:{}", definition.name),
+                    relative_path: None,
+                },
+                format!("sha256:{:x}", Sha256::digest(bytes)),
+                definition.description.chars().take(280).collect::<String>(),
+                crate::context::catalog::CatalogCapabilities::invokable(definition.read_only),
+            )
+        })
+        .collect()
+}
+
 #[allow(dead_code)] // consumed by Context catalog assembly
 pub(crate) fn registry_hash(registry: &[ToolDefinition]) -> String {
     let canonical = serde_json::to_vec(registry).expect("tool registry serializes");

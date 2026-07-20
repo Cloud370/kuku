@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::event::{
-    EventPayload, EventStore, ProviderFact, ProviderFailureFact,
+    Cursor, EventPayload, EventStore, ProviderFact, ProviderFailureFact,
     ProviderFailureKind as ProviderFailureKindFact, ProviderUsage as ProviderUsageFact,
     RequestCompleted, RequestFailed, RequestScope, RequestStarted, TaskActivityBatch, TaskEvent,
     TaskLedgerRecord, JSON_SAFE_INTEGER_MAX,
@@ -12,6 +13,14 @@ pub(crate) trait RequestEvidenceRecorder: std::fmt::Debug + Send + Sync {
     fn record_before_provider(&self, started: RequestStarted) -> Result<()>;
     fn record_completed(&self, completed: RequestCompleted) -> Result<()>;
     fn record_failed(&self, failed: RequestFailed) -> Result<()>;
+
+    fn record_exact_before_provider(
+        &self,
+        _snapshot: crate::event::RequestSnapshot,
+        _started: RequestStarted,
+    ) -> std::result::Result<Cursor, crate::context::ContextFactSinkError> {
+        Err(crate::context::ContextFactSinkError::RecorderUnavailable)
+    }
 }
 
 pub(crate) async fn begin_provider_request<T>(
@@ -65,6 +74,42 @@ impl RequestEvidenceRecorder for LifecycleOnlyRecorder {
     fn record_failed(&self, failed: RequestFailed) -> Result<()> {
         self.append(TaskEvent::RequestFailed(failed))
     }
+
+    fn record_exact_before_provider(
+        &self,
+        snapshot: crate::event::RequestSnapshot,
+        started: RequestStarted,
+    ) -> std::result::Result<Cursor, crate::context::ContextFactSinkError> {
+        let store = match &self.event_store {
+            Some(store) => store.clone(),
+            None => EventStore::open(&self.events_path)
+                .map_err(crate::context::ContextFactSinkError::Append)?,
+        };
+        let sink = crate::context::EventStoreContextFactSink::new(store)?;
+        <crate::context::DurableRequestEvidenceRecorder as crate::context::RequestEvidenceRecorder>::record_before_provider(
+            &crate::context::DurableRequestEvidenceRecorder::new(Arc::new(sink)),
+            snapshot,
+            started,
+        )
+    }
+}
+
+pub(crate) async fn begin_exact_provider_request<T>(
+    recorder: &dyn RequestEvidenceRecorder,
+    input: crate::context::SnapshotInput<'_>,
+    started: RequestStarted,
+    provider_call: impl std::future::Future<Output = T>,
+) -> Result<(std::time::Instant, T)> {
+    let snapshot = crate::context::RequestSnapshotBuilder::build(input).map_err(|error| {
+        Error::InvalidEventStream(format!("request snapshot build failed: {error}"))
+    })?;
+    let started_at = std::time::Instant::now();
+    recorder
+        .record_exact_before_provider(snapshot, started)
+        .map_err(|error| {
+            Error::InvalidEventStream(format!("request evidence append failed: {error}"))
+        })?;
+    Ok((started_at, provider_call.await))
 }
 
 fn append_activity(mut event_store: EventStore, event: TaskEvent) -> Result<()> {
