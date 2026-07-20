@@ -34,13 +34,14 @@ getrandom = { workspace = true }
 typed-path = { workspace = true }
 cap-std = { workspace = true }
 fslock = { workspace = true }
-arc-swap = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }
 home = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
 wreq = { version = "6.0.0-rc.28", features = ["json", "stream"] }
+qrcode = { workspace = true }
+thiserror = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }

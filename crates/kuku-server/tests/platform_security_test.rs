@@ -52,6 +52,14 @@ fn explicit_token_is_read_without_copying_it_into_home() {
 }
 
 #[test]
+fn startup_token_value_trims_terminal_newlines() {
+    let store = BearerTokenStore::from_token(format!("{TOKEN}\r\n")).unwrap();
+
+    assert_eq!(TOKEN, store.expose_for_terminal());
+    assert_eq!(BearerTokenSource::ExplicitFile, store.source());
+}
+
+#[test]
 fn malformed_persisted_token_is_rejected_without_leaking_it() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("auth")).unwrap();

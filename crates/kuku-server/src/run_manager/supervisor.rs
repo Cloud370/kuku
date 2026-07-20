@@ -333,6 +333,30 @@ impl RunSupervisor {
         }
     }
 
+    pub async fn shutdown(&self) {
+        let run_ids = self
+            .drivers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for run_id in run_ids {
+            self.stop(&run_id).await;
+        }
+        for _ in 0..100 {
+            let empty = self
+                .drivers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty();
+            if empty {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     pub async fn resolve(&self, run_id: &RunId, interaction_id: InteractionId, choice_id: String) {
         let command = self
             .drivers
@@ -791,6 +815,10 @@ impl TaskRuntime {
             self.recover_task(&task_id).await?;
         }
         Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        self.supervisor.shutdown().await;
     }
 
     #[cfg(test)]

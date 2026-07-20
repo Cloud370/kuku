@@ -1,20 +1,18 @@
 pub mod api;
 pub mod config_watcher;
-pub mod error_mapping;
 pub mod platform;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;
 #[cfg(feature = "test-scenarios")]
 pub mod testing;
-pub mod wire;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -31,6 +29,155 @@ pub struct AppState {
     pub task_runtime: Arc<run_manager::TaskRuntime>,
     pub kuku_home: PathBuf,
     _instance_lock: platform::ServerInstanceLock,
+}
+
+pub struct PreparedServer {
+    pub app: Router,
+    pub listener: tokio::net::TcpListener,
+    pub state: Arc<AppState>,
+    watcher: Option<config_watcher::ConfigWatcherHandle>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StartupError {
+    #[error("KUKU_HOME already has a running web server")]
+    AlreadyRunning,
+    #[error("invalid server argument: {0}")]
+    InvalidArgument(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("platform startup failed: {0:?}")]
+    Platform(crate::api::ApiError),
+}
+
+impl PreparedServer {
+    pub fn print_connection_info(&self, show_qr: bool) {
+        let token = self.state.platform.auth.expose_for_terminal();
+        let origin = self.state.platform.connection.local_url.clone();
+        let url = format!("{origin}/#credential={token}");
+        println!("kuku server: {origin}");
+        println!("kuku credential URL: {url}");
+        if show_qr {
+            if let Ok(code) = qrcode::QrCode::new(url.as_bytes()) {
+                println!(
+                    "{}",
+                    code.render::<qrcode::render::unicode::Dense1x2>().build()
+                );
+            }
+        }
+    }
+
+    pub async fn serve(self) -> Result<(), StartupError> {
+        let app = self.app.clone();
+        self.serve_with(app).await
+    }
+
+    pub async fn serve_with(mut self, app: Router) -> Result<(), StartupError> {
+        let listener = self.listener;
+        let state = Arc::clone(&self.state);
+        let watcher = self.watcher.take();
+        let result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+        state.task_runtime.shutdown().await;
+        if let Some(watcher) = watcher {
+            watcher.shutdown().await;
+        }
+        result.map_err(StartupError::Io)
+    }
+}
+
+pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedServer, StartupError> {
+    let listen_addr: SocketAddr = args.listen.parse().map_err(|error| {
+        StartupError::InvalidArgument(format!("invalid listen address: {error}"))
+    })?;
+    if !(1..=64).contains(&args.max_concurrent_runs) {
+        return Err(StartupError::InvalidArgument(
+            "max concurrent runs must be between 1 and 64".to_owned(),
+        ));
+    }
+    let home = std::env::var_os("KUKU_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home::home_dir().map(|dir| dir.join(".kuku")))
+        .unwrap_or_else(|| PathBuf::from(".kuku"));
+    let config_path = args.config.unwrap_or_else(|| home.join("config.toml"));
+    let token = args
+        .auth_token_file
+        .as_deref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let mut registration_roots = args
+        .registration_root
+        .into_iter()
+        .map(|value| {
+            let (label, path) = value.split_once('=').ok_or_else(|| {
+                StartupError::InvalidArgument("registration root must use LABEL=PATH".to_owned())
+            })?;
+            if label.trim().is_empty() || path.trim().is_empty() {
+                return Err(StartupError::InvalidArgument(
+                    "registration root label and path are required".to_owned(),
+                ));
+            }
+            Ok(platform::RegistrationRootSpec {
+                label: label.to_owned(),
+                path: PathBuf::from(path),
+            })
+        })
+        .collect::<Result<Vec<_>, StartupError>>()?;
+    if registration_roots.is_empty() {
+        registration_roots.push(platform::RegistrationRootSpec {
+            label: "Current directory".to_owned(),
+            path: std::env::current_dir()?,
+        });
+    }
+    let preferred_origin = local_origin(listen_addr);
+    let mut allowed_origins = args.allow_origin;
+    if !allowed_origins
+        .iter()
+        .any(|origin| origin == &preferred_origin)
+    {
+        allowed_origins.push(preferred_origin.clone());
+    }
+    let state = AppState::open_with_config_path_and_origins(
+        &home,
+        &config_path,
+        token,
+        registration_roots,
+        preferred_origin,
+        allowed_origins,
+        args.max_concurrent_runs,
+    )
+    .await
+    .map_err(|error| {
+        if error.message == "another web server is already running" {
+            StartupError::AlreadyRunning
+        } else {
+            StartupError::Platform(error)
+        }
+    })?;
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
+    let watcher =
+        config_watcher::ConfigWatcherHandle::start(config_path, Arc::clone(&state.platform.config));
+    let app = build_app(Arc::clone(&state));
+    Ok(PreparedServer {
+        app,
+        listener,
+        state,
+        watcher: Some(watcher),
+    })
+}
+
+fn local_origin(address: SocketAddr) -> String {
+    if address.ip().is_unspecified() {
+        format!("http://127.0.0.1:{}", address.port())
+    } else {
+        format!("http://{address}")
+    }
 }
 
 async fn auth_middleware(
@@ -66,19 +213,38 @@ async fn auth_middleware(
         return secure_response(&state, response);
     }
     request.extensions_mut().insert(context);
+    if !state.platform.bootstrap.status().await.complete
+        && initialized_route(request.method(), request.uri().path())
+    {
+        let error = crate::api::ApiError::new(
+            crate::api::ApiErrorCode::InitIncomplete,
+            "server initialization is incomplete",
+            "platform-init-gate",
+        );
+        return secure_response(&state, (StatusCode::CONFLICT, Json(error)).into_response());
+    }
     secure_response(&state, next.run(request).await)
 }
 
+fn initialized_route(_method: &Method, path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/settings" | "/api/v1/workspaces" | "/api/v1/catalog"
+    ) || path.starts_with("/api/v1/workspaces/")
+        || path == "/api/v1/tasks"
+        || path.starts_with("/api/v1/tasks/")
+}
+
 pub fn build_app(state: Arc<AppState>) -> Router {
+    let health_state = state.clone();
+    let api = platform::router(state.platform.clone())
+        .merge(routes::tasks::router(state.task_runtime.clone()));
     Router::new()
-        .route("/health", axum::routing::get(routes::health::health))
-        .nest(
-            "/api/v1",
-            platform::router(state.platform.clone()).merge(routes::tasks::router(
-                state.task_runtime.clone(),
-                state.platform.bootstrap.clone(),
-            )),
+        .route(
+            "/health",
+            axum::routing::get(move || routes::health::health(health_state.clone())),
         )
+        .nest("/api/v1", api)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -163,6 +329,48 @@ impl AppState {
         preferred_origin: String,
         max_concurrent_runs: usize,
     ) -> Result<Arc<Self>, crate::api::ApiError> {
+        Self::open_with_config_path(
+            home,
+            &home.join("config.toml"),
+            bearer_token,
+            registration_roots,
+            preferred_origin,
+            max_concurrent_runs,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_config_path(
+        home: &std::path::Path,
+        config_path: &std::path::Path,
+        bearer_token: Option<String>,
+        registration_roots: Vec<platform::RegistrationRootSpec>,
+        preferred_origin: String,
+        max_concurrent_runs: usize,
+    ) -> Result<Arc<Self>, crate::api::ApiError> {
+        Self::open_with_config_path_and_origins(
+            home,
+            config_path,
+            bearer_token,
+            registration_roots,
+            preferred_origin.clone(),
+            vec![preferred_origin],
+            max_concurrent_runs,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_config_path_and_origins(
+        home: &std::path::Path,
+        config_path: &std::path::Path,
+        bearer_token: Option<String>,
+        registration_roots: Vec<platform::RegistrationRootSpec>,
+        preferred_origin: String,
+        allowed_origins: Vec<String>,
+        max_concurrent_runs: usize,
+    ) -> Result<Arc<Self>, crate::api::ApiError> {
         let instance_lock = platform::ServerInstanceLock::acquire(home).map_err(|error| {
             crate::api::ApiError::new(
                 crate::api::ApiErrorCode::Internal,
@@ -172,7 +380,7 @@ impl AppState {
         })?;
         let revisions = platform::ServerRevisionCoordinator::open(home);
         let config =
-            platform::ConfigService::open(home.join("config.toml"), Arc::clone(&revisions)).await?;
+            platform::ConfigService::open(config_path.to_owned(), Arc::clone(&revisions)).await?;
         let repository = run_manager::TaskRepository::open(home)
             .map_err(|error| error.into_api_error("task-repository"))?;
         let roots =
@@ -221,7 +429,7 @@ impl AppState {
             settings,
             workspaces: Arc::clone(&workspaces),
             auth,
-            origin_policy: Arc::new(platform::OriginPolicy::new(vec![preferred_origin.clone()])?),
+            origin_policy: Arc::new(platform::OriginPolicy::new(allowed_origins)?),
             connection: crate::api::ConnectionInfo {
                 server_id: identity.server_id,
                 display_name: identity.display_name,

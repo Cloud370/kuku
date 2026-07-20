@@ -32,6 +32,7 @@ pub struct BearerTokenStore {
 
 impl BearerTokenStore {
     pub fn from_token(token: String) -> Result<Arc<Self>, ApiError> {
+        let token = token.trim_end_matches(['\r', '\n']).to_owned();
         if !valid_token(&token) {
             return Err(internal_error("bearer credential has invalid format"));
         }

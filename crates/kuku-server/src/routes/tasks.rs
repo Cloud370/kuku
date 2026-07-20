@@ -4,7 +4,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
-use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,7 +14,6 @@ use crate::api::{
     ApiError, Cursor, InteractionId, InteractionResponseRequest, ListTasksQuery, PageCursor,
     StopRunRequest, SubmitRunRequest, TaskId, TimelineQuery, WorkspaceId,
 };
-use crate::platform::BootstrapService;
 use crate::run_manager::{
     DomainError, ResolveInteractionCommand, StopRunCommand, SubmitRunCommand, TaskRuntime,
 };
@@ -25,7 +23,10 @@ struct TaskHttpState {
     runtime: Arc<TaskRuntime>,
 }
 
-pub fn router(runtime: Arc<TaskRuntime>, bootstrap: Arc<BootstrapService>) -> Router {
+pub fn router<S>(runtime: Arc<TaskRuntime>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     let state = Arc::new(TaskHttpState { runtime });
     Router::new()
         .route("/tasks", get(list_tasks).post(create_task))
@@ -38,24 +39,7 @@ pub fn router(runtime: Arc<TaskRuntime>, bootstrap: Arc<BootstrapService>) -> Ro
             post(resolve_interaction),
         )
         .route("/tasks/{task_id}/stream", get(stream))
-        .layer(middleware::from_fn_with_state(bootstrap, init_gate))
         .with_state(state)
-}
-
-async fn init_gate(
-    State(bootstrap): State<Arc<BootstrapService>>,
-    request: axum::http::Request<Body>,
-    next: axum::middleware::Next,
-) -> Response {
-    if !bootstrap.status().await.complete {
-        let error = ApiError::new(
-            crate::api::ApiErrorCode::InitIncomplete,
-            "server initialization is incomplete",
-            "task-init-gate",
-        );
-        return (StatusCode::CONFLICT, Json(error)).into_response();
-    }
-    next.run(request).await
 }
 
 #[derive(Deserialize)]
