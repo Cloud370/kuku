@@ -57,30 +57,31 @@ impl SettingsService {
             return Err(internal_error("settings journal has an unsupported format"));
         }
         verify_journal(&journal)?;
-        if let Some(config) = journal.config_toml {
-            write_private_atomic(&home.join(CONFIG_FILE), config.as_bytes()).map_err(io_error)?;
-            verify_target(
+        if let Some(config) = journal.config_toml.as_deref() {
+            persist_and_verify(
                 &home.join(CONFIG_FILE),
+                config.as_bytes(),
                 journal
                     .config_digest
                     .as_deref()
                     .expect("verified journal config digest is present"),
             )?;
         }
-        if let Some(workspaces) = journal.workspaces_json {
-            write_private_atomic(&home.join(WORKSPACES_FILE), workspaces.as_bytes())
-                .map_err(io_error)?;
-            verify_target(
+        if let Some(workspaces) = journal.workspaces_json.as_deref() {
+            persist_and_verify(
                 &home.join(WORKSPACES_FILE),
+                workspaces.as_bytes(),
                 journal
                     .workspaces_digest
                     .as_deref()
                     .expect("verified journal workspace digest is present"),
             )?;
         }
-        write_private_atomic(&home.join(SETTINGS_FILE), journal.settings_json.as_bytes())
-            .map_err(io_error)?;
-        verify_target(&home.join(SETTINGS_FILE), &journal.settings_digest)?;
+        persist_and_verify(
+            &home.join(SETTINGS_FILE),
+            journal.settings_json.as_bytes(),
+            &journal.settings_digest,
+        )?;
         remove_journal(&journal_path)?;
         Ok(())
     }
@@ -220,13 +221,31 @@ impl SettingsService {
         let journal_path = self.home.join(JOURNAL_FILE);
         write_private_atomic(&journal_path, &journal_bytes).map_err(io_error)?;
 
-        if let Some(prepared) = &prepared_config {
-            self.config.persist_prepared(prepared)?;
+        if let Some(config) = journal.config_toml.as_deref() {
+            persist_and_verify(
+                &self.home.join(CONFIG_FILE),
+                config.as_bytes(),
+                journal
+                    .config_digest
+                    .as_deref()
+                    .expect("prepared config digest is present"),
+            )?;
         }
-        if let Some(prepared) = &prepared_workspace {
-            self.workspaces.persist_prepared_default(prepared)?;
+        if let Some(workspaces) = journal.workspaces_json.as_deref() {
+            persist_and_verify(
+                &self.home.join(WORKSPACES_FILE),
+                workspaces.as_bytes(),
+                journal
+                    .workspaces_digest
+                    .as_deref()
+                    .expect("prepared workspace digest is present"),
+            )?;
         }
-        write_private_atomic(&self.home.join(SETTINGS_FILE), &settings_bytes).map_err(io_error)?;
+        persist_and_verify(
+            &self.home.join(SETTINGS_FILE),
+            &settings_bytes,
+            &journal.settings_digest,
+        )?;
         remove_journal(&journal_path)?;
 
         let mut digests = Vec::new();
@@ -307,6 +326,11 @@ fn verify_target(path: &Path, digest: &str) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+fn persist_and_verify(path: &Path, bytes: &[u8], digest: &str) -> Result<(), ApiError> {
+    write_private_atomic(path, bytes).map_err(io_error)?;
+    verify_target(path, digest)
 }
 
 fn digest_hex(bytes: &[u8]) -> String {

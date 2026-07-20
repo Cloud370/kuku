@@ -1,4 +1,14 @@
-use super::SettingsService;
+use super::{persist_and_verify, SettingsService};
+
+#[test]
+fn persisted_target_must_match_its_intended_digest() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("target.json");
+    let intended = b"intended";
+    persist_and_verify(&path, intended, &digest_hex(intended)).unwrap();
+    assert_eq!(intended, std::fs::read(&path).unwrap().as_slice());
+    assert!(persist_and_verify(&path, b"tampered", &digest_hex(intended)).is_err());
+}
 
 #[test]
 fn recovery_rejects_journal_bytes_that_do_not_match_intended_digest() {
