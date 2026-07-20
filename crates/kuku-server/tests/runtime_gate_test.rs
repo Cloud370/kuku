@@ -12,6 +12,7 @@ use kuku::event::{
 };
 use kuku_server::api::{
     ApiError, RegisterWorkspaceRequest, TaskChange, TaskDelta, TaskProjection, TaskStreamEvent,
+    TimelineItemProjection,
 };
 use kuku_server::platform::{
     RegistrationRootRegistry, RegistrationRootSpec, ServerRevisionCoordinator, WorkspaceRegistry,
@@ -274,6 +275,7 @@ async fn a_ready_lifecycle_reconnect_revision_race_and_restart_recovery() {
     let mut reduced = reduce_all(&repository, &task_id);
     reduced.task.updated_at = replayed.task.updated_at.clone();
     assert_eq!(reduced, replayed);
+    assert_record_deltas_match_replay(&repository, &task_id);
 
     let run_c = service
         .submit(submit(
@@ -563,6 +565,86 @@ fn reduce_all(repository: &TaskRepository, task_id: &TaskId) -> TaskProjection {
         projection::reduce_record(&mut aggregate, cursor(stored.id), &record).unwrap();
     }
     aggregate.projection().unwrap()
+}
+
+fn assert_record_deltas_match_replay(repository: &TaskRepository, task_id: &TaskId) {
+    let records = repository.replay(task_id).unwrap();
+    let mut aggregate = TaskAggregate::default();
+    let mut wire_projection = None;
+    let mut full_timeline = Vec::new();
+
+    for stored in records {
+        let kuku::event::EventPayload::TaskLedger(record) = stored.payload else {
+            continue;
+        };
+        let delta = projection::reduce_record(&mut aggregate, cursor(stored.id), &record).unwrap();
+        let expected = aggregate.projection().unwrap();
+        let Some(mut prior) = wire_projection.take() else {
+            full_timeline = aggregate.timeline_items().to_vec();
+            wire_projection = Some(expected);
+            continue;
+        };
+        let TaskDelta::ChangesApplied {
+            changes,
+            timeline_window,
+        } = delta
+        else {
+            panic!("each durable record must emit an atomic changes frame");
+        };
+        apply_changes(&mut prior, &changes);
+        apply_full_timeline(&mut full_timeline, &changes);
+        if let Some(window) = timeline_window {
+            assert_eq!(
+                window.evicted_items,
+                full_timeline[..window.evicted_items.len()]
+            );
+            full_timeline.drain(..window.evicted_items.len());
+            prior.timeline_next_cursor = window.next_cursor;
+        }
+        assert_eq!(full_timeline, aggregate.timeline_items());
+        prior.cursor = cursor(stored.id);
+        prior.task_revision = expected.task_revision;
+        prior.timeline = expected.timeline.clone();
+        prior.timeline_next_cursor = expected.timeline_next_cursor.clone();
+        prior.task.updated_at = expected.task.updated_at.clone();
+        assert_eq!(prior, expected);
+        wire_projection = Some(prior);
+    }
+}
+
+fn apply_full_timeline(full: &mut Vec<TimelineItemProjection>, changes: &[TaskChange]) {
+    for change in changes {
+        match change {
+            TaskChange::MessageAppended { item } => full.push(item.clone()),
+            TaskChange::ActivityUpserted { activity } => {
+                full.push(TimelineItemProjection::Activity(activity.clone()))
+            }
+            TaskChange::InteractionUpserted { interaction } => {
+                full.push(TimelineItemProjection::Interaction(interaction.clone()))
+            }
+            TaskChange::MessagePatched {
+                message_id,
+                append_text,
+                finalized,
+                request_ids,
+            } => {
+                let Some(TimelineItemProjection::Message(message)) = full.iter_mut().find(|item| {
+                    matches!(item, TimelineItemProjection::Message(message) if message.message_id == *message_id)
+                }) else {
+                    panic!("patched message must exist in the full replay timeline");
+                };
+                message.text.push_str(append_text);
+                message.finalized = *finalized;
+                if let Some(request_ids) = request_ids {
+                    message.request_ids = request_ids.clone();
+                }
+            }
+            TaskChange::RunStateChanged { .. }
+            | TaskChange::SkillsChanged { .. }
+            | TaskChange::ContextSummaryChanged { .. }
+            | TaskChange::ReviewSubmissionsChanged { .. } => {}
+        }
+    }
 }
 
 fn cursor(value: u64) -> kuku::event::Cursor {
