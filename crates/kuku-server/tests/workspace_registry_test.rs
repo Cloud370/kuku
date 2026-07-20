@@ -282,6 +282,71 @@ async fn query_capability_never_uses_a_replacement_workspace_root() {
 }
 
 #[tokio::test]
+async fn capability_opens_and_enumerates_the_registered_workspace_root() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let root = allowed.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("root-file.txt"), "root").unwrap();
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    let opened = capability.open_root().unwrap();
+    let mut file = opened.open("root-file.txt").unwrap();
+    let mut contents = String::new();
+    std::io::Read::read_to_string(&mut file, &mut contents).unwrap();
+    assert_eq!("root", contents);
+    let names = capability
+        .read_root()
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(vec![std::ffi::OsString::from("root-file.txt")], names);
+}
+
+#[test]
+fn process_limits_allow_bounded_review_streams_up_to_one_gibibyte() {
+    assert!(ProcessLimits::new(std::time::Duration::from_secs(5), 1024 * 1024 * 1024).is_ok());
+    assert!(
+        ProcessLimits::new(std::time::Duration::from_secs(5), 1024 * 1024 * 1024 + 1,).is_err()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn capability_reads_symlink_targets_without_following_them() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let root = allowed.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("target.txt"), "target").unwrap();
+    std::os::unix::fs::symlink("target.txt", root.join("link.txt")).unwrap();
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+    let relative = capability.resolve("link.txt").unwrap();
+
+    assert_eq!(
+        b"target.txt",
+        capability.read_link_target(&relative).unwrap().as_slice()
+    );
+    assert!(capability.open_file(&relative).is_err());
+}
+
+#[tokio::test]
 async fn query_capability_prunes_large_generated_directories_before_budgeting_entries() {
     let home = tempfile::tempdir().unwrap();
     let allowed = tempfile::tempdir().unwrap();

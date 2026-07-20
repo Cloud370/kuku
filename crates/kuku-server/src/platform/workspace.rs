@@ -189,6 +189,20 @@ impl WorkspaceCapability {
         &self.workspace_id
     }
 
+    /// Clones the identity-bound workspace root without exposing its host path.
+    pub fn open_root(&self) -> Result<Dir, ApiError> {
+        self.root
+            .try_clone()
+            .map_err(|_| unavailable("workspace root is unavailable"))
+    }
+
+    /// Enumerates the identity-bound workspace root without following a client path.
+    pub fn read_root(&self) -> Result<ReadDir, ApiError> {
+        self.root
+            .read_dir(".")
+            .map_err(|_| unavailable("workspace directory entries are unavailable"))
+    }
+
     /// Validates a portable workspace-relative POSIX path.
     pub fn resolve(&self, relative: &str) -> Result<NormalizedRelativePath, ApiError> {
         NormalizedRelativePath::parse(relative)
@@ -219,6 +233,34 @@ impl WorkspaceCapability {
             return Err(unavailable("workspace file identity changed"));
         }
         Ok(file)
+    }
+
+    /// Reads exact symlink-target bytes without following the link.
+    pub fn read_link_target(&self, path: &NormalizedRelativePath) -> Result<Vec<u8>, ApiError> {
+        let components: Vec<_> = path.as_path().components().collect();
+        let (last, parents) = components
+            .split_last()
+            .ok_or_else(|| invalid_request("workspace path must not be empty"))?;
+        let parent = open_directory_components(&self.root, parents)?;
+        let std::path::Component::Normal(segment) = last else {
+            return Err(invalid_request("workspace path is not normalized"));
+        };
+        let before = parent
+            .symlink_metadata(segment)
+            .map_err(|_| unavailable("workspace path is unavailable"))?;
+        if !before.file_type().is_symlink() {
+            return Err(unavailable("workspace path is not a symbolic link"));
+        }
+        let target = parent
+            .read_link(segment)
+            .map_err(|_| unavailable("workspace symbolic link is unavailable"))?;
+        let after = parent
+            .symlink_metadata(segment)
+            .map_err(|_| unavailable("workspace path is unavailable"))?;
+        if FileIdentity::from_metadata(&before)? != FileIdentity::from_metadata(&after)? {
+            return Err(unavailable("workspace symbolic link identity changed"));
+        }
+        Ok(encode_link_target(&target))
     }
 
     /// Reads a directory beneath the capability without following symlinks.
@@ -290,6 +332,24 @@ impl WorkspaceCapability {
         }
         Some(value.to_owned())
     }
+}
+
+#[cfg(unix)]
+fn encode_link_target(target: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    target.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn encode_link_target(target: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    target
+        .as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 /// A validated path relative to a workspace capability.

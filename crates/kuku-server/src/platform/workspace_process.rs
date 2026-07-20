@@ -15,7 +15,7 @@ use crate::api::{ApiError, ApiErrorCode};
 
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const MAX_PROCESS_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROCESS_OUTPUT_BYTES: usize = 1024 * 1024 * 1024;
 
 /// A shell-free command executed at a workspace root.
 #[derive(Debug, Clone, PartialEq, Eq)]
