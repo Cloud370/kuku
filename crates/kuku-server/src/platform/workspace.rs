@@ -835,8 +835,7 @@ fn open_directory_components(
                 "workspace path must name a real directory without symlinks",
             ));
         }
-        let opened = current
-            .open_dir(segment)
+        let opened = open_directory_no_follow(&current, segment)
             .map_err(|_| unavailable("workspace directory is unavailable"))?;
         let opened_metadata = opened
             .dir_metadata()
@@ -858,6 +857,18 @@ fn open_file_no_follow(parent: &Dir, segment: &std::ffi::OsStr) -> std::io::Resu
     #[cfg(windows)]
     options.custom_flags(0x0020_0000);
     parent.open_with(segment, &options)
+}
+
+fn open_directory_no_follow(parent: &Dir, segment: &std::ffi::OsStr) -> std::io::Result<Dir> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options
+        .custom_flags((rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW).bits() as i32);
+    #[cfg(windows)]
+    options.custom_flags(0x0220_0000);
+    let file = parent.open_with(segment, &options)?;
+    Ok(Dir::from_std_file(file.into_std()))
 }
 
 fn generate_root_id() -> Result<RegistrationRootId, ApiError> {

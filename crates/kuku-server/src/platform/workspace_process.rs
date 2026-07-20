@@ -315,7 +315,7 @@ fn run_process(
     let mut child = command
         .spawn()
         .map_err(|_| unavailable("workspace process cannot be started"))?;
-    let process_tree = ProcessTree::attach(&child)?;
+    let process_tree = ProcessTree::attach(&mut child)?;
     let stdout = child
         .stdout
         .take()
@@ -490,7 +490,7 @@ struct ProcessTree;
 
 #[cfg(unix)]
 impl ProcessTree {
-    fn attach(_child: &Child) -> Result<Self, ApiError> {
+    fn attach(_child: &mut Child) -> Result<Self, ApiError> {
         Ok(Self)
     }
 
@@ -507,7 +507,7 @@ struct ProcessTree(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl ProcessTree {
-    fn attach(child: &Child) -> Result<Self, ApiError> {
+    fn attach(child: &mut Child) -> Result<Self, ApiError> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -519,6 +519,7 @@ impl ProcessTree {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if job.is_null() {
+                reap_failed_attach(child);
                 return Err(unavailable("workspace process job cannot be created"));
             }
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -532,6 +533,7 @@ impl ProcessTree {
                 || AssignProcessToJobObject(job, child.as_raw_handle()) == 0
             {
                 windows_sys::Win32::Foundation::CloseHandle(job);
+                reap_failed_attach(child);
                 return Err(unavailable("workspace process job cannot be configured"));
             }
             Ok(Self(job))
@@ -562,13 +564,19 @@ struct ProcessTree;
 
 #[cfg(not(any(unix, windows)))]
 impl ProcessTree {
-    fn attach(_child: &Child) -> Result<Self, ApiError> {
+    fn attach(_child: &mut Child) -> Result<Self, ApiError> {
         Ok(Self)
     }
 
     fn terminate(&self, child: &mut Child) {
         let _ = child.kill();
     }
+}
+
+#[cfg(windows)]
+fn reap_failed_attach(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(unix)]
