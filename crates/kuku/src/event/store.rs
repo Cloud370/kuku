@@ -82,6 +82,14 @@ impl EventStore {
         Ok(event)
     }
 
+    /// Append one event and flush it durably before returning.
+    pub fn append_synced(&mut self, payload: EventPayload) -> Result<StoredEvent> {
+        let event = self.append(payload)?;
+        let file = OpenOptions::new().read(true).open(&self.path)?;
+        file.sync_data()?;
+        Ok(event)
+    }
+
     /// Read all events from an events.jsonl file.
     pub fn replay(path: impl AsRef<Path>) -> Result<Vec<StoredEvent>> {
         let path = path.as_ref();

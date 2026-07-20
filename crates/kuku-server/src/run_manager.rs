@@ -6,11 +6,20 @@ use std::time::Duration;
 use tokio::sync::{broadcast, oneshot, Mutex as TokioMutex, Semaphore};
 
 pub mod domain;
+pub mod idempotency;
+pub mod projection;
+pub mod repository;
+pub mod store;
 
 pub use domain::{DomainError, TaskAggregate};
+pub use repository::TaskRepository;
+pub use store::{CreateTaskCommand, TaskCommandService};
 
 #[cfg(test)]
 mod domain_tests;
+
+#[cfg(test)]
+mod store_tests;
 
 pub struct RunHandle {
     cancel_token: Arc<tokio::sync::Notify>,
