@@ -165,6 +165,7 @@ impl Run {
                                 }
                             };
                             let result = super::tool_exec::write_tool_result(
+                                &self.execution_scope,
                                 &slot,
                                 &status,
                                 &summary,
@@ -209,6 +210,7 @@ impl Run {
                 RunState::Cancelled { events_path, turn } => {
                     append_turn_cancelled(
                         &events_path,
+                        &self.execution_scope,
                         &crate::conversation::address::ConversationAddress::MAIN,
                         turn,
                         "user_cancelled",

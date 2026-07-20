@@ -66,7 +66,7 @@ impl Run {
         match poll {
             Err(error) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
-                super::stream::record_streaming_provider_error_facts(&streaming, &error);
+                super::stream::record_streaming_provider_error_facts(&streaming, &error)?;
                 streaming.pending.flush_runtime_logs();
                 Err(error)
             }
@@ -182,6 +182,7 @@ impl Run {
                     if !has_permission_decision(&prior_events, &queued.tool_call.id) {
                         append_permission_decision(
                             &pending.events_path,
+                            pending.execution_scope(),
                             pending.turn,
                             &queued.tool_call.id,
                             choice,
@@ -198,6 +199,7 @@ impl Run {
                 let QueuedToolCall {
                     tool_call,
                     display_summary,
+                    ..
                 } = pending.queued_tool_calls.pop_front().unwrap();
                 let hook_result = run_tool_pre_hooks(
                     &mut *pending,
@@ -211,6 +213,7 @@ impl Run {
                     pending.record_tool_call(&tool_call.name);
                     persist_blocked_tool_result(
                         &pending.events_path,
+                        pending.execution_scope(),
                         pending.turn,
                         &tool_call.id,
                         &block.reason,
@@ -255,6 +258,7 @@ impl Run {
                     pending.queued_tool_calls.pop_front().unwrap();
                 append_permission_request(
                     &pending.events_path,
+                    pending.execution_scope(),
                     &pending.conversation,
                     pending.turn,
                     &PermissionRequest {
@@ -272,6 +276,7 @@ impl Run {
                 )?;
                 append_permission_decision(
                     &pending.events_path,
+                    pending.execution_scope(),
                     pending.turn,
                     &tool_call.id,
                     PermissionChoice::Deny,
@@ -287,6 +292,7 @@ impl Run {
                 let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
                 persist_blocked_tool_result(
                     &pending.events_path,
+                    pending.execution_scope(),
                     pending.turn,
                     &tool_call.id,
                     "permission denied",

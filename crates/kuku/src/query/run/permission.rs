@@ -114,6 +114,7 @@ impl Run {
         let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
+            execution: waiting.pending.execution_scope().clone(),
             turn: waiting.pending.turn,
             ts: now_timestamp()?,
             conversation: None,
@@ -152,6 +153,7 @@ impl Run {
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
         let QueuedToolCall {
+            request,
             tool_call,
             display_summary: queued_summary,
         } = queued;
@@ -175,6 +177,7 @@ impl Run {
         }
         append_permission_decision(
             &pending.events_path,
+            pending.execution_scope(),
             pending.turn,
             &tool_call.id,
             choice,
@@ -203,6 +206,7 @@ impl Run {
             && self.has_active_ordered_simple_slot()
         {
             pending.queued_tool_calls.push_front(QueuedToolCall {
+                request,
                 tool_call,
                 display_summary: queued_summary,
             });
@@ -221,6 +225,7 @@ impl Run {
             pending.record_tool_call(&tool_call.name);
             persist_blocked_tool_result(
                 &pending.events_path,
+                pending.execution_scope(),
                 pending.turn,
                 &tool_call.id,
                 &block.reason,

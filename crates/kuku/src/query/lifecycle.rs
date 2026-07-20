@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::context::revert::filter_rolled_back_events;
 use crate::conversation::address::ConversationAddress;
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, RequestScope, StoredEvent};
 use crate::provider::types::ProviderToolCall;
 
 use super::types::PermissionRequest;
@@ -15,6 +15,7 @@ pub(super) struct LifecycleState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingPermissionLifecycle {
+    pub(super) request_scope: RequestScope,
     pub(super) tool_call: ProviderToolCall,
     pub(super) request: PermissionRequest,
     pub(super) turn: u64,
@@ -22,6 +23,7 @@ pub(super) struct PendingPermissionLifecycle {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenToolLifecycle {
+    pub(super) request: RequestScope,
     pub(super) conversation: ConversationAddress,
     pub(super) tool_call: ProviderToolCall,
     pub(super) kind: OpenToolKind,
@@ -37,6 +39,7 @@ pub(super) enum OpenToolKind {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ToolLifecycle {
+    request: RequestScope,
     conversation: Option<String>,
     tool_call: ProviderToolCall,
     turn: u64,
@@ -58,6 +61,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
     for event in filter_rolled_back_events(events) {
         match &event.payload {
             EventPayload::ToolCall {
+                request,
                 turn,
                 conversation,
                 tool_call_id,
@@ -71,6 +75,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                     tool_call_id: tool_call_id.clone(),
                 };
                 tools.entry(key).or_insert_with(|| ToolLifecycle {
+                    request: request.clone(),
                     conversation: conversation.clone(),
                     tool_call: ProviderToolCall {
                         id: tool_call_id.clone(),
@@ -185,6 +190,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
 
         if lifecycle.permission_denied {
             open_tools.push(OpenToolLifecycle {
+                request: lifecycle.request.clone(),
                 conversation: lifecycle
                     .conversation
                     .as_deref()
@@ -198,6 +204,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             });
         } else if lifecycle.permission_allowed {
             open_tools.push(OpenToolLifecycle {
+                request: lifecycle.request.clone(),
                 conversation: lifecycle
                     .conversation
                     .as_deref()
@@ -211,12 +218,14 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             });
         } else if let Some(request) = lifecycle.permission_request {
             pending_permissions.push(PendingPermissionLifecycle {
+                request_scope: lifecycle.request.clone(),
                 tool_call: lifecycle.tool_call,
                 request,
                 turn: lifecycle.turn,
             });
         } else {
             open_tools.push(OpenToolLifecycle {
+                request: lifecycle.request.clone(),
                 conversation: lifecycle
                     .conversation
                     .as_deref()
@@ -267,6 +276,7 @@ mod tests {
         event(
             id,
             EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 turn,
                 ts: "ts".to_string(),
                 conversation: "main".to_string(),
@@ -282,7 +292,7 @@ mod tests {
                 ts: "ts".to_string(),
                 conversation: None,
                 tool_call_id: tool_call_id.to_string(),
-                request_id: format!("req_{turn}"),
+                request: crate::event::test_request_scope(format!("req_{turn}")),
                 index,
                 tool: "write".to_string(),
                 args: json!({ "path": tool_call_id }),
@@ -304,7 +314,7 @@ mod tests {
                 ts: "ts".to_string(),
                 conversation: Some(conversation.to_string()),
                 tool_call_id: tool_call_id.to_string(),
-                request_id: format!("req_{conversation}_{turn}"),
+                request: crate::event::test_request_scope(format!("req_{conversation}_{turn}")),
                 index,
                 tool: "write".to_string(),
                 args: json!({ "path": tool_call_id }),
@@ -316,6 +326,7 @@ mod tests {
         event(
             id,
             EventPayload::PermissionRequested {
+                execution: crate::event::test_execution_scope(),
                 turn,
                 ts: "ts".to_string(),
                 tool_call_id: tool_call_id.to_string(),
@@ -332,6 +343,7 @@ mod tests {
         event(
             id,
             EventPayload::PermissionAllow {
+                execution: crate::event::test_execution_scope(),
                 turn,
                 ts: "ts".to_string(),
                 tool_call_id: tool_call_id.to_string(),
@@ -347,6 +359,7 @@ mod tests {
         event(
             id,
             EventPayload::PermissionDeny {
+                execution: crate::event::test_execution_scope(),
                 turn,
                 ts: "ts".to_string(),
                 tool_call_id: tool_call_id.to_string(),
@@ -361,6 +374,7 @@ mod tests {
         event(
             id,
             EventPayload::ToolResult {
+                execution: crate::event::test_execution_scope(),
                 turn,
                 ts: "ts".to_string(),
                 conversation: None,

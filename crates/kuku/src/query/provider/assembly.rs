@@ -170,10 +170,7 @@ pub(super) fn append_handoff_instruction(
     }
 }
 
-pub(super) fn build_current_user_message(
-    prefix: Option<String>,
-    prompt: &str,
-) -> CanonicalMessage {
+pub(super) fn build_current_user_message(prefix: Option<String>, prompt: &str) -> CanonicalMessage {
     let mut blocks = Vec::new();
     if let Some(prefix) = prefix {
         blocks.push(MessageBlock::Text(prefix));
@@ -216,10 +213,7 @@ pub(super) fn replace_current_user_message(
     replace_latest_user_message(history, raw_prompt, replacement)
 }
 
-pub(super) fn append_current_turn_prefix_once(
-    messages: &mut Vec<CanonicalMessage>,
-    prefix: &str,
-) {
+pub(super) fn append_current_turn_prefix_once(messages: &mut Vec<CanonicalMessage>, prefix: &str) {
     if messages.iter().any(|message| {
         message.blocks.iter().any(|block| match block {
             MessageBlock::Text(text) => text.contains(prefix),

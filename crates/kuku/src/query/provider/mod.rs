@@ -5,7 +5,9 @@ use crate::context::{
     SkillRegistryProvenance, ToolRegistryProvenance,
 };
 use crate::error::Result;
-use crate::event::{EventPayload, EventStore};
+use crate::event::{
+    EventPayload, EventStore, RequestCause, RequestId, RequestScope, RequestStarted,
+};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::compute_context_headroom;
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
@@ -129,16 +131,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     ) {
         Ok(assembly) => assembly,
         Err(error) => {
-            let request_id = format!("req_{}", pending.request_num);
-            append_model_error(
-                &pending.events_path,
-                pending.turn,
-                request_id,
-                "prompt_render",
-                &error.to_string(),
-            )?;
             append_turn_interrupted(
                 &pending.events_path,
+                pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
                 "prompt_render_error",
@@ -305,7 +300,15 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         }
     }
 
-    let request_id = format!("req_{}", pending.request_num);
+    let request_id = RequestId::try_new()?;
+    let request_scope = RequestScope {
+        execution: pending
+            .query
+            .execution_scope
+            .clone()
+            .expect("execution scope assigned at start"),
+        request_id: request_id.clone(),
+    };
     let _tier_name = pending
         .query
         .tier
@@ -422,9 +425,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             })?;
         }
         store.append(EventPayload::ContextSources {
+            request: request_scope.clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
-            request_id: request_id.clone(),
             project_instruction_sources: assembly
                 .project_instruction_sources
                 .iter()
@@ -462,7 +465,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         kuku_home: pending.kuku_home.clone(),
         session_id: pending.session_id.clone(),
         turn: pending.turn,
-        request_id: request_id.clone(),
+        request_id: request_id.as_str().to_string(),
     });
 
     let mut lead_events = Vec::new();
@@ -476,7 +479,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         Some(serde_json::json!({
             "provider": provider_name,
             "model": model_name,
-            "request_id": request_id,
+            "request_id": request_id.as_str(),
         })),
     )?;
     lead_events.extend(pending.pending_events.drain(..));
@@ -532,22 +535,24 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 .unwrap_or_default();
             let mut store = EventStore::open(&pending.events_path)?;
             store.append(EventPayload::Handoff {
+                execution: request_scope.execution.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
-                request_id: request_id.clone(),
+                request_id: request_id.as_str().to_string(),
                 summary: user_input,
                 keep_turns: pending.handoff_keep_turns,
             })?;
             store.append(EventPayload::ModelError {
+                request: request_scope.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
-                request_id: request_id.clone(),
                 kind: "context_too_large".to_string(),
                 message: failure.message.clone(),
             })?;
             drop(store);
             append_turn_interrupted(
                 &pending.events_path,
+                pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
                 "context_too_large",
@@ -566,13 +571,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         Err(failure) => {
             append_model_error(
                 &pending.events_path,
+                request_scope.clone(),
                 pending.turn,
-                request_id,
                 failure.kind.as_event_kind(),
                 &failure.message,
             )?;
             append_turn_interrupted(
                 &pending.events_path,
+                pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
                 failure.kind.as_event_kind(),
@@ -636,7 +642,7 @@ pub(super) fn emit_runtime_log(
     record.kind = kind.into();
     record.message = message.into();
     record.session_id = Some(pending.session_id.clone());
-    record.run_id = Some(pending.session_id.clone());
+    record.run_id = Some(pending.execution_scope().run_id.to_string());
     record.workspace = Some(pending.workspace.display().to_string());
     record.turn = Some(pending.turn);
     record.data = data;
@@ -656,15 +662,9 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             .as_ref()
             .map(|r| r.config.model.clone())
             .unwrap_or_else(|| "unknown".to_string());
-        append_model_error(
-            &pending.events_path,
-            pending.turn,
-            format!("req_{}", pending.request_num),
-            "loop_limit",
-            "tool loop exceeded maximum provider requests",
-        )?;
         append_turn_interrupted(
             &pending.events_path,
+            pending.execution_scope(),
             &pending.conversation,
             pending.turn,
             "loop_limit",
@@ -695,19 +695,9 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
     }) {
         Ok(config) => config,
         Err(error) => {
-            let request_id = format!(
-                "req_{}",
-                EventStore::replay(&pending.events_path)?.len() + 1
-            );
-            append_model_error(
-                &pending.events_path,
-                pending.turn,
-                request_id,
-                "missing_config",
-                &error.to_string(),
-            )?;
             append_turn_interrupted(
                 &pending.events_path,
+                pending.execution_scope(),
                 &pending.conversation,
                 pending.turn,
                 "missing_config",

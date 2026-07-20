@@ -33,6 +33,7 @@ fn return_blocked_tool(
     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
     let mut store = EventStore::open(&pending.events_path)?;
     store.append(EventPayload::ToolResult {
+        execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
         conversation: None,
@@ -78,6 +79,7 @@ fn return_tool_result(
 ) -> Result<PendingStep> {
     let mut store = EventStore::open(&pending.events_path)?;
     store.append(EventPayload::ToolResult {
+        execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
         conversation: None,
@@ -193,7 +195,8 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     let StreamingChunkState {
         mut pending,
         conversation,
-        request_id,
+        request,
+        request_started,
         accumulated_text,
         accumulated_thinking,
         stop_reason,
@@ -231,9 +234,9 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     {
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ModelResponse {
+            request: request.clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
-            request_id: request_id.clone(),
             text: accumulated_text.clone(),
             thinking: if accumulated_thinking.is_empty() {
                 None
@@ -250,6 +253,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         })?;
         if !pending.conversation.is_main() && !accumulated_text.is_empty() {
             store.append(EventPayload::MessageAssistant {
+                execution: pending.execution_scope().clone(),
                 ts: now_timestamp()?,
                 conversation: pending.conversation.as_str().to_string(),
                 turn: pending.turn,
@@ -278,6 +282,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                     trimmed
                 };
                 store.append(EventPayload::Handoff {
+                    execution: pending.execution_scope().clone(),
                     turn: pending.turn,
                     ts: now_timestamp()?,
                     request_id: request_id.clone(),
@@ -338,7 +343,12 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
 
         if !has_tool_calls {
             drop(store);
-            append_turn_completed(&pending.events_path, &conversation, pending.turn)?;
+            append_turn_completed(
+                &pending.events_path,
+                pending.execution_scope(),
+                &conversation,
+                pending.turn,
+            )?;
             pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
                 input_tokens: Some(pending.cumulative.input_tokens),
@@ -378,11 +388,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
 
         for tool_call in &tool_calls {
             store.append(EventPayload::ToolCall {
+                request: request.clone(),
                 turn: pending.turn,
                 ts: now_timestamp()?,
                 conversation: Some(pending.conversation.as_str().to_string()),
                 tool_call_id: tool_call.id.clone(),
-                request_id: request_id.clone(),
                 index: tool_call.index,
                 tool: tool_call.name.clone(),
                 args: tool_call.args.clone(),
@@ -393,6 +403,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     for tool_call in tool_calls {
         let display = display_summary(&tool_call.name, &tool_call.args, None);
         pending.queued_tool_calls.push_back(QueuedToolCall {
+            request: request.clone(),
             tool_call,
             display_summary: display,
         });
@@ -423,7 +434,7 @@ fn persist_runtime_model_usage_log(
     record.message = format!("model request {request_id} usage");
     record.session_id = Some(pending.session_id.clone());
     record.workspace = Some(pending.workspace.display().to_string());
-    record.run_id = Some(pending.session_id.clone());
+    record.run_id = Some(pending.execution_scope().run_id.to_string());
     record.request_id = Some(request_id.to_string());
     record.turn = Some(pending.turn);
     record.data = Some(serde_json::json!({
@@ -451,6 +462,7 @@ pub(super) async fn advance_pending(
     if is_cancelled {
         append_turn_cancelled(
             &pending.events_path,
+            pending.execution_scope(),
             &pending.conversation,
             pending.turn,
             "user_cancelled",
@@ -688,6 +700,7 @@ pub(super) async fn advance_pending(
                     };
                     append_permission_request(
                         &pending.events_path,
+                        pending.execution_scope(),
                         &pending.conversation,
                         pending.turn,
                         &request,
@@ -703,6 +716,7 @@ pub(super) async fn advance_pending(
                         let choice = gate_choice(&decision.source);
                         append_permission_decision(
                             &pending.events_path,
+                            pending.execution_scope(),
                             pending.turn,
                             &id,
                             choice,
@@ -776,6 +790,7 @@ pub(super) async fn advance_pending(
                 GateDecisionKind::Deny => {
                     append_permission_request(
                         &pending.events_path,
+                        pending.execution_scope(),
                         &pending.conversation,
                         pending.turn,
                         &PermissionRequest {
@@ -792,6 +807,7 @@ pub(super) async fn advance_pending(
                     )?;
                     append_permission_decision(
                         &pending.events_path,
+                        pending.execution_scope(),
                         pending.turn,
                         &id,
                         PermissionChoice::Deny,

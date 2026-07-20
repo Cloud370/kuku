@@ -64,10 +64,11 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
     };
     events.iter().any(|event| {
         matches!(
-            &event.payload,
-            crate::event::EventPayload::PermissionDeny { tool_call_id: id, .. }
-                if id == tool_call_id
-        )
+                    &event.payload,
+                    crate::event::EventPayload::PermissionDeny {
+        tool_call_id: id, .. }
+                        if id == tool_call_id
+                )
     })
 }
 
@@ -89,6 +90,7 @@ mod tests {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
                 conversation: None,
@@ -126,6 +128,7 @@ mod tests {
         StoredEvent {
             id: 99,
             payload: EventPayload::PermissionDeny {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
                 tool_call_id: tool_call_id.to_string(),

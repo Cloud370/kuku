@@ -7,6 +7,30 @@ use tempfile::TempDir;
 
 use kuku::session::session_events_path;
 
+#[allow(dead_code)]
+pub fn execution_scope() -> kuku::event::ExecutionScope {
+    kuku::event::ExecutionScope {
+        workspace_id: kuku::event::WorkspaceId::parse("wsp_111111111111111111111111").unwrap(),
+        task_id: kuku::event::TaskId::parse("tsk_222222222222222222222222").unwrap(),
+        run_id: kuku::event::RunId::parse("run_333333333333333333333333").unwrap(),
+        turn_id: kuku::event::TurnId::parse("trn_444444444444444444444444").unwrap(),
+        conversation_id: kuku::event::ConversationId::parse("con_555555555555555555555555")
+            .unwrap(),
+        turn_index: 1,
+    }
+}
+
+#[allow(dead_code)]
+pub fn request_scope(seed: impl AsRef<str>) -> kuku::event::RequestScope {
+    use sha2::{Digest, Sha256};
+
+    let digest = format!("{:x}", Sha256::digest(seed.as_ref().as_bytes()));
+    kuku::event::RequestScope {
+        execution: execution_scope(),
+        request_id: kuku::event::RequestId::parse(format!("req_{}", &digest[..24])).unwrap(),
+    }
+}
+
 // ---------- SSE response builders ----------
 
 #[cfg(feature = "test_support")]

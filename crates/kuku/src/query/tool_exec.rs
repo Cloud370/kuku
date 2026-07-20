@@ -30,6 +30,7 @@ fn finalize_persisted_tool_result(
 }
 
 pub(crate) fn write_tool_result(
+    execution: &crate::event::ExecutionScope,
     slot: &ExecSlot,
     status: &str,
     summary: &str,
@@ -41,6 +42,7 @@ pub(crate) fn write_tool_result(
     let mut store = crate::event::EventStore::open(events_path)?;
     let structured = finalize_persisted_tool_result(store.next_id(), result);
     let stored = store.append(crate::event::EventPayload::ToolResult {
+        execution: execution.clone(),
         turn,
         ts: now_timestamp()?,
         conversation: slot
@@ -254,6 +256,7 @@ pub(super) async fn execute_tool_call(
         let result = clamp_inline_skill_tool_result(pending, &tool_call.name, result);
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ToolResult {
+            execution: pending.execution_scope().clone(),
             turn: pending.turn,
             ts: now_timestamp()?,
             conversation: Some(pending.conversation.as_str().to_string()),
@@ -288,6 +291,7 @@ pub(super) async fn execute_tool_call(
     .await;
     let mut store = EventStore::open(&pending.events_path)?;
     let stored = store.append(EventPayload::ToolResult {
+        execution: pending.execution_scope().clone(),
         turn: pending.turn,
         ts: now_timestamp()?,
         conversation: Some(pending.conversation.as_str().to_string()),
@@ -459,7 +463,7 @@ mod tests {
         std::mem::forget(dir);
         let events_path = workspace.join("events.jsonl");
         std::fs::write(&events_path, "").unwrap();
-        let mut query = Query::new("test");
+        let mut query = Query::new("test").execution_scope(crate::event::test_execution_scope());
         if no_skills {
             query = query.no_skills();
         }
@@ -600,6 +604,7 @@ mod tests {
         };
 
         write_tool_result(
+            &crate::event::test_execution_scope(),
             &slot,
             "ok",
             "read README.md",

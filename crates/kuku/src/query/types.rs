@@ -9,7 +9,9 @@ use crate::config::{Config, SecretString};
 use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
-use crate::event::{ExecutionScope, RunId, TaskId, TurnId};
+use crate::event::{
+    ExecutionScope, RequestCause, RequestId, RequestScope, RunId, TaskId, TurnId,
+};
 use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
@@ -359,6 +361,13 @@ impl TurnPrefixFreeze {
 }
 
 impl PendingRun {
+    pub(super) fn execution_scope(&self) -> &ExecutionScope {
+        self.query
+            .execution_scope
+            .as_ref()
+            .expect("execution scope assigned at start")
+    }
+
     pub(super) fn flush_runtime_logs(&mut self) {
         let _ = self.runtime_log_writer.flush();
     }
@@ -399,6 +408,7 @@ pub(super) struct ResolvedRuntime {
 
 #[derive(Debug)]
 pub(super) struct QueuedToolCall {
+    pub(super) request: RequestScope,
     pub(super) tool_call: ProviderToolCall,
     pub(super) display_summary: String,
 }
@@ -431,7 +441,8 @@ pub(super) enum PendingStep {
 pub(super) struct StreamingChunkState {
     pub(super) pending: PendingRun,
     pub(super) conversation: ConversationAddress,
-    pub(super) request_id: String,
+    pub(super) request: RequestScope,
+    pub(super) request_started: std::time::Instant,
     pub(super) stream:
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
@@ -484,7 +495,7 @@ impl RunOutput {
 impl std::fmt::Debug for StreamingChunkState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingChunkState")
-            .field("request_id", &self.request_id)
+            .field("request", &self.request)
             .field("accumulated_text", &self.accumulated_text)
             .field("stop_reason", &self.stop_reason)
             .field("tool_calls", &self.tool_calls)

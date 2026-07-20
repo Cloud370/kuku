@@ -20,6 +20,7 @@ pub(crate) fn stored_read_event(id: u64, structured: serde_json::Value) -> Store
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
             conversation: None,
@@ -49,6 +50,7 @@ pub(crate) fn read_snapshot_event(
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
             conversation: None,

@@ -17,6 +17,7 @@ pub(super) fn has_permission_decision(events: &[StoredEvent], tool_call_id: &str
 
 pub(super) fn persist_blocked_tool_result(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     turn: u64,
     tool_call_id: &str,
     summary: &str,
@@ -24,6 +25,7 @@ pub(super) fn persist_blocked_tool_result(
     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
     let mut store = EventStore::open(events_path)?;
     store.append(EventPayload::ToolResult {
+        execution: execution.clone(),
         turn,
         ts: now_timestamp()?,
         conversation: None,

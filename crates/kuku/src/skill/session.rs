@@ -280,6 +280,7 @@ mod tests {
             event(
                 2,
                 EventPayload::TurnStarted {
+                    execution: crate::event::test_execution_scope(),
                     turn: 2,
                     ts: "t2".to_string(),
                     conversation: "main".to_string(),
@@ -338,7 +339,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_ok".to_string(),
-                    request_id: "req_3".to_string(),
+                    request: crate::event::test_request_scope("req_3".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -347,6 +348,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 3,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -369,7 +371,7 @@ mod tests {
                     ts: "t4".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_blocked".to_string(),
-                    request_id: "req_3".to_string(),
+                    request: crate::event::test_request_scope("req_3".to_string()),
                     index: 1,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "beta" }),
@@ -378,6 +380,7 @@ mod tests {
             event(
                 5,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 3,
                     ts: "t5".to_string(),
                     conversation: Some("main".to_string()),
@@ -421,7 +424,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_4".to_string(),
+                    request: crate::event::test_request_scope("req_4".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -430,6 +433,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 4,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -452,7 +456,7 @@ mod tests {
                     ts: "t4".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
-                    request_id: "req_4".to_string(),
+                    request: crate::event::test_request_scope("req_4".to_string()),
                     index: 1,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "beta" }),
@@ -461,6 +465,7 @@ mod tests {
             event(
                 5,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 4,
                     ts: "t5".to_string(),
                     conversation: Some("main".to_string()),
@@ -504,7 +509,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_4".to_string(),
+                    request: crate::event::test_request_scope("req_4".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -513,6 +518,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 4,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -553,7 +559,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_5".to_string(),
+                    request: crate::event::test_request_scope("req_5".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -562,6 +568,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 5,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -584,7 +591,7 @@ mod tests {
                     ts: "t4".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
-                    request_id: "req_5".to_string(),
+                    request: crate::event::test_request_scope("req_5".to_string()),
                     index: 1,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "beta" }),
@@ -593,6 +600,7 @@ mod tests {
             event(
                 5,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 5,
                     ts: "t5".to_string(),
                     conversation: Some("main".to_string()),
@@ -615,7 +623,7 @@ mod tests {
                     ts: "t6".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_gamma".to_string(),
-                    request_id: "req_5".to_string(),
+                    request: crate::event::test_request_scope("req_5".to_string()),
                     index: 2,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "gamma" }),
@@ -649,7 +657,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_4".to_string(),
+                    request: crate::event::test_request_scope("req_4".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -658,6 +666,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 4,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -719,7 +728,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_1".to_string(),
+                    request: crate::event::test_request_scope("req_1".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "alpha" }),
@@ -728,6 +737,7 @@ mod tests {
             event(
                 3,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 1,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),
@@ -791,7 +801,7 @@ mod tests {
                     ts: "t3".to_string(),
                     conversation: Some("review".to_string()),
                     tool_call_id: "tool_review".to_string(),
-                    request_id: "req_1".to_string(),
+                    request: crate::event::test_request_scope("req_1".to_string()),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "review" }),
@@ -800,6 +810,7 @@ mod tests {
             event(
                 4,
                 EventPayload::ToolResult {
+                    execution: crate::event::test_execution_scope(),
                     turn: 1,
                     ts: "t4".to_string(),
                     conversation: Some("review".to_string()),

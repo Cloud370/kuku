@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::conversation::address::ConversationAddress;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 use super::revert::filter_rolled_back_events;
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, RequestId, StoredEvent};
 
 struct PendingToolCall {
     index: u64,
@@ -22,7 +22,7 @@ struct ToolCallKey {
 
 #[derive(Default)]
 struct ResponseGroup {
-    request_id: Option<String>,
+    request_id: Option<RequestId>,
     text: Option<String>,
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
@@ -79,7 +79,7 @@ fn rebuild_history_internal(
 
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();
-    let mut seen_tool_call_keys = HashSet::new();
+    let mut seen_tool_call_keys = HashMap::<ToolCallKey, RequestId>::new();
 
     for event in effective {
         if event_turn(&event.payload).is_some_and(|turn| suppressed_turns.contains(&turn))
@@ -106,7 +106,7 @@ fn rebuild_history_internal(
             }
             EventPayload::ModelResponse {
                 turn,
-                request_id,
+                request,
                 text,
                 thinking,
                 ..
@@ -120,18 +120,18 @@ fn rebuild_history_internal(
                 if current_group
                     .request_id
                     .as_ref()
-                    .is_some_and(|active| active != request_id)
+                    .is_some_and(|active| active != &request.request_id)
                 {
                     flush_group(&mut messages, &mut current_group);
                 }
-                current_group.request_id = Some(request_id.clone());
+                current_group.request_id = Some(request.request_id.clone());
                 current_group.text = Some(text.clone());
                 current_group.thinking = thinking.clone();
             }
             EventPayload::ToolCall {
                 conversation: None,
                 turn,
-                request_id,
+                request,
                 tool_call_id,
                 index,
                 tool,
@@ -143,16 +143,15 @@ fn rebuild_history_internal(
                     turn: *turn,
                     tool_call_id: tool_call_id.clone(),
                 };
-                if request_id == tool_call_id
-                    && permission_metadata_args(args)
-                    && seen_tool_call_keys.contains(&key)
+                if permission_metadata_args(args)
+                    && seen_tool_call_keys.get(&key) == Some(&request.request_id)
                 {
                     continue;
                 }
-                seen_tool_call_keys.insert(key);
-                if current_group.request_id.as_ref() != Some(request_id) {
+                seen_tool_call_keys.insert(key, request.request_id.clone());
+                if current_group.request_id.as_ref() != Some(&request.request_id) {
                     flush_group(&mut messages, &mut current_group);
-                    current_group.request_id = Some(request_id.clone());
+                    current_group.request_id = Some(request.request_id.clone());
                 }
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),
@@ -166,7 +165,7 @@ fn rebuild_history_internal(
             EventPayload::ToolCall {
                 conversation: Some(event_conversation),
                 turn,
-                request_id,
+                request,
                 tool_call_id,
                 index,
                 tool,
@@ -178,16 +177,15 @@ fn rebuild_history_internal(
                     turn: *turn,
                     tool_call_id: tool_call_id.clone(),
                 };
-                if request_id == tool_call_id
-                    && permission_metadata_args(args)
-                    && seen_tool_call_keys.contains(&key)
+                if permission_metadata_args(args)
+                    && seen_tool_call_keys.get(&key) == Some(&request.request_id)
                 {
                     continue;
                 }
-                seen_tool_call_keys.insert(key);
-                if current_group.request_id.as_ref() != Some(request_id) {
+                seen_tool_call_keys.insert(key, request.request_id.clone());
+                if current_group.request_id.as_ref() != Some(&request.request_id) {
                     flush_group(&mut messages, &mut current_group);
-                    current_group.request_id = Some(request_id.clone());
+                    current_group.request_id = Some(request.request_id.clone());
                 }
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),

@@ -292,6 +292,7 @@ mod tests {
         let events = vec![StoredEvent {
             id: 1,
             payload: EventPayload::MessageUser {
+                execution: crate::event::test_execution_scope(),
                 ts: "t1".to_string(),
                 conversation: "main".to_string(),
                 turn: 1,
@@ -320,6 +321,7 @@ mod tests {
         let events = vec![StoredEvent {
             id: 1,
             payload: EventPayload::MessageUser {
+                execution: crate::event::test_execution_scope(),
                 ts: "t1".to_string(),
                 conversation: "review".to_string(),
                 turn: 1,

@@ -85,6 +85,7 @@ fn appends_events_with_monotonic_ids() {
     let first = store.append(session_created()).unwrap();
     let second = store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -146,6 +147,7 @@ fn truncates_partial_tail_before_appending_after_reopen() {
     let mut store = EventStore::open(&path).unwrap();
     let appended = store
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -242,6 +244,7 @@ fn concurrent_handles_do_not_reuse_the_same_event_id() {
     let first = left.append(session_created()).unwrap();
     let second = right
         .append(EventPayload::TurnStarted {
+            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             conversation: "main".to_string(),
@@ -315,7 +318,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ContextSources {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
-            request_id: "req_1".to_string(),
+            request: common::request_scope("req_1".to_string()),
             project_instruction_sources: vec![FileSource {
                 path: "/workspace/AGENTS.md".to_string(),
                 hash: "sha256:agents".to_string(),
@@ -330,7 +333,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ModelResponse {
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
-            request_id: "req_1".to_string(),
+            request: common::request_scope("req_1".to_string()),
             text: "answer".to_string(),
             thinking: Some("reasoning".to_string()),
             input_tokens_total: Some(123),
@@ -340,7 +343,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .append(EventPayload::ModelError {
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request_id: "req_1".to_string(),
+            request: common::request_scope("req_1".to_string()),
             kind: "RateLimited".to_string(),
             message: "HTTP 429: rate limited".to_string(),
         })
@@ -359,12 +362,12 @@ fn fact_only_events_roundtrip_without_observability_fields() {
 
     match &replayed[3].payload {
         EventPayload::ContextSources {
-            request_id,
+            request,
             project_instruction_sources,
             memory_sources,
             ..
         } => {
-            assert_eq!(request_id, "req_1");
+            assert_eq!(request, &common::request_scope("req_1"));
             assert_eq!(project_instruction_sources[0].path, "/workspace/AGENTS.md");
             assert_eq!(memory_sources[0].hash, "sha256:memory");
         }
@@ -460,7 +463,7 @@ fn fact_event_json_omits_removed_observability_fields() {
         payload: EventPayload::ModelResponse {
             turn: 2,
             ts: "2026-05-18T00:01:00Z".to_string(),
-            request_id: "req_2".to_string(),
+            request: common::request_scope("req_2".to_string()),
             text: "hi".to_string(),
             thinking: None,
             input_tokens_total: Some(7),
@@ -483,6 +486,7 @@ fn permission_requested_roundtrips_as_fact_event() {
     let event = StoredEvent {
         id: 12,
         payload: EventPayload::PermissionRequested {
+            execution: common::execution_scope(),
             turn: 2,
             ts: "2026-05-18T00:02:00Z".to_string(),
             tool_call_id: "toolu_cmd".to_string(),
@@ -535,11 +539,125 @@ fn new_writes_use_kind_not_type_at_top_level() {
     );
 }
 
+fn scoped_event_lines() -> Vec<String> {
+    let execution = common::execution_scope();
+    let request = common::request_scope("req_1");
+    let events = vec![
+        StoredEvent {
+            id: 5,
+            payload: EventPayload::MessageUser {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:04Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 1,
+                text: "Please inspect src/lib.rs and summarize changes.".to_string(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        },
+        StoredEvent {
+            id: 6,
+            payload: EventPayload::MessageAssistant {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:05Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 1,
+                message_id: "msg_001".to_string(),
+                text: "I am checking the file now.".to_string(),
+            },
+        },
+        StoredEvent {
+            id: 7,
+            payload: EventPayload::ToolCall {
+                request,
+                ts: "2026-06-09T00:00:06Z".to_string(),
+                conversation: Some("session://s_001/conversations/c_main".to_string()),
+                turn: 1,
+                tool_call_id: "toolu_read_1".to_string(),
+                index: 0,
+                tool: "read_file".to_string(),
+                args: serde_json::json!({"path": "src/lib.rs"}),
+            },
+        },
+        StoredEvent {
+            id: 8,
+            payload: EventPayload::ToolResult {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:07Z".to_string(),
+                conversation: Some("session://s_001/conversations/c_main".to_string()),
+                turn: 1,
+                tool_call_id: "toolu_read_1".to_string(),
+                status: "ok".to_string(),
+                summary: "Read src/lib.rs".to_string(),
+                model_content: "Read complete".to_string(),
+                truncated: false,
+                files_read: vec!["src/lib.rs".to_string()],
+                files_changed: vec!["src/lib.rs".to_string()],
+                commands_run: vec!["cargo check -p kuku".to_string()],
+                memory_changed: Some(
+                    serde_json::json!({"scope": "project", "action": "remember", "count": 1}),
+                ),
+                structured: Some(serde_json::json!({"kind": "file_content", "path": "src/lib.rs"})),
+            },
+        },
+        StoredEvent {
+            id: 9,
+            payload: EventPayload::TurnStarted {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:08Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 1,
+            },
+        },
+        StoredEvent {
+            id: 10,
+            payload: EventPayload::TurnCompleted {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:09Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 1,
+            },
+        },
+        StoredEvent {
+            id: 11,
+            payload: EventPayload::TurnCancelled {
+                execution: execution.clone(),
+                ts: "2026-06-09T00:00:10Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 2,
+                reason: "user_cancelled".to_string(),
+            },
+        },
+        StoredEvent {
+            id: 12,
+            payload: EventPayload::TurnInterrupted {
+                execution,
+                ts: "2026-06-09T00:00:11Z".to_string(),
+                conversation: "session://s_001/conversations/c_main".to_string(),
+                turn: 3,
+                reason: "approval_required".to_string(),
+            },
+        },
+    ];
+
+    events
+        .into_iter()
+        .map(|event| serde_json::to_string(&event).unwrap())
+        .collect()
+}
+
 #[test]
 fn replay_recognizes_every_new_event_kind() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let contents = format!("{}\n", new_event_lines().join("\n"));
+    let original = new_event_lines();
+    let mut lines = original[..4]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect::<Vec<_>>();
+    lines.extend(scoped_event_lines());
+    lines.extend(original[12..].iter().map(|line| (*line).to_string()));
+    let contents = format!("{}\n", lines.join("\n"));
     std::fs::write(&path, contents).unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
@@ -621,6 +739,7 @@ fn concurrent_async_appends_keep_contiguous_ids_and_valid_jsonl() {
                     let mut store = EventStore::open(&*path).unwrap();
                     store
                         .append(EventPayload::TurnStarted {
+                            execution: common::execution_scope(),
                             turn: index + 1,
                             ts: format!("2026-06-09T00:00:{index:02}Z"),
                             conversation: "main".to_string(),
@@ -648,3 +767,4 @@ fn concurrent_async_appends_keep_contiguous_ids_and_valid_jsonl() {
         }
     });
 }
+mod common;

@@ -161,13 +161,14 @@ pub(super) fn record_streaming_provider_error_facts(
     };
     let _ = append_model_error(
         &streaming.pending.events_path,
+        streaming.request.clone(),
         streaming.pending.turn,
-        streaming.request_id.clone(),
         provider_failure_event_kind(*kind),
         message,
     );
     let _ = append_turn_interrupted(
         &streaming.pending.events_path,
+        streaming.pending.execution_scope(),
         &streaming.conversation,
         streaming.pending.turn,
         provider_failure_event_kind(*kind),

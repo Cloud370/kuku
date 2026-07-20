@@ -322,6 +322,7 @@ mod tests {
         event(
             id,
             EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 ts: "t".into(),
                 conversation: conversation.into(),
                 turn,
@@ -333,6 +334,7 @@ mod tests {
         event(
             id,
             EventPayload::TurnCompleted {
+                execution: crate::event::test_execution_scope(),
                 ts: "t".into(),
                 conversation: conversation.into(),
                 turn,
@@ -344,6 +346,7 @@ mod tests {
         event(
             id,
             EventPayload::TurnCancelled {
+                execution: crate::event::test_execution_scope(),
                 ts: "t".into(),
                 conversation: conversation.into(),
                 turn,
@@ -356,6 +359,7 @@ mod tests {
         event(
             id,
             EventPayload::TurnInterrupted {
+                execution: crate::event::test_execution_scope(),
                 ts: "t".into(),
                 conversation: conversation.into(),
                 turn,

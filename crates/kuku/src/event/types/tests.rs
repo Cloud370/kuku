@@ -5,6 +5,7 @@ fn handoff_round_trip() {
     let event = StoredEvent {
         id: 43,
         payload: EventPayload::Handoff {
+            execution: crate::event::test_execution_scope(),
             turn: 3,
             ts: "2026-05-27T00:00:01Z".to_string(),
             request_id: "req_3".to_string(),
@@ -22,6 +23,7 @@ fn handoff_event_type_tag_is_handoff() {
     let event = StoredEvent {
         id: 1,
         payload: EventPayload::Handoff {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "t".to_string(),
             request_id: "req_1".to_string(),

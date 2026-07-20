@@ -6,7 +6,7 @@ use crate::context::provenance::{
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
 };
 
-use super::TaskLedgerRecord;
+use super::{ExecutionScope, RequestScope, TaskLedgerRecord};
 
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,9 +43,9 @@ impl RollbackScope {
 pub enum EventPayload {
     TaskLedger(TaskLedgerRecord),
     ContextSources {
+        request: RequestScope,
         turn: u64,
         ts: String,
-        request_id: String,
         project_instruction_sources: Vec<FileSource>,
         memory_sources: Vec<FileSource>,
     },
@@ -57,31 +57,32 @@ pub enum EventPayload {
         bootstrap_loaded: Vec<String>,
     },
     ModelResponse {
+        request: RequestScope,
         turn: u64,
         ts: String,
-        request_id: String,
         text: String,
         thinking: Option<String>,
         input_tokens_total: Option<u32>,
     },
     ModelError {
+        request: RequestScope,
         turn: u64,
         ts: String,
-        request_id: String,
         kind: String,
         message: String,
     },
     ToolCall {
+        request: RequestScope,
         turn: u64,
         ts: String,
         conversation: Option<String>,
         tool_call_id: String,
-        request_id: String,
         index: u64,
         tool: String,
         args: Value,
     },
     PermissionAllow {
+        execution: ExecutionScope,
         turn: u64,
         ts: String,
         tool_call_id: String,
@@ -91,6 +92,7 @@ pub enum EventPayload {
         source: String,
     },
     PermissionRequested {
+        execution: ExecutionScope,
         turn: u64,
         ts: String,
         tool_call_id: String,
@@ -101,6 +103,7 @@ pub enum EventPayload {
         source: String,
     },
     PermissionDeny {
+        execution: ExecutionScope,
         turn: u64,
         ts: String,
         tool_call_id: String,
@@ -109,6 +112,7 @@ pub enum EventPayload {
         source: String,
     },
     ToolResult {
+        execution: ExecutionScope,
         turn: u64,
         ts: String,
         conversation: Option<String>,
@@ -124,6 +128,7 @@ pub enum EventPayload {
         structured: Option<Value>,
     },
     Handoff {
+        execution: ExecutionScope,
         turn: u64,
         ts: String,
         request_id: String,
@@ -168,6 +173,7 @@ pub enum EventPayload {
         capabilities: PromptCapabilityMetadata,
     },
     MessageUser {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,
@@ -176,6 +182,7 @@ pub enum EventPayload {
         via_tool_call_id: Option<String>,
     },
     MessageAssistant {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,
@@ -183,22 +190,26 @@ pub enum EventPayload {
         text: String,
     },
     TurnStarted {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,
     },
     TurnCompleted {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,
     },
     TurnCancelled {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,
         reason: String,
     },
     TurnInterrupted {
+        execution: ExecutionScope,
         ts: String,
         conversation: String,
         turn: u64,

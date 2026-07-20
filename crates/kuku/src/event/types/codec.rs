@@ -15,9 +15,9 @@ impl EventPayload {
                 .ok()?,
             )),
             "context.sources" => Some(Self::ContextSources {
+                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
-                request_id: string_field(object, "request_id")?,
                 project_instruction_sources: serde_json::from_value(
                     object.get("project_instruction_sources")?.clone(),
                 )
@@ -34,31 +34,32 @@ impl EventPayload {
                     .ok()?,
             }),
             "model.response" => Some(Self::ModelResponse {
+                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
-                request_id: string_field(object, "request_id")?,
                 text: string_field(object, "text")?,
                 thinking: optional_string_field(object, "thinking"),
                 input_tokens_total: optional_u32_field(object, "input_tokens_total"),
             }),
             "model.error" => Some(Self::ModelError {
+                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
-                request_id: string_field(object, "request_id")?,
                 kind: string_field(object, "error_kind")?,
                 message: string_field(object, "message")?,
             }),
             "tool.call" => Some(Self::ToolCall {
+                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 conversation: optional_string_field(object, "conversation"),
                 tool_call_id: string_field(object, "tool_call_id")?,
-                request_id: string_field(object, "request_id")?,
                 index: u64_field(object, "index")?,
                 tool: string_field(object, "tool")?,
                 args: object.get("args")?.clone(),
             }),
             "permission.allow" => Some(Self::PermissionAllow {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -68,6 +69,7 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "permission.requested" => Some(Self::PermissionRequested {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -78,6 +80,7 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "permission.deny" => Some(Self::PermissionDeny {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -86,6 +89,7 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "tool.result" => Some(Self::ToolResult {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 conversation: optional_string_field(object, "conversation"),
@@ -101,6 +105,7 @@ impl EventPayload {
                 structured: object.get("structured").cloned(),
             }),
             "handoff" => Some(Self::Handoff {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
@@ -162,6 +167,7 @@ impl EventPayload {
                 capabilities: serde_json::from_value(object.get("capabilities")?.clone()).ok()?,
             }),
             "message.user" => Some(Self::MessageUser {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -170,6 +176,7 @@ impl EventPayload {
                 via_tool_call_id: optional_string_field(object, "via_tool_call_id"),
             }),
             "message.assistant" => Some(Self::MessageAssistant {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -177,22 +184,26 @@ impl EventPayload {
                 text: string_field(object, "text")?,
             }),
             "turn.started" => Some(Self::TurnStarted {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
             }),
             "turn.completed" => Some(Self::TurnCompleted {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
             }),
             "turn.cancelled" => Some(Self::TurnCancelled {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
                 reason: string_field(object, "reason")?,
             }),
             "turn.interrupted" => Some(Self::TurnInterrupted {
+                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -242,9 +253,9 @@ impl EventPayload {
                 "kuku_version": kuku_version,
             })),
             Self::ContextSources {
+                request,
                 turn,
                 ts,
-                request_id,
                 project_instruction_sources,
                 memory_sources,
             } => Ok(serde_json::json!({
@@ -252,7 +263,7 @@ impl EventPayload {
                 "ts": ts,
                 "kind": "context.sources",
                 "turn": turn,
-                "request_id": request_id,
+                "request": request,
                 "project_instruction_sources": project_instruction_sources,
                 "memory_sources": memory_sources,
             })),
@@ -272,6 +283,7 @@ impl EventPayload {
                 "bootstrap_loaded": bootstrap_loaded,
             })),
             Self::TurnStarted {
+                execution,
                 turn,
                 ts,
                 conversation,
@@ -282,9 +294,11 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("turn.started"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
+                map.insert("execution".into(), serde_json::to_value(execution)?);
                 Ok(Value::Object(map))
             }
             Self::MessageUser {
+                execution,
                 turn,
                 ts,
                 text,
@@ -299,6 +313,7 @@ impl EventPayload {
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("text".into(), Value::from(text.clone()));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
+                map.insert("execution".into(), serde_json::to_value(execution)?);
                 if let Some(from) = from {
                     map.insert("from".into(), Value::from(from.clone()));
                 }
@@ -311,9 +326,9 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::ModelResponse {
+                request,
                 turn,
                 ts,
-                request_id,
                 text,
                 thinking,
                 input_tokens_total,
@@ -323,7 +338,7 @@ impl EventPayload {
                 map.insert("ts".into(), Value::from(ts.clone()));
                 map.insert("kind".into(), Value::from("model.response"));
                 map.insert("turn".into(), Value::from(*turn));
-                map.insert("request_id".into(), Value::from(request_id.clone()));
+                map.insert("request".into(), serde_json::to_value(request)?);
                 map.insert("text".into(), Value::from(text.clone()));
                 if let Some(thinking) = thinking {
                     map.insert("thinking".into(), Value::from(thinking.clone()));
@@ -337,9 +352,9 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::ModelError {
+                request,
                 turn,
                 ts,
-                request_id,
                 kind,
                 message,
             } => Ok(serde_json::json!({
@@ -347,16 +362,16 @@ impl EventPayload {
                 "ts": ts,
                 "kind": "model.error",
                 "turn": turn,
-                "request_id": request_id,
+                "request": request,
                 "error_kind": kind,
                 "message": message,
             })),
             Self::ToolCall {
+                request,
                 turn,
                 ts,
                 conversation,
                 tool_call_id,
-                request_id,
                 index,
                 tool,
                 args,
@@ -367,7 +382,7 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("tool.call"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("tool_call_id".into(), Value::from(tool_call_id.clone()));
-                map.insert("request_id".into(), Value::from(request_id.clone()));
+                map.insert("request".into(), serde_json::to_value(request)?);
                 map.insert("index".into(), Value::from(*index));
                 map.insert("tool".into(), Value::from(tool.clone()));
                 map.insert("args".into(), args.clone());
@@ -377,6 +392,7 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::PermissionAllow {
+                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -394,8 +410,10 @@ impl EventPayload {
                 "scope": scope,
                 "matcher": matcher,
                 "source": source,
+                "execution": execution,
             })),
             Self::PermissionRequested {
+                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -415,8 +433,10 @@ impl EventPayload {
                 "summary": summary,
                 "candidate": candidate,
                 "source": source,
+                "execution": execution,
             })),
             Self::PermissionDeny {
+                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -432,8 +452,10 @@ impl EventPayload {
                 "tool": tool,
                 "reason": reason,
                 "source": source,
+                "execution": execution,
             })),
             Self::ToolResult {
+                execution,
                 turn,
                 ts,
                 conversation,
@@ -453,6 +475,7 @@ impl EventPayload {
                 map.insert("ts".into(), Value::from(ts.clone()));
                 map.insert("kind".into(), Value::from("tool.result"));
                 map.insert("turn".into(), Value::from(*turn));
+                map.insert("execution".into(), serde_json::to_value(execution)?);
                 map.insert("tool_call_id".into(), Value::from(tool_call_id.clone()));
                 map.insert("status".into(), Value::from(status.clone()));
                 map.insert("summary".into(), Value::from(summary.clone()));
@@ -479,6 +502,7 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::Handoff {
+                execution,
                 turn,
                 ts,
                 request_id,
@@ -492,8 +516,10 @@ impl EventPayload {
                 "request_id": request_id,
                 "summary": summary,
                 "keep_turns": keep_turns,
+                "execution": execution,
             })),
             Self::TurnCompleted {
+                execution,
                 turn,
                 ts,
                 conversation,
@@ -504,6 +530,7 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("turn.completed"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
+                map.insert("execution".into(), serde_json::to_value(execution)?);
                 Ok(Value::Object(map))
             }
             Self::ConversationOpened { ts, conversation } => Ok(serde_json::json!({
@@ -567,6 +594,7 @@ impl EventPayload {
                 "capabilities": capabilities,
             })),
             Self::MessageAssistant {
+                execution,
                 ts,
                 conversation,
                 turn,
@@ -580,8 +608,10 @@ impl EventPayload {
                 "turn": turn,
                 "message_id": message_id,
                 "text": text,
+                "execution": execution,
             })),
             Self::TurnCancelled {
+                execution,
                 ts,
                 conversation,
                 turn,
@@ -593,8 +623,10 @@ impl EventPayload {
                 "conversation": conversation,
                 "turn": turn,
                 "reason": reason,
+                "execution": execution,
             })),
             Self::TurnInterrupted {
+                execution,
                 ts,
                 conversation,
                 turn,
@@ -606,6 +638,7 @@ impl EventPayload {
                 "conversation": conversation,
                 "turn": turn,
                 "reason": reason,
+                "execution": execution,
             })),
             Self::ConversationRollback {
                 ts,

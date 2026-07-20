@@ -5,6 +5,7 @@ fn ts(id: u64, turn: u64) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".into(),
             conversation: "main".into(),
@@ -16,6 +17,7 @@ fn te(id: u64, turn: u64) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::TurnCompleted {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".into(),
             conversation: "main".into(),
@@ -27,6 +29,7 @@ fn ui(id: u64, turn: u64, text: &str) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".into(),
             conversation: "main".into(),
@@ -41,6 +44,7 @@ fn tool_result_read(id: u64, turn: u64, path: &str, content: &str, full: bool) -
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".into(),
             conversation: None,
@@ -68,6 +72,7 @@ fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> St
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".into(),
             conversation: None,
@@ -125,6 +130,7 @@ fn message_user(id: u64, conversation: &str, turn: u64, text: &str) -> StoredEve
     StoredEvent {
         id,
         payload: EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             ts: "t".into(),
             conversation: conversation.into(),
             turn,

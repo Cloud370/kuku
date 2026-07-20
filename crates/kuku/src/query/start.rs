@@ -214,9 +214,10 @@ impl Query {
                 &conversation,
                 "resume_before_new_turn",
             )?;
-            append_turn_started(&events_path, &conversation, turn)?;
+            append_turn_started(&events_path, &execution_scope, &conversation, turn)?;
             append_message_user_with_sender(
                 &events_path,
+                &execution_scope,
                 &conversation,
                 turn,
                 &self.prompt,
@@ -231,7 +232,7 @@ impl Query {
                 record.kind = "session.turn_start".to_string();
                 record.message = format!("starting turn {turn}");
                 record.session_id = Some(session_id.clone());
-                record.run_id = Some(session_id.clone());
+                record.run_id = Some(execution_scope.run_id.to_string());
                 record.workspace = Some(workspace.display().to_string());
                 record.turn = Some(turn);
                 let mut session_log_writer =
@@ -522,6 +523,7 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
             resumed_permission_requests.push_back(pending.request.clone());
         }
         queued_tool_calls.push_back(QueuedToolCall {
+            request: pending.request_scope.clone(),
             tool_call: pending.tool_call.clone(),
             display_summary: pending.request.summary.clone(),
         });
@@ -571,16 +573,18 @@ fn resumed_model_request_count(events: &[crate::event::StoredEvent], turn: u64) 
 }
 
 fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
-    let mut request_ids = Vec::<&str>::new();
+    let mut request_ids = Vec::<&crate::event::RequestId>::new();
     for event in events {
         if let EventPayload::ToolCall {
             turn: event_turn,
-            request_id,
+            request,
             ..
         } = &event.payload
         {
-            if *event_turn == turn && !request_ids.iter().any(|id| *id == request_id) {
-                request_ids.push(request_id);
+            if *event_turn == turn
+                && !request_ids.iter().any(|id| *id == &request.request_id)
+            {
+                request_ids.push(&request.request_id);
             }
         }
     }
@@ -590,21 +594,12 @@ fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
 fn resumed_request_num(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
     events
         .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ModelResponse {
-                turn: event_turn,
-                request_id,
-                ..
-            }
-            | EventPayload::ModelError {
-                turn: event_turn,
-                request_id,
-                ..
-            } if *event_turn == turn => Some(request_num_from_id(request_id)),
-            _ => None,
+        .filter(|event| match &event.payload {
+            EventPayload::ModelResponse { turn: event_turn, .. }
+            | EventPayload::ModelError { turn: event_turn, .. } => *event_turn == turn,
+            _ => false,
         })
-        .max()
-        .unwrap_or(0)
+        .count() as u64
 }
 
 fn request_num_from_id(request_id: &str) -> u64 {

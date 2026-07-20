@@ -14,6 +14,7 @@ fn user_input(id: u64, turn: u64, text: &str) -> StoredEvent {
     event(
         id,
         EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "2026-05-13T00:00:00Z".to_string(),
             conversation: "main".to_string(),
@@ -30,7 +31,7 @@ fn model_response(id: u64, turn: u64, request_id: &str, text: &str) -> StoredEve
         EventPayload::ModelResponse {
             turn,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request_id: request_id.to_string(),
+            request: crate::event::test_request_scope(request_id.to_string()),
             text: text.to_string(),
             thinking: None,
             input_tokens_total: Some(10),
@@ -53,7 +54,7 @@ fn tool_call(
             ts: "2026-05-13T00:00:02Z".to_string(),
             conversation: None,
             tool_call_id: tool_call_id.to_string(),
-            request_id: request_id.to_string(),
+            request: crate::event::test_request_scope(request_id.to_string()),
             index,
             tool: tool.to_string(),
             args: json!({"name": tool}),
@@ -65,6 +66,7 @@ fn tool_result(id: u64, turn: u64, tool_call_id: &str, model_content: &str) -> S
     event(
         id,
         EventPayload::ToolResult {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "2026-05-13T00:00:03Z".to_string(),
             conversation: None,
@@ -86,6 +88,7 @@ fn turn_end(id: u64, turn: u64) -> StoredEvent {
     event(
         id,
         EventPayload::TurnCompleted {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "2026-05-13T00:00:04Z".to_string(),
             conversation: "main".to_string(),
@@ -225,7 +228,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
                 ts: "2026-05-13T00:00:02Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 index: 0,
                 tool: "run_command".to_string(),
                 args: json!({"command": "pwd"}),
@@ -238,7 +241,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
                 ts: "2026-05-13T00:00:03Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "tool_1".to_string(),
+                request: crate::event::test_request_scope("req_1"),
                 index: 0,
                 tool: "run_command".to_string(),
                 args: json!({
@@ -252,6 +255,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
         event(
             5,
             EventPayload::PermissionRequested {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-13T00:00:04Z".to_string(),
                 tool_call_id: "tool_1".to_string(),
@@ -265,6 +269,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
         event(
             6,
             EventPayload::PermissionAllow {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-13T00:00:05Z".to_string(),
                 tool_call_id: "tool_1".to_string(),
@@ -316,7 +321,7 @@ fn keeps_reused_tool_call_id_in_later_turn() {
                 ts: "2026-05-13T00:00:02Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 index: 0,
                 tool: "read_file".to_string(),
                 args: json!({"path": "first.txt"}),
@@ -333,7 +338,7 @@ fn keeps_reused_tool_call_id_in_later_turn() {
                 ts: "2026-05-13T00:00:06Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "req_2".to_string(),
+                request: crate::event::test_request_scope("req_2".to_string()),
                 index: 0,
                 tool: "read_file".to_string(),
                 args: json!({"path": "second.txt"}),
@@ -398,7 +403,7 @@ fn keeps_same_turn_reused_tool_call_id_when_request_id_differs() {
                 ts: "2026-05-13T00:00:02Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 index: 0,
                 tool: "inspect_metadata".to_string(),
                 args: json!({"target": "first"}),
@@ -413,7 +418,7 @@ fn keeps_same_turn_reused_tool_call_id_when_request_id_differs() {
                 ts: "2026-05-13T00:00:04Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "tool_1".to_string(),
-                request_id: "req_2".to_string(),
+                request: crate::event::test_request_scope("req_2".to_string()),
                 index: 0,
                 tool: "inspect_metadata".to_string(),
                 args: json!({
@@ -481,6 +486,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             1,
             EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-13T00:00:00Z".to_string(),
                 conversation: "main".to_string(),
@@ -489,6 +495,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             2,
             EventPayload::MessageUser {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-13T00:00:01Z".to_string(),
                 conversation: "main".to_string(),
@@ -505,7 +512,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
                 ts: "2026-05-13T00:00:03Z".to_string(),
                 conversation: Some("main".to_string()),
                 tool_call_id: "agent_1".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 index: 0,
                 tool: "agent".to_string(),
                 args: json!({"to": "explore", "message": "child task"}),
@@ -514,6 +521,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             5,
             EventPayload::TurnStarted {
+                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: "2026-05-13T00:00:04Z".to_string(),
                 conversation: "explore".to_string(),
@@ -527,7 +535,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
                 ts: "2026-05-13T00:00:05Z".to_string(),
                 conversation: Some("explore".to_string()),
                 tool_call_id: "read_1".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 index: 0,
                 tool: "read_file".to_string(),
                 args: json!({"path": "README.md"}),
@@ -536,6 +544,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             8,
             EventPayload::ToolResult {
+                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: "2026-05-13T00:00:06Z".to_string(),
                 conversation: Some("explore".to_string()),
@@ -555,6 +564,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             10,
             EventPayload::MessageAssistant {
+                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: "2026-05-13T00:00:08Z".to_string(),
                 conversation: "explore".to_string(),
@@ -565,6 +575,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             11,
             EventPayload::TurnCompleted {
+                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: "2026-05-13T00:00:09Z".to_string(),
                 conversation: "explore".to_string(),
@@ -573,6 +584,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
         event(
             12,
             EventPayload::ToolResult {
+                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-13T00:00:10Z".to_string(),
                 conversation: None,
@@ -730,7 +742,7 @@ fn preserves_thinking_in_response_group() {
             EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-13T00:00:01Z".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 text: "Hello!".to_string(),
                 thinking: Some("The user said hi".to_string()),
                 input_tokens_total: Some(10),
@@ -762,7 +774,7 @@ fn preserves_thinking_with_tool_calls() {
             EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-13T00:00:01Z".to_string(),
-                request_id: "req_1".to_string(),
+                request: crate::event::test_request_scope("req_1".to_string()),
                 text: "I will inspect.".to_string(),
                 thinking: Some("Need to read the file first".to_string()),
                 input_tokens_total: Some(10),
@@ -775,7 +787,7 @@ fn preserves_thinking_with_tool_calls() {
             EventPayload::ModelResponse {
                 turn: 1,
                 ts: "2026-05-13T00:00:05Z".to_string(),
-                request_id: "req_2".to_string(),
+                request: crate::event::test_request_scope("req_2".to_string()),
                 text: "Done.".to_string(),
                 thinking: Some("File looks good".to_string()),
                 input_tokens_total: Some(12),
@@ -824,6 +836,7 @@ fn handoff_event_with_keep_turns(
     event(
         id,
         EventPayload::Handoff {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "2026-05-27T00:00:01Z".to_string(),
             request_id: "req_handoff".to_string(),
@@ -874,6 +887,7 @@ fn rebuild_history_does_not_wrap_forwarded_message_without_tool_call_marker() {
     let events = vec![event(
         1,
         EventPayload::MessageUser {
+            execution: crate::event::test_execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
             conversation: "review".to_string(),
@@ -961,6 +975,7 @@ fn ts(id: u64, turn: u64) -> StoredEvent {
     event(
         id,
         EventPayload::TurnStarted {
+            execution: crate::event::test_execution_scope(),
             turn,
             ts: "t".to_string(),
             conversation: "main".to_string(),

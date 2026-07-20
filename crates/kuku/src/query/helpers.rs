@@ -190,6 +190,7 @@ fn append_event(events_path: &std::path::Path, payload: EventPayload) -> Result<
 
 pub(super) fn append_permission_request(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     _conversation: &ConversationAddress,
     turn: u64,
     request: &PermissionRequest,
@@ -197,6 +198,7 @@ pub(super) fn append_permission_request(
     append_event(
         events_path,
         EventPayload::PermissionRequested {
+            execution: execution.clone(),
             turn,
             ts: now_timestamp()?,
             tool_call_id: request.tool_call_id.clone(),
@@ -211,12 +213,14 @@ pub(super) fn append_permission_request(
 
 pub(super) fn append_turn_started(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<()> {
     append_event(
         events_path,
         EventPayload::TurnStarted {
+            execution: execution.clone(),
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
@@ -226,6 +230,7 @@ pub(super) fn append_turn_started(
 
 pub(super) fn append_message_user_with_sender(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
     text: &str,
@@ -235,6 +240,7 @@ pub(super) fn append_message_user_with_sender(
     append_event(
         events_path,
         EventPayload::MessageUser {
+            execution: execution.clone(),
             turn,
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
@@ -247,6 +253,7 @@ pub(super) fn append_message_user_with_sender(
 
 pub(super) fn append_permission_decision(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     turn: u64,
     tool_call_id: &str,
     choice: PermissionChoice,
@@ -255,6 +262,7 @@ pub(super) fn append_permission_decision(
 ) -> Result<()> {
     let payload = match choice {
         PermissionChoice::Deny => EventPayload::PermissionDeny {
+            execution: execution.clone(),
             turn,
             ts: now_timestamp()?,
             tool_call_id: tool_call_id.to_string(),
@@ -264,6 +272,7 @@ pub(super) fn append_permission_decision(
         },
         PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => {
             EventPayload::PermissionAllow {
+                execution: execution.clone(),
                 turn,
                 ts: now_timestamp()?,
                 tool_call_id: tool_call_id.to_string(),
@@ -279,17 +288,17 @@ pub(super) fn append_permission_decision(
 
 pub(super) fn append_model_error(
     events_path: &std::path::Path,
+    request: crate::event::RequestScope,
     turn: u64,
-    request_id: String,
     kind: &str,
     message: &str,
 ) -> Result<()> {
     append_event(
         events_path,
         EventPayload::ModelError {
+            request,
             turn,
             ts: now_timestamp()?,
-            request_id,
             kind: kind.to_string(),
             message: message.to_string(),
         },
@@ -325,6 +334,7 @@ fn has_terminal_event(
 
 pub(super) fn append_turn_completed(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<()> {
@@ -334,6 +344,7 @@ pub(super) fn append_turn_completed(
     append_event(
         events_path,
         EventPayload::TurnCompleted {
+            execution: execution.clone(),
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
@@ -343,6 +354,7 @@ pub(super) fn append_turn_completed(
 
 pub(super) fn append_turn_cancelled(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
     reason: &str,
@@ -353,6 +365,7 @@ pub(super) fn append_turn_cancelled(
     append_event(
         events_path,
         EventPayload::TurnCancelled {
+            execution: execution.clone(),
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
@@ -363,6 +376,7 @@ pub(super) fn append_turn_cancelled(
 
 pub(super) fn append_turn_interrupted(
     events_path: &std::path::Path,
+    execution: &crate::event::ExecutionScope,
     conversation: &ConversationAddress,
     turn: u64,
     reason: &str,
@@ -373,6 +387,7 @@ pub(super) fn append_turn_interrupted(
     append_event(
         events_path,
         EventPayload::TurnInterrupted {
+            execution: execution.clone(),
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
@@ -388,7 +403,26 @@ pub(super) fn append_interrupted_active_turn(
     reason: &str,
 ) -> Result<()> {
     if let Some(active_turn) = crate::conversation::active_turn(events, conversation) {
-        append_turn_interrupted(events_path, conversation, active_turn.turn, reason)?;
+        let execution = events.iter().find_map(|event| match &event.payload {
+            EventPayload::TurnStarted {
+                execution,
+                conversation: event_conversation,
+                turn,
+                ..
+            } if event_conversation == conversation.as_str() && *turn == active_turn.turn => {
+                Some(execution)
+            }
+            _ => None,
+        });
+        if let Some(execution) = execution {
+            append_turn_interrupted(
+                events_path,
+                execution,
+                conversation,
+                active_turn.turn,
+                reason,
+            )?;
+        }
     }
     Ok(())
 }
