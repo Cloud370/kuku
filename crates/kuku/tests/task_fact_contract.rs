@@ -52,6 +52,7 @@ fn run() -> RunFact {
         started_at: "2026-07-20T00:00:00Z".to_owned(),
         finished_at: None,
         summary: None,
+        warnings: Vec::new(),
         checks: None,
         metrics: None,
         workspace_changes: None,
@@ -148,6 +149,29 @@ fn run_variant_state_and_metric_values_are_checked() {
         }]),
         Err(kuku::event::TaskLedgerError::InvalidRunCompletion)
     ));
+    let mut active_with_warnings = run();
+    active_with_warnings.warnings = vec!["not terminal".to_owned()];
+    assert!(matches!(
+        TaskActivityBatch::try_new(vec![TaskEvent::RunStarted {
+            run: active_with_warnings
+        }]),
+        Err(kuku::event::TaskLedgerError::InvalidRunCompletion)
+    ));
+
+    let mut terminal_with_warnings = run();
+    terminal_with_warnings.state = RunState::Completed;
+    terminal_with_warnings.finished_at = Some("2026-07-20T00:01:00Z".to_owned());
+    terminal_with_warnings.summary = Some("done".to_owned());
+    terminal_with_warnings.warnings = vec!["partial result".to_owned()];
+    let batch = TaskActivityBatch::try_new(vec![TaskEvent::RunCompleted {
+        run: terminal_with_warnings,
+    }])
+    .unwrap();
+    let value = serde_json::to_value(batch).unwrap();
+    assert_eq!(
+        value["events"][0]["event"]["run"]["warnings"],
+        serde_json::json!(["partial result"])
+    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ use kuku::event::{
 
 use super::driver::{
     drain_text_chunks, permission_choice, DriverCommand, DriverEvent, DriverHandle, DriverStart,
-    RunDriverFactory, RunFailure, RunResult,
+    RunDriverFactory, RunFailure, RunResult, TextBuffer,
 };
 use super::store::{CreateTaskCommand, TaskCommandService};
 use super::submission::SubmitRunCommand;
@@ -34,9 +34,24 @@ impl FakeDriverFactory {
         sender
             .send(DriverEvent::Completed(RunResult {
                 summary: summary.to_owned(),
+                warnings: Vec::new(),
                 checks: None,
                 metrics: None,
                 workspace_changes: None,
+            }))
+            .await
+            .unwrap();
+    }
+
+    async fn complete_with_warnings(&self, run_id: &RunId, warnings: Vec<String>) {
+        let sender = self.events.lock().unwrap().get(run_id).cloned().unwrap();
+        sender
+            .send(DriverEvent::Completed(RunResult {
+                summary: "done with warnings".to_owned(),
+                checks: None,
+                metrics: None,
+                workspace_changes: None,
+                warnings,
             }))
             .await
             .unwrap();
@@ -150,6 +165,7 @@ async fn dropping_submission_owner_does_not_stop_the_driver() {
     wait_for_state(&runtime, &task_id, RunState::Running).await;
     fake.complete(&accepted.run_id, "done").await;
     wait_for_state(&runtime, &task_id, RunState::Completed).await;
+    assert_terminal_finalizes_agent(runtime.repository(), &task_id, &accepted.run_id);
 }
 
 #[tokio::test]
@@ -197,6 +213,7 @@ async fn capacity_one_queues_a_second_task_and_stop_cancels_it_before_start() {
 
     wait_for_state(&runtime, &second_task, RunState::Stopped).await;
     assert!(!fake.was_started(&queued.run_id));
+    assert_terminal_finalizes_agent(runtime.repository(), &second_task, &queued.run_id);
     fake.complete(&running.run_id, "done").await;
     wait_for_state(&runtime, &first_task, RunState::Completed).await;
 }
@@ -340,6 +357,7 @@ async fn accepted_stop_wins_over_late_driver_failure() {
     .await;
 
     wait_for_state(&runtime, &task_id, RunState::Stopped).await;
+    assert_terminal_finalizes_agent(runtime.repository(), &task_id, &accepted.run_id);
 }
 
 #[tokio::test]
@@ -711,6 +729,112 @@ fn unknown_interaction_choice_is_not_coerced_to_deny() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn sustained_small_deltas_keep_the_first_byte_deadline() {
+    let mut buffer = TextBuffer::default();
+    let started_at = tokio::time::Instant::now();
+    assert!(buffer.push(started_at, "a").is_empty());
+    let deadline = buffer.deadline().unwrap();
+
+    tokio::time::advance(Duration::from_millis(40)).await;
+    assert!(buffer.push(tokio::time::Instant::now(), "b").is_empty());
+    assert_eq!(buffer.deadline(), Some(deadline));
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(buffer.is_due(tokio::time::Instant::now()));
+    let chunks = buffer.flush(false);
+    assert_eq!(chunks, vec![("ab".to_owned(), false)]);
+}
+
+#[tokio::test]
+async fn invalid_interaction_choice_has_no_durable_or_driver_effect() {
+    let dir = tempdir().unwrap();
+    let fake = Arc::new(FakeDriverFactory::default());
+    let runtime = TaskRuntime::open_unchecked(dir.path(), fake.clone(), 1, 64).unwrap();
+    let created = runtime
+        .create_task(create("invalid-choice-create"))
+        .await
+        .unwrap();
+    let task_id = created.projection.task.task_id.clone();
+    let accepted = runtime
+        .submit(submit(
+            task_id.clone(),
+            created.projection.task_revision,
+            "invalid-choice-submit",
+        ))
+        .await
+        .unwrap();
+    wait_for_state(&runtime, &task_id, RunState::Running).await;
+    let interaction_id = InteractionId::try_new().unwrap();
+    fake.send(
+        &accepted.run_id,
+        DriverEvent::InteractionOpened(InteractionFact {
+            interaction_id: interaction_id.clone(),
+            run_id: accepted.run_id.clone(),
+            prompt: "Continue?".to_owned(),
+            choices: vec![InteractionChoiceFact {
+                choice_id: "continue".to_owned(),
+                label: "Continue".to_owned(),
+            }],
+            selected_choice_id: None,
+        }),
+    )
+    .await;
+    wait_for_state(&runtime, &task_id, RunState::NeedsAttention).await;
+    let mut commands = fake.commands(&accepted.run_id).await;
+    let before = runtime.projection(&task_id).await.unwrap();
+    let record_count = runtime.repository().replay(&task_id).unwrap().len();
+    let invalid = super::ResolveInteractionCommand {
+        task_id: task_id.clone(),
+        interaction_id: interaction_id.clone(),
+        choice_id: "not-a-choice".to_owned(),
+        expected_task_revision: accepted.task_revision,
+        idempotency_key: "invalid-choice-key".to_owned(),
+    };
+
+    assert_eq!(
+        runtime
+            .resolve_interaction(invalid.clone())
+            .await
+            .unwrap_err(),
+        DomainError::InvalidRequest
+    );
+    assert_eq!(
+        runtime.resolve_interaction(invalid).await.unwrap_err(),
+        DomainError::InvalidRequest
+    );
+    assert_eq!(
+        runtime.projection(&task_id).await.unwrap().task_revision,
+        before.task_revision
+    );
+    assert_eq!(
+        runtime.repository().replay(&task_id).unwrap().len(),
+        record_count
+    );
+    assert!(matches!(
+        commands.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    runtime
+        .resolve_interaction(super::ResolveInteractionCommand {
+            task_id,
+            interaction_id: interaction_id.clone(),
+            choice_id: "continue".to_owned(),
+            expected_task_revision: accepted.task_revision,
+            idempotency_key: "invalid-choice-key".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        commands.recv().await,
+        Some(DriverCommand::Resolve {
+            interaction_id: received,
+            choice_id,
+        }) if received == interaction_id && choice_id == "continue"
+    ));
+}
+
 #[tokio::test]
 async fn recovery_interrupts_every_unfinished_run_state() {
     let dir = tempdir().unwrap();
@@ -827,6 +951,172 @@ async fn driver_event_eof_durably_fails_the_run() {
     fake.close_events(&accepted.run_id);
 
     wait_for_state(&runtime, &task_id, RunState::Failed).await;
+    assert_terminal_finalizes_agent(runtime.repository(), &task_id, &accepted.run_id);
+}
+
+struct FailingDriverFactory;
+
+impl RunDriverFactory for FailingDriverFactory {
+    fn start(
+        &self,
+        _: DriverStart,
+    ) -> Pin<Box<dyn Future<Output = Result<DriverHandle, DomainError>> + Send>> {
+        Box::pin(async { Err(DomainError::InvalidRequest) })
+    }
+}
+
+#[tokio::test]
+async fn factory_failure_finalizes_agent_in_the_terminal_batch() {
+    let dir = tempdir().unwrap();
+    let runtime =
+        TaskRuntime::open_unchecked(dir.path(), Arc::new(FailingDriverFactory), 1, 64).unwrap();
+    let created = runtime
+        .create_task(create("factory-fail-create"))
+        .await
+        .unwrap();
+    let task_id = created.projection.task.task_id.clone();
+    let accepted = runtime
+        .submit(submit(
+            task_id.clone(),
+            created.projection.task_revision,
+            "factory-fail-submit",
+        ))
+        .await
+        .unwrap();
+
+    wait_for_state(&runtime, &task_id, RunState::Failed).await;
+
+    assert_terminal_finalizes_agent(runtime.repository(), &task_id, &accepted.run_id);
+}
+
+#[tokio::test]
+async fn terminal_batch_does_not_repeat_an_existing_agent_finalization() {
+    let dir = tempdir().unwrap();
+    let fake = Arc::new(FakeDriverFactory::default());
+    let runtime = TaskRuntime::open_unchecked(dir.path(), fake.clone(), 1, 64).unwrap();
+    let created = runtime
+        .create_task(create("already-final-create"))
+        .await
+        .unwrap();
+    let task_id = created.projection.task.task_id.clone();
+    let accepted = runtime
+        .submit(submit(
+            task_id.clone(),
+            created.projection.task_revision,
+            "already-final-submit",
+        ))
+        .await
+        .unwrap();
+    wait_for_state(&runtime, &task_id, RunState::Running).await;
+    fake.send(
+        &accepted.run_id,
+        DriverEvent::Activity(vec![TaskEvent::MessagePatched {
+            message_id: format!("msg_agent_{}", accepted.run_id.as_str()),
+            append_text: String::new(),
+            finalized: true,
+            request_ids: None,
+        }]),
+    )
+    .await;
+    wait_for_agent_finalized(&runtime, &task_id).await;
+    fake.complete(&accepted.run_id, "done").await;
+    wait_for_state(&runtime, &task_id, RunState::Completed).await;
+
+    let batch = terminal_batch(runtime.repository(), &task_id, &accepted.run_id);
+    assert!(!batch.iter().any(|event| matches!(
+        event,
+        TaskEvent::MessagePatched { message_id, finalized: true, .. }
+            if message_id == &format!("msg_agent_{}", accepted.run_id.as_str())
+    )));
+}
+
+#[tokio::test]
+async fn completed_driver_warnings_are_persisted_in_the_terminal_fact() {
+    let dir = tempdir().unwrap();
+    let fake = Arc::new(FakeDriverFactory::default());
+    let runtime = TaskRuntime::open_unchecked(dir.path(), fake.clone(), 1, 64).unwrap();
+    let created = runtime.create_task(create("warning-create")).await.unwrap();
+    let task_id = created.projection.task.task_id.clone();
+    let accepted = runtime
+        .submit(submit(
+            task_id.clone(),
+            created.projection.task_revision,
+            "warning-submit",
+        ))
+        .await
+        .unwrap();
+    wait_for_state(&runtime, &task_id, RunState::Running).await;
+
+    fake.complete_with_warnings(
+        &accepted.run_id,
+        vec!["partial result".to_owned(), "check logs".to_owned()],
+    )
+    .await;
+    wait_for_state(&runtime, &task_id, RunState::Completed).await;
+
+    let batch = terminal_batch(runtime.repository(), &task_id, &accepted.run_id);
+    assert!(batch.iter().any(|event| matches!(
+        event,
+        TaskEvent::RunCompleted { run }
+            if run.warnings == ["partial result", "check logs"]
+    )));
+}
+
+async fn wait_for_agent_finalized(runtime: &TaskRuntime, task_id: &TaskId) {
+    for _ in 0..100 {
+        let projection = runtime.projection(task_id).await.unwrap();
+        if projection.timeline.iter().any(|item| {
+            matches!(
+                item,
+                crate::api::TimelineItemProjection::Message(message)
+                    if message.role == crate::api::MessageRole::Agent && message.finalized
+            )
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("agent message did not finalize")
+}
+
+fn assert_terminal_finalizes_agent(repository: &TaskRepository, task_id: &TaskId, run_id: &RunId) {
+    let batch = terminal_batch(repository, task_id, run_id);
+    assert!(batch.iter().any(|event| matches!(
+        event,
+        TaskEvent::MessagePatched {
+            message_id,
+            append_text,
+            finalized: true,
+            ..
+        } if message_id == &format!("msg_agent_{}", run_id.as_str()) && append_text.is_empty()
+    )));
+}
+
+fn terminal_batch(repository: &TaskRepository, task_id: &TaskId, run_id: &RunId) -> Vec<TaskEvent> {
+    repository
+        .replay(task_id)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find_map(|record| match record.payload {
+            kuku::event::EventPayload::TaskLedger(kuku::event::TaskLedgerRecord::Activity(
+                batch,
+            )) if batch.events().iter().any(|event| {
+                matches!(
+                    event,
+                    TaskEvent::RunCompleted { run }
+                        | TaskEvent::RunStopped { run }
+                        | TaskEvent::RunFailed { run }
+                        | TaskEvent::RunInterrupted { run }
+                        if &run.run_id == run_id
+                )
+            }) =>
+            {
+                Some(batch.events().to_vec())
+            }
+            _ => None,
+        })
+        .expect("terminal activity batch")
 }
 
 fn last_control_contains(
@@ -854,6 +1144,7 @@ fn active_run(task_id: &TaskId, run_id: &RunId, state: RunState) -> RunFact {
         started_at: "2026-07-20T00:00:00Z".to_owned(),
         finished_at: None,
         summary: None,
+        warnings: Vec::new(),
         checks: None,
         metrics: None,
         workspace_changes: None,

@@ -19,6 +19,43 @@ use super::DomainError;
 const TEXT_BATCH_BYTES: usize = 4 * 1024;
 const TEXT_BATCH_DELAY: Duration = Duration::from_millis(50);
 
+#[derive(Default)]
+pub(super) struct TextBuffer {
+    text: String,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl TextBuffer {
+    pub(super) fn push(&mut self, now: tokio::time::Instant, delta: &str) -> Vec<(String, bool)> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        if self.text.is_empty() {
+            self.deadline = Some(now + TEXT_BATCH_DELAY);
+        }
+        self.text.push_str(delta);
+        if self.text.len() >= TEXT_BATCH_BYTES {
+            self.flush(false)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_due(&self, now: tokio::time::Instant) -> bool {
+        self.deadline.is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(super) fn flush(&mut self, finalized: bool) -> Vec<(String, bool)> {
+        self.deadline = None;
+        drain_text_chunks(&mut self.text, finalized)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DriverStart {
     pub task_id: TaskId,
@@ -57,6 +94,7 @@ impl Eq for DriverEvent {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunResult {
     pub summary: String,
+    pub warnings: Vec<String>,
     pub checks: Option<Vec<CheckFact>>,
     pub metrics: Option<Vec<MetricFact>>,
     pub workspace_changes: Option<WorkspaceChangesFact>,
@@ -142,7 +180,7 @@ async fn run_kuku_driver(
 ) {
     let mut pending = HashMap::<InteractionId, String>::new();
     let mut activities = HashMap::<String, ActivityFact>::new();
-    let mut text = String::new();
+    let mut text = TextBuffer::default();
     let delay = tokio::time::sleep(TEXT_BATCH_DELAY);
     tokio::pin!(delay);
     loop {
@@ -173,22 +211,21 @@ async fn run_kuku_driver(
                     None => return,
                 }
             }
-            _ = &mut delay, if !text.is_empty() => {
+            _ = &mut delay, if text.deadline().is_some() => {
                 if !flush_text(&events, &start.agent_message_id, &mut text, false).await {
                     return;
                 }
-                delay.as_mut().reset(tokio::time::Instant::now() + TEXT_BATCH_DELAY);
             }
             next = run.next() => {
                 match next {
                     Ok(Some(kuku::UiEvent::TextDelta { text: delta })) => {
-                        text.push_str(&delta);
-                        if text.len() >= TEXT_BATCH_BYTES
-                            && !flush_text(&events, &start.agent_message_id, &mut text, false).await
-                        {
+                        let chunks = text.push(tokio::time::Instant::now(), &delta);
+                        if !send_text_chunks(&events, &start.agent_message_id, chunks).await {
                             return;
                         }
-                        delay.as_mut().reset(tokio::time::Instant::now() + TEXT_BATCH_DELAY);
+                        if let Some(deadline) = text.deadline() {
+                            delay.as_mut().reset(deadline);
+                        }
                     }
                     Ok(Some(kuku::UiEvent::PermissionRequested { request })) => {
                         if !flush_text(&events, &start.agent_message_id, &mut text, false).await {
@@ -252,6 +289,7 @@ async fn run_kuku_driver(
                         }
                         let _ = events.send(DriverEvent::Completed(RunResult {
                             summary: output.text,
+                            warnings: Vec::new(),
                             checks: None,
                             metrics: None,
                             workspace_changes: None,
@@ -292,13 +330,18 @@ async fn run_kuku_driver(
 async fn flush_text(
     events: &mpsc::Sender<DriverEvent>,
     message_id: &str,
-    text: &mut String,
+    text: &mut TextBuffer,
     finalized: bool,
 ) -> bool {
-    if text.is_empty() && !finalized {
-        return true;
-    }
-    for (append_text, finalized) in drain_text_chunks(text, finalized) {
+    send_text_chunks(events, message_id, text.flush(finalized)).await
+}
+
+async fn send_text_chunks(
+    events: &mpsc::Sender<DriverEvent>,
+    message_id: &str,
+    chunks: Vec<(String, bool)>,
+) -> bool {
+    for (append_text, finalized) in chunks {
         if events
             .send(DriverEvent::Activity(vec![TaskEvent::MessagePatched {
                 message_id: message_id.to_owned(),

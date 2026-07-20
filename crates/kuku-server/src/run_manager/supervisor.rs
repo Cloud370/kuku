@@ -503,7 +503,10 @@ impl RunSupervisor {
         result: Option<RunResult>,
     ) -> Result<bool, DomainError> {
         let _task = self.repository.task_guard(task_id).await;
-        let projection = self.repository.rebuild(task_id)?.projection()?;
+        let aggregate = self.repository.rebuild(task_id)?;
+        let agent_message_id = format!("msg_agent_{}", run_id.as_str());
+        let finalize_agent = aggregate.message_needs_finalization(&agent_message_id);
+        let projection = aggregate.projection()?;
         let Some(current) = projection.active_run else {
             return Ok(false);
         };
@@ -539,12 +542,14 @@ impl RunSupervisor {
                 .then(super::store::current_timestamp)
                 .transpose()?,
             summary,
+            warnings: Vec::new(),
             checks: None,
             metrics: None,
             workspace_changes: None,
         };
         if state == RunState::Completed {
             if let Some(result) = result {
+                run.warnings = result.warnings;
                 run.checks = result.checks;
                 run.metrics = result.metrics;
                 run.workspace_changes = result.workspace_changes;
@@ -557,7 +562,17 @@ impl RunSupervisor {
             RunState::Failed => TaskEvent::RunFailed { run },
             _ => return Err(DomainError::LedgerCorrupt),
         };
-        let batch = kuku::event::TaskActivityBatch::try_new(vec![event])
+        let mut events = Vec::with_capacity(2);
+        if !state.is_active() && finalize_agent {
+            events.push(TaskEvent::MessagePatched {
+                message_id: agent_message_id,
+                append_text: String::new(),
+                finalized: true,
+                request_ids: None,
+            });
+        }
+        events.push(event);
+        let batch = kuku::event::TaskActivityBatch::try_new(events)
             .map_err(|_| DomainError::LedgerCorrupt)?;
         self.repository
             .append(task_id, TaskLedgerRecord::Activity(batch))?;
@@ -766,7 +781,8 @@ impl TaskRuntime {
 
     async fn recover_task(&self, task_id: &TaskId) -> Result<(), DomainError> {
         let _task = self.commands.repository().task_guard(task_id).await;
-        let projection = self.commands.repository().rebuild(task_id)?.projection()?;
+        let aggregate = self.commands.repository().rebuild(task_id)?;
+        let projection = aggregate.projection()?;
         let Some(active) = projection.active_run else {
             return Ok(());
         };
@@ -807,7 +823,17 @@ impl TaskRuntime {
                 }
             }
         }
-        let mut events = vec![TaskEvent::RunInterrupted {
+        let agent_message_id = format!("msg_agent_{}", active.run_id.as_str());
+        let mut events = Vec::new();
+        if aggregate.message_needs_finalization(&agent_message_id) {
+            events.push(TaskEvent::MessagePatched {
+                message_id: agent_message_id,
+                append_text: String::new(),
+                finalized: true,
+                request_ids: None,
+            });
+        }
+        events.push(TaskEvent::RunInterrupted {
             run: RunFact {
                 run_id: active.run_id,
                 task_id: task_id.clone(),
@@ -815,11 +841,12 @@ impl TaskRuntime {
                 started_at: active.started_at,
                 finished_at: Some(super::store::current_timestamp()?),
                 summary: Some("server_restarted".to_owned()),
+                warnings: Vec::new(),
                 checks: None,
                 metrics: None,
                 workspace_changes: None,
             },
-        }];
+        });
         let mut interactions = pending_interactions.into_iter().collect::<Vec<_>>();
         interactions.sort();
         events.extend(

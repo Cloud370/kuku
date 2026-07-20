@@ -813,6 +813,7 @@ fn run_fact(
         started_at: "1".to_owned(),
         finished_at: None,
         summary: None,
+        warnings: Vec::new(),
         checks: None,
         metrics: None,
         workspace_changes: None,

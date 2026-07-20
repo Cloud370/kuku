@@ -27,6 +27,7 @@ fn run(id: RunId, state: RunState) -> RunFact {
         started_at: "2026-07-20T00:00:00Z".to_owned(),
         finished_at: (!state.is_active()).then(|| "2026-07-20T00:01:00Z".to_owned()),
         summary: (!state.is_active()).then(|| "finished".to_owned()),
+        warnings: Vec::new(),
         checks: None,
         metrics: None,
         workspace_changes: None,

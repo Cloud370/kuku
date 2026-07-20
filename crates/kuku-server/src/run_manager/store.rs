@@ -275,6 +275,7 @@ impl TaskCommandService {
                         started_at,
                         finished_at: None,
                         summary: None,
+                        warnings: Vec::new(),
                         checks: None,
                         metrics: None,
                         workspace_changes: None,
@@ -393,6 +394,7 @@ impl TaskCommandService {
                         started_at: submitted_at,
                         finished_at: None,
                         summary: None,
+                        warnings: Vec::new(),
                         checks: None,
                         metrics: None,
                         workspace_changes: None,
@@ -661,6 +663,7 @@ impl TaskCommandService {
                     started_at: active.started_at,
                     finished_at: None,
                     summary: None,
+                    warnings: Vec::new(),
                     checks: None,
                     metrics: None,
                     workspace_changes: None,
@@ -716,6 +719,9 @@ impl TaskCommandService {
         }
         if !aggregate.interaction_is_pending(&command.interaction_id) {
             return Err(DomainError::InteractionNotPending);
+        }
+        if !aggregate.interaction_accepts_choice(&command.interaction_id, &command.choice_id) {
+            return Err(DomainError::InvalidRequest);
         }
         let next_revision = command
             .expected_task_revision

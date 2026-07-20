@@ -272,6 +272,7 @@ pub struct RunFact {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub summary: Option<String>,
+    pub warnings: Vec<String>,
     pub checks: Option<Vec<CheckFact>>,
     pub metrics: Option<Vec<MetricFact>>,
     pub workspace_changes: Option<WorkspaceChangesFact>,
@@ -635,7 +636,7 @@ impl TaskEvent {
             if run.state != state {
                 return Err(TaskLedgerError::ContradictoryRunState);
             }
-            if state.is_active() && run.summary.is_some() {
+            if state.is_active() && (run.summary.is_some() || !run.warnings.is_empty()) {
                 return Err(TaskLedgerError::InvalidRunCompletion);
             }
             if state.is_active()

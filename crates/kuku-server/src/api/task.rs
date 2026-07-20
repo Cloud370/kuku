@@ -125,6 +125,7 @@ pub struct MetricProjection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompletionProjection {
     pub summary: String,
+    pub warnings: Vec<String>,
     #[serde(deserialize_with = "required_nullable")]
     pub checks: Option<Vec<CheckProjection>>,
     #[serde(deserialize_with = "required_nullable")]

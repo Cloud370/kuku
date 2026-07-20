@@ -175,6 +175,32 @@ impl TaskAggregate {
             .is_some_and(|interaction| interaction.selected_choice_id.is_none())
     }
 
+    pub(super) fn interaction_accepts_choice(
+        &self,
+        interaction_id: &InteractionId,
+        choice_id: &str,
+    ) -> bool {
+        self.interactions
+            .get(interaction_id)
+            .is_some_and(|interaction| {
+                interaction.selected_choice_id.is_none()
+                    && interaction
+                        .choices
+                        .iter()
+                        .any(|choice| choice.choice_id == choice_id)
+            })
+    }
+
+    pub(super) fn message_needs_finalization(&self, message_id: &str) -> bool {
+        self.timeline.iter().any(|item| {
+            matches!(
+                item,
+                TimelineItemProjection::Message(message)
+                    if message.message_id == message_id && !message.finalized
+            )
+        })
+    }
+
     pub fn set_updated_at(&mut self, updated_at: String) {
         self.updated_at = updated_at;
     }
@@ -776,6 +802,7 @@ fn run_projection(run: &RunFact) -> RunProjection {
         finished_at: run.finished_at.clone(),
         completion: run.summary.as_ref().map(|summary| CompletionProjection {
             summary: summary.clone(),
+            warnings: run.warnings.clone(),
             checks: run.checks.as_ref().map(|checks| {
                 checks
                     .iter()
