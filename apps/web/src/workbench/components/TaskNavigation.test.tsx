@@ -128,6 +128,7 @@ describe('TaskNavigation', () => {
       await screen.findByText('No Tasks yet');
       const createButton = screen.getByRole('button', { name: 'New Task' });
       expect(createButton).toBeDisabled();
+      expect(screen.getByRole('combobox', { name: 'Workspace' })).toBeDisabled();
       await user.click(createButton);
       expect(screen.queryByRole('button', { name: 'Create Task' })).not.toBeInTheDocument();
       expect(commands.retryPendingCommand).not.toHaveBeenCalled();

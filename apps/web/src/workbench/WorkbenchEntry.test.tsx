@@ -1,21 +1,69 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import platformStatusJson from '../api/generated/fixtures/platform_status.json';
-import type { PlatformStatus } from '../api/generated';
+import taskProjectionJson from '../api/generated/fixtures/task_projection.json';
+import type { PlatformStatus, TaskProjection } from '../api/generated';
+import { createWorkbenchSnapshot, applyProjection, selectTimelineItems } from './state';
 import { WorkbenchEntry } from './WorkbenchEntry';
-import { createWorkbenchSnapshot } from './state';
+
+const snapshot = applyProjection(
+  createWorkbenchSnapshot(),
+  structuredClone(taskProjectionJson) as TaskProjection,
+);
+const store = {
+  abandonConflictedCommand: vi.fn(),
+  createTask: vi.fn(),
+  loadOlder: vi.fn(),
+  pendingCommand: null,
+  reconnectFromCursor: vi.fn(),
+  respond: vi.fn(),
+  retryPendingCommand: vi.fn(),
+  returnToRecent: vi.fn(),
+  setDraft: vi.fn(),
+  stopRun: vi.fn(),
+  submitRun: vi.fn(),
+};
 
 vi.mock('./entry/EntryGate', () => ({
   EntryGate: ({ renderWorkbench }: { renderWorkbench: (status: PlatformStatus) => ReactNode }) =>
     renderWorkbench(structuredClone(platformStatusJson) as PlatformStatus),
 }));
 
+vi.mock('./WorkbenchController', () => ({
+  WorkbenchController: ({ children }: { children: (view: unknown) => ReactNode }) =>
+    children({
+      catalog: {
+        agents: [],
+        api_version: 1,
+        revision: 'catalog',
+        skills: [],
+        tiers: [],
+        tools: [],
+      },
+      catalogError: null,
+      loadOlder: vi.fn(),
+      onRetry: vi.fn(),
+      platform: structuredClone(platformStatusJson),
+      selectTask: vi.fn(),
+      retryCatalog: vi.fn(),
+      searchCatalog: vi.fn(),
+      snapshot,
+      store,
+      timelineItems: selectTimelineItems(snapshot),
+      workspace: null,
+    }),
+}));
+
+vi.mock('./components/TaskNavigation', () => ({
+  TaskNavigation: () => <p>Task list</p>,
+}));
+
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 describe('WorkbenchEntry', () => {
@@ -35,58 +83,23 @@ describe('WorkbenchEntry', () => {
     );
   });
 
-  it('forwards thread and review callbacks into the chat slot', async () => {
-    const user = userEvent.setup();
-    const onOpenAgentThread = vi.fn();
-    const onOpenReview = vi.fn();
-    const chat = vi.fn(
-      ({
-        onOpenAgentThread: openThread,
-        onOpenReview: openReview,
-      }: {
-        onOpenAgentThread: (taskId: string, conversationId: string) => void;
-        onOpenReview: (taskId: string) => void;
-      }) => (
-        <>
-          <button
-            onClick={() => {
-              openThread('task-1', 'conversation-1');
-            }}
-            type="button"
-          >
-            Open thread
-          </button>
-          <button
-            onClick={() => {
-              openReview('task-1');
-            }}
-            type="button"
-          >
-            Open review
-          </button>
-        </>
-      ),
-    );
-
+  it('mounts Tasks, Chat, Context, and the production Composer', () => {
     render(
       <WorkbenchEntry
-        chat={chat}
-        context={<div>Context</div>}
-        onOpenAgentThread={onOpenAgentThread}
+        context={<p>Context surface</p>}
+        onOpenAgentThread={vi.fn()}
         onOpenContext={vi.fn()}
-        onOpenReview={onOpenReview}
-        onStop={vi.fn()}
-        stagedSkillCount={0}
-        state={createWorkbenchSnapshot()}
-        taskNavigation={<div>Tasks</div>}
-        workspace={null}
+        onOpenFile={vi.fn()}
+        onOpenLoadedSkills={vi.fn()}
+        onOpenRequestContext={vi.fn()}
+        onOpenReview={vi.fn()}
       />,
     );
 
-    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ onOpenAgentThread, onOpenReview }));
-    await user.click(screen.getByRole('button', { name: 'Open thread' }));
-    await user.click(screen.getByRole('button', { name: 'Open review' }));
-    expect(onOpenAgentThread).toHaveBeenCalledWith('task-1', 'conversation-1');
-    expect(onOpenReview).toHaveBeenCalledWith('task-1');
+    expect(screen.getByRole('navigation', { name: 'Tasks' })).toBeVisible();
+    expect(screen.getByRole('main', { name: 'Chat' })).toBeVisible();
+    expect(screen.getByRole('complementary', { name: 'Agent Context' })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
+    expect(screen.getByRole('status', { name: 'Run status' })).toBeInTheDocument();
   });
 });

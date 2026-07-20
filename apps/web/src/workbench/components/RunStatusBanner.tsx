@@ -25,7 +25,11 @@ export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunSta
         {taskState === 'needs_attention' || taskState === 'failed' ? (
           <AlertCircle aria-hidden="true" size={16} />
         ) : active ? (
-          <LoaderCircle aria-hidden="true" className="animate-spin" size={16} />
+          <LoaderCircle
+            aria-hidden="true"
+            className="animate-spin motion-reduce:animate-none"
+            size={16}
+          />
         ) : taskState === 'completed' ? (
           <CheckCircle2 aria-hidden="true" size={16} />
         ) : (

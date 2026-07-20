@@ -175,7 +175,7 @@ export function TaskNavigation({
         <select
           id="workbench-workspace"
           aria-label="Workspace"
-          disabled={noWorkspaces}
+          disabled={noWorkspaces || hasNonCreatePending}
           value={workspaceId ?? ''}
           className="h-9 min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[var(--text-sm)] text-[var(--color-text-primary)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
           onChange={(event) => {

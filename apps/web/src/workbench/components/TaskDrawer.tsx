@@ -1,52 +1,27 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { X } from 'lucide-react';
+
+import { activateFocusTrap } from '../accessibility/focusTrap';
 
 interface TaskDrawerProps {
   children: ReactNode;
   open: boolean;
   onClose: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-export function TaskDrawer({ children, open, onClose }: TaskDrawerProps) {
+export function TaskDrawer({ children, open, onClose, returnFocusRef }: TaskDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    const restoreTarget =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const drawer = drawerRef.current;
-    const focusable = () => Array.from(drawer?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
-    focusable()[0]?.focus();
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const controls = focusable();
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      restoreTarget?.focus();
-    };
-  }, [onClose, open]);
+    if (drawer === null) return;
+    const restoreTarget =
+      returnFocusRef?.current ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    return activateFocusTrap(drawer, onClose, restoreTarget);
+  }, [onClose, open, returnFocusRef]);
 
   if (!open) return null;
   return (
@@ -60,6 +35,7 @@ export function TaskDrawer({ children, open, onClose }: TaskDrawerProps) {
         }}
         ref={drawerRef}
         role="dialog"
+        data-reduced-motion={window.matchMedia('(prefers-reduced-motion: reduce)').matches}
       >
         <div className="flex h-12 items-center justify-between border-b border-[var(--color-border)] px-3">
           <h2 className="text-sm font-semibold">Tasks</h2>

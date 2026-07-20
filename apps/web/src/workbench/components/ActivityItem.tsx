@@ -17,7 +17,11 @@ export function ActivityItem({ activity, onOpenFile }: ActivityItemProps) {
     <article className="border-l-2 border-[var(--color-border)] py-2 pl-3 text-sm">
       <div className="flex min-w-0 items-center gap-2">
         {activity.status === 'running' ? (
-          <LoaderCircle aria-hidden="true" className="shrink-0 animate-spin" size={15} />
+          <LoaderCircle
+            aria-hidden="true"
+            className="shrink-0 animate-spin motion-reduce:animate-none"
+            size={15}
+          />
         ) : delegated ? (
           <Bot aria-hidden="true" className="shrink-0" size={15} />
         ) : (

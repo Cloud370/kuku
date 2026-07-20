@@ -89,6 +89,8 @@ export interface WorkbenchStoreState {
   snapshot: WorkbenchSnapshot;
   pendingCommand: PendingCommand | null;
   setDraft(draft: LocalDraft): void;
+  clearTask(): void;
+  setTaskError(message: string): void;
   loadTask(taskId: string): Promise<TaskProjection>;
   subscribeTask(taskId: string): () => void;
   reconnectFromCursor(): Promise<void>;
@@ -262,6 +264,24 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       setDraft(draft) {
         draftGeneration += 1;
         set({ snapshot: { ...get().snapshot, localDraft: structuredClone(draft) } });
+      },
+      clearTask() {
+        subscriptionController?.abort();
+        subscriptionController = null;
+        taskGeneration += 1;
+        draftGeneration += 1;
+        stoppedRunId = null;
+        set({ snapshot: createWorkbenchSnapshot() });
+      },
+      setTaskError(message) {
+        const snapshot = get().snapshot;
+        set({
+          snapshot: {
+            ...snapshot,
+            connection: 'error',
+            lastError: message,
+          },
+        });
       },
       async loadTask(taskId) {
         subscriptionController?.abort();

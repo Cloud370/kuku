@@ -1,46 +1,169 @@
 import type { ReactNode } from 'react';
 
-import type { WorkspaceSummary } from '../api/generated';
+import type { TaskDelta } from '../api/generated';
+import { webApi } from '../api/client';
 import { EntryGate } from './entry/EntryGate';
-import type { WorkbenchSnapshot } from './state';
+import { WorkbenchController } from './WorkbenchController';
+import type { WorkbenchRoute } from './taskSelection';
+import { StateBoundary } from './components/StateBoundary';
+import { ChatTimeline } from './components/ChatTimeline';
+import { Composer } from './components/Composer';
+import { RunLiveRegion } from './components/RunLiveRegion';
+import { TaskNavigation } from './components/TaskNavigation';
 import { WorkbenchShell } from './components/WorkbenchShell';
 
 export interface WorkbenchEntryProps {
-  chat: (callbacks: WorkbenchChatCallbacks) => ReactNode;
+  api?: typeof webApi;
   context: ReactNode;
   onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenContext: () => void;
+  onOpenFile: (workspaceId: string, relativePath: string) => void;
+  onOpenLoadedSkills: (taskId: string) => void;
+  onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
-  onStop: () => void;
-  stagedSkillCount: number;
-  state: WorkbenchSnapshot;
-  taskNavigation: ReactNode;
-  workspace: WorkspaceSummary | null;
+  onTaskDeltaCommitted?: (taskId: string, delta: TaskDelta) => void;
+  onStop?: () => void;
+  route?: WorkbenchRoute;
 }
 
-export interface WorkbenchChatCallbacks {
-  onOpenAgentThread: (taskId: string, conversationId: string) => void;
-  onOpenReview: (taskId: string) => void;
-}
-
-export function WorkbenchEntry(props: WorkbenchEntryProps) {
+export function WorkbenchEntry({
+  api = webApi,
+  context,
+  onOpenAgentThread,
+  onOpenContext,
+  onOpenFile,
+  onOpenLoadedSkills,
+  onOpenRequestContext,
+  onOpenReview,
+  onStop,
+  onTaskDeltaCommitted,
+  route,
+}: WorkbenchEntryProps) {
   return (
     <EntryGate
       renderWorkbench={(platformStatus) => (
-        <WorkbenchShell
-          chat={props.chat({
-            onOpenAgentThread: props.onOpenAgentThread,
-            onOpenReview: props.onOpenReview,
-          })}
-          context={props.context}
-          onOpenContext={props.onOpenContext}
-          onStop={props.onStop}
-          platformStatus={platformStatus}
-          stagedSkillCount={props.stagedSkillCount}
-          state={props.state}
-          taskNavigation={props.taskNavigation}
-          workspace={props.workspace}
-        />
+        <WorkbenchController
+          api={api}
+          onTaskDeltaCommitted={onTaskDeltaCommitted}
+          platform={platformStatus}
+          route={route}
+        >
+          {(view) => {
+            void onOpenAgentThread;
+            const tiers = view.catalog?.tiers ?? [];
+            const skills = view.catalog?.skills ?? [];
+            const projection = view.snapshot.projection;
+            const defaultTierId =
+              projection?.selected_tier_id ??
+              tiers.find(({ tier }) => tier.is_default)?.tier.tier_id ??
+              tiers[0]?.tier.tier_id ??
+              '';
+            const taskId = view.snapshot.selectedTaskId;
+            return (
+              <WorkbenchShell
+                chat={
+                  <StateBoundary onRetry={() => void view.onRetry()} snapshot={view.snapshot}>
+                    {view.catalogError === null ? null : (
+                      <div
+                        className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] px-4 py-2 text-xs"
+                        role="alert"
+                      >
+                        <span>{view.catalogError}</span>
+                        <button
+                          className="shrink-0 font-medium text-[var(--color-accent)]"
+                          onClick={() => {
+                            view.retryCatalog();
+                          }}
+                          type="button"
+                        >
+                          Retry catalog
+                        </button>
+                      </div>
+                    )}
+                    <ChatTimeline
+                      loadOlder={view.loadOlder}
+                      onOpenFile={onOpenFile}
+                      onOpenRequestContext={onOpenRequestContext}
+                      onOpenReview={onOpenReview}
+                      onRespond={(selectedTaskId, interactionId, choiceId) => {
+                        void view.store.respond(interactionId, choiceId);
+                        void selectedTaskId;
+                      }}
+                      onReturnToRecent={() => {
+                        view.store.returnToRecent();
+                      }}
+                      projection={projection}
+                      timelineHistory={view.snapshot.timelineHistory}
+                      timelineItems={view.timelineItems}
+                    />
+                    <Composer
+                      activeRunId={projection?.active_run?.run_id ?? null}
+                      catalogReady={view.catalog !== null && view.catalogError === null}
+                      defaultTierId={defaultTierId}
+                      draft={view.snapshot.localDraft}
+                      loadedSkillCount={projection?.context_summary?.loaded_skill_count ?? 0}
+                      onDraftChange={(draft) => {
+                        view.store.setDraft(draft);
+                      }}
+                      onOpenLoadedSkills={() => {
+                        if (taskId !== null) onOpenLoadedSkills(taskId);
+                      }}
+                      onRetryPendingCommand={() => {
+                        void view.store.retryPendingCommand();
+                      }}
+                      onSearchSkills={(query) => {
+                        view.searchCatalog(query);
+                      }}
+                      onStop={() => {
+                        void view.store.stopRun();
+                        onStop?.();
+                      }}
+                      onSubmit={async (input) => {
+                        await view.store.submitRun(input);
+                      }}
+                      pendingCommand={view.store.pendingCommand}
+                      skills={skills}
+                      taskId={taskId}
+                      tiers={tiers}
+                    />
+                    <RunLiveRegion projection={projection} />
+                  </StateBoundary>
+                }
+                context={context}
+                onOpenContext={onOpenContext}
+                onStop={() => {
+                  void view.store.stopRun();
+                  onStop?.();
+                }}
+                platformStatus={platformStatus}
+                stagedSkillCount={view.snapshot.localDraft.skillIds.length}
+                state={view.snapshot}
+                taskNavigation={
+                  <TaskNavigation
+                    api={api}
+                    commands={{
+                      abandonConflictedCommand: () => {
+                        view.store.abandonConflictedCommand();
+                      },
+                      createTask: (workspaceId) => view.store.createTask(workspaceId),
+                      retryPendingCommand: () => view.store.retryPendingCommand(),
+                    }}
+                    initialWorkspaceId={view.workspace?.workspace_id ?? null}
+                    onSelectTask={(selectedTaskId) => {
+                      void view.selectTask(selectedTaskId);
+                    }}
+                    onWorkspaceChange={(workspaceId) => {
+                      view.selectWorkspace(workspaceId);
+                    }}
+                    pendingCommand={view.store.pendingCommand}
+                    selectedTaskId={view.snapshot.selectedTaskId}
+                  />
+                }
+                workspace={view.workspace}
+              />
+            );
+          }}
+        </WorkbenchController>
       )}
     />
   );
