@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use std::future::{pending, Future};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,7 +14,11 @@ mod api {
 }
 
 mod platform {
-    pub use kuku_server::platform::WorkspaceCapability;
+    pub use kuku_server::platform::*;
+}
+
+mod run_manager {
+    pub use kuku_server::run_manager::*;
 }
 
 #[path = "../src/review/mod.rs"]

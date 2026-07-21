@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -20,6 +22,10 @@ mod api {
 
 mod platform {
     pub use kuku_server::platform::*;
+}
+
+mod run_manager {
+    pub use kuku_server::run_manager::*;
 }
 
 #[path = "../src/review/mod.rs"]

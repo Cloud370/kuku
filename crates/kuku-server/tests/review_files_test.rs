@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use std::fs::{File, FileTimes};
 use std::future::Future;
 use std::pin::Pin;
@@ -15,7 +17,11 @@ mod api {
 }
 
 mod platform {
-    pub use kuku_server::platform::WorkspaceCapability;
+    pub use kuku_server::platform::*;
+}
+
+mod run_manager {
+    pub use kuku_server::run_manager::*;
 }
 
 #[path = "../src/review/files.rs"]
