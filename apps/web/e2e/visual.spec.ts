@@ -27,15 +27,33 @@ async function newVisualPage(
 async function capture(page: Page, name: string): Promise<void> {
   await page.addStyleTag({
     content:
-      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}',
+      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}[data-testid="connection-display-name"]{display:inline-block!important;width:5rem!important}',
   });
   await page.evaluate(async () => document.fonts.ready);
   await expect(page).toHaveScreenshot(name, {
     animations: 'disabled',
     caret: 'hide',
-    mask: [page.getByText(/^kuku [a-f0-9]{8}$/u), page.getByText(/^http:\/\/127\.0\.0\.1:\d+$/u)],
+    mask: [
+      page.getByTestId('connection-display-name'),
+      page.getByText(/^kuku [a-f0-9]{8}$/u),
+      page.getByText(/http:\/\/127\.0\.0\.1:\d+/u),
+      page.getByLabel('Context').locator('span.font-mono'),
+      page.locator('button[aria-label^="Select Request"]'),
+    ],
     maskColor: '#262a2d',
   });
+}
+
+async function openReviewWithEmptySubmissions(page: Page, url: string): Promise<void> {
+  const empty = page.getByText('No submitted reviews', { exact: true });
+  const terminal = page.getByText(/^(?:No submitted reviews|Unable to load submitted reviews)$/u);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.goto(url);
+    await expect(terminal).toBeVisible();
+    if (await empty.isVisible()) return;
+    await page.waitForTimeout(100 * (attempt + 1));
+  }
+  await expect(empty).toBeVisible();
 }
 
 async function openAvailableDiff(page: Page, path: string): Promise<void> {
@@ -154,6 +172,9 @@ test('captures loading, empty, transport error, and Needs Attention Workbench st
   const attention = await newVisualPage(browser, unifiedBinary);
   await attention.page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}`);
   await expect(attention.page.getByRole('group', { name: 'Permission request' })).toBeVisible();
+  await attention.page
+    .getByRole('searchbox')
+    .fill('Exercise the full deterministic browser scenario');
   await capture(attention.page, 'workbench-needs-attention.png');
   await attention.context.close();
 });
@@ -211,7 +232,10 @@ test('captures Git, non-Git Files, and outdated Review states', async ({
   if (changedPath === undefined) throw new Error('scenario returned no change with new lines');
 
   const git = await newVisualPage(browser, unifiedBinary);
-  await git.page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}/review`);
+  await openReviewWithEmptySubmissions(
+    git.page,
+    `${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}/review`,
+  );
   await git.page.getByRole('tab', { name: 'Changes' }).click();
   await expect(git.page.getByLabel('Workspace changes')).toContainText(changedPath);
   await openAvailableDiff(git.page, changedPath);
@@ -238,7 +262,8 @@ test('captures Git, non-Git Files, and outdated Review states', async ({
   const plain = workspaces.items.find((workspace) => workspace.branch === null);
   if (plain === undefined) throw new Error('scenario has no non-Git workspace');
   const nonGit = await newVisualPage(browser, unifiedBinary);
-  await nonGit.page.goto(
+  await openReviewWithEmptySubmissions(
+    nonGit.page,
     `${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}/review?workspace=${encodeURIComponent(plain.workspace_id)}`,
   );
   await nonGit.page.getByRole('tab', { name: 'Files' }).click();

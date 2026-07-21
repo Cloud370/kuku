@@ -57,7 +57,9 @@ export function WorkbenchHeader({
       ) : null}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-secondary)]">
-          <span className="truncate">{platformStatus.connection.display_name}</span>
+          <span className="truncate" data-testid="connection-display-name">
+            {platformStatus.connection.display_name}
+          </span>
           {workspace !== null ? (
             <>
               <span aria-hidden="true">/</span>
