@@ -102,5 +102,6 @@
       "stream": true,
       "thinking": {"kind": "disabled"}
     }
-  }
+  },
+  "exact_payload_hash": "sha256:exact"
 }

@@ -891,6 +891,12 @@
         "discoverable": {
           "$ref": "#/$defs/DiscoverableContext"
         },
+        "exact_payload_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "exact_request": {
           "anyOf": [
             {
@@ -948,6 +954,7 @@
       "required": [
         "api_version",
         "discoverable",
+        "exact_payload_hash",
         "exact_request",
         "health",
         "next_request_base",
@@ -2522,6 +2529,9 @@
     },
     "ObservationContextItem": {
       "properties": {
+        "current_drift": {
+          "$ref": "#/$defs/ObservationDrift"
+        },
         "kind": {
           "$ref": "#/$defs/ObservationKind"
         },
@@ -2549,6 +2559,7 @@
         }
       },
       "required": [
+        "current_drift",
         "kind",
         "relative_path",
         "request_id",
@@ -2557,6 +2568,16 @@
         "tool_call_id"
       ],
       "type": "object"
+    },
+    "ObservationDrift": {
+      "enum": [
+        "present",
+        "changed_since_observation",
+        "no_longer_present",
+        "inaccessible",
+        "not_applicable"
+      ],
+      "type": "string"
     },
     "ObservationFact": {
       "description": "Immutable observation recorded for one provider request.",

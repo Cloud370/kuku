@@ -65,6 +65,16 @@ pub struct ConversationContext {
     pub delegated_results: Vec<ConversationId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationDrift {
+    Present,
+    ChangedSinceObservation,
+    NoLongerPresent,
+    Inaccessible,
+    NotApplicable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ObservationContextItem {
     pub request_id: RequestId,
@@ -73,6 +83,7 @@ pub struct ObservationContextItem {
     #[serde(deserialize_with = "required_nullable")]
     pub relative_path: Option<WorkspaceRelativePath>,
     pub retention: ObservationRetention,
+    pub current_drift: ObservationDrift,
     pub summary: String,
 }
 
@@ -233,6 +244,8 @@ pub struct ContextSnapshot {
     pub warnings: Vec<ContextWarning>,
     #[serde(deserialize_with = "required_nullable")]
     pub exact_request: Option<ExactRequest>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub exact_payload_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

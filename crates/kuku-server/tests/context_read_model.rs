@@ -316,6 +316,10 @@ fn current_and_historical_snapshots_share_complete_shape() {
     );
     assert!(historical.exact_request.is_some());
     assert_eq!(
+        Some("sha256:exact"),
+        historical.exact_payload_hash.as_deref()
+    );
+    assert_eq!(
         Some(10),
         historical.usage.this_request.unwrap().input_tokens
     );
@@ -404,6 +408,10 @@ fn inaccessible_observation_has_distinct_warning() {
         .snapshot(&id("tsk_000000000000000000000001"), None)
         .unwrap();
     assert_eq!(0, snapshot.health.source_drift_count);
+    assert_eq!(
+        api::ObservationDrift::Inaccessible,
+        snapshot.sections.observations[0].current_drift
+    );
     assert!(snapshot
         .warnings
         .iter()

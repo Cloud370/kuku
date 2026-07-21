@@ -13,7 +13,7 @@ use crate::api::{
     ContextHealth, ContextHealthLevel, ContextSections, ContextSnapshot, ContextWarning,
     ContextWarningCode, ConversationContext, DelegatedAgentStatus, DiscoverableContext,
     InstructionContextItem, MemoryContextItem, MessageProjection, ObservationContextItem,
-    RequestStatus, RequestSummary, SkillContextItem, TierSummary,
+    ObservationDrift, RequestStatus, RequestSummary, SkillContextItem, TierSummary,
 };
 use crate::run_manager::DomainError;
 
@@ -171,6 +171,8 @@ impl ContextReadModel {
             health,
             warnings,
             exact_request: selected_snapshot.map(|snapshot| snapshot.exact.clone()),
+            exact_payload_hash: selected_snapshot
+                .map(|snapshot| snapshot.exact_payload_hash.clone()),
         })
     }
 
@@ -433,6 +435,7 @@ fn sections(
             kind: value.fact.kind,
             relative_path: value.fact.relative_path,
             retention: value.fact.retention,
+            current_drift: observation_drift(value.current_drift),
             summary: value.fact.summary,
         })
         .collect();
@@ -463,6 +466,16 @@ fn sections(
         },
         observation_states,
     )
+}
+
+fn observation_drift(state: ObservationState) -> ObservationDrift {
+    match state {
+        ObservationState::Present => ObservationDrift::Present,
+        ObservationState::ChangedSinceObservation => ObservationDrift::ChangedSinceObservation,
+        ObservationState::NoLongerPresent => ObservationDrift::NoLongerPresent,
+        ObservationState::Inaccessible => ObservationDrift::Inaccessible,
+        ObservationState::NotApplicable => ObservationDrift::NotApplicable,
+    }
 }
 
 fn health(

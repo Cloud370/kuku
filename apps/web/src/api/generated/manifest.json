@@ -2,7 +2,7 @@
   "algorithm": "sha256",
   "files": {
     "fixtures/api_error.json": "14a8a9977e09e30fdb33f57239848474c05414381cb8341d30c7692bfd6206c0",
-    "fixtures/context_snapshot.json": "c95f282a9a36155a9c263f6b5bef8bf7138dd45c174a00918d59d81d756b3190",
+    "fixtures/context_snapshot.json": "1b1c36be5a818dbcc52b79d217b2ba4ac7d77cde57eaeecaa61481a36775bf1c",
     "fixtures/platform_catalog.json": "d417ba190deecdbdd41b1e799515ed268c7d9f7370cc8b0e8b27ab7a058bb2f9",
     "fixtures/platform_status.json": "1a69a8e341b2d4147ffc47484160605d5d319c1f65f9844c420e40831160fb5e",
     "fixtures/review_snapshot.json": "7ed907e671dd22460e8a8c16575f56ad6407bfe0181a8d353030886b0d6e00f4",
@@ -10,8 +10,8 @@
     "fixtures/task_changes.json": "d0c8a49b6591f6f467a078970c568004259ea850e37f036604926b4fed1dd87e",
     "fixtures/task_projection.json": "3b78cbb8eebdc273b84bd2cc61685b498390d6132aac5fb4a9259be87d32ba13",
     "fixtures/task_stream_event.json": "24cc11490d93d711022f6be991d8450291ecae0d3445f7f5914b2bed2ddf3411",
-    "index.ts": "42679f8e14a2e4b8f50aac2300caf4036b08a2d9db5bff8cae8c8ec9c222c861",
+    "index.ts": "a0dd73c512d7d9853d1d3528f6bac165b54d071a0d364ec0a44f9bf64555e687",
     "manifest-inputs.json": "14357759cce84a9e02407f4b3be79f523e423bc3c1db3dba30cf1133adc1c6ef",
-    "schema.json": "bb7de26b2205790ae424aab7c142341e3de3d664a59802ddc2bf431f9e8833a7"
+    "schema.json": "9625c229e83a5be1aae52d5b751516316b523e1854e5ba0d4ef025e08994554e"
   }
 }

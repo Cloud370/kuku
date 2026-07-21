@@ -17,9 +17,9 @@ pub use context::{
     ContextBreakdownProjection, ContextCatalog, ContextHealth, ContextHealthLevel, ContextSections,
     ContextSnapshot, ContextSummary, ContextUsage, ContextWarning, ContextWarningCode,
     ConversationContext, DelegatedAgentProjection, DelegatedAgentStatus, DiscoverableContext,
-    InstructionContextItem, MemoryContextItem, ObservationContextItem, RequestStatus,
-    RequestSummary, SkillCatalogEntry, SkillContextItem, TierCatalogEntry, TierSummary,
-    ToolCatalogEntry, UsageSummary,
+    InstructionContextItem, MemoryContextItem, ObservationContextItem, ObservationDrift,
+    RequestStatus, RequestSummary, SkillCatalogEntry, SkillContextItem, TierCatalogEntry,
+    TierSummary, ToolCatalogEntry, UsageSummary,
 };
 pub use error::{ApiError, ApiErrorCode};
 pub use platform::{

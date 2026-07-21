@@ -147,6 +147,7 @@ pub fn snapshot_with_context_evidence() -> ContextSnapshot {
             kind: ObservationKind::FileRead,
             relative_path: Some(WorkspaceRelativePath::parse("src/lib.rs").unwrap()),
             retention: ObservationRetention::Retained,
+            current_drift: kuku_server::api::ObservationDrift::Present,
             summary: "Read the module entrypoint".to_string(),
         }],
         agents: vec![DelegatedAgentProjection {
@@ -203,6 +204,7 @@ pub fn historical_snapshot() -> ContextSnapshot {
             "thinking": {"kind": "disabled"}
         }
     });
+    wire["exact_payload_hash"] = json!("sha256:fixture-exact");
     parse(wire)
 }
 

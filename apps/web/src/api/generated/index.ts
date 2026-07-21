@@ -274,6 +274,16 @@ export type InstructionKind = "system" | "project" | "workspace" | "agent";
  */
 export type MemoryKind = "global" | "project";
 /**
+ * This interface was referenced by `WebApiContract`'s JSON-Schema
+ * via the `definition` "ObservationDrift".
+ */
+export type ObservationDrift =
+  | "present"
+  | "changed_since_observation"
+  | "no_longer_present"
+  | "inaccessible"
+  | "not_applicable";
+/**
  * Kind and immutable metadata of a workspace observation.
  *
  * This interface was referenced by `WebApiContract`'s JSON-Schema
@@ -811,6 +821,7 @@ export interface ConnectionInfo {
 export interface ContextSnapshot {
   api_version: ApiVersion;
   discoverable: DiscoverableContext;
+  exact_payload_hash: string | null;
   exact_request: ExactRequest | null;
   health: ContextHealth;
   next_request_base: ContextBreakdown;
@@ -1408,6 +1419,7 @@ export interface MemoryContextItem {
  * via the `definition` "ObservationContextItem".
  */
 export interface ObservationContextItem {
+  current_drift: ObservationDrift;
   kind: ObservationKind;
   relative_path:
     | ({

@@ -6,6 +6,7 @@
     "skill_count": 0,
     "tool_count": 0
   },
+  "exact_payload_hash": null,
   "exact_request": null,
   "health": {
     "context_token_limit": null,

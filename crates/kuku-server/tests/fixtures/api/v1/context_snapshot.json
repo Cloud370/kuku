@@ -63,5 +63,6 @@
     "truncated_observation_count": 0
   },
   "warnings": [],
-  "exact_request": null
+  "exact_request": null,
+  "exact_payload_hash": null
 }
