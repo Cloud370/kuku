@@ -130,7 +130,7 @@ describe('WorkbenchShell', () => {
     expect(screen.getByRole('button', { name: 'Open Agent Context' })).toBeVisible();
   });
 
-  it('opens mobile Agent Context through the integration callback', async () => {
+  it('opens mobile Agent Context in the canonical drawer and updates the integration route', async () => {
     const user = userEvent.setup();
     const onOpenContext = vi.fn();
     renderAt(360, { onOpenContext });
@@ -138,7 +138,12 @@ describe('WorkbenchShell', () => {
     await user.click(screen.getByRole('button', { name: 'Open Agent Context' }));
 
     expect(onOpenContext).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('complementary', { name: 'Agent Context' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Agent Context' })).toBeVisible();
+    expect(screen.getByRole('complementary', { name: 'Agent Context' })).toHaveTextContent(
+      'Context content',
+    );
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Agent Context' })).toBeNull();
   });
 
   it('shows only the server-supplied current branch', () => {

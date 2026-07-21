@@ -59,6 +59,7 @@ function IconButton({
 export function WorkbenchShell(props: WorkbenchShellProps) {
   const narrow = useMediaQuery('(max-width: 767px)');
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [contextDrawerOpen, setContextDrawerOpen] = useState(false);
   const [tasksCollapsed, setTasksCollapsed] = useState(false);
   const [contextCollapsed, setContextCollapsed] = useState(false);
 
@@ -71,7 +72,10 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         <WorkbenchHeader
           onOpenContext={
             narrow
-              ? props.onOpenContext
+              ? () => {
+                  setContextDrawerOpen(true);
+                  props.onOpenContext();
+                }
               : () => {
                   setContextCollapsed(false);
                 }
@@ -95,14 +99,27 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         />
       </div>
       {narrow ? (
-        <TaskDrawer
-          open={taskDrawerOpen}
-          onClose={() => {
-            setTaskDrawerOpen(false);
-          }}
-        >
-          {props.taskNavigation}
-        </TaskDrawer>
+        <>
+          <TaskDrawer
+            open={taskDrawerOpen}
+            onClose={() => {
+              setTaskDrawerOpen(false);
+            }}
+          >
+            {props.taskNavigation}
+          </TaskDrawer>
+          <TaskDrawer
+            contentRole="complementary"
+            label="Agent Context"
+            open={contextDrawerOpen}
+            onClose={() => {
+              setContextDrawerOpen(false);
+            }}
+            side="right"
+          >
+            {props.context}
+          </TaskDrawer>
+        </>
       ) : tasksCollapsed ? null : (
         <nav
           aria-label="Tasks"

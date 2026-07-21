@@ -29,6 +29,20 @@ vi.mock('./workbench/WorkbenchEntry', () => ({
   ),
 }));
 
+vi.mock('./features/review/ReviewRoute', () => ({
+  ReviewRoute: ({ taskId }: { taskId: string }) => (
+    <main aria-label="Production Review">review:{taskId}</main>
+  ),
+}));
+
+vi.mock('./features/settings/SettingsRoute', () => ({
+  SettingsRoute: () => <main aria-label="Production Settings">settings</main>,
+}));
+
+vi.mock('./features/guide/GuideRoute', () => ({
+  GuideRoute: () => <main aria-label="Production Guide">guide</main>,
+}));
+
 function LocationProbe() {
   const location = useLocation();
   return <output aria-label="Location">{location.pathname}</output>;
@@ -87,5 +101,20 @@ describe('App routing', () => {
     expect(screen.getByRole('status', { name: 'Location' })).toHaveTextContent(
       '/tasks/tsk_000000000000000000000002',
     );
+  });
+
+  it.each([
+    ['/auth', 'latest'],
+    ['/init', 'latest'],
+    [
+      '/tasks/tsk_000000000000000000000001/review?workspace=wsp_000000000000000000000001',
+      'review:tsk_000000000000000000000001',
+    ],
+    ['/settings', 'settings'],
+    ['/guide', 'guide'],
+  ])('maps %s to its canonical product route', async (path, expected) => {
+    renderAt(path);
+
+    expect(await screen.findByText(expected)).toBeVisible();
   });
 });
