@@ -171,6 +171,10 @@ export type Temperature = number;
  * via the `definition` "ContextHealthLevel".
  */
 export type ContextHealthLevel = "unavailable" | "healthy" | "notice" | "warning";
+/**
+ * This interface was referenced by `WebApiContract`'s JSON-Schema
+ * via the `definition` "WorkspaceRelativePath".
+ */
 export type WorkspaceRelativePath = string;
 /**
  * This interface was referenced by `WebApiContract`'s JSON-Schema
@@ -1094,11 +1098,7 @@ export interface SourceFact {
   /**
    * Contained workspace-relative path when the source is file-backed.
    */
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   /**
    * Ownership scope of the source.
    */
@@ -1134,11 +1134,7 @@ export interface SourceFact1 {
   /**
    * Contained workspace-relative path when the source is file-backed.
    */
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   /**
    * Ownership scope of the source.
    */
@@ -1203,11 +1199,7 @@ export interface ObservationFact {
   /**
    * Contained workspace-relative path when applicable.
    */
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   /**
    * Request-time retention state.
    */
@@ -1294,11 +1286,7 @@ export interface SourceFact2 {
   /**
    * Contained workspace-relative path when the source is file-backed.
    */
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   /**
    * Ownership scope of the source.
    */
@@ -1392,11 +1380,7 @@ export interface SourceFact3 {
   /**
    * Contained workspace-relative path when the source is file-backed.
    */
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   /**
    * Ownership scope of the source.
    */
@@ -1421,11 +1405,7 @@ export interface MemoryContextItem {
 export interface ObservationContextItem {
   current_drift: ObservationDrift;
   kind: ObservationKind;
-  relative_path:
-    | ({
-        [k: string]: unknown;
-      } & WorkspaceRelativePath)
-    | null;
+  relative_path: WorkspaceRelativePath | null;
   request_id: RequestId;
   retention: ObservationRetention;
   summary: string;

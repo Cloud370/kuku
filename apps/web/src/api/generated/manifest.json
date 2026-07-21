@@ -10,8 +10,11 @@
     "fixtures/task_changes.json": "d0c8a49b6591f6f467a078970c568004259ea850e37f036604926b4fed1dd87e",
     "fixtures/task_projection.json": "3b78cbb8eebdc273b84bd2cc61685b498390d6132aac5fb4a9259be87d32ba13",
     "fixtures/task_stream_event.json": "24cc11490d93d711022f6be991d8450291ecae0d3445f7f5914b2bed2ddf3411",
-    "index.ts": "a0dd73c512d7d9853d1d3528f6bac165b54d071a0d364ec0a44f9bf64555e687",
-    "manifest-inputs.json": "14357759cce84a9e02407f4b3be79f523e423bc3c1db3dba30cf1133adc1c6ef",
-    "schema.json": "9625c229e83a5be1aae52d5b751516316b523e1854e5ba0d4ef025e08994554e"
+    "fixtures/task_stream_event.projection_replaced.json": "663b10a5cd213c229cd6bba43a1f8db8aef81e44ff6732452ae6f5170586a467",
+    "fixtures/task_stream_event.timeline_atomic_batch.json": "6afa099a3e627530d949fd47fe443b45d727bf47982e9aa3e3a6d35ccac54548",
+    "fixtures/task_stream_event.timeline_single_eviction.json": "62f4452b2c5159c4f1733d350eabfec1b9f4483937b7314b2540436ae61317b7",
+    "index.ts": "118de69420e5de075a11e5d8cb4e15924d73ea7ff632a68e35e143ea57daffb5",
+    "manifest-inputs.json": "f0b279baea69aabd8bc3af78917cf8938897a753c4c3475bc9abda6d5011fb39",
+    "schema.json": "400caf672b1052da766c5b107a915e711d2a213b618d04ed809cea58ebaa2d8a"
   }
 }

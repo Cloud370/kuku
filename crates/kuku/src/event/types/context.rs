@@ -114,19 +114,7 @@ impl JsonSchema for WorkspaceRelativePath {
             "type": "string",
             "minLength": 1,
             "maxLength": MAX_WORKSPACE_RELATIVE_PATH_BYTES,
-            "pattern": r"^(?:[^./\\:]|\.[^./\\:]|\.\.[^/\\:])[^/\\:]*(?:/(?:[^./\\:]|\.[^./\\:]|\.\.[^/\\:])[^/\\:]*)*$",
-            "allOf": [
-                {
-                    "not": {
-                        "pattern": r"(?:^|/)[^/]*[. ](?:/|$)"
-                    }
-                },
-                {
-                    "not": {
-                        "pattern": r"(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[. ]*(?:\.[^/]*)?(?:/|$)"
-                    }
-                }
-            ],
+            "pattern": r"^(?:(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[. ]*(?:\.[^/]*)?(?:/|$))(?![^/]*[. ](?:/|$))(?:[^./\\:]|\.[^./\\:]|\.\.[^/\\:])[^/\\:]*)(?:/(?:(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[. ]*(?:\.[^/]*)?(?:/|$))(?![^/]*[. ](?:/|$))(?:[^./\\:]|\.[^./\\:]|\.\.[^/\\:])[^/\\:]*))*$",
             "format": "workspace-relative-path",
             "x-kuku-max-utf8-bytes": MAX_WORKSPACE_RELATIVE_PATH_BYTES
         })

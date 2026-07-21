@@ -8,5 +8,8 @@
   "fixtures/platform_catalog.json",
   "fixtures/context_snapshot.json",
   "fixtures/review_snapshot.json",
+  "fixtures/task_stream_event.projection_replaced.json",
+  "fixtures/task_stream_event.timeline_single_eviction.json",
+  "fixtures/task_stream_event.timeline_atomic_batch.json",
   "schema.json"
 ]

@@ -1,0 +1,43 @@
+{
+  "api_version": 1,
+  "cursor": 501,
+  "event": {
+    "changes": [
+      {
+        "item": {
+          "item": {
+            "file_references": [],
+            "finalized": true,
+            "message_id": "message-000500",
+            "order_key": 500,
+            "request_ids": [],
+            "role": "agent",
+            "text": "Fixture message 500"
+          },
+          "type": "message"
+        },
+        "type": "message_appended"
+      }
+    ],
+    "timeline_window": {
+      "evicted_items": [
+        {
+          "item": {
+            "file_references": [],
+            "finalized": true,
+            "message_id": "message-000000",
+            "order_key": 0,
+            "request_ids": [],
+            "role": "agent",
+            "text": "Fixture message 0"
+          },
+          "type": "message"
+        }
+      ],
+      "next_cursor": "timeline:v1:fixture-history"
+    },
+    "type": "changes_applied"
+  },
+  "task_id": "tsk_000000000000000000000001",
+  "task_revision": 1
+}

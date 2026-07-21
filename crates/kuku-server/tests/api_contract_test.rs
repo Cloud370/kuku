@@ -13,7 +13,104 @@ fn fixture(name: &str) -> Value {
         "{}/tests/fixtures/api/v1/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
-    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    if let Ok(contents) = fs::read_to_string(path) {
+        return serde_json::from_str(&contents).unwrap();
+    }
+
+    let exported = tempfile::tempdir().unwrap();
+    contract_export::export_to(exported.path()).unwrap();
+    serde_json::from_str(&fs::read_to_string(exported.path().join("fixtures").join(name)).unwrap())
+        .unwrap()
+}
+
+fn definition<'a>(schema: &'a Value, name: &str) -> &'a Value {
+    &schema["$defs"][name]
+}
+
+#[test]
+fn one_contract_contains_acceptance_families_and_numeric_stream_cursor() {
+    let schema: Value = serde_json::from_str(&contract_export::render_schema().unwrap()).unwrap();
+    for name in [
+        "PlatformStatus",
+        "TaskPage",
+        "TaskProjection",
+        "TaskStreamEvent",
+        "TimelineWindowDelta",
+        "ContextSnapshot",
+        "AgentThread",
+        "ReviewSnapshot",
+        "DiffDocument",
+        "AnnotationBatch",
+        "ReviewSubmissionResult",
+        "ApiError",
+    ] {
+        assert!(!definition(&schema, name).is_null(), "missing {name}");
+    }
+
+    let event = fixture("task_stream_event.projection_replaced.json");
+    assert!(event["cursor"].is_u64());
+    assert!(event["task_revision"].is_u64());
+    assert!(event["task_id"].is_string());
+    assert_eq!(event["event"]["type"], "projection_replaced");
+    serde_json::from_value::<TaskStreamEvent>(event).unwrap();
+}
+
+#[test]
+fn timeline_window_fixtures_cover_null_single_eviction_and_large_atomic_batch() {
+    let null_window = fixture("task_stream_event.json");
+    assert!(null_window["event"]["timeline_window"].is_null());
+
+    let single = fixture("task_stream_event.timeline_single_eviction.json");
+    let single_event = serde_json::from_value::<TaskStreamEvent>(single.clone()).unwrap();
+    assert_eq!(serde_json::to_value(single_event).unwrap(), single);
+    assert_eq!(single["event"]["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        single["event"]["timeline_window"]["evicted_items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        single["event"]["changes"][0]["item"]["item"]["message_id"],
+        "message-000500"
+    );
+    assert_eq!(
+        single["event"]["timeline_window"]["evicted_items"][0]["item"]["message_id"],
+        "message-000000"
+    );
+
+    let atomic = fixture("task_stream_event.timeline_atomic_batch.json");
+    let atomic_event = serde_json::from_value::<TaskStreamEvent>(atomic.clone()).unwrap();
+    assert_eq!(serde_json::to_value(atomic_event).unwrap(), atomic);
+
+    let changes = atomic["event"]["changes"].as_array().unwrap();
+    let evicted = atomic["event"]["timeline_window"]["evicted_items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(changes.len(), 501);
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(
+        evicted[0]["item"]["message_id"],
+        changes[0]["item"]["item"]["message_id"]
+    );
+
+    let newest_window = changes
+        .iter()
+        .skip(evicted.len())
+        .map(|change| change["item"].clone())
+        .collect::<Vec<_>>();
+    let complete_replay = evicted
+        .iter()
+        .cloned()
+        .chain(newest_window.iter().cloned())
+        .collect::<Vec<_>>();
+    let appended = changes
+        .iter()
+        .map(|change| change["item"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(newest_window.len(), 500);
+    assert_eq!(complete_replay, appended);
 }
 
 #[test]
@@ -323,6 +420,9 @@ fn exporter_writes_stable_schema_fixture_inputs() {
         "fixtures/task_projection.json",
         "fixtures/task_changes.json",
         "fixtures/task_stream_event.json",
+        "fixtures/task_stream_event.projection_replaced.json",
+        "fixtures/task_stream_event.timeline_single_eviction.json",
+        "fixtures/task_stream_event.timeline_atomic_batch.json",
         "fixtures/platform_status.json",
         "fixtures/settings_snapshot.json",
         "fixtures/platform_catalog.json",

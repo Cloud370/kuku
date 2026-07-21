@@ -4,10 +4,11 @@ use std::path::Path;
 
 use schemars::schema_for;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use super::WebApiContract;
 
-const FIXTURES: &[(&str, &str)] = &[
+const SOURCE_FIXTURES: &[(&str, &str)] = &[
     (
         "api_error.json",
         include_str!("../../tests/fixtures/api/v1/api_error.json"),
@@ -87,12 +88,12 @@ pub fn export_to(output_dir: &Path) -> Result<(), ExportError> {
 
     let fixture_dir = output_dir.join("fixtures");
     fs::create_dir_all(&fixture_dir)?;
-    for (name, contents) in FIXTURES {
-        let value: serde_json::Value = serde_json::from_str(contents)?;
+    let fixtures = fixture_outputs()?;
+    for (name, value) in &fixtures {
         fs::write(fixture_dir.join(name), render_pretty(&value)?)?;
     }
 
-    let manifest_inputs = FIXTURES
+    let manifest_inputs = fixtures
         .iter()
         .map(|(name, _)| format!("fixtures/{name}"))
         .chain(std::iter::once("schema.json".to_owned()))
@@ -102,6 +103,94 @@ pub fn export_to(output_dir: &Path) -> Result<(), ExportError> {
         render_pretty(&manifest_inputs)?,
     )?;
     Ok(())
+}
+
+fn fixture_outputs() -> Result<Vec<(&'static str, Value)>, serde_json::Error> {
+    let mut fixtures = SOURCE_FIXTURES
+        .iter()
+        .map(|(name, contents)| serde_json::from_str(contents).map(|value| (*name, value)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let projection: Value = serde_json::from_str(
+        SOURCE_FIXTURES
+            .iter()
+            .find(|(name, _)| *name == "task_projection.json")
+            .expect("task projection fixture is registered")
+            .1,
+    )?;
+
+    fixtures.extend([
+        (
+            "task_stream_event.projection_replaced.json",
+            json!({
+                "api_version": 1,
+                "cursor": projection["cursor"],
+                "task_revision": projection["task_revision"],
+                "task_id": projection["task"]["task_id"],
+                "event": {
+                    "type": "projection_replaced",
+                    "projection": projection,
+                },
+            }),
+        ),
+        (
+            "task_stream_event.timeline_single_eviction.json",
+            task_stream_event(501, 1, vec![message_appended(500)], vec![message_item(0)]),
+        ),
+        (
+            "task_stream_event.timeline_atomic_batch.json",
+            task_stream_event(
+                501,
+                1,
+                (0..=500).map(message_appended).collect(),
+                vec![message_item(0)],
+            ),
+        ),
+    ]);
+    Ok(fixtures)
+}
+
+fn task_stream_event(
+    cursor: u64,
+    task_revision: u64,
+    changes: Vec<Value>,
+    evicted_items: Vec<Value>,
+) -> Value {
+    json!({
+        "api_version": 1,
+        "cursor": cursor,
+        "task_revision": task_revision,
+        "task_id": "tsk_000000000000000000000001",
+        "event": {
+            "type": "changes_applied",
+            "changes": changes,
+            "timeline_window": {
+                "next_cursor": "timeline:v1:fixture-history",
+                "evicted_items": evicted_items,
+            },
+        },
+    })
+}
+
+fn message_appended(index: u64) -> Value {
+    json!({
+        "type": "message_appended",
+        "item": message_item(index),
+    })
+}
+
+fn message_item(index: u64) -> Value {
+    json!({
+        "type": "message",
+        "item": {
+            "message_id": format!("message-{index:06}"),
+            "role": "agent",
+            "text": format!("Fixture message {index}"),
+            "finalized": true,
+            "request_ids": [],
+            "file_references": [],
+            "order_key": index,
+        },
+    })
 }
 
 fn render_pretty<T>(value: &T) -> Result<String, serde_json::Error>

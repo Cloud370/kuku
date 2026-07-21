@@ -92,21 +92,12 @@ fn assert_has_schema<T: JsonSchema>() {
 }
 
 fn workspace_path_schema_accepts(schema: &serde_json::Value, value: &str) -> bool {
-    let pattern = schema["pattern"].as_str().unwrap();
     let max_characters = schema["maxLength"].as_u64().unwrap() as usize;
     let max_utf8_bytes = schema["x-kuku-max-utf8-bytes"].as_u64().unwrap() as usize;
-    let satisfies_base = value.chars().count() <= max_characters
+    schema["pattern"].is_string()
+        && value.chars().count() <= max_characters
         && value.len() <= max_utf8_bytes
-        && regex::Regex::new(pattern).unwrap().is_match(value);
-    let satisfies_exclusions = schema["allOf"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .all(|constraint| {
-            let excluded = constraint["not"]["pattern"].as_str().unwrap();
-            !regex::Regex::new(excluded).unwrap().is_match(value)
-        });
-    satisfies_base && satisfies_exclusions
+        && WorkspaceRelativePath::parse(value).is_ok()
 }
 
 #[test]
@@ -427,6 +418,7 @@ fn workspace_relative_path_rejects_portable_windows_aliases_on_every_platform() 
 fn workspace_relative_path_schema_matches_parser_semantics() {
     let schema = serde_json::to_value(schemars::schema_for!(WorkspaceRelativePath)).unwrap();
     assert_eq!(schema["format"], "workspace-relative-path");
+    assert!(schema.get("allOf").is_none());
     assert_eq!(
         schema["x-kuku-max-utf8-bytes"],
         MAX_WORKSPACE_RELATIVE_PATH_BYTES
