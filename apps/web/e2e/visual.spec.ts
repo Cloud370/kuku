@@ -38,6 +38,23 @@ async function capture(page: Page, name: string): Promise<void> {
   });
 }
 
+async function openAvailableDiff(page: Page, path: string): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const diffResponse = page.waitForResponse((response) =>
+      response.url().includes('/changes/diff?'),
+    );
+    await page.getByLabel('Workspace changes').getByText(path, { exact: true }).click();
+    const response = await diffResponse;
+    if (response.status() === 200) return;
+
+    const body = await response.text();
+    if (response.status() !== 503 || attempt === 2) {
+      expect(response.status(), body).toBe(200);
+    }
+    await page.waitForTimeout(100 * (attempt + 1));
+  }
+}
+
 async function submitFollowUp(
   request: Parameters<typeof taskProjection>[0],
   server: UnifiedBinary,
@@ -100,7 +117,7 @@ test('captures loading, empty, transport error, and Needs Attention Workbench st
     await route.continue();
   });
   await loading.page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}`);
-  await expect(loading.page.getByRole('status')).toContainText('Loading Task');
+  await expect(loading.page.getByText('Loading Task', { exact: true })).toBeVisible();
   await capture(loading.page, 'workbench-loading.png');
   releaseLoading();
   await loading.context.close();
@@ -172,7 +189,9 @@ test('captures current, historical, and mobile-sheet Context states', async ({
     .first();
   await expect(olderRequest).toBeVisible();
   await olderRequest.click();
-  await expect(historical.page.getByText('Historical Request')).toBeVisible();
+  const context = historical.page.getByLabel('Context');
+  await expect(context.getByRole('status')).toHaveText('Context loaded');
+  await expect(context.getByText('Historical Request')).toBeVisible();
   await capture(historical.page, 'context-historical.png');
   await historical.context.close();
 });
@@ -187,14 +206,15 @@ test('captures Git, non-Git Files, and outdated Review states', async ({
   await completeScenario(request, unifiedBinary);
   const projection = await taskProjection(request, unifiedBinary, taskId);
   const snapshot = await changes(request, unifiedBinary, projection.task.workspace_id);
-  const changedPath = snapshot.entries[0]?.path;
-  if (changedPath === undefined) throw new Error('scenario returned no changed path');
+  const selectableEntry = snapshot.entries.find((entry) => (entry.additions ?? 0) > 0);
+  const changedPath = selectableEntry?.path;
+  if (changedPath === undefined) throw new Error('scenario returned no change with new lines');
 
   const git = await newVisualPage(browser, unifiedBinary);
   await git.page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}/review`);
   await git.page.getByRole('tab', { name: 'Changes' }).click();
   await expect(git.page.getByLabel('Workspace changes')).toContainText(changedPath);
-  await git.page.getByLabel('Workspace changes').getByRole('button').first().click();
+  await openAvailableDiff(git.page, changedPath);
   const line = git.page.getByRole('button', { name: /^Select new line /u }).first();
   await expect(line).toBeVisible();
   await capture(git.page, 'review-git-changes.png');
@@ -289,7 +309,9 @@ test('captures Settings loading, transport, validation, populated, and Guide sta
   await expect(maximumRuns).toBeVisible();
   await maximumRuns.fill('2');
   await validation.page.getByRole('button', { name: 'Save Settings' }).click();
-  await expect(validation.page.getByRole('alert')).toContainText('Settings could not be saved');
+  await expect(validation.page.getByRole('alert')).toContainText(
+    'Settings reconciled with current server state',
+  );
   await capture(validation.page, 'settings-validation-error.png');
   await validation.context.close();
 

@@ -500,7 +500,7 @@ async fn run_scenario_driver(
 ) {
     let request_scope = RequestScope {
         execution: start.execution_scope.clone(),
-        request_id: ScenarioIds::seeded(seed).request_id(),
+        request_id: request_id_for_run(&start.execution_scope.run_id),
     };
     let initial = request_events(&fixture, &start, &request_scope);
     if events
@@ -707,6 +707,15 @@ async fn run_scenario_driver(
             workspace_changes: None,
         }))
         .await;
+}
+
+fn request_id_for_run(run_id: &RunId) -> RequestId {
+    let suffix = run_id
+        .as_str()
+        .strip_prefix("run_")
+        .expect("validated run id has the canonical prefix");
+    RequestId::parse(format!("req_{suffix}"))
+        .expect("run-derived deterministic request id is valid")
 }
 
 async fn send_timeline_history(

@@ -210,6 +210,63 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
     }
     assert_eq!(10_000, history_ids.len());
     assert_eq!(Some(expected_file_path.clone()), tool_file_reference);
+
+    let _: SubmitRunResponse = client
+        .post(
+            &format!("/api/v1/tasks/{task_id}/runs"),
+            &json!({
+                "expected_task_revision": terminal.task_revision,
+                "idempotency_key": "scenario-runtime-follow-up",
+                "message": "Capture a second immutable Request snapshot",
+                "tier_id": "tier:balanced",
+                "skill_ids": []
+            }),
+            202,
+        )
+        .await;
+    let mut follow_up_context = None;
+    for _ in 0..200 {
+        let response = client
+            .client
+            .get(format!("{}/api/v1/tasks/{task_id}/context", client.base_url))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            200,
+            response.status().as_u16(),
+            "follow-up Request made Context ledger unreadable"
+        );
+        let snapshot: ContextSnapshot = response.json().await.unwrap();
+        if snapshot.request_history.len() == 2 {
+            follow_up_context = Some(snapshot);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let follow_up_context = follow_up_context.expect("follow-up Request was not recorded");
+    assert_ne!(
+        follow_up_context.request_history[0].request_id,
+        follow_up_context.request_history[1].request_id
+    );
+
+    let follow_up_projection: TaskProjection =
+        client.get(&format!("/api/v1/tasks/{task_id}")).await;
+    let _: Value = client
+        .post(
+            &format!("/api/v1/tasks/{task_id}/stop"),
+            &json!({
+                "expected_task_revision": follow_up_projection.task_revision,
+                "idempotency_key": "scenario-runtime-follow-up-stop"
+            }),
+            202,
+        )
+        .await;
+    assert_eq!(
+        TaskState::Stopped,
+        wait_for_terminal_projection(&client, &task_id).await.task.state
+    );
 }
 
 #[test]
@@ -233,6 +290,28 @@ async fn control_releases_only_declared_barriers() {
 
 #[tokio::test]
 async fn scenario_factory_drives_the_production_driver_contract() {
+    async fn initial_request_id(
+        handle: &mut kuku_server::run_manager::driver::DriverHandle,
+    ) -> String {
+        assert_eq!(
+            handle.events.recv().await,
+            Some(RuntimeDriverEvent::Started)
+        );
+        while let Some(event) = handle.events.recv().await {
+            if let RuntimeDriverEvent::Activity(events) = event {
+                if let Some(request_id) = events.iter().find_map(|event| match event {
+                    TaskEvent::RequestStarted(started) => {
+                        Some(started.scope.request_id.as_str().to_owned())
+                    }
+                    _ => None,
+                }) {
+                    return request_id;
+                }
+            }
+        }
+        panic!("scenario driver emitted no RequestStarted event");
+    }
+
     fn assert_driver_factory<T: RunDriverFactory>() {}
     assert_driver_factory::<ScenarioDriverFactory>();
 
@@ -259,17 +338,24 @@ async fn scenario_factory_drives_the_production_driver_contract() {
     };
     let factory = ScenarioDriverFactory::from_fixture("core_task", 7).unwrap();
     let control = factory.control();
-    let mut handle = factory.start(start).await.unwrap();
+    let mut first = factory.start(start.clone()).await.unwrap();
+    let first_request_id = initial_request_id(&mut first).await;
+    let second_run_id = ids.run_id();
+    let second = DriverStart {
+        run_id: second_run_id.clone(),
+        agent_message_id: "msg_agent_scenario_follow_up".to_owned(),
+        execution_scope: kuku::event::ExecutionScope {
+            run_id: second_run_id,
+            turn_id: ids.turn_id(),
+            turn_index: 2,
+            ..start.execution_scope
+        },
+        ..start
+    };
+    let mut follow_up = factory.start(second).await.unwrap();
+    let follow_up_request_id = initial_request_id(&mut follow_up).await;
 
-    assert_eq!(
-        handle.events.recv().await,
-        Some(RuntimeDriverEvent::Started)
-    );
-    while let Some(event) = handle.events.recv().await {
-        if matches!(event, RuntimeDriverEvent::Activity(_)) {
-            break;
-        }
-    }
+    assert_ne!(first_request_id, follow_up_request_id);
     control.release("after-tool").await.unwrap();
 }
 
