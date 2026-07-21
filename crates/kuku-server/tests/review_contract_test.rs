@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
 use std::future::{pending, Future};
 use std::pin::Pin;
@@ -134,10 +134,12 @@ fn review_limit_defaults_match_the_contract() {
 
 #[test]
 fn revision_budget_retry_keeps_prior_debits() {
-    let mut limits = ReviewLimits::default();
-    limits.revision_file_hash_bytes = 3;
-    limits.revision_listing_entries = 2;
-    limits.revision_listing_hash_bytes = 4;
+    let limits = ReviewLimits {
+        revision_file_hash_bytes: 3,
+        revision_listing_entries: 2,
+        revision_listing_hash_bytes: 4,
+        ..ReviewLimits::default()
+    };
     let mut budget = RevisionBudget::new(&limits);
 
     budget.debit_file_bytes(2).unwrap();
@@ -215,9 +217,11 @@ async fn git_admission_rejects_global_and_workspace_n_plus_one() {
 
 #[tokio::test]
 async fn aborted_holder_releases_both_admission_permits() {
-    let mut limits = ReviewLimits::default();
-    limits.global_scan_permits = 1;
-    limits.workspace_scan_permits = 1;
+    let limits = ReviewLimits {
+        global_scan_permits: 1,
+        workspace_scan_permits: 1,
+        ..ReviewLimits::default()
+    };
     let admission = Arc::new(ReviewAdmission::new(&limits));
     let workspace = workspace_id(1);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

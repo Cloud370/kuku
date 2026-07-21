@@ -266,7 +266,7 @@ mod tests {
 
         let truncated = truncate_utf8_bytes(&text, 25);
 
-        assert!(truncated.as_bytes().len() <= 25);
+        assert!(truncated.len() <= 25);
         assert!(truncated.ends_with("..."));
         assert!(!truncated.contains(' '));
         let rebuilt = truncated[..truncated.len() - 3].chars().collect::<String>();
@@ -285,7 +285,7 @@ mod tests {
 
         let block = pack_skill_block(&header_lines, &preview_candidates, &hint_lines);
 
-        assert!(block.as_bytes().len() <= MAX_SKILLS_BLOCK_BYTES);
+        assert!(block.len() <= MAX_SKILLS_BLOCK_BYTES);
         assert!(block.contains("... +11 more"));
         assert!(!block.contains("... +9 more"));
     }
@@ -301,7 +301,7 @@ mod tests {
 
         let block = pack_skill_block(&header_lines, &preview_candidates, &hint_lines);
 
-        assert!(block.as_bytes().len() <= MAX_SKILLS_BLOCK_BYTES);
+        assert!(block.len() <= MAX_SKILLS_BLOCK_BYTES);
         assert!(block.contains("... +"));
         assert!(!block.contains('\u{fffd}'));
     }
@@ -320,9 +320,9 @@ mod tests {
             let catalog = render_skill_catalog(&registry, &[], None).expect("should render");
 
             assert!(
-                catalog.as_bytes().len() <= MAX_SKILLS_BLOCK_BYTES,
+                catalog.len() <= MAX_SKILLS_BLOCK_BYTES,
                 "catalog exceeded byte budget for total_skills={total_skills}, bytes={}",
-                catalog.as_bytes().len()
+                catalog.len()
             );
         }
     }

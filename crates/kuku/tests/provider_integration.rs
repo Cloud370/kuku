@@ -1178,10 +1178,8 @@ async fn agent_to_opens_nested_address_from_root_contact() {
     let events = EventStore::replay(env.events_path(session_id)).unwrap();
     let nested_kinds: Vec<&str> = events
         .iter()
-        .filter_map(|event| {
-            (event_conversation(&event.payload) == Some("review/api"))
-                .then(|| event.payload.kind_name())
-        })
+        .filter(|event| event_conversation(&event.payload) == Some("review/api"))
+        .map(|event| event.payload.kind_name())
         .collect();
     let opened_index = nested_kinds
         .iter()

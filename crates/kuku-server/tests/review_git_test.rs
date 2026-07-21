@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

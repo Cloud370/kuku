@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
 use std::fs::{File, FileTimes};
 use std::future::Future;

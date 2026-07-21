@@ -232,7 +232,7 @@ fn append_records(
                 }
             }
         }
-        return Ok(completed);
+        Ok(completed)
     }
 
     #[cfg(not(test))]
