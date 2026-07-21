@@ -1,0 +1,33 @@
+{
+  "name": "human_acceptance",
+  "provider": {
+    "model": "scenario-model",
+    "response": "The acceptance request is complete."
+  },
+  "workspace": {
+    "kind": "directory",
+    "git_branch": null,
+    "baseline_files": [],
+    "working_files": [
+      {
+        "path": "README.md",
+        "content": "Acceptance checklist\n- verify Context\n"
+      }
+    ],
+    "revision_update": {
+      "path": "README.md",
+      "content": "Acceptance checklist\n- verify Context\n- verify Review\n"
+    }
+  },
+  "task": {
+    "message": "Verify the human acceptance checklist."
+  },
+  "review": {
+    "path": "README.md",
+    "side": "file",
+    "start_line": 2,
+    "end_line": 2,
+    "excerpt": "- verify Context",
+    "comment": "Record this acceptance note in the follow-up run."
+  }
+}

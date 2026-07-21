@@ -1,12 +1,258 @@
 #![cfg(feature = "test-scenarios")]
 
+#[allow(dead_code)]
+mod common;
+
+const FULL_TASK_FIXTURE: &str = include_str!("fixtures/scenarios/full_task.json");
+const HUMAN_ACCEPTANCE_FIXTURE: &str = include_str!("fixtures/scenarios/human_acceptance.json");
+
+use std::net::SocketAddr;
+use std::path::Path;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+
+use axum::extract::State;
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
 use kuku::event::{
     CommandReceipt, CommandResult, Cursor, MessageFact, MessageRoleFact, TaskActivityBatch,
     TaskEvent, TaskId, TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
 };
-use kuku_server::api::{TaskChange, TimelineItemProjection};
+use kuku_server::api::{
+    AnnotationBatch, AnnotationDraft, AnnotationSide, AnnotationStatus, ApiError, ApiErrorCode,
+    ChangesAvailability, ContextSnapshot, CreateTaskResponse, DiffDocument, ExactContentBlock,
+    FileContent, ReviewSnapshot, ReviewSubmissionPage, ReviewSubmissionResult, SubmitRunResponse,
+    TaskChange, TaskProjection, TaskState, TimelineItemProjection,
+};
 use kuku_server::run_manager::{DomainError, TaskAggregate};
 use kuku_server::testing::{BarrierOutcome, DriverEvent, ScenarioControl, ScenarioDriverFactory};
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureScenario {
+    name: String,
+    provider: FeatureProviderInput,
+    workspace: FeatureWorkspaceInput,
+    task: FeatureTaskInput,
+    review: FeatureReviewInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureProviderInput {
+    model: String,
+    response: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureWorkspaceInput {
+    kind: FeatureWorkspaceKind,
+    git_branch: Option<String>,
+    baseline_files: Vec<FeatureFileInput>,
+    working_files: Vec<FeatureFileInput>,
+    revision_update: FeatureFileInput,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum FeatureWorkspaceKind {
+    Git,
+    Directory,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureFileInput {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureTaskInput {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureReviewInput {
+    path: String,
+    side: AnnotationSide,
+    start_line: u32,
+    end_line: u32,
+    excerpt: String,
+    comment: String,
+}
+
+fn parse_feature_scenario(source: &str) -> Result<FeatureScenario, String> {
+    let value: Value = serde_json::from_str(source).map_err(|error| error.to_string())?;
+    reject_serialized_server_state(&value)?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+fn reject_serialized_server_state(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if matches!(
+                    key.as_str(),
+                    "projection"
+                        | "ledger"
+                        | "task_revision"
+                        | "cursor"
+                        | "timeline"
+                        | "review_summary"
+                ) {
+                    return Err(format!("serialized server state is forbidden: {key}"));
+                }
+                reject_serialized_server_state(child)?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                reject_serialized_server_state(item)?;
+            }
+        }
+        Value::String(name) if matches!(name.as_str(), "TaskProjection" | "TaskLedgerRecord") => {
+            return Err(format!("serialized server type is forbidden: {name}"));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct FeatureProviderLog {
+    requests: Mutex<Vec<Value>>,
+}
+
+#[derive(Clone)]
+struct FeatureProviderState {
+    log: Arc<FeatureProviderLog>,
+    response: String,
+}
+
+struct FeatureProvider {
+    addr: SocketAddr,
+    log: Arc<FeatureProviderLog>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl FeatureProvider {
+    async fn start(response: String) -> Self {
+        let log = Arc::new(FeatureProviderLog::default());
+        let state = FeatureProviderState {
+            log: log.clone(),
+            response,
+        };
+        let app = Router::new()
+            .route("/v1/messages", post(feature_provider_response))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Self { addr, log, handle }
+    }
+
+    fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.log.requests.lock().unwrap().clone()
+    }
+}
+
+impl Drop for FeatureProvider {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+async fn feature_provider_response(
+    State(state): State<FeatureProviderState>,
+    Json(request): Json<Value>,
+) -> Response {
+    let request_index = {
+        let mut requests = state.log.requests.lock().unwrap();
+        requests.push(request);
+        requests.len()
+    };
+    let body = common::mock_provider::anthropic_sse_response(json!({
+        "id": format!("msg_feature_{request_index}"),
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": state.response}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 10}
+    }));
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CONNECTION, "close"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+struct FeatureClient {
+    base_url: String,
+    client: wreq::Client,
+}
+
+impl FeatureClient {
+    fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            client: wreq::Client::new(),
+        }
+    }
+
+    async fn get<T: DeserializeOwned>(&self, path: &str) -> T {
+        let response = self
+            .client
+            .get(format!("{}{path}", self.base_url))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200, "GET {path}");
+        response.json().await.unwrap()
+    }
+
+    async fn post<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        expected_status: u16,
+    ) -> T {
+        let response = self.post_response(path, body).await;
+        assert_eq!(response.status().as_u16(), expected_status, "POST {path}");
+        response.json().await.unwrap()
+    }
+
+    async fn post_response<B: Serialize + ?Sized>(&self, path: &str, body: &B) -> wreq::Response {
+        self.client
+            .post(format!("{}{path}", self.base_url))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .json(body)
+            .send()
+            .await
+            .unwrap()
+    }
+}
 
 fn task_id(suffix: char) -> TaskId {
     let mut value = "tsk_0123456789abcdef0123456".to_owned();
@@ -73,11 +319,433 @@ fn fixture_text() -> String {
         .unwrap()
 }
 
+fn write_feature_file(root: &Path, file: &FeatureFileInput) {
+    let relative = Path::new(&file.path);
+    assert!(!relative.is_absolute(), "fixture path must be relative");
+    assert!(
+        relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "fixture path must stay within the workspace"
+    );
+    let destination = root.join(relative);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(destination, &file.content).unwrap();
+}
+
+fn run_git(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn materialize_workspace(root: &Path, input: &FeatureWorkspaceInput) {
+    if input.kind == FeatureWorkspaceKind::Git {
+        run_git(root, &["init", "--quiet"]);
+        run_git(root, &["config", "user.email", "scenario@example.invalid"]);
+        run_git(root, &["config", "user.name", "Scenario Test"]);
+        let branch = input.git_branch.as_deref().unwrap();
+        run_git(root, &["checkout", "--quiet", "-b", branch]);
+    } else {
+        assert!(input.git_branch.is_none());
+        assert!(input.baseline_files.is_empty());
+    }
+
+    for file in &input.baseline_files {
+        write_feature_file(root, file);
+    }
+    if input.kind == FeatureWorkspaceKind::Git {
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "--quiet", "-m", "scenario baseline"]);
+    }
+    for file in &input.working_files {
+        write_feature_file(root, file);
+    }
+}
+
+async fn initialize_feature_server(
+    client: &FeatureClient,
+    server: &common::TestServer,
+    scenario: &FeatureScenario,
+    provider_port: u16,
+) -> String {
+    let status: Value = client.get("/api/v1/status").await;
+    let mut revision = status["init"]["server_revision"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let providers: Value = client
+        .post(
+            "/api/v1/init/providers",
+            &json!({
+                "providers": [{
+                    "provider_id": "scenario",
+                    "format": "anthropic",
+                    "base_url": format!("http://127.0.0.1:{provider_port}"),
+                    "credential": {"source": "direct_value", "value": "scenario-key"}
+                }],
+                "tiers": [{
+                    "tier_id": "balanced",
+                    "provider_id": "scenario",
+                    "model": scenario.provider.model,
+                    "purpose": "balanced",
+                    "think": null
+                }],
+                "expected_revision": revision
+            }),
+            200,
+        )
+        .await;
+    revision = providers["server_revision"].as_str().unwrap().to_owned();
+    let tier: Value = client
+        .post(
+            "/api/v1/init/default-tier",
+            &json!({"tier_id": "balanced", "expected_revision": revision}),
+            200,
+        )
+        .await;
+    revision = tier["server_revision"].as_str().unwrap().to_owned();
+    let roots: Value = client.get("/api/v1/registration-roots").await;
+    let relative_path = server
+        .workspace
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let workspace: Value = client
+        .post(
+            "/api/v1/init/workspace",
+            &json!({
+                "workspace": {
+                    "root_id": roots["items"][0]["root_id"],
+                    "relative_path": relative_path,
+                    "label": scenario.name,
+                    "expected_revision": revision
+                }
+            }),
+            200,
+        )
+        .await;
+    revision = workspace["server_revision"].as_str().unwrap().to_owned();
+    let _: Value = client
+        .post(
+            "/api/v1/init/test",
+            &json!({"tier_id": "balanced", "expected_revision": revision}),
+            200,
+        )
+        .await;
+    let status: Value = client.get("/api/v1/init/status").await;
+    let _: Value = client
+        .post(
+            "/api/v1/init/complete",
+            &json!({"expected_revision": status["server_revision"]}),
+            200,
+        )
+        .await;
+    let workspaces: Value = client.get("/api/v1/workspaces").await;
+    workspaces["items"][0]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn wait_for_terminal_projection(client: &FeatureClient, task_id: &TaskId) -> TaskProjection {
+    for _ in 0..200 {
+        let projection: TaskProjection = client.get(&format!("/api/v1/tasks/{task_id}")).await;
+        if matches!(
+            projection.task.state,
+            TaskState::Completed | TaskState::Stopped | TaskState::Failed | TaskState::Interrupted
+        ) {
+            return projection;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("feature scenario task did not reach a terminal state");
+}
+
+fn exact_request_contains(snapshot: &ContextSnapshot, expected: &str) -> bool {
+    snapshot
+        .exact_request
+        .as_ref()
+        .into_iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| &message.content)
+        .any(|content| {
+            matches!(content, ExactContentBlock::Text { text } if text.contains(expected))
+        })
+}
+
+fn json_contains(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(expected),
+        Value::Array(items) => items.iter().any(|item| json_contains(item, expected)),
+        Value::Object(object) => object.values().any(|item| json_contains(item, expected)),
+        _ => false,
+    }
+}
+
+async fn current_review_revision(
+    client: &FeatureClient,
+    scenario: &FeatureScenario,
+    workspace_id: &str,
+) -> kuku_server::api::RevisionToken {
+    let content: FileContent = client
+        .get(&format!(
+            "/api/v1/workspaces/{workspace_id}/files/content?path={}&start_line=1&end_line=100",
+            scenario.review.path
+        ))
+        .await;
+    assert!(
+        content
+            .text
+            .as_deref()
+            .unwrap()
+            .contains(&scenario.review.excerpt),
+        "{} file read omitted the annotated excerpt",
+        scenario.name
+    );
+
+    let changes: ReviewSnapshot = client
+        .get(&format!(
+            "/api/v1/workspaces/{workspace_id}/changes?limit=100"
+        ))
+        .await;
+    match scenario.workspace.kind {
+        FeatureWorkspaceKind::Git => {
+            assert_eq!(ChangesAvailability::Available, changes.availability);
+            let entry = changes
+                .entries
+                .iter()
+                .find(|entry| entry.path == scenario.review.path)
+                .unwrap();
+            let diff: DiffDocument = client
+                .get(&format!(
+                    "/api/v1/workspaces/{workspace_id}/changes/diff?path={}&revision={}&limit=100",
+                    scenario.review.path, entry.revision
+                ))
+                .await;
+            assert_eq!(entry.revision, diff.revision);
+            assert!(diff
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .any(|line| line.text == scenario.review.excerpt));
+            entry.revision.clone()
+        }
+        FeatureWorkspaceKind::Directory => {
+            assert_eq!(ChangesAvailability::NotGitRepository, changes.availability);
+            assert!(changes.entries.is_empty());
+            content.revision
+        }
+    }
+}
+
+fn annotation_batch(
+    scenario: &FeatureScenario,
+    task_revision: TaskRevision,
+    revision: kuku_server::api::RevisionToken,
+    idempotency_key: &str,
+) -> AnnotationBatch {
+    AnnotationBatch {
+        expected_task_revision: task_revision,
+        idempotency_key: idempotency_key.to_owned(),
+        notes: vec![AnnotationDraft {
+            path: scenario.review.path.clone(),
+            revision,
+            side: scenario.review.side,
+            start_line: scenario.review.start_line,
+            end_line: scenario.review.end_line,
+            excerpt: scenario.review.excerpt.clone(),
+            comment: scenario.review.comment.clone(),
+        }],
+    }
+}
+
+async fn run_feature_scenario(scenario: FeatureScenario) {
+    let provider = FeatureProvider::start(scenario.provider.response.clone()).await;
+    let server = common::TestServer::start_unconfigured_with_token(Some(TOKEN.to_owned())).await;
+    materialize_workspace(server.workspace.path(), &scenario.workspace);
+    let client = FeatureClient::new(server.base_url.clone());
+    let workspace_id =
+        initialize_feature_server(&client, &server, &scenario, provider.port()).await;
+
+    let created: CreateTaskResponse = client
+        .post(
+            "/api/v1/tasks",
+            &json!({
+                "workspace_id": workspace_id,
+                "idempotency_key": format!("{}-create", scenario.name)
+            }),
+            201,
+        )
+        .await;
+    let task_id = created.projection.task.task_id.clone();
+    let _: SubmitRunResponse = client
+        .post(
+            &format!("/api/v1/tasks/{task_id}/runs"),
+            &json!({
+                "expected_task_revision": created.projection.task_revision,
+                "idempotency_key": format!("{}-run", scenario.name),
+                "message": scenario.task.message,
+                "tier_id": "balanced",
+                "skill_ids": []
+            }),
+            202,
+        )
+        .await;
+    let terminal = wait_for_terminal_projection(&client, &task_id).await;
+
+    let first_context: ContextSnapshot = client
+        .get(&format!("/api/v1/tasks/{task_id}/context"))
+        .await;
+    assert_eq!(1, first_context.request_history.len());
+    assert_eq!(
+        scenario.provider.model,
+        first_context
+            .exact_request
+            .as_ref()
+            .unwrap()
+            .parameters
+            .model
+    );
+    assert!(exact_request_contains(
+        &first_context,
+        &scenario.task.message
+    ));
+    let first_request_id = first_context
+        .selected_request
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    let historical: ContextSnapshot = client
+        .get(&format!(
+            "/api/v1/tasks/{task_id}/context/{first_request_id}"
+        ))
+        .await;
+    assert_eq!(first_context, historical);
+
+    let stale_revision = current_review_revision(&client, &scenario, &workspace_id).await;
+    assert_eq!(
+        scenario.review.path,
+        scenario.workspace.revision_update.path
+    );
+    write_feature_file(server.workspace.path(), &scenario.workspace.revision_update);
+    let stale = annotation_batch(
+        &scenario,
+        terminal.task_revision,
+        stale_revision,
+        &format!("{}-stale-review", scenario.name),
+    );
+    let stale_response = client
+        .post_response(
+            &format!("/api/v1/tasks/{task_id}/review/annotations"),
+            &stale,
+        )
+        .await;
+    assert_eq!(409, stale_response.status().as_u16());
+    let stale_error: ApiError = stale_response.json().await.unwrap();
+    assert_eq!(ApiErrorCode::Outdated, stale_error.code());
+
+    let current_revision = current_review_revision(&client, &scenario, &workspace_id).await;
+    let batch = annotation_batch(
+        &scenario,
+        terminal.task_revision,
+        current_revision.clone(),
+        &format!("{}-review", scenario.name),
+    );
+    let submitted: ReviewSubmissionResult = client
+        .post(
+            &format!("/api/v1/tasks/{task_id}/review/annotations"),
+            &batch,
+            201,
+        )
+        .await;
+    assert!(!submitted.replayed);
+    assert_eq!(current_revision, submitted.submission.notes[0].revision);
+    assert_eq!(
+        AnnotationStatus::Current,
+        submitted.submission.notes[0].status
+    );
+
+    let after_follow_up = wait_for_terminal_projection(&client, &task_id).await;
+    assert_eq!(1, after_follow_up.review_summary.total_submissions);
+    assert_eq!(
+        Some(&submitted.submission.run_id),
+        after_follow_up.task.latest_run_id.as_ref()
+    );
+    let submissions: ReviewSubmissionPage = client
+        .get(&format!(
+            "/api/v1/tasks/{task_id}/review/submissions?limit=50"
+        ))
+        .await;
+    assert_eq!(1, submissions.items.len());
+    assert_eq!(
+        scenario.review.comment,
+        submissions.items[0].notes[0].comment
+    );
+
+    let follow_up_context: ContextSnapshot = client
+        .get(&format!("/api/v1/tasks/{task_id}/context"))
+        .await;
+    assert_eq!(2, follow_up_context.request_history.len());
+    assert!(exact_request_contains(
+        &follow_up_context,
+        &scenario.review.comment
+    ));
+    let preserved_first: ContextSnapshot = client
+        .get(&format!(
+            "/api/v1/tasks/{task_id}/context/{first_request_id}"
+        ))
+        .await;
+    assert_eq!(
+        first_context.exact_request, preserved_first.exact_request,
+        "historical exact request changed after Review follow-up"
+    );
+
+    let provider_requests = provider.requests();
+    assert!(provider_requests.len() >= 3);
+    assert!(json_contains(
+        provider_requests.last().unwrap(),
+        &scenario.review.comment
+    ));
+}
+
 #[test]
 fn scenario_fixture_is_provider_input_not_a_projection_script() {
     let factory = ScenarioDriverFactory::from_fixture("core_task", 7).unwrap();
     assert!(!factory.fixture_source().contains("TaskProjection"));
     assert!(!factory.fixture_source().contains("ledger"));
+}
+
+#[test]
+fn feature_scenarios_are_input_fragments_not_serialized_server_state() {
+    for source in [FULL_TASK_FIXTURE, HUMAN_ACCEPTANCE_FIXTURE] {
+        parse_feature_scenario(source).unwrap();
+        assert!(!source.contains("TaskProjection"));
+        assert!(!source.contains("TaskLedgerRecord"));
+        assert!(!source.contains("\"projection\""));
+        assert!(!source.contains("\"ledger\""));
+    }
+    assert!(parse_feature_scenario(r#"{"projection":{"task_revision":1}}"#).is_err());
+    assert!(parse_feature_scenario(r#"{"kind":"TaskLedgerRecord"}"#).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn feature_scenarios_drive_real_context_and_review_services() {
+    for source in [FULL_TASK_FIXTURE, HUMAN_ACCEPTANCE_FIXTURE] {
+        run_feature_scenario(parse_feature_scenario(source).unwrap()).await;
+    }
 }
 
 #[test]

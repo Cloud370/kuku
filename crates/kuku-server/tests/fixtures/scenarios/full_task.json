@@ -1,0 +1,38 @@
+{
+  "name": "full_task",
+  "provider": {
+    "model": "scenario-model",
+    "response": "The requested task is complete."
+  },
+  "workspace": {
+    "kind": "git",
+    "git_branch": "feature/ui",
+    "baseline_files": [
+      {
+        "path": "src/lib.rs",
+        "content": "pub fn status() -> &'static str {\n    \"draft\"\n}\n"
+      }
+    ],
+    "working_files": [
+      {
+        "path": "src/lib.rs",
+        "content": "pub fn status() -> &'static str {\n    \"ready\"\n}\n"
+      }
+    ],
+    "revision_update": {
+      "path": "src/lib.rs",
+      "content": "pub fn status() -> &'static str {\n    \"ready\"\n}\n\npub const REVIEWED: bool = true;\n"
+    }
+  },
+  "task": {
+    "message": "Finish the status implementation and report the result."
+  },
+  "review": {
+    "path": "src/lib.rs",
+    "side": "new",
+    "start_line": 2,
+    "end_line": 2,
+    "excerpt": "    \"ready\"",
+    "comment": "Keep the ready status and include it in the final check."
+  }
+}
