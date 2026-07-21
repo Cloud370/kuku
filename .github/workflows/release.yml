@@ -13,80 +13,140 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            platform: linux-x86_64
-            archive: tar.gz
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            platform: darwin-aarch64
-            archive: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform: windows-x86_64
-            archive: zip
-    runs-on: ${{ matrix.os }}
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    outputs:
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-
-      - name: Build WebUI
-        working-directory: apps/web
-        run: npm ci && npm run build
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: taiki-e/install-action@cross
-        if: runner.os == 'Linux'
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
-      - name: Build binary (Linux)
-        if: runner.os == 'Linux'
-        run: cross build --release --features embedded-web-assets --target ${{ matrix.target }}
-
-      - name: Build binary
-        if: runner.os != 'Linux'
-        run: cargo build --release --features embedded-web-assets --target ${{ matrix.target }}
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
+          fetch-depth: 0
+      - name: Resolve immutable candidate
+        id: candidate
+        run: echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Require every independent gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../kuku-${{ matrix.platform }}.tar.gz kuku
-
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: pwsh
+          mkdir -p artifacts/preflight
+          gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" \
+            -f per_page=100 > artifacts/preflight/check-runs.json
+          for CHECK in \
+            "WebUI Required" \
+            "WebUI Promotion" \
+            "A5 Release Candidate" \
+            "H1 Workbench" \
+            "H2 Context" \
+            "H3 Review RC"; do
+            jq -e --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
+              [.check_runs[] | select(
+                .name == $name and .head_sha == $sha and .status == "completed" and
+                .conclusion == "success"
+              )] | length > 0
+            ' artifacts/preflight/check-runs.json >/dev/null
+          done
+      - name: Download exact gate attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/kuku.exe -DestinationPath kuku-${{ matrix.platform }}.zip
-
+          download_check_artifact() {
+            CHECK="$1"
+            ARTIFACT="$2"
+            DESTINATION="$3"
+            URL="$(jq -r --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
+              [.check_runs[] | select(
+                .name == $name and .head_sha == $sha and .conclusion == "success"
+              )] | sort_by(.completed_at) | last | .details_url
+            ' artifacts/preflight/check-runs.json)"
+            RUN_ID="$(printf '%s' "$URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+            test -n "$RUN_ID"
+            mkdir -p "$DESTINATION"
+            gh run download "$RUN_ID" --name "$ARTIFACT" --dir "$DESTINATION"
+          }
+          download_check_artifact "WebUI Promotion" "webui-promotion-$SOURCE_SHA" \
+            artifacts/preflight/promotion
+          download_check_artifact "A5 Release Candidate" "webui-a5-$SOURCE_SHA" \
+            artifacts/preflight/a5
+          download_check_artifact "H1 Workbench" "human-gate-H1-$SOURCE_SHA" \
+            artifacts/preflight/H1
+          download_check_artifact "H2 Context" "human-gate-H2-$SOURCE_SHA" \
+            artifacts/preflight/H2
+          download_check_artifact "H3 Review RC" "human-gate-H3-$SOURCE_SHA" \
+            artifacts/preflight/H3
+          A5_URL="$(jq -r --arg sha "$SOURCE_SHA" '
+            [.check_runs[] | select(
+              .name == "A5 Release Candidate" and .head_sha == $sha and .conclusion == "success"
+            )] | sort_by(.completed_at) | last | .details_url
+          ' artifacts/preflight/check-runs.json)"
+          A5_RUN_ID="$(printf '%s' "$A5_URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+          test -n "$A5_RUN_ID"
+          mkdir -p artifacts/preflight/packages
+          for PACKAGE in kuku-linux-x86_64 kuku-darwin-aarch64 kuku-windows-x86_64; do
+            gh run download "$A5_RUN_ID" --name "$PACKAGE" --dir artifacts/preflight/packages
+          done
+      - name: Reject stale or mismatched evidence
+        env:
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+        run: |
+          for GATE in H1 H2 H3; do
+            jq -e --arg gate "$GATE" --arg sha "$SOURCE_SHA" '
+              .gate == $gate and .source_sha == $sha and
+              .evidence.gate == $gate and .evidence.source_sha == $sha and
+              .evidence.decision == "accept"
+            ' "artifacts/preflight/$GATE/attestation.json" >/dev/null
+          done
+          for GATE in H1 H2; do
+            jq -e --slurpfile candidate artifacts/preflight/promotion/manifest.json '
+              .manifest as $reviewed | $candidate[0] as $selected |
+              ["source_sha", "build_hash", "binary_hash", "assets_hash",
+               "generated_contract_hash", "visual_baseline_hash", "scenario_hash",
+               "harness_hash", "scenario", "seed"] |
+              all(.[]; $reviewed[.] == $selected[.])
+            ' "artifacts/preflight/$GATE/attestation.json" >/dev/null
+          done
+          jq -e --slurpfile promoted artifacts/preflight/promotion/manifest.json \
+            --arg sha "$SOURCE_SHA" '
+            .source_sha == $sha and
+            .harness_hash == $promoted[0].harness_hash and
+            .promotion_manifest.source_sha == $sha and
+            .promotion_manifest == $promoted[0]
+          ' artifacts/preflight/a5/a5-manifest.json >/dev/null
+          jq -e --slurpfile promoted artifacts/preflight/promotion/manifest.json '
+            .manifest as $reviewed | $promoted[0] as $selected |
+            ["source_sha", "assets_hash", "generated_contract_hash",
+             "visual_baseline_hash", "scenario_hash", "harness_hash", "scenario", "seed"] |
+            all(.[]; $reviewed[.] == $selected[.])
+          ' artifacts/preflight/H3/attestation.json >/dev/null
+          ARCHIVE_HASH="$(jq -r '.manifest.archive_hash' artifacts/preflight/H3/attestation.json)"
+          test "$ARCHIVE_HASH" != null
+          grep -Eq "^${ARCHIVE_HASH}  " artifacts/preflight/a5/package-sha256sums.txt
+          for PACKAGE in artifacts/preflight/packages/kuku-*; do
+            PACKAGE_HASH="$(sha256sum "$PACKAGE" | awk '{print $1}')"
+            grep -Eq "^${PACKAGE_HASH}  " artifacts/preflight/a5/package-sha256sums.txt
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: kuku-${{ matrix.platform }}
-          path: kuku-${{ matrix.platform }}.*
+          name: validated-webui-packages-${{ steps.candidate.outputs.source_sha }}
+          path: artifacts/preflight/packages
+          if-no-files-found: error
+          retention-days: 14
 
   release:
-    needs: build
+    needs: preflight
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -94,8 +154,8 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: validated-webui-packages-${{ needs.preflight.outputs.source_sha }}
           path: artifacts
-          merge-multiple: true
 
       - name: Generate checksums
         working-directory: artifacts

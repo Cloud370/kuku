@@ -19,6 +19,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -38,12 +41,19 @@ jobs:
     needs: fmt
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
-      - run: mkdir -p apps/web/dist && cp apps/web/index.html apps/web/dist/
+      - name: Build embedded Web assets
+        working-directory: apps/web
+        run: npm ci && npm run build
       - run: cargo check -p kuku-app --features embedded-web-assets
 
   test:

@@ -1,0 +1,308 @@
+name: WebUI Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact H1/H2-reviewed SHA; dispatch this workflow at the same ref"
+        required: true
+        type: string
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+concurrency:
+  group: webui-promotion-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify-human-predecessors:
+    name: Verify fresh H1 and H2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: apps/web
+      - name: Verify selected SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p artifacts/promotion
+          printf '%s' "$SOURCE_SHA" | grep -Eq '^[a-f0-9]{40}$'
+      - name: Resolve exact automated and protected check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" \
+            -f per_page=100 > artifacts/promotion/check-runs.json
+          for CHECK in "A3 Embedded Chromium" "H1 Workbench" "H2 Context"; do
+            jq -e --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
+              [.check_runs[] | select(
+                .name == $name and .head_sha == $sha and .status == "completed" and .conclusion == "success"
+              )] | length > 0
+            ' artifacts/promotion/check-runs.json >/dev/null
+          done
+      - name: Download authoritative A3 manifest and Human attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          A3_URL="$(jq -r --arg sha "$SOURCE_SHA" '
+            [.check_runs[] | select(
+              .name == "A3 Embedded Chromium" and .head_sha == $sha and
+              .status == "completed" and .conclusion == "success"
+            )] | sort_by(.completed_at) | last | .details_url
+          ' artifacts/promotion/check-runs.json)"
+          A3_RUN_ID="$(printf '%s' "$A3_URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+          test -n "$A3_RUN_ID"
+          gh run download "$A3_RUN_ID" --name "webui-a3-$SOURCE_SHA" \
+            --dir artifacts/promotion/a3
+          cp artifacts/promotion/a3/manifest.json artifacts/promotion/manifest.json
+          for GATE in H1 H2; do
+            if test "$GATE" = H1; then CHECK="H1 Workbench"; else CHECK="H2 Context"; fi
+            URL="$(jq -r --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
+              [.check_runs[] | select(
+                .name == $name and .head_sha == $sha and .conclusion == "success"
+              )] | sort_by(.completed_at) | last | .details_url
+            ' artifacts/promotion/check-runs.json)"
+            RUN_ID="$(printf '%s' "$URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+            test -n "$RUN_ID"
+            mkdir -p "artifacts/promotion/$GATE"
+            gh run download "$RUN_ID" \
+              --name "human-gate-$GATE-$SOURCE_SHA" \
+              --dir "artifacts/promotion/$GATE"
+          done
+      - name: Recompute authoritative static identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          import {
+            buildCandidateIdentity,
+            hashAcceptanceHarness,
+            hashPath,
+          } from './apps/web/scripts/acceptance-human.mjs';
+          const candidate = JSON.parse(await readFile('./artifacts/promotion/manifest.json'));
+          const stable = {
+            source_sha: process.env.SOURCE_SHA,
+            assets_hash: await hashPath('./apps/web/dist'),
+            generated_contract_hash: await hashPath('./apps/web/src/api/generated/manifest.json'),
+            visual_baseline_hash: await hashPath('./apps/web/e2e/__screenshots__'),
+            scenario_hash: await hashPath('./crates/kuku-server/tests/fixtures/scenarios/human_acceptance.json'),
+            harness_hash: await hashAcceptanceHarness(),
+            scenario: 'human_acceptance',
+            seed: 7,
+          };
+          for (const [field, value] of Object.entries(stable)) assert.equal(candidate[field], value, field);
+          assert.equal(candidate.gate, 'h1-h2');
+          const canonical = buildCandidateIdentity({
+            sourceSha: candidate.source_sha,
+            binaryHash: candidate.binary_hash,
+            assetsHash: candidate.assets_hash,
+            contractHash: candidate.generated_contract_hash,
+            baselineHash: candidate.visual_baseline_hash,
+            scenarioHash: candidate.scenario_hash,
+            harnessHash: candidate.harness_hash,
+            scenario: candidate.scenario,
+            seed: candidate.seed,
+          });
+          assert.equal(candidate.build_hash, canonical.build_hash, 'build_hash');
+          EOF
+      - name: Verify attestation identities and hashes
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          for GATE in H1 H2; do
+            jq -e --arg gate "$GATE" --arg sha "$SOURCE_SHA" '
+              .gate == $gate and .source_sha == $sha and
+              .evidence.gate == $gate and .evidence.decision == "accept"
+            ' "artifacts/promotion/$GATE/attestation.json" >/dev/null
+            jq -e --slurpfile candidate artifacts/promotion/manifest.json '
+              .manifest as $reviewed | $candidate[0] as $selected |
+              ["source_sha", "build_hash", "binary_hash", "assets_hash",
+               "generated_contract_hash", "visual_baseline_hash", "scenario_hash", "harness_hash",
+               "scenario", "seed"] |
+              all(.[]; $reviewed[.] == $selected[.])
+            ' "artifacts/promotion/$GATE/attestation.json" >/dev/null
+            node apps/web/scripts/validate-human-evidence.mjs \
+              "artifacts/promotion/$GATE/evidence.json" \
+              "artifacts/promotion/$GATE/manifest.json" \
+              artifacts/promotion/check-runs.json
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promotion-input-${{ inputs.source_sha }}
+          path: artifacts/promotion
+          retention-days: 30
+
+  embedded-rebuild:
+    name: A4 Embedded Rebuild
+    needs: verify-human-predecessors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci && npm run build
+        working-directory: apps/web
+      - run: cargo build -p kuku-app --features embedded-web-assets,test-scenarios
+      - uses: actions/download-artifact@v4
+        with:
+          name: promotion-input-${{ inputs.source_sha }}
+          path: artifacts/promotion
+      - name: Verify rebuilt candidate identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          mkdir -p artifacts/rebuild
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { readFile, writeFile } from 'node:fs/promises';
+          import {
+            buildCandidateIdentity,
+            hashAcceptanceHarness,
+            hashPath,
+          } from './apps/web/scripts/acceptance-human.mjs';
+          const reviewed = JSON.parse(await readFile('./artifacts/promotion/manifest.json'));
+          const stable = {
+            source_sha: process.env.SOURCE_SHA,
+            assets_hash: await hashPath('./apps/web/dist'),
+            generated_contract_hash: await hashPath('./apps/web/src/api/generated/manifest.json'),
+            visual_baseline_hash: await hashPath('./apps/web/e2e/__screenshots__'),
+            scenario_hash: await hashPath('./crates/kuku-server/tests/fixtures/scenarios/human_acceptance.json'),
+            harness_hash: await hashAcceptanceHarness(),
+            scenario: 'human_acceptance',
+            seed: 7,
+          };
+          for (const [field, value] of Object.entries(stable)) assert.equal(reviewed[field], value, field);
+          const canonicalReviewed = buildCandidateIdentity({
+            sourceSha: stable.source_sha,
+            binaryHash: reviewed.binary_hash,
+            assetsHash: stable.assets_hash,
+            contractHash: stable.generated_contract_hash,
+            baselineHash: stable.visual_baseline_hash,
+            scenarioHash: stable.scenario_hash,
+            harnessHash: stable.harness_hash,
+            scenario: stable.scenario,
+            seed: stable.seed,
+          });
+          assert.equal(reviewed.build_hash, canonicalReviewed.build_hash, 'reviewed build_hash');
+          const rebuiltBinaryHash = await hashPath('./target/debug/kuku');
+          const rebuilt = buildCandidateIdentity({
+            sourceSha: stable.source_sha,
+            binaryHash: rebuiltBinaryHash,
+            assetsHash: stable.assets_hash,
+            contractHash: stable.generated_contract_hash,
+            baselineHash: stable.visual_baseline_hash,
+            scenarioHash: stable.scenario_hash,
+            harnessHash: stable.harness_hash,
+            scenario: stable.scenario,
+            seed: stable.seed,
+          });
+          await writeFile('./artifacts/rebuild/rebuild.json', `${JSON.stringify({
+            source_sha: stable.source_sha,
+            reviewed_build_hash: reviewed.build_hash,
+            rebuilt_build_hash: rebuilt.build_hash,
+            rebuilt_binary_hash: rebuiltBinaryHash,
+            stable_identity: stable,
+          }, null, 2)}\n`);
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a4-rebuild-${{ inputs.source_sha }}
+          path: artifacts/rebuild/rebuild.json
+          retention-days: 30
+
+  visual-compare:
+    name: A4 Fixed Visual Compare
+    needs: verify-human-predecessors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: apps/web
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: npm run build
+        working-directory: apps/web
+      - run: cargo build -p kuku-app --features embedded-web-assets,test-scenarios
+      - run: npm run test:e2e:visual
+        working-directory: apps/web
+      - name: Upload visual failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-a4-visual-${{ inputs.source_sha }}
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 30
+
+  promotion:
+    name: WebUI Promotion
+    if: always()
+    needs: [verify-human-predecessors, embedded-rebuild, visual-compare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require selected-candidate A4 results
+        env:
+          HUMAN: ${{ needs.verify-human-predecessors.result }}
+          EMBEDDED: ${{ needs.embedded-rebuild.result }}
+          VISUAL: ${{ needs.visual-compare.result }}
+        run: |
+          test "$HUMAN" = success
+          test "$EMBEDDED" = success
+          test "$VISUAL" = success
+      - uses: actions/download-artifact@v4
+        with:
+          name: promotion-input-${{ inputs.source_sha }}
+          path: artifacts/promotion
+      - uses: actions/download-artifact@v4
+        with:
+          name: a4-rebuild-${{ inputs.source_sha }}
+          path: artifacts/promotion/rebuild
+      - name: Bind promotion to rebuild proof
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          jq -e --arg sha "$SOURCE_SHA" --slurpfile reviewed artifacts/promotion/manifest.json '
+            .source_sha == $sha and
+            .reviewed_build_hash == $reviewed[0].build_hash and
+            .stable_identity.harness_hash == $reviewed[0].harness_hash and
+            (.rebuilt_binary_hash | test("^[a-f0-9]{64}$"))
+          ' artifacts/promotion/rebuild/rebuild.json >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webui-promotion-${{ inputs.source_sha }}
+          path: artifacts/promotion
+          retention-days: 90

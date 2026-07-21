@@ -1,0 +1,231 @@
+name: WebUI Human Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: "Protected Human gate"
+        required: true
+        type: choice
+        options: [H1, H2, H3]
+      source_sha:
+        description: "Exact 40-character candidate SHA; dispatch this workflow at the same ref"
+        required: true
+        type: string
+      archive_name:
+        description: "A5 package reviewed by H3; ignored by H1/H2"
+        required: true
+        default: kuku-linux-x86_64.tar.gz
+        type: choice
+        options:
+          - kuku-linux-x86_64.tar.gz
+          - kuku-darwin-aarch64.tar.gz
+          - kuku-windows-x86_64.zip
+      evidence_artifact:
+        description: "Base64-encoded Human evidence JSON"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+concurrency:
+  group: webui-human-${{ inputs.gate }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  human-gate:
+    name: ${{ inputs.gate == 'H1' && 'H1 Workbench' || inputs.gate == 'H2' && 'H2 Context' || 'H3 Review RC' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gate == 'H1' && 'webui-h1' || inputs.gate == 'H2' && 'webui-h2' || 'webui-h3' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Build reproducible static identity
+        working-directory: apps/web
+        run: npm ci && npm run build
+      - name: Verify dispatch identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf '%s' "$SOURCE_SHA" | grep -Eq '^[a-f0-9]{40}$'
+      - name: Read exact-SHA automated predecessor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          mkdir -p artifacts/human/authoritative
+          gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" \
+            -f per_page=100 > artifacts/human/check-runs.json
+          if test "$GATE" = H3; then
+            PREDECESSOR="A5 Release Candidate"
+          else
+            PREDECESSOR="A3 Embedded Chromium"
+          fi
+          URL="$(jq -r --arg name "$PREDECESSOR" --arg sha "$SOURCE_SHA" '
+            [.check_runs[] | select(
+              .name == $name and .head_sha == $sha and .status == "completed" and
+              .conclusion == "success"
+            )] | sort_by(.completed_at) | last | .details_url
+          ' artifacts/human/check-runs.json)"
+          RUN_ID="$(printf '%s' "$URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
+          test -n "$RUN_ID"
+          echo "PREDECESSOR_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+      - name: Download authoritative candidate identity
+        env:
+          ARCHIVE_NAME: ${{ inputs.archive_name }}
+          GATE: ${{ inputs.gate }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if test "$GATE" = H3; then
+            gh run download "$PREDECESSOR_RUN_ID" --name "webui-a5-$SOURCE_SHA" \
+              --dir artifacts/human/authoritative
+            case "$ARCHIVE_NAME" in
+              kuku-linux-x86_64.tar.gz) PACKAGE_ARTIFACT=kuku-linux-x86_64 ;;
+              kuku-darwin-aarch64.tar.gz) PACKAGE_ARTIFACT=kuku-darwin-aarch64 ;;
+              kuku-windows-x86_64.zip) PACKAGE_ARTIFACT=kuku-windows-x86_64 ;;
+              *) exit 1 ;;
+            esac
+            mkdir -p artifacts/human/package artifacts/human/extracted
+            gh run download "$PREDECESSOR_RUN_ID" --name "$PACKAGE_ARTIFACT" \
+              --dir artifacts/human/package
+            if test "$ARCHIVE_NAME" = kuku-windows-x86_64.zip; then
+              unzip -q "artifacts/human/package/$ARCHIVE_NAME" -d artifacts/human/extracted
+            else
+              tar -C artifacts/human/extracted -xzf "artifacts/human/package/$ARCHIVE_NAME"
+            fi
+          else
+            gh run download "$PREDECESSOR_RUN_ID" --name "webui-a3-$SOURCE_SHA" \
+              --dir artifacts/human/authoritative
+          fi
+      - name: Verify and materialize authoritative manifest
+        env:
+          ARCHIVE_NAME: ${{ inputs.archive_name }}
+          GATE: ${{ inputs.gate }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          node --input-type=module <<'EOF'
+          import assert from 'node:assert/strict';
+          import { readFile, writeFile } from 'node:fs/promises';
+          import {
+            buildCandidateIdentity,
+            hashAcceptanceHarness,
+            hashPath,
+          } from './apps/web/scripts/acceptance-human.mjs';
+
+          const stable = {
+            source_sha: process.env.SOURCE_SHA,
+            assets_hash: await hashPath('./apps/web/dist'),
+            generated_contract_hash: await hashPath('./apps/web/src/api/generated/manifest.json'),
+            visual_baseline_hash: await hashPath('./apps/web/e2e/__screenshots__'),
+            scenario_hash: await hashPath('./crates/kuku-server/tests/fixtures/scenarios/human_acceptance.json'),
+            harness_hash: await hashAcceptanceHarness(),
+            scenario: 'human_acceptance',
+            seed: 7,
+          };
+          const assertStable = (candidate) => {
+            for (const [field, value] of Object.entries(stable)) assert.equal(candidate[field], value, field);
+            assert.match(candidate.binary_hash, /^[a-f0-9]{64}$/);
+            const canonical = buildCandidateIdentity({
+              sourceSha: candidate.source_sha,
+              binaryHash: candidate.binary_hash,
+              assetsHash: candidate.assets_hash,
+              contractHash: candidate.generated_contract_hash,
+              baselineHash: candidate.visual_baseline_hash,
+              scenarioHash: candidate.scenario_hash,
+              harnessHash: candidate.harness_hash,
+              scenario: candidate.scenario,
+              seed: candidate.seed,
+              ...(candidate.archive_hash === undefined ? {} : { archiveHash: candidate.archive_hash }),
+            });
+            assert.equal(candidate.build_hash, canonical.build_hash, 'build_hash');
+          };
+
+          let manifest;
+          if (process.env.GATE === 'H3') {
+            const a5 = JSON.parse(await readFile('./artifacts/human/authoritative/a5-manifest.json'));
+            assert.equal(a5.source_sha, process.env.SOURCE_SHA);
+            assert.equal(a5.harness_hash, a5.promotion_manifest.harness_hash);
+            assertStable(a5.promotion_manifest);
+            const archive = `./artifacts/human/package/${process.env.ARCHIVE_NAME}`;
+            const binary = process.env.ARCHIVE_NAME.endsWith('.zip')
+              ? './artifacts/human/extracted/kuku.exe'
+              : './artifacts/human/extracted/kuku';
+            const archiveHash = await hashPath(archive);
+            assert.ok(a5.package_sha256sums.some((line) => line.trim().split(/\s+/)[0] === archiveHash));
+            manifest = {
+              gate: 'h3',
+              ...buildCandidateIdentity({
+                sourceSha: stable.source_sha,
+                binaryHash: await hashPath(binary),
+                assetsHash: stable.assets_hash,
+                contractHash: stable.generated_contract_hash,
+                baselineHash: stable.visual_baseline_hash,
+                scenarioHash: stable.scenario_hash,
+                harnessHash: stable.harness_hash,
+                scenario: stable.scenario,
+                seed: stable.seed,
+                archiveHash,
+              }),
+            };
+          } else {
+            manifest = JSON.parse(await readFile('./artifacts/human/authoritative/manifest.json'));
+            assert.equal(manifest.gate, 'h1-h2');
+            assertStable(manifest);
+          }
+          await writeFile('./artifacts/human/manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
+          EOF
+      - name: Decode external Human evidence
+        env:
+          EVIDENCE_ARTIFACT: ${{ inputs.evidence_artifact }}
+        run: |
+          printf '%s' "$EVIDENCE_ARTIFACT" | base64 --decode > artifacts/human/evidence.json
+          jq -e . artifacts/human/evidence.json >/dev/null
+      - name: Validate protected Human evidence
+        env:
+          EXPECTED_GATE: ${{ inputs.gate }}
+          REVIEWER: ${{ github.actor }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          jq -e --arg gate "$EXPECTED_GATE" --arg reviewer "$REVIEWER" --arg sha "$SOURCE_SHA" '
+            .gate == $gate and .reviewer == $reviewer and .source_sha == $sha
+          ' artifacts/human/evidence.json >/dev/null
+          node apps/web/scripts/validate-human-evidence.mjs \
+            artifacts/human/evidence.json \
+            artifacts/human/manifest.json \
+            artifacts/human/check-runs.json
+      - name: Prepare immutable attestation
+        env:
+          GATE: ${{ inputs.gate }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          jq -n \
+            --arg gate "$GATE" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg workflow_run "$GITHUB_RUN_ID" \
+            --slurpfile manifest artifacts/human/manifest.json \
+            --slurpfile evidence artifacts/human/evidence.json \
+            '{gate: $gate, source_sha: $source_sha, workflow_run: $workflow_run,
+              manifest: $manifest[0], evidence: $evidence[0]}' \
+            > artifacts/human/attestation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: human-gate-${{ inputs.gate }}-${{ inputs.source_sha }}
+          path: |
+            artifacts/human/attestation.json
+            artifacts/human/check-runs.json
+            artifacts/human/evidence.json
+            artifacts/human/manifest.json
+          retention-days: 90
