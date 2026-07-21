@@ -1,0 +1,72 @@
+.surface {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.surface[data-presentation-mode='full'] {
+  width: 100%;
+  height: 100dvh;
+  border: 0;
+}
+
+.surface[data-presentation-mode='sheet'] {
+  max-height: min(85dvh, 56rem);
+}
+
+.toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+  padding-bottom: 0.75rem;
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--color-border);
+}
+
+.content {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-top: 1rem;
+  padding-right: max(1rem, env(safe-area-inset-right));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-left: max(1rem, env(safe-area-inset-left));
+}
+
+.status {
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface,
+  .surface * {
+    scroll-behavior: auto;
+    transition-duration: 0s;
+    animation-duration: 0s;
+  }
+}
+
+@media (forced-colors: active) {
+  .surface,
+  .toolbar,
+  .status {
+    border-color: CanvasText;
+  }
+
+  .surface :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
