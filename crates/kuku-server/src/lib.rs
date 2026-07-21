@@ -45,6 +45,8 @@ pub struct AppState {
     pub limits: ServerLimits,
     pub(crate) context_model: Arc<ContextReadModel>,
     pub(crate) review_routes: Arc<routes::review::ReviewRouteState>,
+    #[cfg(feature = "test-scenarios")]
+    scenario_control: Option<testing::ScenarioControl>,
     _instance_lock: platform::ServerInstanceLock,
 }
 
@@ -115,6 +117,7 @@ impl PreparedServer {
 }
 
 pub async fn prepare_server(args: server_args::ServerArgs) -> Result<PreparedServer, StartupError> {
+    reject_unavailable_scenario_environment()?;
     let listen_addr: SocketAddr = args.listen.parse().map_err(|error| {
         StartupError::InvalidArgument(format!("invalid listen address: {error}"))
     })?;
@@ -350,6 +353,11 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .merge(routes::catalog::router::<()>(state.context_model.clone()))
         .merge(routes::agents::router::<()>(state.context_model.clone()))
         .merge(routes::review::router::<()>(state.review_routes.clone()));
+    #[cfg(feature = "test-scenarios")]
+    let api = match state.scenario_control.clone() {
+        Some(control) => api.merge(testing::router(control)),
+        None => api,
+    };
     Router::new()
         .route(
             "/health",
@@ -453,6 +461,14 @@ impl AppState {
         limits: ServerLimits,
         instance_lock: platform::ServerInstanceLock,
     ) -> Result<Arc<Self>, crate::api::ApiError> {
+        #[cfg(feature = "test-scenarios")]
+        let scenario = testing::ScenarioRuntime::from_environment().map_err(|error| {
+            crate::api::ApiError::new(
+                crate::api::ApiErrorCode::InvalidRequest,
+                error.to_string(),
+                "scenario-startup",
+            )
+        })?;
         let revisions = platform::ServerRevisionCoordinator::open(home);
         let config =
             platform::ConfigService::open(config_path.to_owned(), Arc::clone(&revisions)).await?;
@@ -468,7 +484,15 @@ impl AppState {
             }),
             Arc::clone(&revisions),
         )?;
-        let probe = Arc::new(HttpProviderProbe {
+        #[cfg(feature = "test-scenarios")]
+        let probe: Arc<dyn ProviderProbe> = match &scenario {
+            Some(scenario) => scenario.provider_probe(),
+            None => Arc::new(HttpProviderProbe {
+                config: Arc::clone(&config),
+            }),
+        };
+        #[cfg(not(feature = "test-scenarios"))]
+        let probe: Arc<dyn ProviderProbe> = Arc::new(HttpProviderProbe {
             config: Arc::clone(&config),
         });
         let bootstrap = platform::BootstrapService::open(
@@ -514,6 +538,15 @@ impl AppState {
                 plaintext: true,
             },
         });
+        #[cfg(feature = "test-scenarios")]
+        let factory: Arc<dyn RunDriverFactory> = match &scenario {
+            Some(scenario) => scenario.factory(),
+            None => Arc::new(run_manager::driver::KukuDriverFactory::from_platform(
+                Arc::clone(&workspaces),
+                Arc::clone(&config),
+            )),
+        };
+        #[cfg(not(feature = "test-scenarios"))]
         let factory: Arc<dyn RunDriverFactory> =
             Arc::new(run_manager::driver::KukuDriverFactory::from_platform(
                 Arc::clone(&workspaces),
@@ -589,9 +622,28 @@ impl AppState {
             limits,
             context_model,
             review_routes,
+            #[cfg(feature = "test-scenarios")]
+            scenario_control: scenario.as_ref().map(testing::ScenarioRuntime::control),
             _instance_lock: instance_lock,
         }))
     }
+}
+
+#[cfg(feature = "test-scenarios")]
+fn reject_unavailable_scenario_environment() -> Result<(), StartupError> {
+    Ok(())
+}
+
+#[cfg(not(feature = "test-scenarios"))]
+fn reject_unavailable_scenario_environment() -> Result<(), StartupError> {
+    if std::env::var_os("KUKU_TEST_SCENARIO").is_some()
+        || std::env::var_os("KUKU_TEST_SEED").is_some()
+    {
+        return Err(StartupError::InvalidArgument(
+            "scenario environment requires a build with test scenario support".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]

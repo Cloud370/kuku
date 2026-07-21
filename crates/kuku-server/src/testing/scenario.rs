@@ -1,9 +1,31 @@
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
-use kuku::event::{ConversationId, InteractionId, RequestId, RunId, TaskId, TurnId, WorkspaceId};
+use kuku::event::{
+    ActivityFact, ActivityKindFact, ActivityStatusFact, ContextBreakdown, ConversationContextFact,
+    ConversationId, ExactContentBlock, ExactMessage, ExactRequest, ExactRequestParameters,
+    InteractionChoiceFact, InteractionFact, InteractionId, MessageRole, ProviderFact,
+    ProviderUsage, RequestCause, RequestCompleted, RequestId, RequestScope, RequestSnapshot,
+    RequestStarted, RevisionToken, RunId, TaskEvent, TaskId, ThinkingConfig, TurnId, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
+
+use crate::run_manager::driver::{
+    DriverCommand, DriverEvent as RuntimeDriverEvent, DriverHandle, DriverStart, RunDriverFactory,
+    RunFailure, RunResult,
+};
+use crate::run_manager::DomainError;
+
+use super::{BarrierOutcome, ScenarioControl};
 
 const CORE_TASK_FIXTURE: &str = include_str!("../../tests/fixtures/scenarios/core_task.json");
+const FULL_TASK_FIXTURE: &str = include_str!("../../tests/fixtures/scenarios/full_task.json");
+const HUMAN_ACCEPTANCE_FIXTURE: &str =
+    include_str!("../../tests/fixtures/scenarios/human_acceptance.json");
 
 /// Errors raised while loading or validating an acceptance scenario.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,13 +104,13 @@ pub struct ScenarioFixture {
 impl ScenarioFixture {
     /// Loads an embedded fixture by its stable name.
     pub fn embedded(name: &str) -> Result<Self, ScenarioError> {
-        let source = match name {
-            "core_task" => CORE_TASK_FIXTURE,
+        let fixture = match name {
+            "core_task" => serde_json::from_str(CORE_TASK_FIXTURE)
+                .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?,
+            "full_task" => feature_fixture(FULL_TASK_FIXTURE)?,
+            "human_acceptance" => feature_fixture(HUMAN_ACCEPTANCE_FIXTURE)?,
             _ => return Err(ScenarioError::UnknownFixture(name.to_owned())),
         };
-
-        let fixture: Self = serde_json::from_str(source)
-            .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?;
         fixture.validate(name)?;
         Ok(fixture)
     }
@@ -113,6 +135,93 @@ impl ScenarioFixture {
         }
         Ok(())
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureFixture {
+    name: String,
+    provider: FeatureProvider,
+    workspace: FeatureWorkspace,
+    task: FeatureTask,
+    review: serde_json::Value,
+    barriers: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureProvider {
+    model: String,
+    response: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureWorkspace {
+    kind: serde_json::Value,
+    git_branch: Option<String>,
+    baseline_files: Vec<FeatureFile>,
+    working_files: Vec<FeatureFile>,
+    revision_update: FeatureFile,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureFile {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureTask {
+    message: String,
+}
+
+fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioError> {
+    let input: FeatureFixture = serde_json::from_str(source)
+        .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?;
+    let file = input.workspace.working_files.first();
+    let arguments = serde_json::json!({
+        "path": file.map_or("README.md", |file| file.path.as_str())
+    });
+    let observation = file.map_or_else(String::new, |file| file.content.clone());
+    let _ = (
+        input.workspace.kind,
+        input.workspace.git_branch,
+        input.workspace.baseline_files,
+        input.workspace.revision_update,
+    );
+    let _ = input.review;
+    Ok(ScenarioFixture {
+        name: input.name,
+        provider: input.provider.model,
+        events: vec![
+            DriverEvent::ProviderResponse {
+                text: format!("I will inspect the workspace for: {}", input.task.message),
+            },
+            DriverEvent::ToolCall {
+                name: "read_file".to_owned(),
+                arguments,
+            },
+            DriverEvent::DelegatedConversation {
+                conversation_id: "scenario-helper".to_owned(),
+                summary: if observation.is_empty() {
+                    "The workspace observation is empty.".to_owned()
+                } else {
+                    "A deterministic helper inspected the workspace.".to_owned()
+                },
+            },
+            DriverEvent::Usage {
+                input_tokens: 5,
+                output_tokens: 10,
+            },
+            DriverEvent::ProviderResponse {
+                text: input.provider.response,
+            },
+        ],
+        barriers: input.barriers,
+    })
 }
 
 /// A reproducible logical clock for scenario event sequencing.
@@ -227,6 +336,8 @@ pub struct ScenarioDriverFactory {
     clock: DeterministicClock,
     ids: ScenarioIds,
     position: usize,
+    control: ScenarioControl,
+    starts: Arc<Mutex<Vec<DriverStart>>>,
 }
 
 impl ScenarioDriverFactory {
@@ -235,14 +346,19 @@ impl ScenarioDriverFactory {
         let fixture = ScenarioFixture::embedded(name)?;
         let fixture_source = match name {
             "core_task" => CORE_TASK_FIXTURE,
+            "full_task" => FULL_TASK_FIXTURE,
+            "human_acceptance" => HUMAN_ACCEPTANCE_FIXTURE,
             _ => return Err(ScenarioError::UnknownFixture(name.to_owned())),
         };
+        let control = ScenarioControl::new(fixture.barriers.clone());
         Ok(Self {
             fixture,
             fixture_source,
             clock: DeterministicClock::seeded(seed),
             ids: ScenarioIds::seeded(seed),
             position: 0,
+            control,
+            starts: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -266,11 +382,365 @@ impl ScenarioDriverFactory {
         &mut self.ids
     }
 
+    /// Returns the controls bound to this seeded fixture.
+    pub fn control(&self) -> ScenarioControl {
+        self.control.clone()
+    }
+
+    /// Returns whether the real runtime started the named Run with its scoped Query input.
+    pub fn started_with_scope(&self, run_id: &RunId) -> bool {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|start| start.run_id == *run_id && start.execution_scope.run_id == *run_id)
+    }
+
     /// Advances the clock and emits the next typed provider event.
     pub fn next_event(&mut self) -> Option<(u64, DriverEvent)> {
         let event = self.fixture.events.get(self.position)?.clone();
         self.position += 1;
         Some((self.clock.advance(1), event))
+    }
+}
+
+impl RunDriverFactory for ScenarioDriverFactory {
+    fn start(
+        &self,
+        start: DriverStart,
+    ) -> Pin<Box<dyn Future<Output = Result<DriverHandle, DomainError>> + Send>> {
+        let fixture = self.fixture.clone();
+        let control = self.control.clone();
+        let seed = self.clock.seed;
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(start.clone());
+        Box::pin(async move {
+            let (commands, command_rx) = mpsc::channel(8);
+            let (event_tx, events) = mpsc::channel(64);
+            event_tx
+                .send(RuntimeDriverEvent::Started)
+                .await
+                .map_err(|_| DomainError::RunNotActive)?;
+            tokio::spawn(run_scenario_driver(
+                fixture, control, seed, start, command_rx, event_tx,
+            ));
+            Ok(DriverHandle { commands, events })
+        })
+    }
+}
+
+async fn run_scenario_driver(
+    fixture: ScenarioFixture,
+    control: ScenarioControl,
+    seed: u64,
+    start: DriverStart,
+    mut commands: mpsc::Receiver<DriverCommand>,
+    events: mpsc::Sender<RuntimeDriverEvent>,
+) {
+    let request_scope = RequestScope {
+        execution: start.execution_scope.clone(),
+        request_id: ScenarioIds::seeded(seed).request_id(),
+    };
+    let initial = request_events(&fixture, &start, &request_scope);
+    if events
+        .send(RuntimeDriverEvent::Activity(initial))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut summary = String::new();
+    let mut usage = ProviderUsage {
+        input_tokens: None,
+        output_tokens: None,
+        cached_input_tokens: None,
+        cache_creation_input_tokens: None,
+    };
+    let mut ids = ScenarioIds::seeded(seed);
+    for (index, event) in fixture.events.into_iter().enumerate() {
+        match event {
+            DriverEvent::ProviderResponse { text } => {
+                summary = text.clone();
+                if events
+                    .send(RuntimeDriverEvent::Activity(vec![
+                        TaskEvent::MessagePatched {
+                            message_id: start.agent_message_id.clone(),
+                            append_text: text,
+                            finalized: false,
+                            request_ids: None,
+                        },
+                    ]))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            DriverEvent::ToolCall { name, arguments } => {
+                let activity_id = format!("scenario-tool-{seed}-{index}");
+                let activity = ActivityFact {
+                    activity_id: activity_id.clone(),
+                    run_id: start.run_id.clone(),
+                    title: name,
+                    kind: ActivityKindFact::Tool,
+                    status: ActivityStatusFact::Running,
+                    detail: Some(arguments.to_string()),
+                    conversation_id: None,
+                    agent: None,
+                    tier: None,
+                    result_in_main: None,
+                    file_references: Vec::new(),
+                };
+                if events
+                    .send(RuntimeDriverEvent::Activity(vec![
+                        TaskEvent::ActivityUpserted {
+                            activity: activity.clone(),
+                        },
+                    ]))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let mut completed = activity;
+                completed.status = ActivityStatusFact::Completed;
+                if events
+                    .send(RuntimeDriverEvent::Activity(vec![
+                        TaskEvent::ActivityUpserted {
+                            activity: completed,
+                        },
+                    ]))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                if fixture.barriers.iter().any(|name| name == "after-tool")
+                    && !wait_for_barrier(&control, "after-tool", &mut commands, &events).await
+                {
+                    return;
+                }
+            }
+            DriverEvent::Interaction { name, payload } => {
+                let interaction_id = ids.interaction_id();
+                let interaction = InteractionFact {
+                    interaction_id: interaction_id.clone(),
+                    run_id: start.run_id.clone(),
+                    prompt: payload
+                        .get("prompt")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(&name)
+                        .to_owned(),
+                    choices: vec![InteractionChoiceFact {
+                        choice_id: "approve".to_owned(),
+                        label: "Approve".to_owned(),
+                    }],
+                    selected_choice_id: None,
+                };
+                if events
+                    .send(RuntimeDriverEvent::InteractionOpened(interaction))
+                    .await
+                    .is_err()
+                    || !wait_for_interaction(&interaction_id, &mut commands, &events).await
+                {
+                    return;
+                }
+            }
+            DriverEvent::DelegatedConversation {
+                summary: detail, ..
+            } => {
+                let activity = ActivityFact {
+                    activity_id: format!("scenario-agent-{seed}-{index}"),
+                    run_id: start.run_id.clone(),
+                    title: "Delegated scenario check".to_owned(),
+                    kind: ActivityKindFact::DelegatedAgent,
+                    status: ActivityStatusFact::Completed,
+                    detail: None,
+                    conversation_id: Some(ids.conversation_id()),
+                    agent: Some("scenario-agent".to_owned()),
+                    tier: Some(start.tier_id.clone()),
+                    result_in_main: Some(!detail.is_empty()),
+                    file_references: Vec::new(),
+                };
+                if events
+                    .send(RuntimeDriverEvent::Activity(vec![
+                        TaskEvent::ActivityUpserted { activity },
+                    ]))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            DriverEvent::Usage {
+                input_tokens,
+                output_tokens,
+            } => {
+                usage.input_tokens = Some(input_tokens);
+                usage.output_tokens = Some(output_tokens);
+            }
+        }
+    }
+
+    if fixture
+        .barriers
+        .iter()
+        .any(|name| name == "continuity-before-finish")
+        && !wait_for_barrier(&control, "continuity-before-finish", &mut commands, &events).await
+    {
+        return;
+    }
+    let completed = vec![
+        TaskEvent::RequestCompleted(RequestCompleted {
+            scope: request_scope.clone(),
+            usage,
+            elapsed_ms: Some(1),
+            provider_request_id: Some(format!("scenario-{seed}")),
+            cost: None,
+        }),
+        TaskEvent::MessagePatched {
+            message_id: start.agent_message_id,
+            append_text: String::new(),
+            finalized: true,
+            request_ids: Some(vec![request_scope.request_id]),
+        },
+    ];
+    if events
+        .send(RuntimeDriverEvent::Activity(completed))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let _ = events
+        .send(RuntimeDriverEvent::Completed(RunResult {
+            summary,
+            warnings: Vec::new(),
+            checks: None,
+            metrics: None,
+            workspace_changes: None,
+        }))
+        .await;
+}
+
+fn request_events(
+    fixture: &ScenarioFixture,
+    start: &DriverStart,
+    scope: &RequestScope,
+) -> Vec<TaskEvent> {
+    let exact = ExactRequest {
+        messages: vec![ExactMessage {
+            role: MessageRole::User,
+            content: vec![ExactContentBlock::Text {
+                text: start.prompt.clone(),
+            }],
+        }],
+        tools: Vec::new(),
+        parameters: ExactRequestParameters {
+            model: fixture.provider.clone(),
+            max_output_tokens: None,
+            temperature: None,
+            stream: true,
+            thinking: ThinkingConfig::Disabled,
+        },
+    };
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&exact).expect("scenario request serializes"))
+    );
+    let cause = RequestCause::UserSubmission;
+    vec![
+        TaskEvent::RequestSnapshot(RequestSnapshot {
+            scope: scope.clone(),
+            cause: cause.clone(),
+            provider: ProviderFact::Anthropic,
+            tier_id: start.tier_id.clone(),
+            exact,
+            context: ContextBreakdown {
+                skills: start.selected_skills.clone(),
+                instructions: Vec::new(),
+                memory: Vec::new(),
+                conversation: ConversationContextFact {
+                    retained_turns: start.execution_scope.turn_index.saturating_sub(1),
+                    handoff_boundaries: 0,
+                    history_summarized: false,
+                    delegated_results: Vec::new(),
+                },
+                observations: Vec::new(),
+                delegated_results: Vec::new(),
+                capabilities: Vec::new(),
+                token_estimate: None,
+            },
+            catalog_revision: RevisionToken::parse("0".repeat(64)).expect("zero revision is valid"),
+            exact_payload_hash: hash,
+        }),
+        TaskEvent::RequestStarted(RequestStarted {
+            scope: scope.clone(),
+            cause,
+            provider: ProviderFact::Anthropic,
+            model: fixture.provider.clone(),
+            started_at: format!(
+                "2026-07-20T00:00:{:02}Z",
+                start.execution_scope.turn_index % 60
+            ),
+        }),
+    ]
+}
+
+async fn wait_for_barrier(
+    control: &ScenarioControl,
+    name: &str,
+    commands: &mut mpsc::Receiver<DriverCommand>,
+    events: &mpsc::Sender<RuntimeDriverEvent>,
+) -> bool {
+    loop {
+        tokio::select! {
+            outcome = control.wait(name) => match outcome {
+                Ok(BarrierOutcome::Released) => return true,
+                Ok(BarrierOutcome::Failed(summary)) => {
+                    let _ = events.send(RuntimeDriverEvent::Failed(RunFailure { summary })).await;
+                    return false;
+                }
+                Err(error) => {
+                    let _ = events.send(RuntimeDriverEvent::Failed(RunFailure {
+                        summary: error.to_string(),
+                    })).await;
+                    return false;
+                }
+            },
+            command = commands.recv() => match command {
+                Some(DriverCommand::Stop) | None => {
+                    let _ = events.send(RuntimeDriverEvent::Stopped).await;
+                    return false;
+                }
+                Some(DriverCommand::Resolve { .. }) => {}
+            }
+        }
+    }
+}
+
+async fn wait_for_interaction(
+    expected: &InteractionId,
+    commands: &mut mpsc::Receiver<DriverCommand>,
+    events: &mpsc::Sender<RuntimeDriverEvent>,
+) -> bool {
+    loop {
+        match commands.recv().await {
+            Some(DriverCommand::Resolve { interaction_id, .. }) if interaction_id == *expected => {
+                return events
+                    .send(RuntimeDriverEvent::InteractionClosed(interaction_id))
+                    .await
+                    .is_ok();
+            }
+            Some(DriverCommand::Resolve { .. }) => {}
+            Some(DriverCommand::Stop) | None => {
+                let _ = events.send(RuntimeDriverEvent::Stopped).await;
+                return false;
+            }
+        }
     }
 }
 

@@ -30,10 +30,14 @@ use kuku_server::api::{
     FileContent, ReviewSnapshot, ReviewSubmissionPage, ReviewSubmissionResult, SubmitRunResponse,
     TaskChange, TaskProjection, TaskState, TimelineItemProjection,
 };
+use kuku_server::run_manager::driver::{
+    DriverEvent as RuntimeDriverEvent, DriverStart, RunDriverFactory,
+};
 use kuku_server::run_manager::{DomainError, TaskAggregate};
 use kuku_server::testing::{BarrierOutcome, DriverEvent, ScenarioControl, ScenarioDriverFactory};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+static SCENARIO_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +47,7 @@ struct FeatureScenario {
     workspace: FeatureWorkspaceInput,
     task: FeatureTaskInput,
     review: FeatureReviewInput,
+    barriers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +577,7 @@ fn annotation_batch(
 }
 
 async fn run_feature_scenario(scenario: FeatureScenario) {
+    assert!(scenario.barriers.iter().any(|name| name == "after-tool"));
     let provider = FeatureProvider::start(scenario.provider.response.clone()).await;
     let server = common::TestServer::start_unconfigured_with_token(Some(TOKEN.to_owned())).await;
     materialize_workspace(server.workspace.path(), &scenario.workspace);
@@ -743,9 +749,80 @@ fn feature_scenarios_are_input_fragments_not_serialized_server_state() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn feature_scenarios_drive_real_context_and_review_services() {
+    let _environment = SCENARIO_ENV_LOCK.lock().await;
     for source in [FULL_TASK_FIXTURE, HUMAN_ACCEPTANCE_FIXTURE] {
         run_feature_scenario(parse_feature_scenario(source).unwrap()).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
+    let _environment = SCENARIO_ENV_LOCK.lock().await;
+    std::env::set_var("KUKU_TEST_SCENARIO", "full_task");
+    std::env::set_var("KUKU_TEST_SEED", "7");
+    let server = common::TestServer::start_unconfigured_with_token(Some(TOKEN.to_owned())).await;
+    std::env::remove_var("KUKU_TEST_SCENARIO");
+    std::env::remove_var("KUKU_TEST_SEED");
+
+    let scenario = parse_feature_scenario(FULL_TASK_FIXTURE).unwrap();
+    materialize_workspace(server.workspace.path(), &scenario.workspace);
+    let client = FeatureClient::new(server.base_url.clone());
+    let unauthenticated = wreq::Client::new()
+        .post(format!(
+            "{}/api/v1/testing/barriers/after-tool/release",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(401, unauthenticated.status().as_u16());
+
+    let workspace_id = initialize_feature_server(&client, &server, &scenario, 1).await;
+    let created: CreateTaskResponse = client
+        .post(
+            "/api/v1/tasks",
+            &json!({
+                "workspace_id": workspace_id,
+                "idempotency_key": "scenario-runtime-create"
+            }),
+            201,
+        )
+        .await;
+    let task_id = created.projection.task.task_id;
+    let _: SubmitRunResponse = client
+        .post(
+            &format!("/api/v1/tasks/{task_id}/runs"),
+            &json!({
+                "expected_task_revision": created.projection.task_revision,
+                "idempotency_key": "scenario-runtime-run",
+                "message": scenario.task.message,
+                "tier_id": "balanced",
+                "skill_ids": []
+            }),
+            202,
+        )
+        .await;
+
+    let after_tool = client
+        .post_response("/api/v1/testing/barriers/after-tool/release", &json!({}))
+        .await;
+    assert_eq!(204, after_tool.status().as_u16());
+    let continuity = client
+        .post_response(
+            "/api/v1/testing/barriers/continuity-before-finish/release",
+            &json!({}),
+        )
+        .await;
+    assert_eq!(204, continuity.status().as_u16());
+    let terminal = wait_for_terminal_projection(&client, &task_id).await;
+    assert_eq!(TaskState::Completed, terminal.task.state);
+    assert!(terminal.cursor.get() > created.projection.cursor.get());
+
+    let context: ContextSnapshot = client
+        .get(&format!("/api/v1/tasks/{task_id}/context"))
+        .await;
+    assert_eq!(1, context.request_history.len());
+    assert!(exact_request_contains(&context, &scenario.task.message));
 }
 
 #[test]
@@ -765,6 +842,66 @@ async fn control_releases_only_declared_barriers() {
         control.wait("after-tool").await.unwrap(),
         BarrierOutcome::Released
     );
+}
+
+#[tokio::test]
+async fn scenario_factory_drives_the_production_driver_contract() {
+    fn assert_driver_factory<T: RunDriverFactory>() {}
+    assert_driver_factory::<ScenarioDriverFactory>();
+
+    let directory = tempfile::tempdir().unwrap();
+    let event_store = kuku::event::EventStore::open(directory.path().join("events.jsonl")).unwrap();
+    let mut ids = kuku_server::testing::ScenarioIds::seeded(7);
+    let start = DriverStart {
+        task_id: ids.task_id(),
+        run_id: ids.run_id(),
+        workspace_id: ids.workspace_id(),
+        prompt: "Run the deterministic scenario".to_owned(),
+        tier_id: "tier:default".to_owned(),
+        selected_skills: Vec::new(),
+        agent_message_id: "msg_agent_scenario".to_owned(),
+        execution_scope: kuku::event::ExecutionScope {
+            workspace_id: ids.workspace_id(),
+            task_id: ids.task_id(),
+            run_id: ids.run_id(),
+            turn_id: ids.turn_id(),
+            conversation_id: ids.conversation_id(),
+            turn_index: 1,
+        },
+        event_store,
+    };
+    let factory = ScenarioDriverFactory::from_fixture("core_task", 7).unwrap();
+    let control = factory.control();
+    let mut handle = factory.start(start).await.unwrap();
+
+    assert_eq!(
+        handle.events.recv().await,
+        Some(RuntimeDriverEvent::Started)
+    );
+    while let Some(event) = handle.events.recv().await {
+        if matches!(event, RuntimeDriverEvent::Activity(_)) {
+            break;
+        }
+    }
+    control.release("after-tool").await.unwrap();
+}
+
+#[test]
+fn feature_scenarios_use_the_same_fixture_factory() {
+    for name in ["full_task", "human_acceptance"] {
+        let factory = ScenarioDriverFactory::from_fixture(name, 11).unwrap();
+        assert_eq!(factory.fixture().name, name);
+        assert!(factory
+            .fixture()
+            .barriers
+            .iter()
+            .any(|name| name == "after-tool"));
+        assert!(factory
+            .fixture()
+            .barriers
+            .iter()
+            .any(|name| name == "continuity-before-finish"));
+    }
 }
 
 #[test]

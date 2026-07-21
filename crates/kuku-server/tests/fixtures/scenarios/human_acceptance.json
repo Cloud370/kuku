@@ -29,5 +29,6 @@
     "end_line": 2,
     "excerpt": "- verify Context",
     "comment": "Record this acceptance note in the follow-up run."
-  }
+  },
+  "barriers": ["after-tool", "continuity-before-finish"]
 }

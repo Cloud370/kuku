@@ -1,6 +1,12 @@
 use std::fmt;
 use std::sync::Arc;
 
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
+use serde::Deserialize;
 use tokio::sync::{Mutex, Notify};
 
 /// The result observed when a scenario barrier is triggered.
@@ -106,9 +112,84 @@ impl ScenarioControl {
     }
 }
 
+/// Builds the feature-only scenario control routes under `/api/v1`.
+pub fn router(control: ScenarioControl) -> Router {
+    Router::new()
+        .route("/testing/barriers/{name}/release", post(release))
+        .route("/testing/failures/{name}", post(fail))
+        .with_state(control)
+}
+
+async fn release(
+    State(control): State<ScenarioControl>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ControlHttpError> {
+    control.release(&name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FailureRequest {
+    reason: String,
+}
+
+async fn fail(
+    State(control): State<ScenarioControl>,
+    Path(name): Path<String>,
+    Json(request): Json<FailureRequest>,
+) -> Result<StatusCode, ControlHttpError> {
+    if request.reason.trim().is_empty() {
+        return Err(ControlHttpError::InvalidReason);
+    }
+    control.fail(&name, request.reason).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+enum ControlHttpError {
+    Control(ControlError),
+    InvalidReason,
+}
+
+impl From<ControlError> for ControlHttpError {
+    fn from(error: ControlError) -> Self {
+        Self::Control(error)
+    }
+}
+
+impl IntoResponse for ControlHttpError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            Self::Control(ControlError::UnknownBarrier(name)) => (
+                StatusCode::NOT_FOUND,
+                crate::api::ApiErrorCode::RequestNotFound,
+                format!("unknown scenario barrier: {name}"),
+            ),
+            Self::Control(ControlError::AlreadyTriggered(name)) => (
+                StatusCode::CONFLICT,
+                crate::api::ApiErrorCode::IdempotencyConflict,
+                format!("scenario barrier already triggered: {name}"),
+            ),
+            Self::InvalidReason => (
+                StatusCode::BAD_REQUEST,
+                crate::api::ApiErrorCode::InvalidRequest,
+                "scenario failure reason is required".to_owned(),
+            ),
+        };
+        (
+            status,
+            Json(crate::api::ApiError::new(code, message, "scenario-control")),
+        )
+            .into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn barrier_release_wakes_waiter_once() {
@@ -131,6 +212,43 @@ mod tests {
         assert_eq!(
             control.release("missing").await,
             Err(ControlError::UnknownBarrier("missing".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn control_router_maps_declared_unknown_and_repeated_barriers() {
+        let app = router(ScenarioControl::new([
+            "after-tool",
+            "continuity-before-finish",
+        ]));
+        let release = Request::post("/testing/barriers/after-tool/release")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(release).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let repeated = Request::post("/testing/barriers/after-tool/release")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(repeated).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        let missing = Request::post("/testing/barriers/missing/release")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(missing).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let failure = Request::post("/testing/failures/continuity-before-finish")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"reason":"fixture failure"}"#))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(failure).await.unwrap().status(),
+            StatusCode::NO_CONTENT
         );
     }
 }

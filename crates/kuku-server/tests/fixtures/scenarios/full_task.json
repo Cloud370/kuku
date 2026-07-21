@@ -34,5 +34,6 @@
     "end_line": 2,
     "excerpt": "    \"ready\"",
     "comment": "Keep the ready status and include it in the final check."
-  }
+  },
+  "barriers": ["after-tool", "continuity-before-finish"]
 }

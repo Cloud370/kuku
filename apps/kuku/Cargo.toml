@@ -17,6 +17,7 @@ path = "src/main.rs"
 [features]
 default = []
 embedded-web-assets = ["dep:rust-embed"]
+test-scenarios = ["kuku-server/test-scenarios"]
 
 [dependencies]
 kuku = { workspace = true }
