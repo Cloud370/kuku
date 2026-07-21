@@ -65,6 +65,13 @@ pub enum DriverEvent {
         /// JSON arguments passed to the tool.
         arguments: serde_json::Value,
     },
+    /// A deterministic sequence of older timeline activities.
+    TimelineHistory {
+        /// Number of unique timeline items to emit.
+        count: u32,
+        /// Maximum number of activities sent in one runtime event.
+        batch_size: u16,
+    },
     /// A pending interaction that the command path must preserve.
     Interaction {
         /// Stable interaction kind.
@@ -203,6 +210,16 @@ fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioErro
             DriverEvent::ToolCall {
                 name: "read_file".to_owned(),
                 arguments,
+            },
+            DriverEvent::Interaction {
+                name: "permission".to_owned(),
+                payload: serde_json::json!({
+                    "prompt": "Permission request"
+                }),
+            },
+            DriverEvent::TimelineHistory {
+                count: 10_000,
+                batch_size: 250,
             },
             DriverEvent::DelegatedConversation {
                 conversation_id: "scenario-helper".to_owned(),
@@ -524,6 +541,11 @@ async fn run_scenario_driver(
                     return;
                 }
             }
+            DriverEvent::TimelineHistory { count, batch_size } => {
+                if !send_timeline_history(&start, seed, count, batch_size, &events).await {
+                    return;
+                }
+            }
             DriverEvent::Interaction { name, payload } => {
                 let interaction_id = ids.interaction_id();
                 let interaction = InteractionFact {
@@ -624,6 +646,44 @@ async fn run_scenario_driver(
             workspace_changes: None,
         }))
         .await;
+}
+
+async fn send_timeline_history(
+    start: &DriverStart,
+    seed: u64,
+    count: u32,
+    batch_size: u16,
+    events: &mpsc::Sender<RuntimeDriverEvent>,
+) -> bool {
+    let batch_size = batch_size.max(1);
+    for batch_start in (0..count).step_by(usize::from(batch_size)) {
+        let batch_end = count.min(batch_start.saturating_add(u32::from(batch_size)));
+        let batch = (batch_start..batch_end)
+            .map(|ordinal| TaskEvent::ActivityUpserted {
+                activity: ActivityFact {
+                    activity_id: format!("scenario-history-{seed}-{ordinal:05}"),
+                    run_id: start.run_id.clone(),
+                    title: format!("Scenario history item {ordinal:05}"),
+                    kind: ActivityKindFact::System,
+                    status: ActivityStatusFact::Completed,
+                    detail: None,
+                    conversation_id: None,
+                    agent: None,
+                    tier: None,
+                    result_in_main: None,
+                    file_references: Vec::new(),
+                },
+            })
+            .collect();
+        if events
+            .send(RuntimeDriverEvent::Activity(batch))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn request_events(

@@ -330,7 +330,7 @@ async fn run_kuku_driver(
                     return;
                 }
             }
-            next = run.next() => {
+            next = run.next(), if pending.is_empty() => {
                 match next {
                     Ok(Some(event)) if permission_metadata(&event).is_some() => {
                         if !flush_text(&events, &start.agent_message_id, &mut text, false).await {
@@ -616,7 +616,10 @@ mod activity_tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Duration;
 
+    use httpmock::prelude::*;
+    use httpmock::MockServer;
     use kuku::conversation::address::ConversationAddress;
     use kuku::event::{
         CommandReceipt, CommandResult, ConversationId, EventPayload, ExecutionScope, RunFact,
@@ -828,8 +831,9 @@ mod activity_tests {
         store
     }
 
-    pub(super) async fn factory_fixture(
+    async fn factory_fixture_with_config(
         tier_id: &str,
+        config: kuku::config::Config,
     ) -> (
         KukuDriverFactory,
         DriverStart,
@@ -889,11 +893,120 @@ mod activity_tests {
             event_store: store,
         };
         (
-            KukuDriverFactory::new(registry, Arc::new(test_config())),
+            KukuDriverFactory::new(registry, Arc::new(config)),
             start,
             home,
             allowed,
         )
+    }
+
+    pub(super) async fn factory_fixture(
+        tier_id: &str,
+    ) -> (
+        KukuDriverFactory,
+        DriverStart,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        factory_fixture_with_config(tier_id, test_config()).await
+    }
+
+    #[tokio::test]
+    async fn real_driver_waits_for_permission_decision_before_polling_again() {
+        let provider = MockServer::start_async().await;
+        provider.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .body_contains("permission gate denied this tool call");
+            then.status(200)
+                .body(kuku::test_support::anthropic_sse_response(
+                    serde_json::json!({
+                        "id": "msg_final",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Denied."}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 8, "output_tokens": 2}
+                    }),
+                ));
+        });
+        provider.mock(|when, then| {
+            when.method(POST).path("/v1/messages");
+            then.status(200)
+                .body(kuku::test_support::anthropic_sse_response(
+                    serde_json::json!({
+                        "id": "msg_permission",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "toolu_command",
+                            "name": "run_command",
+                            "input": {"command": "printf blocked", "brief": "print marker"}
+                        }],
+                        "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 5, "output_tokens": 4}
+                    }),
+                ));
+        });
+        let mut config = test_config();
+        config.providers.get_mut("anthropic").unwrap().base_url = provider.base_url();
+        let (factory, start, _home, _allowed) =
+            factory_fixture_with_config("tier:balanced", config).await;
+        let mut handle = factory.start(start).await.unwrap();
+
+        let interaction = loop {
+            match tokio::time::timeout(Duration::from_secs(5), handle.events.recv())
+                .await
+                .expect("driver event")
+                .expect("driver event stream")
+            {
+                super::DriverEvent::InteractionOpened(interaction) => break interaction,
+                super::DriverEvent::Failed(failure) => panic!("driver failed: {}", failure.summary),
+                _ => {}
+            }
+        };
+        let unexpected = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                match handle.events.recv().await {
+                    Some(super::DriverEvent::InteractionOpened(_)) => {
+                        break "duplicate interaction"
+                    }
+                    Some(super::DriverEvent::Failed(_)) => break "driver failure",
+                    Some(_) => {}
+                    None => break "closed event stream",
+                }
+            }
+        })
+        .await;
+        assert!(unexpected.is_err(), "{unexpected:?}");
+
+        handle
+            .commands
+            .send(DriverCommand::Resolve {
+                interaction_id: interaction.interaction_id.clone(),
+                choice_id: "deny".to_owned(),
+            })
+            .await
+            .unwrap();
+        let mut closed = false;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), handle.events.recv())
+                .await
+                .expect("driver completion event")
+                .expect("driver event stream")
+            {
+                super::DriverEvent::InteractionClosed(interaction_id) => {
+                    assert_eq!(interaction_id, interaction.interaction_id);
+                    closed = true;
+                }
+                super::DriverEvent::Completed(_) => break,
+                super::DriverEvent::InteractionOpened(_) => panic!("duplicate interaction"),
+                super::DriverEvent::Failed(failure) => panic!("driver failed: {}", failure.summary),
+                _ => {}
+            }
+        }
+        assert!(closed);
     }
 
     #[tokio::test]

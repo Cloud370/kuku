@@ -28,7 +28,7 @@ use kuku_server::api::{
     AnnotationBatch, AnnotationDraft, AnnotationSide, AnnotationStatus, ApiError, ApiErrorCode,
     ChangesAvailability, ContextSnapshot, CreateTaskResponse, DiffDocument, ExactContentBlock,
     FileContent, ReviewSnapshot, ReviewSubmissionPage, ReviewSubmissionResult, SubmitRunResponse,
-    TaskChange, TaskProjection, TaskState, TimelineItemProjection,
+    TaskChange, TaskProjection, TaskState, TimelineItemProjection, TimelinePage,
 };
 use kuku_server::run_manager::driver::{
     DriverEvent as RuntimeDriverEvent, DriverStart, RunDriverFactory,
@@ -807,6 +807,48 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
         .post_response("/api/v1/testing/barriers/after-tool/release", &json!({}))
         .await;
     assert_eq!(204, after_tool.status().as_u16());
+
+    let mut pending = None;
+    let mut last_observed = None;
+    for _ in 0..200 {
+        let projection: TaskProjection = client.get(&format!("/api/v1/tasks/{task_id}")).await;
+        last_observed = Some((
+            projection.task.state,
+            projection.cursor,
+            projection.timeline.len(),
+        ));
+        if let Some(interaction) = projection.timeline.iter().find_map(|item| match item {
+            TimelineItemProjection::Interaction(interaction)
+                if interaction.selected_choice_id.is_none() =>
+            {
+                Some(interaction.clone())
+            }
+            _ => None,
+        }) {
+            assert_eq!(TaskState::NeedsAttention, projection.task.state);
+            pending = Some((projection.task_revision, interaction));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pending = pending.unwrap_or_else(|| {
+        panic!("feature scenario exposed no pending interaction; last={last_observed:?}")
+    });
+    assert_eq!("Permission request", pending.1.prompt);
+    let _: Value = client
+        .post(
+            &format!(
+                "/api/v1/tasks/{task_id}/interactions/{}",
+                pending.1.interaction_id
+            ),
+            &json!({
+                "expected_task_revision": pending.0,
+                "idempotency_key": "scenario-runtime-interaction",
+                "choice_id": pending.1.choices[0].choice_id
+            }),
+            202,
+        )
+        .await;
     let continuity = client
         .post_response(
             "/api/v1/testing/barriers/continuity-before-finish/release",
@@ -823,6 +865,33 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
         .await;
     assert_eq!(1, context.request_history.len());
     assert!(exact_request_contains(&context, &scenario.task.message));
+
+    let mut before = None;
+    let mut history_ids = std::collections::BTreeSet::new();
+    loop {
+        let path = before.as_ref().map_or_else(
+            || format!("/api/v1/tasks/{task_id}/timeline?limit=500"),
+            |cursor: &kuku_server::api::PageCursor| {
+                format!(
+                    "/api/v1/tasks/{task_id}/timeline?limit=500&before={}",
+                    cursor.as_str()
+                )
+            },
+        );
+        let page: TimelinePage = client.get(&path).await;
+        for item in page.items {
+            if let TimelineItemProjection::Activity(activity) = item {
+                if activity.activity_id.starts_with("scenario-history-7-") {
+                    assert!(history_ids.insert(activity.activity_id));
+                }
+            }
+        }
+        before = page.next_cursor;
+        if before.is_none() {
+            break;
+        }
+    }
+    assert_eq!(10_000, history_ids.len());
 }
 
 #[test]
@@ -887,7 +956,7 @@ async fn scenario_factory_drives_the_production_driver_contract() {
 }
 
 #[test]
-fn feature_scenarios_use_the_same_fixture_factory() {
+fn feature_scenarios_include_required_runtime_inputs() {
     for name in ["full_task", "human_acceptance"] {
         let factory = ScenarioDriverFactory::from_fixture(name, 11).unwrap();
         assert_eq!(factory.fixture().name, name);
@@ -901,6 +970,30 @@ fn feature_scenarios_use_the_same_fixture_factory() {
             .barriers
             .iter()
             .any(|name| name == "continuity-before-finish"));
+
+        let tool_position = factory
+            .fixture()
+            .events
+            .iter()
+            .position(|event| matches!(event, DriverEvent::ToolCall { .. }))
+            .unwrap();
+        let interaction_position = factory
+            .fixture()
+            .events
+            .iter()
+            .position(|event| matches!(event, DriverEvent::Interaction { .. }))
+            .unwrap();
+        assert!(interaction_position > tool_position);
+
+        let fixture = serde_json::to_value(factory.fixture()).unwrap();
+        let history = fixture["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "timeline_history")
+            .unwrap();
+        assert_eq!(history["count"], 10_000);
+        assert!(history["batch_size"].as_u64().unwrap() <= 250);
     }
 }
 
