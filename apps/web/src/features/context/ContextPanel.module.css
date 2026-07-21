@@ -1,0 +1,127 @@
+.panel {
+  display: grid;
+  grid-template-rows: 3rem minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 var(--space-md);
+}
+
+.detail {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.summary {
+  min-height: 4.25rem;
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-surface-raised);
+}
+
+.history {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 2.75rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-xs) var(--space-md);
+  scrollbar-width: thin;
+}
+
+.accordion {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.section {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sectionButton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-sm) var(--space-md);
+  text-align: left;
+}
+
+.sectionContent {
+  min-width: 0;
+  padding: 0 var(--space-md) var(--space-md);
+}
+
+.stateBody {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.stateMessage {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: var(--space-xl);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--space-md);
+  background: rgb(0 0 0 / 55%);
+}
+
+.dialog {
+  display: grid;
+  grid-template-rows: 3rem minmax(0, 1fr);
+  width: min(46rem, 100%);
+  max-height: min(46rem, calc(100dvh - 2rem));
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-elevated);
+}
+
+.dialogBody {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-md);
+}
+
+@media (max-width: 420px) {
+  .dialogBackdrop {
+    padding: 0;
+  }
+
+  .dialog {
+    width: 100%;
+    max-height: 100dvh;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+}
