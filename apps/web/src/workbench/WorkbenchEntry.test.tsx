@@ -102,4 +102,22 @@ describe('WorkbenchEntry', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
     expect(screen.getByRole('status', { name: 'Run status' })).toBeInTheDocument();
   });
+
+  it('renders the Context slot from the current Workbench view when provided', () => {
+    render(
+      <WorkbenchEntry
+        context={<p>Fallback Context</p>}
+        onOpenAgentThread={vi.fn()}
+        onOpenContext={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenLoadedSkills={vi.fn()}
+        onOpenRequestContext={vi.fn()}
+        onOpenReview={vi.fn()}
+        renderContext={(view) => <p>Context for {view.snapshot.selectedTaskId}</p>}
+      />,
+    );
+
+    expect(screen.getByText('Context for tsk_000000000000000000000001')).toBeVisible();
+    expect(screen.queryByText('Fallback Context')).toBeNull();
+  });
 });

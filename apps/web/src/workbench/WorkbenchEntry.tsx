@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { TaskDelta } from '../api/generated';
 import { webApi } from '../api/client';
 import { EntryGate } from './entry/EntryGate';
-import { WorkbenchController } from './WorkbenchController';
+import { WorkbenchController, type WorkbenchControllerView } from './WorkbenchController';
 import type { WorkbenchRoute } from './taskSelection';
 import { StateBoundary } from './components/StateBoundary';
 import { ChatTimeline } from './components/ChatTimeline';
@@ -15,6 +15,7 @@ import { WorkbenchShell } from './components/WorkbenchShell';
 export interface WorkbenchEntryProps {
   api?: typeof webApi;
   context: ReactNode;
+  renderContext?: (view: WorkbenchControllerView) => ReactNode;
   onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenContext: () => void;
   onOpenFile: (workspaceId: string, relativePath: string) => void;
@@ -30,6 +31,7 @@ export interface WorkbenchEntryProps {
 export function WorkbenchEntry({
   api = webApi,
   context,
+  renderContext,
   onOpenAgentThread,
   onOpenContext,
   onOpenFile,
@@ -131,7 +133,7 @@ export function WorkbenchEntry({
                     <RunLiveRegion projection={projection} />
                   </StateBoundary>
                 }
-                context={context}
+                context={renderContext?.(view) ?? context}
                 onOpenContext={onOpenContext}
                 onStop={() => {
                   void view.store.stopRun();

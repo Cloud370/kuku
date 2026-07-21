@@ -106,7 +106,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
       ) : tasksCollapsed ? null : (
         <nav
           aria-label="Tasks"
-          className="col-start-1 row-start-2 flex h-full w-64 min-w-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-raised)]"
+          className="col-start-1 row-start-2 flex h-full w-[var(--workbench-tasks-track)] min-w-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-raised)]"
         >
           <div className="flex h-11 items-center justify-end border-b border-[var(--color-border)] px-2">
             <IconButton
@@ -127,7 +127,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
       {narrow ? null : contextCollapsed ? null : (
         <aside
           aria-label="Agent Context"
-          className="col-start-3 row-start-2 flex h-full w-80 min-w-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-surface-raised)]"
+          className="col-start-3 row-start-2 flex h-full w-[var(--workbench-context-track)] min-w-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-surface-raised)]"
         >
           <div className="flex h-11 items-center justify-between border-b border-[var(--color-border)] px-2">
             <span className="px-2 text-sm font-semibold">Agent Context</span>

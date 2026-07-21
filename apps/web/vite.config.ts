@@ -8,7 +8,7 @@ import path from 'node:path';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    include: ['aria-query', 'lz-string', 'pretty-format'],
+    include: ['aria-query', 'lz-string', 'marked', 'pretty-format', 'storybook/test'],
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },

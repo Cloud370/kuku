@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 *,
 *::before,
@@ -13,6 +13,23 @@ html {
   background-color: var(--color-surface);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 20rem;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 pre,
@@ -67,10 +84,39 @@ code {
 }
 
 @keyframes shimmer {
-  0%, 100% { border-color: var(--color-accent); }
-  50% { border-color: transparent; }
+  0%,
+  100% {
+    border-color: var(--color-accent);
+  }
+  50% {
+    border-color: transparent;
+  }
 }
 
 .animate-shimmer {
   animation: shimmer 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :focus-visible {
+    outline-color: Highlight;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    border-color: CanvasText;
+  }
 }
