@@ -11,5 +11,8 @@
     }
   ],
   "default_workspace_id": null,
-  "max_concurrent_runs": 16
+  "max_concurrent_runs": 16,
+  "discovery": {
+    "auto_discover": true
+  }
 }

@@ -10,6 +10,7 @@ const patch: SettingsPatch = {
   default_tier: settings.default_tier,
   default_workspace_id: null,
   max_concurrent_runs: 8,
+  discovery: null,
 };
 
 function apiError(status: number): WebApiError {

@@ -10,6 +10,9 @@
   ],
   "default_tier": "balanced",
   "default_workspace_id": null,
+  "discovery": {
+    "auto_discover": true
+  },
   "max_concurrent_runs": 16,
   "server_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }

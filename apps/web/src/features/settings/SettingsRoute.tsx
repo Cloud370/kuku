@@ -57,6 +57,7 @@ export function SettingsRoute({ api = webApi, onOpenGuide }: SettingsRouteProps)
         default_workspace_id:
           currentDraft.defaultWorkspaceId.length === 0 ? null : currentDraft.defaultWorkspaceId,
         max_concurrent_runs: Number(currentDraft.maxConcurrentRuns),
+        discovery: { auto_discover: currentDraft.autoDiscover },
       });
     },
     onSuccess: (result) => {
@@ -166,5 +167,6 @@ function draftFrom(snapshot: SettingsSnapshot): SettingsDraft {
     defaultTier: snapshot.default_tier,
     defaultWorkspaceId: snapshot.default_workspace_id ?? '',
     maxConcurrentRuns: String(snapshot.max_concurrent_runs),
+    autoDiscover: snapshot.discovery.auto_discover,
   };
 }

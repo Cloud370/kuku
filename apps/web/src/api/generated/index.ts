@@ -2008,8 +2008,17 @@ export interface SettingsSnapshot {
   credentials: CredentialStatus[];
   default_tier: string;
   default_workspace_id: WorkspaceId | null;
+  discovery: DiscoverySettings;
   max_concurrent_runs: number;
   server_revision: RevisionToken;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `WebApiContract`'s JSON-Schema
+ * via the `definition` "DiscoverySettings".
+ */
+export interface DiscoverySettings {
+  auto_discover: boolean;
   [k: string]: unknown;
 }
 /**
@@ -2192,6 +2201,7 @@ export interface UpdateSettingsRequest {
 export interface SettingsPatch {
   default_tier: string | null;
   default_workspace_id: WorkspaceId | null;
+  discovery: DiscoverySettings | null;
   max_concurrent_runs: number | null;
   [k: string]: unknown;
 }

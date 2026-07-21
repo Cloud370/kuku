@@ -4,7 +4,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::api::{ApiError, ApiErrorCode, ApiVersion, SettingsSnapshot, UpdateSettingsRequest};
+use crate::api::{
+    ApiError, ApiErrorCode, ApiVersion, DiscoverySettings, SettingsPatch, SettingsSnapshot,
+    UpdateSettingsRequest,
+};
 
 use super::{
     accepted_digest, write_private_atomic, ConfigService, RevisionDomain,
@@ -133,6 +136,17 @@ impl SettingsService {
         loop {
             let before = self.revision.current().await?;
             let catalog = self.config.catalog().await;
+            let discovery = self
+                .config
+                .snapshot()
+                .await?
+                .resolved
+                .map(|config| DiscoverySettings {
+                    auto_discover: config.discovery.auto_discover,
+                })
+                .unwrap_or(DiscoverySettings {
+                    auto_discover: true,
+                });
             let workspaces = self.workspaces.list().await?;
             let max_concurrent_runs = self.state.read().await.max_concurrent_runs;
             let after = self.revision.current().await?;
@@ -148,6 +162,7 @@ impl SettingsService {
                         .find(|workspace| workspace.is_default)
                         .map(|workspace| workspace.workspace_id),
                     max_concurrent_runs,
+                    discovery,
                 });
             }
         }
@@ -159,28 +174,41 @@ impl SettingsService {
     ) -> Result<SettingsSnapshot, ApiError> {
         let guard = self.revision.begin(&request.expected_revision).await?;
         let _snapshot_gate = self.snapshot_gate.write().await;
-        let prepared_config = if let Some(default_tier) = request.patch.default_tier {
+        let SettingsPatch {
+            default_tier,
+            default_workspace_id,
+            max_concurrent_runs,
+            discovery,
+        } = request.patch;
+        let prepared_config = if default_tier.is_some() || discovery.is_some() {
             let mut file = self
                 .config
                 .snapshot()
                 .await?
                 .raw
                 .ok_or_else(|| invalid_request("providers are not configured"))?;
-            if !file.model.contains_key(&default_tier) {
-                return Err(invalid_request("default tier is not configured"));
+            if let Some(default_tier) = default_tier {
+                if !file.model.contains_key(&default_tier) {
+                    return Err(invalid_request("default tier is not configured"));
+                }
+                file.default_model = Some(default_tier);
             }
-            file.default_model = Some(default_tier);
+            if let Some(discovery) = discovery {
+                file.discovery
+                    .get_or_insert_with(Default::default)
+                    .auto_discover = discovery.auto_discover;
+            }
             Some(self.config.prepare_config(file).await?)
         } else {
             None
         };
-        let prepared_workspace = if let Some(workspace_id) = request.patch.default_workspace_id {
+        let prepared_workspace = if let Some(workspace_id) = default_workspace_id {
             Some(self.workspaces.prepare_default(&workspace_id).await?)
         } else {
             None
         };
         let mut next_settings = self.state.read().await.clone();
-        if let Some(max_concurrent_runs) = request.patch.max_concurrent_runs {
+        if let Some(max_concurrent_runs) = max_concurrent_runs {
             if !(1..=64).contains(&max_concurrent_runs) {
                 return Err(invalid_request(
                     "max concurrent runs must be between 1 and 64",

@@ -1543,6 +1543,17 @@
       ],
       "type": "object"
     },
+    "DiscoverySettings": {
+      "properties": {
+        "auto_discover": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "auto_discover"
+      ],
+      "type": "object"
+    },
     "ExactContentBlock": {
       "description": "Ordered typed content sent to the provider.",
       "oneOf": [
@@ -3433,6 +3444,16 @@
             }
           ]
         },
+        "discovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiscoverySettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "max_concurrent_runs": {
           "format": "uint8",
           "maximum": 255,
@@ -3446,6 +3467,7 @@
       "required": [
         "default_tier",
         "default_workspace_id",
+        "discovery",
         "max_concurrent_runs"
       ],
       "type": "object"
@@ -3474,6 +3496,9 @@
             }
           ]
         },
+        "discovery": {
+          "$ref": "#/$defs/DiscoverySettings"
+        },
         "max_concurrent_runs": {
           "format": "uint8",
           "maximum": 255,
@@ -3489,6 +3514,7 @@
         "credentials",
         "default_tier",
         "default_workspace_id",
+        "discovery",
         "max_concurrent_runs",
         "server_revision"
       ],

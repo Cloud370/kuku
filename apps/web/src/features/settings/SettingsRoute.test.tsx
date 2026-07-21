@@ -54,6 +54,9 @@ describe('SettingsRoute', () => {
     const runs = screen.getByRole('spinbutton', { name: 'Maximum concurrent runs' });
     await user.clear(runs);
     await user.type(runs, '8');
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Discover Skills and Agents automatically' }),
+    );
     await user.click(screen.getByRole('button', { name: 'Save Settings' }));
 
     expect(update).toHaveBeenCalledWith({
@@ -62,6 +65,7 @@ describe('SettingsRoute', () => {
         default_tier: settings.default_tier,
         default_workspace_id: settings.default_workspace_id,
         max_concurrent_runs: 8,
+        discovery: { auto_discover: false },
       },
     });
   });

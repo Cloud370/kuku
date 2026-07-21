@@ -269,6 +269,11 @@ pub struct PlatformStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoverySettings {
+    pub auto_discover: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SettingsSnapshot {
     pub api_version: ApiVersion,
     pub server_revision: RevisionToken,
@@ -277,6 +282,7 @@ pub struct SettingsSnapshot {
     #[serde(deserialize_with = "required_nullable")]
     pub default_workspace_id: Option<WorkspaceId>,
     pub max_concurrent_runs: u8,
+    pub discovery: DiscoverySettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -287,6 +293,8 @@ pub struct SettingsPatch {
     pub default_workspace_id: Option<WorkspaceId>,
     #[serde(deserialize_with = "required_nullable")]
     pub max_concurrent_runs: Option<u8>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub discovery: Option<DiscoverySettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

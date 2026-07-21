@@ -4,6 +4,7 @@ export interface SettingsDraft {
   defaultTier: string;
   defaultWorkspaceId: string;
   maxConcurrentRuns: string;
+  autoDiscover: boolean;
 }
 
 interface SettingsSectionsProps {
@@ -124,6 +125,16 @@ export function SettingsSections({
             type="number"
             value={draft.maxConcurrentRuns}
           />
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            checked={draft.autoDiscover}
+            onChange={(event) => {
+              onChange({ ...draft, autoDiscover: event.currentTarget.checked });
+            }}
+            type="checkbox"
+          />
+          Discover Skills and Agents automatically
         </label>
       </section>
 

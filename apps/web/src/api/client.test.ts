@@ -85,6 +85,7 @@ describe("webApi", () => {
         default_tier: null,
         default_workspace_id: null,
         max_concurrent_runs: 16,
+        discovery: null,
       },
     });
 

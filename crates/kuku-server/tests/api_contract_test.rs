@@ -226,6 +226,7 @@ fn platform_contract_exposes_connection_catalog_and_revision_fields() {
     let settings: SettingsSnapshot =
         serde_json::from_value(fixture("settings_snapshot.json")).unwrap();
     assert_eq!(settings.credentials[0].provider_id, "fixture-provider");
+    assert!(settings.discovery.auto_discover);
 
     let catalog: PlatformCatalog =
         serde_json::from_value(fixture("platform_catalog.json")).unwrap();
@@ -237,7 +238,8 @@ fn platform_contract_exposes_connection_catalog_and_revision_fields() {
         "patch": {
             "default_tier": null,
             "default_workspace_id": null,
-            "max_concurrent_runs": null
+            "max_concurrent_runs": null,
+            "discovery": null
         }
     }))
     .unwrap();

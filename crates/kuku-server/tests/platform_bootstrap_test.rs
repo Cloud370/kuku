@@ -488,6 +488,9 @@ credential = { source = "direct_value", value = "settings-secret" }
                 default_tier: Some("second".to_owned()),
                 default_workspace_id: Some(second.workspace_id.clone()),
                 max_concurrent_runs: Some(7),
+                discovery: Some(kuku_server::api::DiscoverySettings {
+                    auto_discover: false,
+                }),
             },
         })
         .await
@@ -495,6 +498,18 @@ credential = { source = "direct_value", value = "settings-secret" }
     assert_eq!("second", snapshot.default_tier);
     assert_eq!(Some(second.workspace_id), snapshot.default_workspace_id);
     assert_eq!(7, snapshot.max_concurrent_runs);
+    assert!(!snapshot.discovery.auto_discover);
+    assert!(
+        !config
+            .snapshot()
+            .await
+            .unwrap()
+            .raw
+            .unwrap()
+            .discovery
+            .unwrap()
+            .auto_discover
+    );
     assert!(!home.path().join("settings.journal.json").exists());
     assert!(!serde_json::to_string(&snapshot)
         .unwrap()
@@ -507,6 +522,7 @@ credential = { source = "direct_value", value = "settings-secret" }
                 default_tier: Some("first".to_owned()),
                 default_workspace_id: None,
                 max_concurrent_runs: None,
+                discovery: None,
             },
         })
         .await
