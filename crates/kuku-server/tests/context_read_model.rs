@@ -144,6 +144,18 @@ impl ObservationHashProvider for InaccessibleHashes {
     }
 }
 
+struct ChangedHashes;
+
+impl ObservationHashProvider for ChangedHashes {
+    fn current_state(
+        &self,
+        _workspace_id: &WorkspaceId,
+        _path: &kuku::event::WorkspaceRelativePath,
+    ) -> CurrentObservationState {
+        CurrentObservationState::Present("sha256:changed".to_owned())
+    }
+}
+
 fn id<T: serde::de::DeserializeOwned>(value: &str) -> T {
     serde_json::from_value(serde_json::Value::String(value.to_owned())).unwrap()
 }
@@ -420,6 +432,117 @@ fn inaccessible_observation_has_distinct_warning() {
         .warnings
         .iter()
         .any(|warning| warning.code == api::ContextWarningCode::SourceDrift));
+}
+
+#[test]
+fn current_request_keeps_prior_request_observation_and_reports_drift() {
+    let mut facts = facts();
+    let observation = ObservationBuilder::from_tool(
+        request_scope(1),
+        "call-read".to_owned(),
+        ToolObservation {
+            summary: "read src/lib.rs".to_owned(),
+            truncated: false,
+            summarized: false,
+            data: ToolObservationData::FileRead {
+                path: "src/lib.rs".to_owned(),
+                observed_hash: Some("sha256:observed".to_owned()),
+                start_line: 1,
+                line_count: 1,
+            },
+        },
+    )
+    .unwrap();
+    facts
+        .events
+        .push(TaskEvent::ObservationRecorded(observation));
+    let mut foreign_scope = request_scope(1);
+    foreign_scope.execution.turn_id = id("trn_000000000000000000000099");
+    let foreign_observation = ObservationBuilder::from_tool(
+        foreign_scope,
+        "call-foreign-turn".to_owned(),
+        ToolObservation {
+            summary: "read from a different turn scope".to_owned(),
+            truncated: false,
+            summarized: false,
+            data: ToolObservationData::FileRead {
+                path: "src/lib.rs".to_owned(),
+                observed_hash: Some("sha256:observed".to_owned()),
+                start_line: 1,
+                line_count: 1,
+            },
+        },
+    )
+    .unwrap();
+    facts
+        .events
+        .push(TaskEvent::ObservationRecorded(foreign_observation));
+    let model = ContextReadModel::new(
+        Arc::new(StaticSource { facts }),
+        Arc::new(|_: &WorkspaceId| Ok(catalog())),
+        Arc::new(ChangedHashes),
+    );
+
+    let snapshot = model
+        .snapshot(&id("tsk_000000000000000000000001"), None)
+        .unwrap();
+    assert_eq!(
+        id::<kuku::event::RequestId>("req_000000000000000000000002"),
+        snapshot.selected_request.unwrap().request_id
+    );
+    assert_eq!(1, snapshot.sections.observations.len());
+    assert_eq!(1, snapshot.health.source_drift_count);
+    assert_eq!(
+        api::ObservationDrift::ChangedSinceObservation,
+        snapshot.sections.observations[0].current_drift
+    );
+}
+
+#[test]
+fn historical_request_excludes_observations_from_later_requests() {
+    let mut facts = facts();
+    for index in [1, 2] {
+        let observation = ObservationBuilder::from_tool(
+            request_scope(index),
+            format!("call-read-{index}"),
+            ToolObservation {
+                summary: format!("request {index} read src/lib.rs"),
+                truncated: false,
+                summarized: false,
+                data: ToolObservationData::FileRead {
+                    path: "src/lib.rs".to_owned(),
+                    observed_hash: Some("sha256:observed".to_owned()),
+                    start_line: index,
+                    line_count: 1,
+                },
+            },
+        )
+        .unwrap();
+        facts
+            .events
+            .push(TaskEvent::ObservationRecorded(observation));
+    }
+    let model = ContextReadModel::new(
+        Arc::new(StaticSource { facts }),
+        Arc::new(|_: &WorkspaceId| Ok(catalog())),
+        Arc::new(StableHashes),
+    );
+
+    let snapshot = model
+        .snapshot(
+            &id("tsk_000000000000000000000001"),
+            Some(&id("req_000000000000000000000001")),
+        )
+        .unwrap();
+    assert_eq!(1, snapshot.sections.observations.len());
+    assert_eq!(
+        "req_000000000000000000000001",
+        snapshot.sections.observations[0].request_id.as_str()
+    );
+    assert_eq!(
+        "call-read-1",
+        snapshot.sections.observations[0].tool_call_id
+    );
 }
 
 #[test]

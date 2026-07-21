@@ -68,9 +68,19 @@ export function Composer({
         .filter((entry): entry is SkillCatalogEntry => entry !== undefined),
     [draft.skillIds, skills],
   );
-  const disabled = submitting || pendingCommand !== null || taskId === null || !catalogReady;
   const hasActiveRun = activeRunId !== null;
-  const selectedTierId = draft.tierId ?? defaultTierId;
+  const selectedTierId = resolveTierId(draft.tierId, defaultTierId, tiers);
+  const disabled =
+    submitting ||
+    pendingCommand !== null ||
+    taskId === null ||
+    !catalogReady ||
+    selectedTierId === null;
+  useEffect(() => {
+    if (selectedTierId !== null && draft.tierId !== selectedTierId) {
+      onDraftChange({ ...draft, tierId: selectedTierId });
+    }
+  }, [draft, onDraftChange, selectedTierId]);
 
   const submit = async () => {
     const message = draft.text.trim();
@@ -183,6 +193,18 @@ export function Composer({
       </div>
     </section>
   );
+}
+
+function resolveTierId(
+  draftTierId: string | null,
+  defaultTierId: string,
+  tiers: TierCatalogEntry[],
+): string | null {
+  const hasTier = (tierId: string | null): tierId is string =>
+    tierId !== null && tiers.some(({ tier }) => tier.tier_id === tierId);
+  if (hasTier(draftTierId)) return draftTierId;
+  if (hasTier(defaultTierId)) return defaultTierId;
+  return tiers.find(({ tier }) => tier.is_default)?.tier.tier_id ?? tiers[0]?.tier.tier_id ?? null;
 }
 
 function draftsEqual(left: LocalDraft, right: LocalDraft): boolean {

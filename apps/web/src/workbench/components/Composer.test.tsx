@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -108,6 +108,48 @@ describe('Composer', () => {
       tier_id: 'tier:balanced',
     });
     expect(onDraftChange).toHaveBeenLastCalledWith(draft());
+  });
+
+  it('initializes an unselected draft from the catalog default before submitting', async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Composer
+        {...props({
+          defaultTierId: '',
+          draft: draft({ text: 'inspect', tierId: null }),
+          onDraftChange,
+          onSubmit,
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onDraftChange).toHaveBeenCalledWith(draft({ text: 'inspect' }));
+    });
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      message: 'inspect',
+      skill_ids: [],
+      tier_id: 'tier:balanced',
+    });
+  });
+
+  it('disables submission when the catalog has no Tier', () => {
+    render(
+      <Composer
+        {...props({
+          defaultTierId: '',
+          draft: draft({ text: 'inspect', tierId: null }),
+          tiers: [],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Choose Tier' })).toHaveTextContent('Choose Tier');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
   it('uses one catalog entry for Skill picker selection and read-only preview', async () => {

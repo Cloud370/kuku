@@ -4,8 +4,8 @@ use std::sync::Arc;
 use kuku::context::UsageReductionError;
 use kuku::event::{
     CapabilityFact, ContextBreakdown, ConversationContextFact, ConversationId, MemoryKind,
-    ObservationFact, RequestId, RequestSnapshot, RequestStarted, TaskEvent, TaskId, TaskRevision,
-    WorkspaceId,
+    ObservationFact, RequestId, RequestScope, RequestSnapshot, RequestStarted, TaskEvent, TaskId,
+    TaskRevision, WorkspaceId,
 };
 
 use crate::api::{
@@ -121,6 +121,10 @@ impl ContextReadModel {
         let selected_snapshot = selected
             .as_ref()
             .and_then(|request| requests.snapshots.get(&request.request_id));
+        let observation_scopes = selected
+            .as_ref()
+            .map(|request| requests.scopes_through(&request.request_id))
+            .unwrap_or_default();
         let next_request_base = latest
             .as_ref()
             .and_then(|request| requests.snapshots.get(&request.request_id))
@@ -136,6 +140,7 @@ impl ContextReadModel {
             .collect::<Vec<_>>();
         let (sections, observation_states) = sections(
             selected_snapshot,
+            &observation_scopes,
             &facts.workspace_id,
             &observation_facts,
             &catalog,
@@ -351,10 +356,28 @@ impl Requests {
             None => Ok(self.latest()),
         }
     }
+
+    fn scopes_through(&self, selected: &RequestId) -> Vec<RequestScope> {
+        let end = self
+            .history
+            .iter()
+            .position(|request| request.request_id == *selected)
+            .map_or(0, |index| index + 1);
+        self.history
+            .iter()
+            .take(end)
+            .filter_map(|request| {
+                self.snapshots
+                    .get(&request.request_id)
+                    .map(|snapshot| snapshot.scope.clone())
+            })
+            .collect()
+    }
 }
 
 fn sections(
     snapshot: Option<&RequestSnapshot>,
+    observation_scopes: &[RequestScope],
     workspace_id: &WorkspaceId,
     observations: &[ObservationFact],
     catalog: &ContextCatalog,
@@ -415,8 +438,8 @@ fn sections(
             } else {
                 observations.to_vec()
             };
-            ObservationReducer::for_request(
-                &snapshot.scope,
+            ObservationReducer::for_requests(
+                observation_scopes,
                 workspace_id,
                 &request_observations,
                 hashes,

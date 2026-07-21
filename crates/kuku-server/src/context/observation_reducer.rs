@@ -35,9 +35,18 @@ impl ObservationReducer {
         facts: &[ObservationFact],
         hashes: &dyn ObservationHashProvider,
     ) -> Vec<ObservationProjection> {
+        Self::for_requests(std::slice::from_ref(scope), workspace_id, facts, hashes)
+    }
+
+    pub(crate) fn for_requests(
+        scopes: &[RequestScope],
+        workspace_id: &WorkspaceId,
+        facts: &[ObservationFact],
+        hashes: &dyn ObservationHashProvider,
+    ) -> Vec<ObservationProjection> {
         facts
             .iter()
-            .filter(|fact| fact.scope == *scope)
+            .filter(|fact| scopes.contains(&fact.scope))
             .map(|fact| project(fact, workspace_id, hashes))
             .collect()
     }
