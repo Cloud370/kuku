@@ -472,7 +472,7 @@ async fn start_unconfigured_auth_init_task_disconnect_reconnect() {
                 "expected_task_revision": first["projection"]["task_revision"],
                 "idempotency_key": "submit-one",
                 "message": core_message(),
-                "tier_id": "balanced",
+                "tier_id": "tier:balanced",
                 "skill_ids": []
             }),
             202,

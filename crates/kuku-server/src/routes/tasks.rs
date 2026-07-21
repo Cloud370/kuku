@@ -133,9 +133,6 @@ async fn submit_run(
     Path(task_id): Path<TaskId>,
     Json(request): Json<SubmitRunRequest>,
 ) -> Result<(StatusCode, Json<crate::api::SubmitRunResponse>), TaskHttpError> {
-    if request.tier_id.is_empty() || request.tier_id.contains(':') {
-        return Err(DomainError::InvalidRequest.into());
-    }
     let result = state
         .runtime
         .submit(SubmitRunCommand {
@@ -143,7 +140,7 @@ async fn submit_run(
             expected_task_revision: request.expected_task_revision,
             idempotency_key: request.idempotency_key,
             message: request.message,
-            tier_id: format!("tier:{}", request.tier_id),
+            tier_id: request.tier_id,
             skill_ids: request.skill_ids,
         })
         .await?;

@@ -603,7 +603,7 @@ async fn run_feature_scenario(scenario: FeatureScenario) {
                 "expected_task_revision": created.projection.task_revision,
                 "idempotency_key": format!("{}-run", scenario.name),
                 "message": scenario.task.message,
-                "tier_id": "balanced",
+                "tier_id": "tier:balanced",
                 "skill_ids": []
             }),
             202,
@@ -796,7 +796,7 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
                 "expected_task_revision": created.projection.task_revision,
                 "idempotency_key": "scenario-runtime-run",
                 "message": scenario.task.message,
-                "tier_id": "balanced",
+                "tier_id": "tier:balanced",
                 "skill_ids": []
             }),
             202,
