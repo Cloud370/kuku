@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use kuku::event::{
     CommandReceipt, CommandResult, Cursor, MessageFact, MessageRoleFact, TaskActivityBatch,
@@ -37,6 +38,8 @@ use kuku_server::run_manager::{DomainError, TaskAggregate};
 use kuku_server::testing::{BarrierOutcome, DriverEvent, ScenarioControl, ScenarioDriverFactory};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const STATUS_SKILL_PATH: &str = ".agents/skills/status/SKILL.md";
+const STATUS_SKILL_CONTENT: &str = "---\nname: status\ndescription: Inspect status implementation\n---\n\nInspect status implementation and report facts.\n";
 static SCENARIO_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
@@ -859,15 +862,58 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
     let terminal = wait_for_terminal_projection(&client, &task_id).await;
     assert_eq!(TaskState::Completed, terminal.task.state);
     assert!(terminal.cursor.get() > created.projection.cursor.get());
+    assert!(terminal
+        .loaded_skills
+        .iter()
+        .any(|skill| { skill.skill_id == "skill:project:status" && skill.loaded_by == "agent" }));
 
     let context: ContextSnapshot = client
         .get(&format!("/api/v1/tasks/{task_id}/context"))
         .await;
     assert_eq!(1, context.request_history.len());
     assert!(exact_request_contains(&context, &scenario.task.message));
+    let expected_skill_hash = format!("sha256:{:x}", Sha256::digest(STATUS_SKILL_CONTENT));
+    assert_eq!(1, context.sections.skills.len());
+    assert_eq!("skill:project:status", context.sections.skills[0].skill_id);
+    assert_eq!(
+        kuku::event::SkillLoadOrigin::Agent,
+        context.sections.skills[0].origin
+    );
+    assert_eq!(expected_skill_hash, context.sections.skills[0].content_hash);
+    assert_eq!(
+        kuku::event::SourceScope::Project,
+        context.sections.skills[0].source.scope
+    );
+    assert_eq!(
+        "skill-source:project:status",
+        context.sections.skills[0].source.id
+    );
+    assert_eq!(
+        Some(STATUS_SKILL_PATH),
+        context.sections.skills[0]
+            .source
+            .relative_path
+            .as_ref()
+            .map(kuku::event::WorkspaceRelativePath::as_str)
+    );
+    let request_id = &context.request_history[0].request_id;
+    let historical: ContextSnapshot = client
+        .get(&format!("/api/v1/tasks/{task_id}/context/{request_id}"))
+        .await;
+    assert_eq!(context.sections.skills, historical.sections.skills);
+    let expected_file_path = &scenario.workspace.working_files[0].path;
+    assert_eq!(1, context.sections.observations.len());
+    assert_eq!(
+        Some(expected_file_path.as_str()),
+        context.sections.observations[0]
+            .relative_path
+            .as_ref()
+            .map(kuku::event::WorkspaceRelativePath::as_str)
+    );
 
     let mut before = None;
     let mut history_ids = std::collections::BTreeSet::new();
+    let mut tool_file_reference = None;
     loop {
         let path = before.as_ref().map_or_else(
             || format!("/api/v1/tasks/{task_id}/timeline?limit=500"),
@@ -883,6 +929,9 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
             if let TimelineItemProjection::Activity(activity) = item {
                 if activity.activity_id.starts_with("scenario-history-7-") {
                     assert!(history_ids.insert(activity.activity_id));
+                } else if activity.activity_id.starts_with("scenario-tool-7-") {
+                    assert_eq!(1, activity.file_references.len());
+                    tool_file_reference = Some(activity.file_references[0].relative_path.clone());
                 }
             }
         }
@@ -892,6 +941,7 @@ async fn scenario_uses_commands_runtime_ledger_and_authenticated_controls() {
         }
     }
     assert_eq!(10_000, history_ids.len());
+    assert_eq!(Some(expected_file_path.clone()), tool_file_reference);
 }
 
 #[test]
@@ -984,6 +1034,19 @@ fn feature_scenarios_include_required_runtime_inputs() {
             .position(|event| matches!(event, DriverEvent::Interaction { .. }))
             .unwrap();
         assert!(interaction_position > tool_position);
+
+        let skill = factory
+            .fixture()
+            .events
+            .iter()
+            .find_map(|event| match event {
+                DriverEvent::AgentSkillLoaded { skill_id, source } => Some((skill_id, source)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!("skill:project:status", skill.0);
+        assert_eq!(STATUS_SKILL_PATH, skill.1.relative_path.as_str());
+        assert_eq!(STATUS_SKILL_CONTENT, skill.1.content);
 
         let fixture = serde_json::to_value(factory.fixture()).unwrap();
         let history = fixture["events"]

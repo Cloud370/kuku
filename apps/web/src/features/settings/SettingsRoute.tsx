@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { webApi } from '../../api/client';
 import type {
@@ -21,15 +21,22 @@ export interface SettingsRouteApi {
   workspaces: { list: () => Promise<WorkspacePage> };
 }
 
+export type SettingsInitialDialog = 'connection_qr';
+
 interface SettingsRouteProps {
   api?: SettingsRouteApi;
+  initialDialog?: SettingsInitialDialog | null;
   onOpenGuide?: () => void;
 }
 
 const settingsKey = ['settings'] as const;
 const platformCatalogKey = ['platform-catalog'] as const;
 
-export function SettingsRoute({ api = webApi, onOpenGuide }: SettingsRouteProps) {
+export function SettingsRoute({
+  api = webApi,
+  initialDialog = null,
+  onOpenGuide,
+}: SettingsRouteProps) {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: settingsKey, queryFn: () => api.settings.get() });
   const catalog = useQuery({
@@ -40,6 +47,7 @@ export function SettingsRoute({ api = webApi, onOpenGuide }: SettingsRouteProps)
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => api.workspaces.list() });
   const [draft, setDraft] = useState<SettingsDraft | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
+  const initialDialogOpened = useRef(false);
   const [notice, setNotice] = useState<{
     message: string;
     role: 'alert' | 'status';
@@ -77,6 +85,21 @@ export function SettingsRoute({ api = webApi, onOpenGuide }: SettingsRouteProps)
   const loading =
     settings.isPending || catalog.isPending || status.isPending || workspaces.isPending;
   const error = settings.error ?? catalog.error ?? status.error ?? workspaces.error;
+  const ready =
+    !loading &&
+    error === null &&
+    draft !== null &&
+    catalog.data !== undefined &&
+    status.data !== undefined &&
+    workspaces.data !== undefined;
+
+  useEffect(() => {
+    if (ready && initialDialog === 'connection_qr' && !initialDialogOpened.current) {
+      initialDialogOpened.current = true;
+      setQrOpen(true);
+    }
+  }, [initialDialog, ready]);
+
   const transition = save.isPending
     ? { kind: 'saving' as const, message: 'Saving Settings' }
     : undefined;
@@ -130,12 +153,7 @@ export function SettingsRoute({ api = webApi, onOpenGuide }: SettingsRouteProps)
           {notice.message}
         </p>
       )}
-      {!loading &&
-      error === null &&
-      draft !== null &&
-      catalog.data !== undefined &&
-      status.data !== undefined &&
-      workspaces.data !== undefined ? (
+      {ready ? (
         <SettingsSections
           catalog={catalog.data}
           connection={status.data.connection}

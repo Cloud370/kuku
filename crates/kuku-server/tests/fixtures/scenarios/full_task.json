@@ -17,6 +17,10 @@
       {
         "path": "src/lib.rs",
         "content": "pub fn status() -> &'static str {\n    \"ready\"\n}\n"
+      },
+      {
+        "path": ".agents/skills/status/SKILL.md",
+        "content": "---\nname: status\ndescription: Inspect status implementation\n---\n\nInspect status implementation and report facts.\n"
       }
     ],
     "revision_update": {

@@ -6,9 +6,11 @@ use std::sync::{Arc, Mutex};
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, ContextBreakdown, ConversationContextFact,
     ConversationId, ExactContentBlock, ExactMessage, ExactRequest, ExactRequestParameters,
-    InteractionChoiceFact, InteractionFact, InteractionId, MessageRole, ProviderFact,
-    ProviderUsage, RequestCause, RequestCompleted, RequestId, RequestScope, RequestSnapshot,
-    RequestStarted, RevisionToken, RunId, TaskEvent, TaskId, ThinkingConfig, TurnId, WorkspaceId,
+    FileReferenceFact, InteractionChoiceFact, InteractionFact, InteractionId, MessageRole,
+    ObservationFact, ObservationKind, ObservationRetention, ProviderFact, ProviderUsage,
+    RequestCause, RequestCompleted, RequestId, RequestScope, RequestSnapshot, RequestStarted,
+    RevisionToken, RunId, SkillContextFact, SkillLoadFact, SkillLoadOrigin, SourceFact,
+    SourceScope, TaskEvent, TaskId, ThinkingConfig, TurnId, WorkspaceId, WorkspaceRelativePath,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,8 +64,15 @@ pub enum DriverEvent {
     ToolCall {
         /// Tool name.
         name: String,
-        /// JSON arguments passed to the tool.
-        arguments: serde_json::Value,
+        /// Typed file arguments passed to the tool.
+        arguments: ScenarioToolArguments,
+    },
+    /// A project Skill loaded by the Agent while assembling the request.
+    AgentSkillLoaded {
+        /// Stable catalog Skill identifier.
+        skill_id: String,
+        /// Typed Skill source and exact content.
+        source: ScenarioSkillSource,
     },
     /// A deterministic sequence of older timeline activities.
     TimelineHistory {
@@ -93,6 +102,22 @@ pub enum DriverEvent {
         /// Output token count.
         output_tokens: u64,
     },
+}
+
+/// Canonical file input for a scenario Tool call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioToolArguments {
+    /// Contained workspace-relative file path.
+    pub path: WorkspaceRelativePath,
+}
+
+/// Canonical project Skill input for a scenario request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioSkillSource {
+    /// Contained project-relative Skill definition path.
+    pub relative_path: WorkspaceRelativePath,
+    /// Exact Skill definition loaded by the Agent.
+    pub content: String,
 }
 
 /// The fixture consumed by [`ScenarioDriverFactory`].
@@ -189,10 +214,23 @@ fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioErro
     let input: FeatureFixture = serde_json::from_str(source)
         .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?;
     let file = input.workspace.working_files.first();
-    let arguments = serde_json::json!({
-        "path": file.map_or("README.md", |file| file.path.as_str())
-    });
+    let path = file.map_or("README.md", |file| file.path.as_str());
+    let arguments = ScenarioToolArguments {
+        path: WorkspaceRelativePath::parse(path)
+            .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?,
+    };
     let observation = file.map_or_else(String::new, |file| file.content.clone());
+    let skill = input
+        .workspace
+        .working_files
+        .iter()
+        .find(|file| file.path == ".agents/skills/status/SKILL.md")
+        .ok_or_else(|| ScenarioError::InvalidFixture("status Skill is missing".to_owned()))?;
+    let skill_source = ScenarioSkillSource {
+        relative_path: WorkspaceRelativePath::parse(&skill.path)
+            .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?,
+        content: skill.content.clone(),
+    };
     let _ = (
         input.workspace.kind,
         input.workspace.git_branch,
@@ -204,6 +242,10 @@ fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioErro
         name: input.name,
         provider: input.provider.model,
         events: vec![
+            DriverEvent::AgentSkillLoaded {
+                skill_id: "skill:project:status".to_owned(),
+                source: skill_source,
+            },
             DriverEvent::ProviderResponse {
                 text: format!("I will inspect the workspace for: {}", input.task.message),
             },
@@ -498,24 +540,42 @@ async fn run_scenario_driver(
             }
             DriverEvent::ToolCall { name, arguments } => {
                 let activity_id = format!("scenario-tool-{seed}-{index}");
+                let file_reference = FileReferenceFact {
+                    workspace_id: start.workspace_id.clone(),
+                    relative_path: arguments.path.clone(),
+                    label: arguments.path.as_str().to_owned(),
+                };
                 let activity = ActivityFact {
                     activity_id: activity_id.clone(),
                     run_id: start.run_id.clone(),
                     title: name,
                     kind: ActivityKindFact::Tool,
                     status: ActivityStatusFact::Running,
-                    detail: Some(arguments.to_string()),
+                    detail: Some(
+                        serde_json::json!({ "path": arguments.path.as_str() }).to_string(),
+                    ),
                     conversation_id: None,
                     agent: None,
                     tier: None,
                     result_in_main: None,
-                    file_references: Vec::new(),
+                    file_references: vec![file_reference],
+                };
+                let observation = ObservationFact {
+                    scope: request_scope.clone(),
+                    tool_call_id: activity_id.clone(),
+                    kind: ObservationKind::FileRead,
+                    relative_path: Some(arguments.path.clone()),
+                    observed_hash: None,
+                    range: None,
+                    retention: ObservationRetention::Retained,
+                    summary: format!("Observed {}", arguments.path.as_str()),
                 };
                 if events
                     .send(RuntimeDriverEvent::Activity(vec![
                         TaskEvent::ActivityUpserted {
                             activity: activity.clone(),
                         },
+                        TaskEvent::ObservationRecorded(observation),
                     ]))
                     .await
                     .is_err()
@@ -541,6 +601,7 @@ async fn run_scenario_driver(
                     return;
                 }
             }
+            DriverEvent::AgentSkillLoaded { .. } => {}
             DriverEvent::TimelineHistory { count, batch_size } => {
                 if !send_timeline_history(&start, seed, count, batch_size, &events).await {
                     return;
@@ -691,6 +752,36 @@ fn request_events(
     start: &DriverStart,
     scope: &RequestScope,
 ) -> Vec<TaskEvent> {
+    let loaded_skills = fixture
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            DriverEvent::AgentSkillLoaded { skill_id, source } => {
+                let content_hash =
+                    format!("sha256:{:x}", Sha256::digest(source.content.as_bytes()));
+                Some(SkillLoadFact {
+                    execution: start.execution_scope.clone(),
+                    caused_by_request_id: Some(scope.request_id.clone()),
+                    skill_id: skill_id.clone(),
+                    source: SourceFact {
+                        scope: SourceScope::Project,
+                        id: "skill-source:project:status".to_owned(),
+                        relative_path: Some(source.relative_path.clone()),
+                    },
+                    origin: SkillLoadOrigin::Agent,
+                    content_hash,
+                })
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut context_skills = start.selected_skills.clone();
+    context_skills.extend(loaded_skills.iter().map(|skill| SkillContextFact {
+        skill_id: skill.skill_id.clone(),
+        source: skill.source.clone(),
+        origin: skill.origin,
+        content_hash: skill.content_hash.clone(),
+    }));
     let exact = ExactRequest {
         messages: vec![ExactMessage {
             role: MessageRole::User,
@@ -712,42 +803,47 @@ fn request_events(
         Sha256::digest(serde_json::to_vec(&exact).expect("scenario request serializes"))
     );
     let cause = RequestCause::UserSubmission;
-    vec![
-        TaskEvent::RequestSnapshot(RequestSnapshot {
-            scope: scope.clone(),
-            cause: cause.clone(),
-            provider: ProviderFact::Anthropic,
-            tier_id: start.tier_id.clone(),
-            exact,
-            context: ContextBreakdown {
-                skills: start.selected_skills.clone(),
-                instructions: Vec::new(),
-                memory: Vec::new(),
-                conversation: ConversationContextFact {
-                    retained_turns: start.execution_scope.turn_index.saturating_sub(1),
-                    handoff_boundaries: 0,
-                    history_summarized: false,
+    loaded_skills
+        .into_iter()
+        .map(TaskEvent::SkillLoaded)
+        .chain([
+            TaskEvent::RequestSnapshot(RequestSnapshot {
+                scope: scope.clone(),
+                cause: cause.clone(),
+                provider: ProviderFact::Anthropic,
+                tier_id: start.tier_id.clone(),
+                exact,
+                context: ContextBreakdown {
+                    skills: context_skills,
+                    instructions: Vec::new(),
+                    memory: Vec::new(),
+                    conversation: ConversationContextFact {
+                        retained_turns: start.execution_scope.turn_index.saturating_sub(1),
+                        handoff_boundaries: 0,
+                        history_summarized: false,
+                        delegated_results: Vec::new(),
+                    },
+                    observations: Vec::new(),
                     delegated_results: Vec::new(),
+                    capabilities: Vec::new(),
+                    token_estimate: None,
                 },
-                observations: Vec::new(),
-                delegated_results: Vec::new(),
-                capabilities: Vec::new(),
-                token_estimate: None,
-            },
-            catalog_revision: RevisionToken::parse("0".repeat(64)).expect("zero revision is valid"),
-            exact_payload_hash: hash,
-        }),
-        TaskEvent::RequestStarted(RequestStarted {
-            scope: scope.clone(),
-            cause,
-            provider: ProviderFact::Anthropic,
-            model: fixture.provider.clone(),
-            started_at: format!(
-                "2026-07-20T00:00:{:02}Z",
-                start.execution_scope.turn_index % 60
-            ),
-        }),
-    ]
+                catalog_revision: RevisionToken::parse("0".repeat(64))
+                    .expect("zero revision is valid"),
+                exact_payload_hash: hash,
+            }),
+            TaskEvent::RequestStarted(RequestStarted {
+                scope: scope.clone(),
+                cause,
+                provider: ProviderFact::Anthropic,
+                model: fixture.provider.clone(),
+                started_at: format!(
+                    "2026-07-20T00:00:{:02}Z",
+                    start.execution_scope.turn_index % 60
+                ),
+            }),
+        ])
+        .collect()
 }
 
 async fn wait_for_barrier(

@@ -120,10 +120,11 @@ impl BootstrapService {
                 .unwrap_or(false);
             let probe_inputs = self.revision.probe_inputs().await.ok();
             let init = self.init.read().await;
-            let provider_test_passed = probe_inputs.as_ref().is_some_and(|current| {
-                init.probe_passed
-                    && init.probe_input_revision.as_deref() == Some(current.token().as_str())
-            });
+            let provider_test_passed = init.probe_passed
+                && (init.complete
+                    || probe_inputs.as_ref().is_some_and(|current| {
+                        init.probe_input_revision.as_deref() == Some(current.token().as_str())
+                    }));
             let providers_configured = !catalog.credentials.is_empty() && !catalog.tiers.is_empty();
             let default_tier_configured = !catalog.default_tier.tier_id.is_empty();
             let complete = init.complete && provider_test_passed;

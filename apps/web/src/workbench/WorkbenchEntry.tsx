@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import type { TaskDelta } from '../api/generated';
 import { webApi } from '../api/client';
+import type { LocalDraft } from './state';
 import { EntryGate } from './entry/EntryGate';
 import { WorkbenchController, type WorkbenchControllerView } from './WorkbenchController';
 import type { WorkbenchRoute } from './taskSelection';
@@ -15,6 +16,7 @@ import { WorkbenchShell } from './components/WorkbenchShell';
 export interface WorkbenchEntryProps {
   api?: typeof webApi;
   context: ReactNode;
+  initialDraft?: LocalDraft;
   renderContext?: (view: WorkbenchControllerView) => ReactNode;
   onOpenAgentThread: (taskId: string, conversationId: string) => void;
   onOpenContext: () => void;
@@ -31,6 +33,7 @@ export interface WorkbenchEntryProps {
 export function WorkbenchEntry({
   api = webApi,
   context,
+  initialDraft,
   renderContext,
   onOpenAgentThread,
   onOpenContext,
@@ -48,6 +51,7 @@ export function WorkbenchEntry({
       renderWorkbench={(platformStatus) => (
         <WorkbenchController
           api={api}
+          initialDraft={initialDraft}
           onTaskDeltaCommitted={onTaskDeltaCommitted}
           platform={platformStatus}
           route={route}

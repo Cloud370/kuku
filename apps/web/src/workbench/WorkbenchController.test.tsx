@@ -16,6 +16,44 @@ afterEach(() => {
 });
 
 describe('WorkbenchController', () => {
+  it('initializes an editable Guide draft without submitting it', async () => {
+    const user = userEvent.setup();
+    const server = createFakeWorkbenchServer();
+    const submitRun = vi.fn();
+    const api = { ...server.api, tasks: { ...server.api.tasks, submitRun } };
+
+    render(
+      <WorkbenchController
+        api={api}
+        initialDraft={{
+          text: 'Inspect this workspace and identify the most important next step.',
+          skillIds: [],
+          tierId: null,
+        }}
+        platform={structuredClone(platformStatusJson) as PlatformStatus}
+        route={{ kind: 'new' }}
+      >
+        {(view) => (
+          <textarea
+            aria-label="Draft message"
+            onChange={(event) => {
+              view.store.setDraft({ ...view.snapshot.localDraft, text: event.target.value });
+            }}
+            value={view.snapshot.localDraft.text}
+          />
+        )}
+      </WorkbenchController>,
+    );
+
+    const draft = await screen.findByDisplayValue(
+      'Inspect this workspace and identify the most important next step.',
+    );
+    await user.clear(draft);
+    await user.type(draft, 'Use the staged context');
+    expect(draft).toHaveValue('Use the staged context');
+    expect(submitRun).not.toHaveBeenCalled();
+  });
+
   it('loads the default Workspace catalog through the shared client contract', async () => {
     const workspaces = {
       api_version: 1,

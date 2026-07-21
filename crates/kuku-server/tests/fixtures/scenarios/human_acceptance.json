@@ -12,6 +12,10 @@
       {
         "path": "README.md",
         "content": "Acceptance checklist\n- verify Context\n"
+      },
+      {
+        "path": ".agents/skills/status/SKILL.md",
+        "content": "---\nname: status\ndescription: Inspect status implementation\n---\n\nInspect status implementation and report facts.\n"
       }
     ],
     "revision_update": {

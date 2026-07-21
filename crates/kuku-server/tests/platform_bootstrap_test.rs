@@ -133,7 +133,7 @@ async fn init_probe_and_completion_survive_reopen_without_exposing_secrets() {
     let probe = Arc::new(ProbeFixture {
         called: AtomicBool::new(false),
     });
-    let (bootstrap, config, _workspaces, _) =
+    let (bootstrap, config, workspaces, revisions) =
         bootstrap_fixture(home.path(), allowed.path(), Arc::clone(&probe)).await;
     assert_eq!(InitPhase::Required, bootstrap.status().await.phase);
 
@@ -204,6 +204,29 @@ async fn init_probe_and_completion_survive_reopen_without_exposing_secrets() {
         })
         .await
         .unwrap();
+    assert_eq!(InitPhase::Complete, status.phase);
+
+    let settings =
+        SettingsService::open(home.path(), Arc::clone(&config), workspaces, revisions, 4)
+            .await
+            .unwrap();
+    let current = settings.snapshot().await.unwrap();
+    settings
+        .commit(kuku_server::api::UpdateSettingsRequest {
+            expected_revision: current.server_revision,
+            patch: kuku_server::api::SettingsPatch {
+                default_tier: None,
+                default_workspace_id: None,
+                max_concurrent_runs: None,
+                discovery: Some(kuku_server::api::DiscoverySettings {
+                    auto_discover: false,
+                }),
+            },
+        })
+        .await
+        .unwrap();
+    let status = bootstrap.status().await;
+    assert!(status.complete);
     assert_eq!(InitPhase::Complete, status.phase);
 
     let catalog_json = serde_json::to_string(&config.catalog().await).unwrap();

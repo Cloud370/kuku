@@ -22,6 +22,8 @@ import {
   type ReviewFileRouteState,
   type TaskPresentationSnapshot,
 } from './features/experience/presentationState';
+import { GuideAction } from './features/guide/guideActions';
+import type { FirstTaskPrefill } from './features/guide/guideActions';
 import { GuideRoute } from './features/guide/GuideRoute';
 import { AnnotationDrafts } from './features/review/AnnotationDrafts';
 import { ReviewRoute } from './features/review/ReviewRoute';
@@ -36,9 +38,10 @@ import {
   type LocalReviewNote,
   type PendingReviewBatch,
 } from './features/review/annotationState';
-import { SettingsRoute } from './features/settings/SettingsRoute';
+import { SettingsRoute, type SettingsInitialDialog } from './features/settings/SettingsRoute';
 import type { WorkbenchControllerView } from './workbench/WorkbenchController';
 import { WorkbenchEntry } from './workbench/WorkbenchEntry';
+import type { LocalDraft } from './workbench/state';
 import type { WorkbenchRoute } from './workbench/taskSelection';
 
 const presentationStore = createPresentationStore();
@@ -49,6 +52,10 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
   const queryClient = useQueryClient();
   const { taskId } = useParams<{ taskId: string }>();
   const scopeRef = useRef<ExperienceScope | null>(null);
+  const initialDraft = useMemo(
+    () => (kind === 'new' ? guideDraftFromLocationState(location.state) : undefined),
+    [kind, location.state],
+  );
   const route: WorkbenchRoute =
     kind === 'task' && taskId !== undefined
       ? { kind: 'task', taskId }
@@ -80,6 +87,7 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
   return (
     <WorkbenchEntry
       context={<ContextUnavailable />}
+      initialDraft={initialDraft}
       onNavigateTask={(selectedTaskId) => {
         void navigate(`/tasks/${encodeURIComponent(selectedTaskId)}`);
       }}
@@ -393,21 +401,46 @@ function navigateToPresentation(
 
 function SettingsRouteView() {
   const navigate = useNavigate();
-  return <SettingsRoute onOpenGuide={() => void navigate('/guide')} />;
+  const [searchParams] = useSearchParams();
+  const initialDialog: SettingsInitialDialog | null =
+    searchParams.get('connection') === 'qr' ? 'connection_qr' : null;
+  return (
+    <SettingsRoute initialDialog={initialDialog} onOpenGuide={() => void navigate('/guide')} />
+  );
 }
 
 function GuideRouteView() {
   const navigate = useNavigate();
   return (
     <GuideRoute
-      onAction={(_action, route) => {
+      onAction={(action, route) => {
+        if (action === GuideAction.FirstTask) return;
         void navigate(route);
       }}
-      onPrefillFirstTask={() => {
-        void navigate('/tasks/new');
+      onPrefillFirstTask={(prefill) => {
+        void navigate('/tasks/new', { state: { firstTaskPrefill: prefill } });
       }}
     />
   );
+}
+
+function guideDraftFromLocationState(value: unknown): LocalDraft | undefined {
+  if (value === null || typeof value !== 'object' || !('firstTaskPrefill' in value)) {
+    return undefined;
+  }
+  const prefill: unknown = value.firstTaskPrefill;
+  if (
+    prefill === null ||
+    typeof prefill !== 'object' ||
+    !('editable' in prefill) ||
+    prefill.editable !== true ||
+    !('message' in prefill) ||
+    typeof prefill.message !== 'string'
+  ) {
+    return undefined;
+  }
+  const accepted = prefill as FirstTaskPrefill;
+  return { text: accepted.message, skillIds: [], tierId: null };
 }
 
 function App() {

@@ -10,6 +10,7 @@ import type {
 } from '../api/generated';
 import { webApi } from '../api/client';
 import { selectTimelineItems } from './state';
+import type { LocalDraft } from './state';
 import { resolveInitialTask, type WorkbenchRoute } from './taskSelection';
 import {
   createWorkbenchStore,
@@ -36,6 +37,7 @@ export interface WorkbenchControllerView {
 interface WorkbenchControllerProps {
   api?: typeof webApi;
   children: (view: WorkbenchControllerView) => ReactNode;
+  initialDraft?: LocalDraft;
   onTaskDeltaCommitted?: (taskId: string, delta: TaskDelta) => void;
   platform: PlatformStatus;
   route?: WorkbenchRoute;
@@ -44,6 +46,7 @@ interface WorkbenchControllerProps {
 export function WorkbenchController({
   api = webApi,
   children,
+  initialDraft,
   onTaskDeltaCommitted,
   platform,
   route,
@@ -142,7 +145,10 @@ export function WorkbenchController({
 
   useEffect(() => {
     if (resolvedRoute?.kind !== 'task') {
-      if (resolvedRoute?.kind === 'new') store.getState().clearTask();
+      if (resolvedRoute?.kind === 'new') {
+        store.getState().clearTask();
+        if (initialDraft !== undefined) store.getState().setDraft(initialDraft);
+      }
       return;
     }
     const taskId = resolvedRoute.taskId;
@@ -161,7 +167,7 @@ export function WorkbenchController({
       current = false;
       unsubscribe?.();
     };
-  }, [resolvedRoute, retryVersion, store]);
+  }, [initialDraft, resolvedRoute, retryVersion, store]);
 
   useEffect(() => {
     store.getState().setTaskDeltaObserver(onTaskDeltaCommitted ?? null);

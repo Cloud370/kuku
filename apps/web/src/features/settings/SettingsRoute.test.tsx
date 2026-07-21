@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -38,6 +38,36 @@ function renderRoute(value: ReactElement): void {
 afterEach(cleanup);
 
 describe('SettingsRoute', () => {
+  it('opens a deep-linked Connection QR only after Settings are ready without exposing the secret', async () => {
+    let resolveSettings: ((value: SettingsSnapshot) => void) | undefined;
+    const get = vi.fn(
+      () =>
+        new Promise<SettingsSnapshot>((resolve) => {
+          resolveSettings = resolve;
+        }),
+    );
+    const credentials = vi.fn(() => 'secret-in-fragment-only');
+    const api = {
+      catalog: { platform: vi.fn().mockResolvedValue(catalog) },
+      credentials: { current: credentials },
+      platform: { status: vi.fn().mockResolvedValue(status) },
+      settings: { get, update: vi.fn() },
+      workspaces: { list: vi.fn().mockResolvedValue(workspaces) },
+    };
+    renderRoute(<SettingsRoute api={api} initialDialog="connection_qr" />);
+
+    expect(screen.queryByRole('dialog', { name: 'Connection QR' })).toBeNull();
+    const resolve = resolveSettings;
+    if (resolve === undefined) throw new Error('Settings query was not started');
+    act(() => {
+      resolve(settings);
+    });
+
+    expect(await screen.findByRole('dialog', { name: 'Connection QR' })).toBeVisible();
+    expect(credentials).toHaveBeenCalledOnce();
+    expect(document.body).not.toHaveTextContent('secret-in-fragment-only');
+  });
+
   it('loads platform truth and sends only the revisioned generated patch', async () => {
     const user = userEvent.setup();
     const update = vi.fn().mockResolvedValue({ ...settings, max_concurrent_runs: 8 });

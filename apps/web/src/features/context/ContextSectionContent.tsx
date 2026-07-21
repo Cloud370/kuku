@@ -1,7 +1,7 @@
 import { Bot, FileText, Plus, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-import type { WorkspaceId } from '../../api/generated';
+import type { SkillLoadOrigin, WorkspaceId } from '../../api/generated';
 import { SafeMarkdown } from '../../components/content/SafeMarkdown';
 import type { ContextSectionKey } from './ContextPanel';
 import type { ContextViewModel } from './contextSelectors';
@@ -32,6 +32,13 @@ function SourceLine({ id, path, scope }: { id: string; path: string | null; scop
 function formatMetric(value: number | null, suffix = ''): string | null {
   return value === null ? null : `${value.toLocaleString('en-US')}${suffix}`;
 }
+
+const SKILL_ORIGIN_LABELS: Record<SkillLoadOrigin, string> = {
+  agent: 'Loaded by Agent',
+  bootstrap: 'Loaded by Bootstrap',
+  project: 'Loaded by Project',
+  you: 'Loaded by You',
+};
 
 function UsageScope({
   label,
@@ -112,7 +119,9 @@ export function ContextSectionContent({
           <li className="py-2" key={skill.skill_id}>
             <div className="flex items-center justify-between gap-2">
               <span className="min-w-0 break-words text-sm font-medium">{skill.name}</span>
-              <span className="shrink-0 text-xs text-[var(--color-text-muted)]">Loaded</span>
+              <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
+                {SKILL_ORIGIN_LABELS[skill.origin]}
+              </span>
             </div>
             <SafeMarkdown source={skill.description} />
             <SourceLine

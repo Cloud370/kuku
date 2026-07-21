@@ -6,17 +6,20 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkbenchRoute } from './workbench/taskSelection';
+import type { LocalDraft } from './workbench/state';
 import App from './App';
 
 interface MockWorkbenchProps {
+  initialDraft?: LocalDraft;
   onNavigateTask?: (taskId: string) => void;
   route?: WorkbenchRoute;
 }
 
 vi.mock('./workbench/WorkbenchEntry', () => ({
-  WorkbenchEntry: ({ onNavigateTask, route }: MockWorkbenchProps) => (
+  WorkbenchEntry: ({ initialDraft, onNavigateTask, route }: MockWorkbenchProps) => (
     <section aria-label="Production Workbench">
       <p>{route?.kind === 'task' ? `task:${route.taskId}` : (route?.kind ?? 'latest')}</p>
+      <p>{initialDraft?.text ?? 'No initial draft'}</p>
       <button
         onClick={() => {
           onNavigateTask?.('tsk_000000000000000000000002');
@@ -36,11 +39,38 @@ vi.mock('./features/review/ReviewRoute', () => ({
 }));
 
 vi.mock('./features/settings/SettingsRoute', () => ({
-  SettingsRoute: () => <main aria-label="Production Settings">settings</main>,
+  SettingsRoute: ({ initialDialog }: { initialDialog?: string | null }) => (
+    <main aria-label="Production Settings">
+      <p>settings</p>
+      <p>{initialDialog ?? 'No initial Settings dialog'}</p>
+    </main>
+  ),
 }));
 
 vi.mock('./features/guide/GuideRoute', () => ({
-  GuideRoute: () => <main aria-label="Production Guide">guide</main>,
+  GuideRoute: ({
+    onAction,
+    onPrefillFirstTask,
+  }: {
+    onAction?: (action: string, route: string) => void;
+    onPrefillFirstTask: (prefill: { editable: true; message: string }) => void;
+  }) => (
+    <main aria-label="Production Guide">
+      <p>guide</p>
+      <button
+        onClick={() => {
+          onPrefillFirstTask({
+            editable: true,
+            message: 'Inspect this workspace and identify the most important next step.',
+          });
+          onAction?.('first_task', '/tasks/new');
+        }}
+        type="button"
+      >
+        Prepare first task
+      </button>
+    </main>
+  ),
 }));
 
 function LocationProbe() {
@@ -101,6 +131,24 @@ describe('App routing', () => {
     expect(screen.getByRole('status', { name: 'Location' })).toHaveTextContent(
       '/tasks/tsk_000000000000000000000002',
     );
+  });
+
+  it('carries the Guide first Task prefill into the new Task Workbench', async () => {
+    const user = userEvent.setup();
+    renderAt('/guide');
+
+    await user.click(screen.getByRole('button', { name: 'Prepare first task' }));
+
+    expect(screen.getByRole('status', { name: 'Location' })).toHaveTextContent('/tasks/new');
+    expect(
+      screen.getByText('Inspect this workspace and identify the most important next step.'),
+    ).toBeVisible();
+  });
+
+  it('maps the Connection QR deep link to the typed Settings dialog', async () => {
+    renderAt('/settings?connection=qr');
+
+    expect(await screen.findByText('connection_qr')).toBeVisible();
   });
 
   it.each([
