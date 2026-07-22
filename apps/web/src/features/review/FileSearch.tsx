@@ -1,9 +1,11 @@
 import { Search } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FileEntry, WorkspaceId } from '@/api/generated';
 
 import type { ReviewDataSource } from './ReviewRoute';
 import { retryReviewRead } from './retryReviewRead';
+
+type SearchRequest = { kind: 'tree' } | { kind: 'search'; query: string };
 
 type SearchState =
   | { kind: 'loading' }
@@ -13,8 +15,14 @@ type SearchState =
       entries: FileEntry[];
       emptyLabel: string;
       nextCursor: string | null;
-      request: { kind: 'tree' } | { kind: 'search'; query: string };
+      request: SearchRequest;
+      revision: string;
     };
+
+function sameRequest(left: SearchRequest, right: SearchRequest) {
+  if (left.kind !== right.kind) return false;
+  return left.kind === 'tree' || (right.kind === 'search' && left.query === right.query);
+}
 
 export function FileSearch({
   dataSource,
@@ -28,35 +36,45 @@ export function FileSearch({
   const [query, setQuery] = useState('');
   const [state, setState] = useState<SearchState>({ kind: 'loading' });
   const [loadingMore, setLoadingMore] = useState(false);
+  const requestGeneration = useRef(0);
 
   useEffect(() => {
-    let current = true;
+    const generation = ++requestGeneration.current;
+    setQuery('');
+    setState({ kind: 'loading' });
+    setLoadingMore(false);
     void retryReviewRead(() =>
       dataSource.tree(workspaceId, { cursor: null, limit: 100, prefix: '' }),
     )
       .then((page) => {
-        if (current) {
-          setState({
-            emptyLabel: 'No files found',
-            entries: page.entries,
-            kind: 'ready',
-            nextCursor: page.next_cursor,
-            request: { kind: 'tree' },
-          });
+        if (generation !== requestGeneration.current) return;
+        if (page.workspace_id !== workspaceId) {
+          setState({ kind: 'error' });
+          return;
         }
+        setState({
+          emptyLabel: 'No files found',
+          entries: page.entries,
+          kind: 'ready',
+          nextCursor: page.next_cursor,
+          request: { kind: 'tree' },
+          revision: page.revision,
+        });
       })
       .catch(() => {
-        if (current) setState({ kind: 'error' });
+        if (generation === requestGeneration.current) setState({ kind: 'error' });
       });
     return () => {
-      current = false;
+      if (generation === requestGeneration.current) requestGeneration.current += 1;
     };
   }, [dataSource, workspaceId]);
 
   async function submit() {
     const normalized = query.trim();
     if (!normalized) return;
+    const generation = ++requestGeneration.current;
     setState({ kind: 'loading' });
+    setLoadingMore(false);
     try {
       const page = await retryReviewRead(() =>
         dataSource.search(workspaceId, {
@@ -66,39 +84,51 @@ export function FileSearch({
           query: normalized,
         }),
       );
+      if (generation !== requestGeneration.current) return;
+      if (page.workspace_id !== workspaceId) {
+        setState({ kind: 'error' });
+        return;
+      }
       setState({
         kind: 'ready',
         entries: page.matches.map((match) => match.entry),
         emptyLabel: 'No matching files',
         nextCursor: page.next_cursor,
         request: { kind: 'search', query: normalized },
+        revision: page.revision,
       });
     } catch {
-      setState({ kind: 'error' });
+      if (generation === requestGeneration.current) setState({ kind: 'error' });
     }
   }
 
   async function loadMore() {
     if (state.kind !== 'ready' || state.nextCursor === null) return;
+    const base = state;
+    const generation = ++requestGeneration.current;
     setLoadingMore(true);
     try {
       let entries: FileEntry[];
       let nextCursor: string | null;
-      if (state.request.kind === 'tree') {
+      let revision: string;
+      let responseWorkspaceId: WorkspaceId;
+      if (base.request.kind === 'tree') {
         const page = await retryReviewRead(() =>
           dataSource.tree(workspaceId, {
-            cursor: state.nextCursor,
+            cursor: base.nextCursor,
             limit: 100,
             prefix: '',
           }),
         );
         entries = page.entries;
         nextCursor = page.next_cursor;
+        revision = page.revision;
+        responseWorkspaceId = page.workspace_id;
       } else {
-        const searchQuery = state.request.query;
+        const searchQuery = base.request.query;
         const page = await retryReviewRead(() =>
           dataSource.search(workspaceId, {
-            cursor: state.nextCursor,
+            cursor: base.nextCursor,
             limit: 100,
             prefix: '',
             query: searchQuery,
@@ -106,16 +136,34 @@ export function FileSearch({
         );
         entries = page.matches.map((match) => match.entry);
         nextCursor = page.next_cursor;
+        revision = page.revision;
+        responseWorkspaceId = page.workspace_id;
       }
-      setState({
-        ...state,
-        entries: [...state.entries, ...entries],
-        nextCursor,
+      if (generation !== requestGeneration.current) return;
+      if (responseWorkspaceId !== workspaceId || revision !== base.revision) {
+        setState({ kind: 'error' });
+        return;
+      }
+      setState((current) => {
+        if (
+          generation !== requestGeneration.current ||
+          current.kind !== 'ready' ||
+          current.nextCursor !== base.nextCursor ||
+          current.revision !== base.revision ||
+          !sameRequest(current.request, base.request)
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          entries: [...current.entries, ...entries],
+          nextCursor,
+        };
       });
     } catch {
-      setState({ kind: 'error' });
+      if (generation === requestGeneration.current) setState({ kind: 'error' });
     } finally {
-      setLoadingMore(false);
+      if (generation === requestGeneration.current) setLoadingMore(false);
     }
   }
 

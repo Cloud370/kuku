@@ -7,10 +7,10 @@ use std::time::Duration;
 use kuku::context::observations::{ObservationBuilder, ToolObservation, ToolObservationData};
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, CheckFact, ExecutionScope,
-    InteractionChoiceFact, InteractionFact, InteractionId, MetricFact, ObservationFact, RunId,
-    SkillContextFact, TaskEvent, TaskId, WorkspaceChangesFact, WorkspaceId,
+    FiniteMetricValue, InteractionChoiceFact, InteractionFact, InteractionId, MetricFact,
+    ObservationFact, RunId, SkillContextFact, TaskEvent, TaskId, WorkspaceChangesFact, WorkspaceId,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::platform::WorkspaceRegistry;
 
@@ -108,6 +108,7 @@ pub struct RunFailure {
 }
 
 pub struct DriverHandle {
+    pub cancel: watch::Sender<bool>,
     pub commands: mpsc::Sender<DriverCommand>,
     pub events: mpsc::Receiver<DriverEvent>,
 }
@@ -266,13 +267,21 @@ impl RunDriverFactory for KukuDriverFactory {
                 .await
                 .map_err(|_| DomainError::InvalidRequest)?;
             let (command_tx, command_rx) = mpsc::channel(8);
+            let (cancel, cancellation) = watch::channel(false);
             let (event_tx, event_rx) = mpsc::channel(64);
             event_tx
                 .send(DriverEvent::Started)
                 .await
                 .map_err(|_| DomainError::RunNotActive)?;
-            tokio::spawn(run_kuku_driver(start, run, command_rx, event_tx));
+            tokio::spawn(run_kuku_driver(
+                start,
+                run,
+                command_rx,
+                cancellation,
+                event_tx,
+            ));
             Ok(DriverHandle {
+                cancel,
                 commands: command_tx,
                 events: event_rx,
             })
@@ -284,6 +293,7 @@ async fn run_kuku_driver(
     start: DriverStart,
     mut run: kuku::Run,
     mut commands: mpsc::Receiver<DriverCommand>,
+    mut cancellation: watch::Receiver<bool>,
     events: mpsc::Sender<DriverEvent>,
 ) {
     let mut pending = HashMap::<InteractionId, PendingDecision>::new();
@@ -293,6 +303,14 @@ async fn run_kuku_driver(
     tokio::pin!(delay);
     loop {
         tokio::select! {
+            changed = cancellation.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                if *cancellation.borrow() {
+                    run.cancel();
+                }
+            }
             command = commands.recv() => {
                 match command {
                     Some(DriverCommand::Stop) => run.cancel(),
@@ -395,15 +413,20 @@ async fn run_kuku_driver(
                             return;
                         }
                     }
-                    Ok(Some(kuku::UiEvent::Done { output, .. })) => {
+                    Ok(Some(kuku::UiEvent::Done { output, usage, .. })) => {
                         if !flush_text(&events, &start.agent_message_id, &mut text, true).await {
                             return;
                         }
+                        let metrics = completion_metrics(
+                            usage.as_ref(),
+                            output.model_request_count,
+                            output.thinking_duration_ms,
+                        );
                         let _ = events.send(DriverEvent::Completed(RunResult {
                             summary: output.text,
                             warnings: Vec::new(),
                             checks: None,
-                            metrics: None,
+                            metrics: Some(metrics),
                             workspace_changes: None,
                         })).await;
                         return;
@@ -436,6 +459,49 @@ async fn run_kuku_driver(
                 }
             }
         }
+    }
+}
+
+fn completion_metrics(
+    usage: Option<&kuku::ProviderUsage>,
+    model_request_count: u64,
+    thinking_duration_ms: u64,
+) -> Vec<MetricFact> {
+    let mut metrics = Vec::with_capacity(6);
+    if let Some(usage) = usage {
+        for (name, value) in [
+            ("input_tokens", usage.input_tokens),
+            ("output_tokens", usage.output_tokens),
+            ("cache_read_input_tokens", usage.cache_read_input_tokens),
+            (
+                "cache_creation_input_tokens",
+                usage.cache_creation_input_tokens,
+            ),
+        ] {
+            if let Some(value) = value {
+                metrics.push(metric_fact(name, value, "tokens"));
+            }
+        }
+    }
+    metrics.push(metric_fact(
+        "model_request_count",
+        model_request_count,
+        "requests",
+    ));
+    metrics.push(metric_fact(
+        "thinking_duration_ms",
+        thinking_duration_ms,
+        "ms",
+    ));
+    metrics
+}
+
+fn metric_fact(name: &str, value: u64, unit: &str) -> MetricFact {
+    MetricFact {
+        name: name.to_owned(),
+        value: FiniteMetricValue::try_new(value as f64)
+            .expect("unsigned completion metrics are finite"),
+        unit: Some(unit.to_owned()),
     }
 }
 

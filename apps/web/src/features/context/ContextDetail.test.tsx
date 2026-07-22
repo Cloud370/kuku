@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,68 @@ describe('ContextDetail', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
     await user.keyboard('{Escape}');
     expect(trigger).toHaveFocus();
+  });
+
+  it('uses one Context scroll region with a compact status before task-relevant sections', () => {
+    render(
+      <ContextDetail
+        catalog={catalogFixture()}
+        onOpenAgent={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenSectionsChange={vi.fn()}
+        onSelectRequest={vi.fn()}
+        onStageSkill={vi.fn()}
+        onUnstageSkill={vi.fn()}
+        openSections={[]}
+        snapshot={contextFixture()}
+        stagedSkillIds={[]}
+        workspaceId="wsp_000000000000000000000001"
+      />,
+    );
+
+    expect(screen.getAllByRole('region', { name: 'Context details' })).toHaveLength(1);
+    expect(screen.getByLabelText('Context status')).toHaveTextContent('Needs attention');
+
+    const labels = within(screen.getByLabelText('Context sections'))
+      .getAllByRole('button', { expanded: false })
+      .map((button) => button.textContent.replace(/\s+/g, ' ').trim());
+    expect(labels.slice(0, 6)).toEqual([
+      'Skills1',
+      'Instructions1',
+      'Workspace observationsAttention',
+      'Conversation',
+      'Agents1',
+      'Memory1',
+    ]);
+  });
+
+  it('renders scannable Request summaries and reveals technical details on demand', async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextDetail
+        catalog={catalogFixture()}
+        onOpenAgent={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenSectionsChange={vi.fn()}
+        onSelectRequest={vi.fn()}
+        onStageSkill={vi.fn()}
+        onUnstageSkill={vi.fn()}
+        openSections={[]}
+        snapshot={contextFixture()}
+        stagedSkillIds={[]}
+        workspaceId="wsp_000000000000000000000001"
+      />,
+    );
+
+    const firstRequest = screen.getByRole('button', { name: `Select Request ${requestOne}` });
+    expect(firstRequest).toHaveTextContent('Request 1');
+    expect(firstRequest).toHaveTextContent('Completed');
+    expect(firstRequest).toHaveTextContent('claude-fixture');
+    expect(firstRequest).toHaveTextContent('Jul 21');
+    expect(screen.queryByText(requestOne)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Show Request 1 details' }));
+    expect(screen.getByText(requestOne)).toBeVisible();
   });
 
   it('uses native keyboard accordion controls', async () => {

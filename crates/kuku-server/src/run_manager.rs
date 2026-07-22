@@ -8,6 +8,8 @@ pub mod store;
 mod submission;
 pub mod subscription;
 pub mod supervisor;
+mod supervisor_state;
+mod supervisor_support;
 
 pub use domain::{DomainError, TaskAggregate};
 pub use repository::TaskRepository;

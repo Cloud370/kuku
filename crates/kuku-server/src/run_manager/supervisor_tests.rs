@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tempfile::tempdir;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use kuku::event::{
     ConversationId, ExecutionScope, InteractionChoiceFact, InteractionFact, InteractionId,
@@ -19,13 +19,15 @@ use super::driver::{
 };
 use super::store::{CreateTaskCommand, TaskCommandService};
 use super::submission::SubmitRunCommand;
-use super::supervisor::execution_scope_for_run;
+use super::supervisor_support::execution_scope_for_run;
 use super::{DomainError, StopRunCommand, TaskRepository, TaskRuntime};
 
 #[derive(Clone, Default)]
 struct FakeDriverFactory {
     started: Arc<Mutex<HashSet<RunId>>>,
+    command_senders: Arc<Mutex<HashMap<RunId, mpsc::Sender<DriverCommand>>>>,
     commands: Arc<Mutex<HashMap<RunId, mpsc::Receiver<DriverCommand>>>>,
+    cancellations: Arc<Mutex<HashMap<RunId, watch::Receiver<bool>>>>,
     events: Arc<Mutex<HashMap<RunId, mpsc::Sender<DriverEvent>>>>,
 }
 
@@ -67,6 +69,11 @@ impl FakeDriverFactory {
         sender.send(event).await.unwrap();
     }
 
+    fn enqueue(&self, run_id: &RunId, event: DriverEvent) {
+        let sender = self.events.lock().unwrap().get(run_id).cloned().unwrap();
+        sender.try_send(event).unwrap();
+    }
+
     async fn commands(&self, run_id: &RunId) -> mpsc::Receiver<DriverCommand> {
         for _ in 0..100 {
             if let Some(commands) = self.commands.lock().unwrap().remove(run_id) {
@@ -75,6 +82,36 @@ impl FakeDriverFactory {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("driver command channel was not installed")
+    }
+
+    async fn fill_commands(&self, run_id: &RunId) {
+        let sender = self
+            .command_senders
+            .lock()
+            .unwrap()
+            .get(run_id)
+            .cloned()
+            .unwrap();
+        let interaction_id = InteractionId::parse("int_0123456789abcdef01234567").unwrap();
+        for index in 0..8 {
+            sender
+                .send(DriverCommand::Resolve {
+                    interaction_id: interaction_id.clone(),
+                    choice_id: format!("choice-{index}"),
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn cancellation(&self, run_id: &RunId) -> watch::Receiver<bool> {
+        for _ in 0..100 {
+            if let Some(cancellation) = self.cancellations.lock().unwrap().remove(run_id) {
+                return cancellation;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("driver cancellation channel was not installed")
     }
 
     fn close_events(&self, run_id: &RunId) {
@@ -90,18 +127,31 @@ impl RunDriverFactory for FakeDriverFactory {
         let fake = self.clone();
         Box::pin(async move {
             let (commands, command_rx) = mpsc::channel(8);
+            let (cancel, cancellation) = watch::channel(false);
             let (event_tx, events) = mpsc::channel(32);
             fake.started.lock().unwrap().insert(start.run_id.clone());
+            fake.command_senders
+                .lock()
+                .unwrap()
+                .insert(start.run_id.clone(), commands.clone());
             fake.commands
                 .lock()
                 .unwrap()
                 .insert(start.run_id.clone(), command_rx);
+            fake.cancellations
+                .lock()
+                .unwrap()
+                .insert(start.run_id.clone(), cancellation);
             fake.events
                 .lock()
                 .unwrap()
                 .insert(start.run_id, event_tx.clone());
             event_tx.send(DriverEvent::Started).await.unwrap();
-            Ok(DriverHandle { commands, events })
+            Ok(DriverHandle {
+                cancel,
+                commands,
+                events,
+            })
         })
     }
 }
@@ -440,16 +490,21 @@ async fn accepted_stop_wins_over_late_driver_failure() {
         .await
         .unwrap();
     wait_for_state(&runtime, &task_id, RunState::Running).await;
-    let mut commands = fake.commands(&accepted.run_id).await;
-    runtime
-        .stop(StopRunCommand {
+    let mut cancellation = fake.cancellation(&accepted.run_id).await;
+    fake.fill_commands(&accepted.run_id).await;
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        runtime.stop(StopRunCommand {
             task_id: task_id.clone(),
             expected_task_revision: accepted.task_revision,
             idempotency_key: "stop-failure".to_owned(),
-        })
-        .await
-        .unwrap();
-    assert!(matches!(commands.recv().await, Some(DriverCommand::Stop)));
+        }),
+    )
+    .await
+    .expect("stop must not wait for command-channel capacity")
+    .unwrap();
+    cancellation.changed().await.unwrap();
+    assert!(*cancellation.borrow());
 
     fake.send(
         &accepted.run_id,
@@ -637,17 +692,15 @@ async fn stop_and_resolution_are_durable_before_driver_commands() {
         .unwrap();
     assert_ne!(stopped_task_id.as_str(), stopped.run_id.as_str());
     wait_for_state(&runtime, &stopped_task_id, RunState::Running).await;
-    let mut stop_commands = fake.commands(&stopped.run_id).await;
+    let mut stop_cancellation = fake.cancellation(&stopped.run_id).await;
     let stop_command = StopRunCommand {
         task_id: stopped_task_id.clone(),
         expected_task_revision: stopped.task_revision,
         idempotency_key: "ordered-stop".to_owned(),
     };
     let stop_accepted = runtime.stop(stop_command.clone()).await.unwrap();
-    assert!(matches!(
-        stop_commands.recv().await,
-        Some(DriverCommand::Stop)
-    ));
+    stop_cancellation.changed().await.unwrap();
+    assert!(*stop_cancellation.borrow());
     assert!(last_control_contains(
         &runtime,
         &stopped_task_id,
@@ -798,6 +851,10 @@ async fn stop_racing_completion_never_leaves_stopping() {
     panic!("stop/completion race did not settle to a terminal state")
 }
 
+#[path = "supervisor_activity_tests.rs"]
+mod activity_tests;
+#[path = "supervisor_persistence_tests.rs"]
+mod persistence_tests;
 #[path = "supervisor_terminal_tests.rs"]
 mod terminal_tests;
 async fn wait_for_agent_finalized(runtime: &TaskRuntime, task_id: &TaskId) {

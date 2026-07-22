@@ -88,6 +88,7 @@ export function VirtualTimeline<Item>({
     getScrollElement: () => findScrollElement(rootRef.current),
     initialRect: { height: 800, width: 800 },
     overscan: 8,
+    useScrollendEvent: true,
     rangeExtractor: (range) => {
       const indexes = defaultRangeExtractor(range);
       const anchorVirtualIndex = getAnchorVirtualIndex();

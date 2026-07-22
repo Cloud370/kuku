@@ -6,7 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { webApi } from '../../api/client';
 import { ContextPanel } from './ContextPanel';
 import { resolveInitialOpenSections } from './contextSections';
-import { catalogFixture, contextFixture, requestOne, taskId, workspaceId } from './testFixtures';
+import {
+  catalogFixture,
+  contextFixture,
+  requestOne,
+  requestTwo,
+  taskId,
+  workspaceId,
+} from './testFixtures';
 
 const callbacks = {
   onSelectRequest: vi.fn(),
@@ -56,10 +63,7 @@ describe('ContextPanel', () => {
       'usage',
       'health',
     ]);
-    expect(resolveInitialOpenSections(['usage', 'health', 'invalid'])).toEqual([
-      'usage',
-      'health',
-    ]);
+    expect(resolveInitialOpenSections(['usage', 'health', 'invalid'])).toEqual(['usage', 'health']);
   });
 
   it('loads current and historical snapshots through the canonical client', async () => {
@@ -81,13 +85,29 @@ describe('ContextPanel', () => {
     expect(await screen.findByText('2,048 tokens')).toBeVisible();
     expect(screen.getByLabelText('Context usage')).toHaveTextContent('25%');
     expect(screen.getByLabelText('Cache hit rate')).toHaveTextContent('25%');
-    expect(screen.getByLabelText('Task request count')).toHaveTextContent('4');
+    expect(screen.getByLabelText('Model request count')).toHaveTextContent('4');
+    expect(screen.getByText('Model requests')).toBeVisible();
+    expect(screen.queryByText(requestTwo)).toBeNull();
     expect(webApi.context.current).toHaveBeenCalledWith(taskId);
     current.unmount();
 
     renderPanel([], requestOne);
     expect(await screen.findByText(/Historical Request/)).toBeVisible();
     expect(webApi.context.historical).toHaveBeenCalledWith(taskId, requestOne);
+  });
+
+  it('uses compact labels for unavailable summary metrics', async () => {
+    const snapshot = contextFixture();
+    snapshot.health.context_tokens_used = null;
+    snapshot.health.context_token_limit = null;
+    snapshot.usage.this_task.cached_input_ratio = null;
+    vi.spyOn(webApi.context, 'current').mockResolvedValue(snapshot);
+    vi.spyOn(webApi.catalog, 'workspace').mockResolvedValue(catalogFixture());
+
+    renderPanel();
+
+    expect(await screen.findByLabelText('Context usage')).toHaveTextContent('N/A');
+    expect(screen.getByLabelText('Cache hit rate')).toHaveTextContent('N/A');
   });
 
   it('shows Staged only while staged Skill IDs are present', async () => {

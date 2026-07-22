@@ -1,5 +1,5 @@
 import { ArrowLeft, Columns2, Rows3 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AnnotationDraft,
   ChangeEntry,
@@ -45,7 +45,11 @@ export function ReviewCode({ source, language }: { source: string; language: str
   return <SafeCodeBlock code={source} language={resolveReviewLanguage(language)} />;
 }
 
-export function ReviewRoute({
+export function ReviewRoute(props: ReviewRouteProps) {
+  return <ScopedReviewRoute {...props} key={`${props.workspaceId}:${props.taskId}`} />;
+}
+
+function ScopedReviewRoute({
   dataSource = webApi.review,
   initialPath = null,
   mode,
@@ -62,17 +66,26 @@ export function ReviewRoute({
   const [fileState, setFileState] = useState<AsyncState<FileContent>>({ kind: 'idle' });
   const [diffState, setDiffState] = useState<AsyncState<DiffDocument>>({ kind: 'idle' });
   const [diffView, setDiffView] = useState<DiffView>('unified');
+  const changesGeneration = useRef(0);
+  const fileGeneration = useRef(0);
+  const diffGeneration = useRef(0);
 
   const openFile = useCallback(
     async (path: string) => {
+      const generation = ++fileGeneration.current;
       setFileState({ kind: 'loading' });
       try {
         const value = await retryReviewRead(() =>
           dataSource.file(workspaceId, { end_line: 2000, path, start_line: 1 }),
         );
+        if (generation !== fileGeneration.current) return;
+        if (value.workspace_id !== workspaceId || value.path !== path || value.start_line !== 1) {
+          setFileState({ kind: 'error' });
+          return;
+        }
         setFileState({ kind: 'ready', value });
       } catch {
-        setFileState({ kind: 'error' });
+        if (generation === fileGeneration.current) setFileState({ kind: 'error' });
       }
     },
     [dataSource, workspaceId],
@@ -84,17 +97,22 @@ export function ReviewRoute({
 
   useEffect(() => {
     if (activeMode !== 'changes') return;
-    let current = true;
+    const generation = ++changesGeneration.current;
     setChangesState({ kind: 'loading' });
     void retryReviewRead(() => dataSource.changes(workspaceId, { cursor: null, limit: 100 }))
       .then((value) => {
-        if (current) setChangesState({ kind: 'ready', value });
+        if (generation !== changesGeneration.current) return;
+        if (value.workspace_id !== workspaceId) {
+          setChangesState({ kind: 'error' });
+          return;
+        }
+        setChangesState({ kind: 'ready', value });
       })
       .catch(() => {
-        if (current) setChangesState({ kind: 'error' });
+        if (generation === changesGeneration.current) setChangesState({ kind: 'error' });
       });
     return () => {
-      current = false;
+      if (generation === changesGeneration.current) changesGeneration.current += 1;
     };
   }, [activeMode, dataSource, workspaceId]);
 
@@ -104,6 +122,7 @@ export function ReviewRoute({
   }, [initialPath, openFile]);
 
   async function openDiff(entry: ChangeEntry) {
+    const generation = ++diffGeneration.current;
     setDiffState({ kind: 'loading' });
     try {
       const value = await retryReviewRead(() =>
@@ -114,91 +133,158 @@ export function ReviewRoute({
           revision: entry.revision,
         }),
       );
+      if (generation !== diffGeneration.current) return;
+      if (
+        value.workspace_id !== workspaceId ||
+        value.path !== entry.path ||
+        value.revision !== entry.revision
+      ) {
+        setDiffState({ kind: 'error' });
+        return;
+      }
       setDiffState({ kind: 'ready', value });
     } catch {
-      setDiffState({ kind: 'error' });
+      if (generation === diffGeneration.current) setDiffState({ kind: 'error' });
     }
   }
 
   async function loadMoreChanges(cursor: string) {
     if (changesState.kind !== 'ready') return;
+    const base = changesState.value;
+    if (base.next_cursor !== cursor) return;
+    const generation = ++changesGeneration.current;
     try {
       const page = await retryReviewRead(() =>
         dataSource.changes(workspaceId, { cursor, limit: 100 }),
       );
-      if (page.revision !== changesState.value.revision) {
+      if (generation !== changesGeneration.current) return;
+      if (page.workspace_id !== workspaceId || page.revision !== base.revision) {
         setChangesState({ kind: 'error' });
         return;
       }
-      setChangesState({
-        kind: 'ready',
-        value: {
-          ...changesState.value,
-          entries: [...changesState.value.entries, ...page.entries],
-          next_cursor: page.next_cursor,
-        },
+      setChangesState((current) => {
+        if (
+          generation !== changesGeneration.current ||
+          current.kind !== 'ready' ||
+          current.value.workspace_id !== base.workspace_id ||
+          current.value.revision !== base.revision ||
+          current.value.next_cursor !== cursor
+        ) {
+          return current;
+        }
+        return {
+          kind: 'ready',
+          value: {
+            ...current.value,
+            entries: [...current.value.entries, ...page.entries],
+            next_cursor: page.next_cursor,
+          },
+        };
       });
     } catch {
-      setChangesState({ kind: 'error' });
+      if (generation === changesGeneration.current) setChangesState({ kind: 'error' });
     }
   }
 
   async function loadMoreFile(nextStartLine: number) {
     if (fileState.kind !== 'ready') return;
+    const base = fileState.value;
+    if (base.next_start_line !== nextStartLine) return;
+    const generation = ++fileGeneration.current;
     try {
       const page = await retryReviewRead(() =>
         dataSource.file(workspaceId, {
           end_line: nextStartLine + 1999,
-          path: fileState.value.path,
+          path: base.path,
           start_line: nextStartLine,
         }),
       );
-      if (page.revision !== fileState.value.revision || page.text === null) {
+      const pageText = page.text;
+      if (generation !== fileGeneration.current) return;
+      if (
+        page.workspace_id !== workspaceId ||
+        page.path !== base.path ||
+        page.revision !== base.revision ||
+        page.start_line !== nextStartLine ||
+        pageText === null
+      ) {
         setFileState({ kind: 'error' });
         return;
       }
-      setFileState({
-        kind: 'ready',
-        value: {
-          ...fileState.value,
-          end_line: page.end_line,
-          next_start_line: page.next_start_line,
-          text: `${fileState.value.text ?? ''}\n${page.text}`,
-          total_lines: page.total_lines,
-          truncated: page.truncated,
-        },
+      setFileState((current) => {
+        if (
+          generation !== fileGeneration.current ||
+          current.kind !== 'ready' ||
+          current.value.workspace_id !== base.workspace_id ||
+          current.value.path !== base.path ||
+          current.value.revision !== base.revision ||
+          current.value.next_start_line !== nextStartLine
+        ) {
+          return current;
+        }
+        return {
+          kind: 'ready',
+          value: {
+            ...current.value,
+            end_line: page.end_line,
+            next_start_line: page.next_start_line,
+            text: `${current.value.text ?? ''}\n${pageText}`,
+            total_lines: page.total_lines,
+            truncated: page.truncated,
+          },
+        };
       });
     } catch {
-      setFileState({ kind: 'error' });
+      if (generation === fileGeneration.current) setFileState({ kind: 'error' });
     }
   }
 
   async function loadMoreDiff(cursor: string) {
     if (diffState.kind !== 'ready') return;
+    const base = diffState.value;
+    if (base.next_cursor !== cursor) return;
+    const generation = ++diffGeneration.current;
     try {
       const page = await retryReviewRead(() =>
         dataSource.diff(workspaceId, {
           cursor,
           limit: 4000,
-          path: diffState.value.path,
-          revision: diffState.value.revision,
+          path: base.path,
+          revision: base.revision,
         }),
       );
-      if (page.revision !== diffState.value.revision) {
+      if (generation !== diffGeneration.current) return;
+      if (
+        page.workspace_id !== workspaceId ||
+        page.path !== base.path ||
+        page.revision !== base.revision
+      ) {
         setDiffState({ kind: 'error' });
         return;
       }
-      setDiffState({
-        kind: 'ready',
-        value: {
-          ...diffState.value,
-          hunks: [...diffState.value.hunks, ...page.hunks],
-          next_cursor: page.next_cursor,
-          truncated: page.truncated,
-        },
+      setDiffState((current) => {
+        if (
+          generation !== diffGeneration.current ||
+          current.kind !== 'ready' ||
+          current.value.workspace_id !== base.workspace_id ||
+          current.value.path !== base.path ||
+          current.value.revision !== base.revision ||
+          current.value.next_cursor !== cursor
+        ) {
+          return current;
+        }
+        return {
+          kind: 'ready',
+          value: {
+            ...current.value,
+            hunks: [...current.value.hunks, ...page.hunks],
+            next_cursor: page.next_cursor,
+            truncated: page.truncated,
+          },
+        };
       });
     } catch {
-      setDiffState({ kind: 'error' });
+      if (generation === diffGeneration.current) setDiffState({ kind: 'error' });
     }
   }
 
@@ -271,6 +357,7 @@ export function ReviewRoute({
             {fileState.kind === 'ready' ? (
               <FileViewer
                 content={fileState.value}
+                key={`${fileState.value.workspace_id}:${fileState.value.path}:${fileState.value.revision}`}
                 onDraftRange={onDraftRange}
                 onLoadMore={(nextStartLine) => {
                   void loadMoreFile(nextStartLine);
@@ -321,6 +408,7 @@ export function ReviewRoute({
             {diffState.kind === 'ready' ? (
               <DiffViewer
                 document={diffState.value}
+                key={`${diffState.value.workspace_id}:${diffState.value.path}:${diffState.value.revision}`}
                 onDraftRange={onDraftRange}
                 onLoadMore={(cursor) => {
                   void loadMoreDiff(cursor);

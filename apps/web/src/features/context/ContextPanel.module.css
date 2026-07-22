@@ -18,35 +18,33 @@
 }
 
 .detail {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.summarySticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .summary {
-  min-height: 7.5rem;
+  min-height: 7rem;
   border-bottom: 1px solid var(--color-border);
   padding: var(--space-sm) var(--space-md);
   background: var(--color-surface-raised);
 }
 
 .history {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
   min-width: 0;
-  min-height: 2.75rem;
-  overflow-x: auto;
   border-bottom: 1px solid var(--color-border);
-  padding: var(--space-xs) var(--space-md);
-  scrollbar-width: thin;
+  padding: var(--space-sm) var(--space-md);
 }
 
 .accordion {
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .section {

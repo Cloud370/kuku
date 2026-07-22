@@ -21,6 +21,27 @@ afterEach(() => {
 });
 
 describe('VirtualTimeline', () => {
+  it('uses scrollend without leaving a fallback timer after scrolling', () => {
+    const setTimeout = vi.spyOn(window, 'setTimeout');
+    const view = render(
+      <main aria-label="Chat">
+        <VirtualTimeline
+          gapAfter={false}
+          getItemId={(item) => item.id}
+          items={items(3)}
+          maxMountedRows={120}
+          onReturnToRecent={vi.fn()}
+          renderItem={(item) => item.text}
+        />
+      </main>,
+    );
+
+    fireEvent.scroll(screen.getByRole('main', { name: 'Chat' }));
+    view.unmount();
+
+    expect(setTimeout).not.toHaveBeenCalled();
+  });
+
   it('mounts at most 120 stable timeline rows for a large Task', () => {
     render(
       <main aria-label="Chat">

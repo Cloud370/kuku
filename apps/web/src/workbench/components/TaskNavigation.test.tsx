@@ -155,6 +155,55 @@ describe('TaskNavigation', () => {
     });
   });
 
+  it('keeps the selected Workspace response when the parent prop catches up', async () => {
+    const user = userEvent.setup();
+    const { api, list } = setupApi();
+    api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
+      api_version: 1,
+      items: [
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: true,
+          label: 'Workspace A',
+          workspace_id: workspaceId,
+        },
+        {
+          availability: 'available',
+          branch: null,
+          is_default: false,
+          label: 'Workspace B',
+          workspace_id: otherWorkspaceId,
+        },
+      ],
+      server_revision: 'rev_1',
+    });
+    const secondWorkspace = deferredPage();
+    list.mockImplementation((query) =>
+      query.workspace_id === otherWorkspaceId
+        ? secondWorkspace.promise
+        : Promise.resolve(taskPage([task('Task A', 'completed')])),
+    );
+    const props = navigationProps(api, setupCommands());
+    const { rerender } = render(<TaskNavigation {...props} />);
+
+    await screen.findByRole('button', { name: 'Task A' });
+    await user.click(screen.getByRole('combobox', { name: 'Workspace' }));
+    await user.click(screen.getByRole('option', { name: /Workspace B/ }));
+    expect(list).toHaveBeenLastCalledWith({
+      workspace_id: otherWorkspaceId,
+      search: null,
+      limit: 100,
+      cursor: null,
+    });
+
+    rerender(<TaskNavigation {...props} initialWorkspaceId={otherWorkspaceId} />);
+    secondWorkspace.resolve(taskPage([]));
+
+    expect(await screen.findByText('No Tasks yet')).toBeVisible();
+    expect(screen.queryByText('Loading Tasks')).not.toBeInTheDocument();
+  });
+
   it.each(['submit_run', 'stop_run', 'respond'] as const)(
     'does not open Task creation while a %s command is pending',
     async (kind) => {

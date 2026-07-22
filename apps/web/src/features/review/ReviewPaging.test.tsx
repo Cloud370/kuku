@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ReviewSnapshot } from '@/api/generated';
+import type { FileSearchPage, ReviewSnapshot } from '@/api/generated';
 
 import { ChangeList } from './ChangeList';
 import { DiffViewer } from './DiffViewer';
@@ -20,6 +20,37 @@ function source(tree: ReviewDataSource['tree']): ReviewDataSource {
     file: vi.fn(),
     search: vi.fn(),
     tree,
+  };
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function searchPage(path: string): FileSearchPage {
+  return {
+    api_version: 1,
+    matches: [
+      {
+        entry: {
+          binary: false,
+          change: null,
+          kind: 'file',
+          name: path.split('/').at(-1) ?? path,
+          path,
+          revision,
+          size_bytes: 10,
+        },
+        path_match_ranges: [],
+      },
+    ],
+    next_cursor: null,
+    revision,
+    workspace_id: workspaceId,
   };
 }
 
@@ -150,5 +181,97 @@ describe('Review paging', () => {
     );
     await userEvent.click(screen.getByRole('button', { name: 'Load more diff' }));
     expect(onDiffMore).toHaveBeenCalledWith('next-diff');
+  });
+
+  it('keeps the latest search when an older search finishes last', async () => {
+    const firstRequest = deferred<FileSearchPage>();
+    const secondRequest = deferred<FileSearchPage>();
+    const api = source(
+      vi.fn().mockResolvedValue({
+        api_version: 1,
+        entries: [],
+        next_cursor: null,
+        revision,
+        workspace_id: workspaceId,
+      }),
+    );
+    api.search = vi
+      .fn<ReviewDataSource['search']>()
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise);
+    const user = userEvent.setup();
+    render(<FileSearch dataSource={api} onSelect={vi.fn()} workspaceId={workspaceId} />);
+    const searchbox = await screen.findByRole('searchbox', { name: 'Find a file' });
+
+    await user.type(searchbox, 'first{enter}');
+    await user.clear(searchbox);
+    await user.type(searchbox, 'second{enter}');
+    await act(async () => {
+      secondRequest.resolve(searchPage('src/second.ts'));
+      await secondRequest.promise;
+    });
+    expect(screen.getByText('src/second.ts')).toBeVisible();
+
+    await act(async () => {
+      firstRequest.resolve(searchPage('src/first.ts'));
+      await firstRequest.promise;
+    });
+    expect(screen.queryByText('src/first.ts')).toBeNull();
+    expect(screen.getByText('src/second.ts')).toBeVisible();
+  });
+
+  it('does not append an old tree page to newer search results', async () => {
+    const pageRequest = deferred<Awaited<ReturnType<ReviewDataSource['tree']>>>();
+    const tree = vi
+      .fn<ReviewDataSource['tree']>()
+      .mockResolvedValueOnce({
+        api_version: 1,
+        entries: [
+          {
+            binary: false,
+            change: null,
+            kind: 'file',
+            name: 'first.ts',
+            path: 'src/first.ts',
+            revision,
+            size_bytes: 10,
+          },
+        ],
+        next_cursor: 'next-files',
+        revision,
+        workspace_id: workspaceId,
+      })
+      .mockReturnValueOnce(pageRequest.promise);
+    const api = source(tree);
+    api.search = vi.fn().mockResolvedValue(searchPage('src/search-result.ts'));
+    const user = userEvent.setup();
+    render(<FileSearch dataSource={api} onSelect={vi.fn()} workspaceId={workspaceId} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Load more files' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Find a file' }), 'result{enter}');
+    expect(await screen.findByText('src/search-result.ts')).toBeVisible();
+    await act(async () => {
+      pageRequest.resolve({
+        api_version: 1,
+        entries: [
+          {
+            binary: false,
+            change: null,
+            kind: 'file',
+            name: 'stale.ts',
+            path: 'src/stale.ts',
+            revision,
+            size_bytes: 10,
+          },
+        ],
+        next_cursor: null,
+        revision,
+        workspace_id: workspaceId,
+      });
+      await pageRequest.promise;
+    });
+
+    expect(screen.queryByText('src/stale.ts')).toBeNull();
+    expect(screen.getByText('src/search-result.ts')).toBeVisible();
   });
 });

@@ -40,7 +40,7 @@ pub(super) struct RepositoryState {
     dirty_keys: Mutex<HashMap<String, TaskId>>,
     unconfirmed_tasks: Mutex<HashSet<TaskId>>,
     #[cfg(test)]
-    fail_next_append: AtomicBool,
+    append_failures: AtomicUsize,
     #[cfg(test)]
     fail_next_publication: AtomicBool,
     #[cfg(test)]
@@ -280,7 +280,14 @@ impl TaskRepository {
         record: TaskLedgerRecord,
     ) -> Result<StoredEvent, DomainError> {
         #[cfg(test)]
-        if self.state.fail_next_append.swap(false, Ordering::SeqCst) {
+        if self
+            .state
+            .append_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
             return Err(DomainError::LedgerCorrupt);
         }
         self.ensure_task_observer(task_id)?;
@@ -910,7 +917,12 @@ impl TaskRepository {
 
     #[cfg(test)]
     pub(super) fn fail_next_append_for_test(&self) {
-        self.state.fail_next_append.store(true, Ordering::SeqCst);
+        self.fail_appends_for_test(1);
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_appends_for_test(&self, count: usize) {
+        self.state.append_failures.store(count, Ordering::SeqCst);
     }
 
     #[cfg(test)]

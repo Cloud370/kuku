@@ -73,11 +73,14 @@ export function TaskNavigation({
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const listGeneration = useRef(0);
   const previousInitialWorkspaceId = useRef(initialWorkspaceId);
+  const workspaceIdRef = useRef(workspaceId);
+  workspaceIdRef.current = workspaceId;
   const workspaceMenu = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (previousInitialWorkspaceId.current === initialWorkspaceId) return;
     previousInitialWorkspaceId.current = initialWorkspaceId;
+    if (workspaceIdRef.current === initialWorkspaceId) return;
     listGeneration.current += 1;
     setLoadingMore(false);
     setWorkspaceId(initialWorkspaceId);

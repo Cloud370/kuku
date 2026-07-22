@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use kuku::event::{
-    EventPayload, ExecutionScope, InteractionId, MessageRoleFact, ProviderFailureFact,
-    ProviderFailureKind, RequestFailed, RequestId, RequestScope, RunFact, RunId, RunState,
-    TaskEvent, TaskId, TaskLedgerRecord,
+    EventPayload, InteractionId, MessageRoleFact, ProviderFailureFact, ProviderFailureKind,
+    RequestFailed, RequestId, RequestScope, RunFact, RunId, RunState, TaskEvent, TaskId,
+    TaskLedgerRecord,
 };
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::api::{
     CommandAccepted, CreateTaskResponse, ListTasksQuery, ReviewSubmissionResult, SubmitRunResponse,
@@ -24,29 +24,12 @@ use super::submission::{
     SubmitReviewCommand, SubmitRunCommand,
 };
 use super::subscription::{TaskSubscription, TaskSubscriptionHub};
+use super::supervisor_state::PersistenceState;
+use super::supervisor_support::{
+    coalesce_activity_events, execution_scope_for_run, ActiveDriver, PHASE_CANCELLED,
+    PHASE_LAUNCHING, PHASE_QUEUED,
+};
 use super::{DomainError, TaskCommandService, TaskRepository};
-
-struct ActiveDriver {
-    task_id: TaskId,
-    cancelled: Arc<AtomicBool>,
-    phase: Arc<AtomicU8>,
-    commands: Option<mpsc::Sender<DriverCommand>>,
-    _admission: OwnedSemaphorePermit,
-}
-
-const PHASE_QUEUED: u8 = 0;
-const PHASE_LAUNCHING: u8 = 1;
-const PHASE_CANCELLED: u8 = 2;
-
-pub(super) fn execution_scope_for_run(
-    events: &[kuku::event::StoredEvent],
-    workspace_id: &kuku::event::WorkspaceId,
-    task_id: &TaskId,
-    run_id: &RunId,
-) -> Result<ExecutionScope, DomainError> {
-    kuku::event::task_execution_scope(events, workspace_id, task_id, run_id, "main")
-        .map_err(|_| DomainError::StorageExhausted)
-}
 
 pub struct RunSupervisor {
     repository: TaskRepository,
@@ -55,6 +38,7 @@ pub struct RunSupervisor {
     admission: Arc<Semaphore>,
     drivers: Mutex<HashMap<RunId, ActiveDriver>>,
     queue: Mutex<VecDeque<RunId>>,
+    persistence: PersistenceState,
     self_ref: Weak<RunSupervisor>,
     #[cfg(test)]
     launch_pause: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
@@ -80,6 +64,7 @@ impl RunSupervisor {
             admission: Arc::new(Semaphore::new(total)),
             drivers: Mutex::new(HashMap::new()),
             queue: Mutex::new(VecDeque::new()),
+            persistence: PersistenceState::default(),
             self_ref: self_ref.clone(),
             #[cfg(test)]
             launch_pause: Mutex::new(None),
@@ -93,32 +78,36 @@ impl RunSupervisor {
             task_id: task_id.clone(),
             cancelled: cancelled.clone(),
             phase: phase.clone(),
+            cancel: None,
             commands: None,
             _admission: admission,
         };
-        let inserted = {
+        let inserted = self.persistence.admit(|| {
             let mut drivers = self
                 .drivers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Entry::Vacant(slot) = drivers.entry(run_id.clone()) {
                 slot.insert(entry);
+                self.queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_back(run_id);
                 true
             } else {
                 false
             }
-        };
-        if inserted {
-            self.queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push_back(run_id);
+        });
+        if inserted == Ok(true) {
             self.dispatch();
         }
     }
 
     fn dispatch(self: &Arc<Self>) {
         loop {
+            if self.persistence.ensure_healthy().is_err() {
+                return;
+            }
             let Ok(permit) = self.running.clone().try_acquire_owned() else {
                 return;
             };
@@ -229,16 +218,33 @@ impl RunSupervisor {
             if entry.task_id != task_id {
                 return;
             }
+            entry.cancel = Some(handle.cancel.clone());
             entry.commands = Some(handle.commands.clone());
         }
         if cancelled.load(Ordering::Acquire) {
-            let _ = handle.commands.send(DriverCommand::Stop).await;
+            let _ = handle.cancel.send(true);
         }
         let mut terminal = false;
-        while let Some(event) = handle.events.recv().await {
+        let mut pending_event = None;
+        loop {
+            let event = match pending_event.take() {
+                Some(event) => event,
+                None => {
+                    let Some(event) = handle.events.recv().await else {
+                        break;
+                    };
+                    event
+                }
+            };
             let result = match event {
                 DriverEvent::Started => Ok(()),
-                DriverEvent::Activity(events) => self.append_activity(&task_id, events).await,
+                DriverEvent::Activity(_) if cancelled.load(Ordering::Acquire) => Ok(()),
+                DriverEvent::Activity(events) => {
+                    let events =
+                        coalesce_activity_events(events, &mut handle.events, &mut pending_event);
+                    self.append_activity(&task_id, events).await
+                }
+                DriverEvent::InteractionOpened(_) if cancelled.load(Ordering::Acquire) => Ok(()),
                 DriverEvent::InteractionOpened(interaction) => {
                     self.append_activity(
                         &task_id,
@@ -301,7 +307,7 @@ impl RunSupervisor {
                 false
             }
         };
-        let (task_id, command, phase, cancelled) = {
+        let (task_id, cancel, phase, cancelled) = {
             let drivers = self
                 .drivers
                 .lock()
@@ -311,7 +317,7 @@ impl RunSupervisor {
             };
             (
                 entry.task_id.clone(),
-                entry.commands.clone(),
+                entry.cancel.clone(),
                 entry.phase.clone(),
                 entry.cancelled.clone(),
             )
@@ -328,8 +334,8 @@ impl RunSupervisor {
             self.remove(run_id);
             return;
         }
-        if let Some(command) = command {
-            let _ = command.send(DriverCommand::Stop).await;
+        if let Some(cancel) = cancel {
+            let _ = cancel.send(true);
         }
     }
 
@@ -500,43 +506,66 @@ impl RunSupervisor {
     }
 
     async fn persist_started(&self, task_id: &TaskId, run_id: &RunId) -> bool {
-        loop {
-            if let Ok(started) = self.append_started(task_id, run_id).await {
-                return started;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        let result = self
+            .persistence
+            .persist(|| self.append_started(task_id, run_id))
+            .await;
+        self.finish_persistence(result).unwrap_or(false)
     }
 
     async fn persist_completed(&self, task_id: &TaskId, run_id: &RunId, result: RunResult) {
-        loop {
-            if self
-                .append_completed(task_id, run_id, result.clone())
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        let result = self
+            .persistence
+            .persist(|| self.append_completed(task_id, run_id, result.clone()))
+            .await;
+        let _ = self.finish_persistence(result);
     }
 
     async fn persist_stopped(&self, task_id: &TaskId, run_id: &RunId) {
-        loop {
-            if self.append_stopped(task_id, run_id).await.is_ok() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        let result = self
+            .persistence
+            .persist(|| self.append_stopped(task_id, run_id))
+            .await;
+        let _ = self.finish_persistence(result);
     }
 
     async fn persist_failed(&self, task_id: &TaskId, run_id: &RunId, summary: &str) {
-        loop {
-            if self.append_failed(task_id, run_id, summary).await.is_ok() {
-                return;
+        let result = self
+            .persistence
+            .persist(|| self.append_failed(task_id, run_id, summary))
+            .await;
+        let _ = self.finish_persistence(result);
+    }
+
+    fn finish_persistence<T>(&self, result: Result<T, DomainError>) -> Result<T, DomainError> {
+        if result.is_err() {
+            let commands = self.persistence.cleanup(|| {
+                let queued = self
+                    .queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .drain(..)
+                    .collect::<Vec<_>>();
+                let mut drivers = self
+                    .drivers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for run_id in queued {
+                    drivers.remove(&run_id);
+                }
+                drivers
+                    .values()
+                    .filter_map(|entry| {
+                        entry.cancelled.store(true, Ordering::Release);
+                        entry.cancel.clone()
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for cancel in commands {
+                let _ = cancel.send(true);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        result
     }
 
     async fn append_run_transition(
@@ -627,11 +656,13 @@ impl RunSupervisor {
 
 impl RunQueueAdmission for RunSupervisor {
     fn reserve(self: Arc<Self>) -> Result<Box<dyn RunQueueReservation>, DomainError> {
+        self.persistence.ensure_healthy()?;
         let admission = self
             .admission
             .clone()
             .try_acquire_owned()
             .map_err(|_| DomainError::ServerBusy)?;
+        self.persistence.ensure_healthy()?;
         Ok(Box::new(SupervisorReservation {
             supervisor: self,
             admission: Some(admission),
@@ -639,6 +670,7 @@ impl RunQueueAdmission for RunSupervisor {
     }
 
     fn ensure_admitted(&self, task_id: &TaskId, run_id: &RunId) -> Result<(), DomainError> {
+        self.persistence.ensure_healthy()?;
         if self
             .drivers
             .lock()
@@ -652,6 +684,7 @@ impl RunQueueAdmission for RunSupervisor {
             .clone()
             .try_acquire_owned()
             .map_err(|_| DomainError::ServerBusy)?;
+        self.persistence.ensure_healthy()?;
         let supervisor = self.self_ref.upgrade().ok_or(DomainError::RunNotActive)?;
         supervisor.admit(task_id.clone(), run_id.clone(), admission);
         Ok(())
@@ -851,6 +884,14 @@ impl TaskRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some((arrived.clone(), release.clone()));
         (arrived, release)
+    }
+
+    #[cfg(test)]
+    pub(super) fn available_run_permits_for_test(&self) -> (usize, usize) {
+        (
+            self.supervisor.running.available_permits(),
+            self.supervisor.admission.available_permits(),
+        )
     }
 
     async fn recover_task(&self, task_id: &TaskId) -> Result<(), DomainError> {

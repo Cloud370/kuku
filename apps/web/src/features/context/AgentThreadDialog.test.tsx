@@ -28,7 +28,7 @@ describe('AgentThreadDialog', () => {
     expect(await screen.findByText('Research result')).toBeVisible();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByRole('button', { name: /send|submit|stop/i })).toBeNull();
-    expect(screen.getAllByRole('button', { name: /request req_/i })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /select request \d/i })).toHaveLength(2);
   });
 
   it('renders the bounded-history notice and closes on Escape', async () => {

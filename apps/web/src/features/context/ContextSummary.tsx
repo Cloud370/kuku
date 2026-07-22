@@ -1,4 +1,10 @@
-import type { ContextHealth, RequestSummary, UsageSummary } from '../../api/generated';
+import type {
+  ContextHealth,
+  ContextHealthLevel,
+  RequestStatus,
+  RequestSummary,
+  UsageSummary,
+} from '../../api/generated';
 
 import styles from './ContextPanel.module.css';
 
@@ -14,7 +20,7 @@ function formatTokens(value: number | null): string {
 }
 
 function percentage(value: number | null): string {
-  if (value === null) return '--';
+  if (value === null) return 'N/A';
   return `${String(Math.round(Math.max(0, Math.min(1, value)) * 100))}%`;
 }
 
@@ -24,25 +30,45 @@ function contextPercentage(health: ContextHealth): string {
     health.context_token_limit === null ||
     health.context_token_limit <= 0
   ) {
-    return '--';
+    return 'N/A';
   }
   return percentage(health.context_tokens_used / health.context_token_limit);
 }
 
 function Metric({ ariaLabel, label, value }: { ariaLabel: string; label: string; value: string }) {
   return (
-    <div aria-label={ariaLabel} className="min-w-0 px-2 first:pl-0 last:pr-8">
-      <span className="block truncate text-[10px] font-medium uppercase text-[var(--color-text-muted)]">
+    <div aria-label={ariaLabel} className="min-w-0 px-2 first:pl-0 last:pr-0">
+      <span className="block min-h-6 break-words text-[10px] font-medium leading-3 text-[var(--color-text-muted)]">
         {label}
       </span>
-      <span className="mt-0.5 block truncate text-base font-semibold tabular-nums">{value}</span>
+      <span className="mt-0.5 block break-words text-sm font-semibold leading-4 tabular-nums">
+        {value}
+      </span>
     </div>
   );
 }
 
-export function ContextSummary({ health, historical, selectedRequest, usage }: ContextSummaryProps) {
+const HEALTH_LABELS: Record<ContextHealthLevel, string> = {
+  healthy: 'Healthy',
+  notice: 'Notice',
+  unavailable: 'Unavailable',
+  warning: 'Needs attention',
+};
+
+const REQUEST_STATUS_LABELS: Record<RequestStatus, string> = {
+  completed: 'Completed',
+  failed: 'Failed',
+  started: 'In progress',
+};
+
+export function ContextSummary({
+  health,
+  historical,
+  selectedRequest,
+  usage,
+}: ContextSummaryProps) {
   return (
-    <div className={styles.summary}>
+    <div aria-label="Context status" className={styles.summary}>
       <div className="flex min-w-0 items-center justify-between gap-3">
         <p className="truncate text-sm font-medium">
           {historical ? 'Historical Request' : 'Current Context'}
@@ -54,12 +80,14 @@ export function ContextSummary({ health, historical, selectedRequest, usage }: C
               : 'bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)]'
           }`}
         >
-          {health.level}
+          {HEALTH_LABELS[health.level]}
         </span>
       </div>
       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-[var(--color-text-secondary)]">
-        <span className="truncate font-mono">
-          {selectedRequest?.request_id ?? 'No provider Request'}
+        <span className="truncate">
+          {selectedRequest === null
+            ? 'No model request selected'
+            : `${selectedRequest.model} · ${REQUEST_STATUS_LABELS[selectedRequest.status]}`}
         </span>
         <span className="shrink-0 tabular-nums">{formatTokens(health.context_tokens_used)}</span>
       </div>
@@ -71,8 +99,8 @@ export function ContextSummary({ health, historical, selectedRequest, usage }: C
           value={percentage(usage.cached_input_ratio)}
         />
         <Metric
-          ariaLabel="Task request count"
-          label="Reqs"
+          ariaLabel="Model request count"
+          label="Model requests"
           value={usage.request_count.toLocaleString('en-US')}
         />
       </div>

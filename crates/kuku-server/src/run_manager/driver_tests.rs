@@ -14,9 +14,9 @@ use kuku::event::{
 use tempfile::tempdir;
 
 use super::{
-    finished_activity, permission_metadata, read_file_observation, resolve_product_tier,
-    started_activity, ActivityKindFact, ActivityStatusFact, DriverCommand, DriverStart,
-    KukuDriverFactory, PendingDecision, RunDriverFactory,
+    completion_metrics, finished_activity, permission_metadata, read_file_observation,
+    resolve_product_tier, started_activity, ActivityKindFact, ActivityStatusFact, DriverCommand,
+    DriverStart, KukuDriverFactory, PendingDecision, RunDriverFactory,
 };
 
 fn run_id() -> RunId {
@@ -293,6 +293,89 @@ pub(super) async fn factory_fixture(
     tempfile::TempDir,
 ) {
     factory_fixture_with_config(tier_id, test_config()).await
+}
+
+#[test]
+fn completion_metrics_omit_unavailable_usage_without_inventing_zero() {
+    let usage = kuku::ProviderUsage {
+        input_tokens: Some(8),
+        output_tokens: None,
+        cache_read_input_tokens: Some(3),
+        cache_creation_input_tokens: None,
+    };
+
+    let metrics = completion_metrics(Some(&usage), 2, 125);
+
+    assert_eq!(
+        metrics
+            .iter()
+            .map(|metric| metric.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "input_tokens",
+            "cache_read_input_tokens",
+            "model_request_count",
+            "thinking_duration_ms",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn real_driver_maps_completion_usage_and_timing_to_metrics() {
+    let provider = MockServer::start_async().await;
+    provider.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .body(kuku::test_support::anthropic_sse_response(
+                serde_json::json!({
+                    "id": "msg_metrics",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Measured."}],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 8,
+                        "output_tokens": 2
+                    }
+                }),
+            ));
+    });
+    let mut config = test_config();
+    config.providers.get_mut("anthropic").unwrap().base_url = provider.base_url();
+    let (factory, start, _home, _allowed) =
+        factory_fixture_with_config("tier:balanced", config).await;
+    let mut handle = factory.start(start).await.unwrap();
+
+    let completed = loop {
+        match tokio::time::timeout(Duration::from_secs(5), handle.events.recv())
+            .await
+            .expect("driver completion event")
+            .expect("driver event stream")
+        {
+            super::DriverEvent::Completed(result) => break result,
+            super::DriverEvent::Failed(failure) => panic!("driver failed: {}", failure.summary),
+            _ => {}
+        }
+    };
+
+    let metrics = completed.metrics.expect("completion metrics");
+    let metric = |name: &str| {
+        metrics
+            .iter()
+            .find(|metric| metric.name == name)
+            .expect("named completion metric")
+    };
+    assert_eq!(metric("input_tokens").value.get(), 8.0);
+    assert_eq!(metric("input_tokens").unit.as_deref(), Some("tokens"));
+    assert_eq!(metric("output_tokens").value.get(), 2.0);
+    assert_eq!(metric("cache_read_input_tokens").value.get(), 0.0);
+    assert_eq!(metric("cache_creation_input_tokens").value.get(), 0.0);
+    assert_eq!(metric("model_request_count").value.get(), 1.0);
+    assert_eq!(
+        metric("model_request_count").unit.as_deref(),
+        Some("requests")
+    );
+    assert_eq!(metric("thinking_duration_ms").unit.as_deref(), Some("ms"));
 }
 
 #[tokio::test]

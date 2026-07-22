@@ -85,25 +85,25 @@ const assertStickySummary: NonNullable<Story['play']> = async ({ canvasElement }
   const canvas = within(canvasElement);
   const summaryLabel = await canvas.findByText('Current Context');
   const summary = summaryLabel.parentElement?.parentElement;
+  const contextScroll = canvas.getByRole('region', { name: 'Context details' });
   const accordion = canvas.getByLabelText('Context sections');
   if (summary === null || summary === undefined) {
     throw new globalThis.Error('Context summary is missing');
   }
   const summaryTop = summary.getBoundingClientRect().top;
+  const accordionTop = accordion.getBoundingClientRect().top;
   const bodyScroll = document.scrollingElement?.scrollTop ?? 0;
-  accordion.scrollTop = 80;
-  accordion.dispatchEvent(new Event('scroll'));
+  contextScroll.scrollTop = 80;
+  contextScroll.dispatchEvent(new Event('scroll'));
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => {
       resolve();
     });
   });
 
-  await expect(accordion.scrollTop).toBeGreaterThan(0);
+  await expect(contextScroll.scrollTop).toBeGreaterThan(0);
   await expect(Math.abs(summary.getBoundingClientRect().top - summaryTop)).toBeLessThanOrEqual(1);
-  await expect(accordion.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-    summary.getBoundingClientRect().bottom - 1,
-  );
+  await expect(accordion.getBoundingClientRect().top).toBeLessThan(accordionTop);
   await expect(document.scrollingElement?.scrollTop ?? 0).toBe(bodyScroll);
 };
 

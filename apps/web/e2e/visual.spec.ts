@@ -38,7 +38,6 @@ async function capture(page: Page, name: string): Promise<void> {
       page.getByText(/^kuku [a-f0-9]{8}$/u),
       page.getByText(/http:\/\/127\.0\.0\.1:\d+/u),
       page.getByLabel('Context').locator('span.font-mono'),
-      page.locator('button[aria-label^="Select Request"]'),
     ],
     maskColor: '#262a2d',
   });

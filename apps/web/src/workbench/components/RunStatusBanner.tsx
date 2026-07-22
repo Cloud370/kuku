@@ -1,6 +1,6 @@
 import { AlertCircle, CheckCircle2, CircleStop, LoaderCircle } from 'lucide-react';
 
-import type { RunProjection, TaskState } from '../../api/generated';
+import type { MetricProjection, RunProjection, TaskState } from '../../api/generated';
 
 interface RunStatusBannerProps {
   run: RunProjection | null;
@@ -14,6 +14,11 @@ function label(state: TaskState): string {
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function formatMetric(metric: MetricProjection): string {
+  const unit = metric.unit === null ? '' : ` ${metric.unit}`;
+  return `${metric.name}: ${metric.value.toLocaleString('en-US')}${unit}`;
 }
 
 export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunStatusBannerProps) {
@@ -45,19 +50,31 @@ export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunSta
           <p className="overflow-hidden text-ellipsis whitespace-nowrap" title={completion.summary}>
             {completion.summary}
           </p>
-          <div className="mt-1 grid min-w-0 grid-cols-2 gap-3 text-xs text-[var(--color-text-secondary)]">
-            <p className="overflow-hidden text-ellipsis whitespace-nowrap">
+          <div className="mt-1 flex min-w-0 items-center gap-3 overflow-x-auto text-xs text-[var(--color-text-secondary)]">
+            {completion.metrics === null ? (
+              <p className="shrink-0">Metrics unavailable</p>
+            ) : (
+              <ul aria-label="Run metrics" className="flex shrink-0 gap-3">
+                {completion.metrics.map((metric, index) => (
+                  <li
+                    className="whitespace-nowrap tabular-nums"
+                    key={`${metric.name}-${String(index)}`}
+                  >
+                    {formatMetric(metric)}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="shrink-0 whitespace-nowrap">
               {completion.checks === null
                 ? 'Checks unavailable'
                 : `${String(completion.checks.filter((check) => check.passed).length)} of ${String(completion.checks.length)} checks passed`}
             </p>
             {completion.workspace_changes === null ? (
-              <p className="overflow-hidden text-ellipsis whitespace-nowrap">
-                Workspace changes unavailable
-              </p>
+              <p className="shrink-0 whitespace-nowrap">Workspace changes unavailable</p>
             ) : (
               <button
-                className="justify-self-start font-medium text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+                className="shrink-0 font-medium text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
                 onClick={() => {
                   onOpenReview(taskId);
                 }}

@@ -70,12 +70,12 @@ export function ContextDetail({
     ...(view.staged.length > 0 ? (['staged'] as const) : []),
     'skills',
     'instructions',
-    'memory',
-    'conversation',
     'observations',
+    'conversation',
     'agents',
-    'discoverable',
+    'memory',
     'capabilities',
+    'discoverable',
     'usage',
     'health',
   ];
@@ -110,8 +110,8 @@ export function ContextDetail({
   }));
 
   return (
-    <div className={styles.detail}>
-      <div className="relative">
+    <div aria-label="Context details" className={styles.detail} role="region">
+      <div className={styles.summarySticky}>
         <ContextSummary
           health={view.health}
           historical={historical}

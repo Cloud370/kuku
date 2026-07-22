@@ -14,7 +14,7 @@ use kuku::event::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::run_manager::driver::{
     DriverCommand, DriverEvent as RuntimeDriverEvent, DriverHandle, DriverStart, RunDriverFactory,
@@ -477,15 +477,36 @@ impl RunDriverFactory for ScenarioDriverFactory {
             .push(start.clone());
         Box::pin(async move {
             let (commands, command_rx) = mpsc::channel(8);
+            let (cancel, mut cancellation) = watch::channel(false);
             let (event_tx, events) = mpsc::channel(64);
             event_tx
                 .send(RuntimeDriverEvent::Started)
                 .await
                 .map_err(|_| DomainError::RunNotActive)?;
-            tokio::spawn(run_scenario_driver(
-                fixture, control, seed, start, command_rx, event_tx,
-            ));
-            Ok(DriverHandle { commands, events })
+            tokio::spawn(async move {
+                let driver = run_scenario_driver(
+                    fixture,
+                    control,
+                    seed,
+                    start,
+                    command_rx,
+                    event_tx.clone(),
+                );
+                tokio::pin!(driver);
+                tokio::select! {
+                    _ = &mut driver => {}
+                    changed = cancellation.changed() => {
+                        if changed.is_ok() && *cancellation.borrow() {
+                            let _ = event_tx.send(RuntimeDriverEvent::Stopped).await;
+                        }
+                    }
+                }
+            });
+            Ok(DriverHandle {
+                cancel,
+                commands,
+                events,
+            })
         })
     }
 }
