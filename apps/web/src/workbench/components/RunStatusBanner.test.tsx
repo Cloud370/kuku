@@ -27,6 +27,23 @@ afterEach(() => {
 });
 
 describe('RunStatusBanner', () => {
+  it('stays pinned above the scrolling conversation', () => {
+    render(
+      <RunStatusBanner
+        onOpenReview={vi.fn()}
+        run={{ ...completedRun([]), completion: null, finished_at: null, state: 'running' }}
+        taskId="tsk_000000000000000000000001"
+        taskState="running"
+      />,
+    );
+
+    expect(screen.getByRole('region', { name: 'Run status' })).toHaveClass(
+      'sticky',
+      'top-0',
+      'bg-[var(--color-surface)]',
+    );
+  });
+
   it('renders every provided completion metric with its unit', () => {
     render(
       <RunStatusBanner

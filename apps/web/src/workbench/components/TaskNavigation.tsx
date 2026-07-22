@@ -347,10 +347,16 @@ export function TaskNavigation({
           createTask={commands.createTask}
           retryPendingCommand={commands.retryPendingCommand}
           abandonConflictedCommand={commands.abandonConflictedCommand}
-          onCreated={(createdTaskId) => {
+          onCreated={(response) => {
+            const createdTask = response.projection.task;
+            setTasks((current) => [
+              createdTask,
+              ...current.filter((task) => task.task_id !== createdTask.task_id),
+            ]);
+            setPhase('ready');
             setCreating(false);
             setDismissedCreateId(null);
-            onSelectTask(createdTaskId);
+            onSelectTask(createdTask.task_id);
           }}
           onReviewTasks={() => {
             setCreating(false);

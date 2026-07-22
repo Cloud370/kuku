@@ -6,10 +6,16 @@ import { ConnectionBanner } from './ConnectionBanner';
 interface StateBoundaryProps {
   children: ReactNode;
   onRetry: () => void;
+  retainContentWhileLoading?: boolean;
   snapshot: WorkbenchSnapshot;
 }
 
-export function StateBoundary({ children, onRetry, snapshot }: StateBoundaryProps) {
+export function StateBoundary({
+  children,
+  onRetry,
+  retainContentWhileLoading = false,
+  snapshot,
+}: StateBoundaryProps) {
   if (snapshot.projection === null) {
     if (snapshot.connection === 'error') {
       return (
@@ -30,7 +36,10 @@ export function StateBoundary({ children, onRetry, snapshot }: StateBoundaryProp
         </section>
       );
     }
-    if (snapshot.connection === 'loading' || snapshot.connection === 'reconnecting') {
+    if (
+      !retainContentWhileLoading &&
+      (snapshot.connection === 'loading' || snapshot.connection === 'reconnecting')
+    ) {
       return (
         <section className="grid min-h-full place-items-center p-6" role="status">
           Loading Task
@@ -41,7 +50,13 @@ export function StateBoundary({ children, onRetry, snapshot }: StateBoundaryProp
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ConnectionBanner state={snapshot.connection} />
+      <ConnectionBanner
+        state={
+          retainContentWhileLoading && snapshot.connection === 'loading'
+            ? 'ready'
+            : snapshot.connection
+        }
+      />
       {children}
     </div>
   );

@@ -23,8 +23,8 @@ export function ChatMessage({
       <div
         className={
           user
-            ? 'rounded-[var(--radius-md)] bg-[var(--color-surface-raised)] px-4 py-3 text-sm'
-            : 'min-w-0 text-sm'
+            ? 'rounded-[var(--radius-md)] bg-[var(--color-surface-raised)] px-4 py-3 text-[15px] leading-7 text-[var(--color-text-primary)]'
+            : 'min-w-0 text-[15px] leading-7 text-[var(--color-text-primary)]'
         }
       >
         {user ? (

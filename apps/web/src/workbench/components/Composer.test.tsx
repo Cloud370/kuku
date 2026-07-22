@@ -203,6 +203,30 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
+  it('does not insert a status notice while a normal send is pending', () => {
+    const pending = {
+      body: {
+        expected_task_revision: 3,
+        idempotency_key: 'idem-pending',
+        message: 'inspect',
+        skill_ids: [],
+        tier_id: 'tier:balanced',
+      },
+      commandId: 1,
+      controller: new AbortController(),
+      draftGeneration: 1,
+      kind: 'submit_run',
+      status: 'pending',
+      taskGeneration: 1,
+      taskId: 'tsk_000000000000000000000001',
+    } satisfies PendingCommand;
+
+    render(<Composer {...props({ draft: draft({ text: 'inspect' }), pendingCommand: pending })} />);
+
+    expect(screen.queryByLabelText('Pending command')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Composer')).toHaveTextContent('inspect');
+  });
+
   it('disables submission until a Task is selected', () => {
     render(<Composer {...props({ draft: draft({ text: 'inspect' }), taskId: null })} />);
 

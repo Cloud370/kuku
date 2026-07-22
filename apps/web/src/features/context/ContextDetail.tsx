@@ -68,6 +68,7 @@ export function ContextDetail({
   );
   const sectionKeys: ContextSectionKey[] = [
     ...(view.staged.length > 0 ? (['staged'] as const) : []),
+    'usage',
     'skills',
     'instructions',
     'observations',
@@ -76,7 +77,6 @@ export function ContextDetail({
     'memory',
     'capabilities',
     'discoverable',
-    'usage',
     'health',
   ];
   const counts: Partial<Record<ContextSectionKey, number>> = {

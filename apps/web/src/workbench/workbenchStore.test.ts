@@ -422,6 +422,59 @@ describe('idempotent Task commands', () => {
     ]);
   });
 
+  it('clears an unknown interaction outcome when the task stream confirms it', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    const interaction: InteractionProjection = {
+      interaction_id: 'int_000000000000000000000001',
+      order_key: 8,
+      prompt: 'Permission request',
+      choices: [{ choice_id: 'approve', label: 'Approve' }],
+      status: 'pending',
+      selected_choice_id: null,
+    };
+    store.setState({
+      snapshot: readySnapshot(
+        projection(taskId, 8, 4, [{ type: 'interaction', item: interaction }]),
+      ),
+    });
+    tasks.respond.mockRejectedValueOnce(new TypeError('response ended after commit'));
+
+    await expect(store.getState().respond(interaction.interaction_id, 'approve')).rejects.toThrow(
+      'response ended after commit',
+    );
+    expect(store.getState().pendingCommand).toMatchObject({ kind: 'respond', status: 'unknown' });
+
+    store.getState().acceptFrame({
+      api_version: 1,
+      cursor: 9,
+      task_id: taskId,
+      task_revision: 5,
+      event: {
+        type: 'changes_applied',
+        changes: [
+          {
+            type: 'interaction_upserted',
+            interaction: {
+              ...interaction,
+              selected_choice_id: 'approve',
+              status: 'resolved',
+            },
+          },
+        ],
+        timeline_window: null,
+      },
+    });
+
+    expect(store.getState().pendingCommand).toBeNull();
+    expect(selectTimelineItems(store.getState().snapshot)).toMatchObject([
+      {
+        type: 'interaction',
+        item: { status: 'resolved', selected_choice_id: 'approve' },
+      },
+    ]);
+  });
+
   it('retries an interaction once with the recovered task revision', async () => {
     const { api, tasks } = mockApi();
     const store = createWorkbenchStore(api);

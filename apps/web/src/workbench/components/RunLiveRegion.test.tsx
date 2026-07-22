@@ -44,6 +44,22 @@ describe('presentation resilience', () => {
     expect(screen.queryByText('Failed')).toBeNull();
   });
 
+  it('retains rendered content without a layout banner while another Task loads', () => {
+    const snapshot = createWorkbenchSnapshot();
+    snapshot.connection = 'loading';
+    snapshot.selectedTaskId = 'tsk_000000000000000000000002';
+
+    render(
+      <StateBoundary retainContentWhileLoading onRetry={vi.fn()} snapshot={snapshot}>
+        <p>previous Task answer</p>
+      </StateBoundary>,
+    );
+
+    expect(screen.getByText('previous Task answer')).toBeVisible();
+    expect(screen.queryByText('Loading Task')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading')).not.toBeInTheDocument();
+  });
+
   it('announces meaningful run transitions without announcing token patches', () => {
     const running = projection('running');
     const view = render(<RunLiveRegion projection={running} />);

@@ -108,7 +108,7 @@ export function Composer({
       aria-label="Composer"
       className="border-t border-[var(--color-border)] bg-[var(--color-surface)] p-3"
     >
-      {pendingCommand !== null ? (
+      {pendingCommand?.status === 'unknown' ? (
         <PendingCommandNotice command={pendingCommand} onRetry={onRetryPendingCommand} />
       ) : null}
       <div className="mx-auto max-w-4xl">

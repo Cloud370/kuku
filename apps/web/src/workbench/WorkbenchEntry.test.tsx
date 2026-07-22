@@ -6,8 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import platformStatusJson from '../api/generated/fixtures/platform_status.json';
 import taskProjectionJson from '../api/generated/fixtures/task_projection.json';
 import type { PlatformStatus, TaskProjection } from '../api/generated';
-import { createWorkbenchSnapshot, applyProjection, selectTimelineItems } from './state';
-import { WorkbenchEntry } from './WorkbenchEntry';
+import { webApi } from '../api/client';
+import {
+  createWorkbenchSnapshot,
+  applyProjection,
+  beginTaskSubscription,
+  selectTimelineItems,
+} from './state';
+import type { WorkbenchControllerView } from './WorkbenchController';
+import { WorkbenchEntry, WorkbenchView } from './WorkbenchEntry';
 
 const snapshot = applyProjection(
   createWorkbenchSnapshot(),
@@ -129,4 +136,63 @@ describe('WorkbenchEntry', () => {
     expect(screen.getByText('Context for tsk_000000000000000000000001')).toBeVisible();
     expect(screen.queryByText('Fallback Context')).toBeNull();
   });
+
+  it('keeps the confirmed view visible and read-only while another Task loads', () => {
+    const readyView = controllerView(snapshot);
+    const loadingSnapshot = beginTaskSubscription(snapshot, 'tsk_000000000000000000000002');
+    const props = {
+      api: webApi,
+      context: <p>Fallback Context</p>,
+      onOpenContext: vi.fn(),
+      onOpenFile: vi.fn(),
+      onOpenLoadedSkills: vi.fn(),
+      onOpenRequestContext: vi.fn(),
+      onOpenReview: vi.fn(),
+      platformStatus: structuredClone(platformStatusJson) as PlatformStatus,
+      renderContext: (view: WorkbenchControllerView) => (
+        <p>Context for {view.snapshot.selectedTaskId}</p>
+      ),
+    };
+    const rendered = render(<WorkbenchView {...props} view={readyView} />);
+
+    expect(screen.getByText('No messages yet.')).toBeVisible();
+    rendered.rerender(
+      <WorkbenchView {...props} view={controllerView(loadingSnapshot, { timelineItems: [] })} />,
+    );
+
+    expect(screen.getByText('No messages yet.')).toBeVisible();
+    expect(screen.getByText(`Context for ${snapshot.selectedTaskId ?? ''}`)).toBeVisible();
+    expect(screen.getByRole('status', { name: 'Loading selected Task' })).toBeVisible();
+    expect(screen.queryByText('Loading Task')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
+  });
 });
+
+function controllerView(
+  viewSnapshot = snapshot,
+  overrides: Partial<WorkbenchControllerView> = {},
+): WorkbenchControllerView {
+  return {
+    catalog: {
+      agents: [],
+      api_version: 1,
+      revision: 'catalog',
+      skills: [],
+      tiers: [],
+      tools: [],
+    },
+    catalogError: null,
+    loadOlder: vi.fn(),
+    onRetry: vi.fn(),
+    platform: structuredClone(platformStatusJson) as PlatformStatus,
+    retryCatalog: vi.fn(),
+    searchCatalog: vi.fn(),
+    selectTask: vi.fn(),
+    selectWorkspace: vi.fn(),
+    snapshot: viewSnapshot,
+    store: store as unknown as WorkbenchControllerView['store'],
+    timelineItems: selectTimelineItems(viewSnapshot),
+    workspace: null,
+    ...overrides,
+  };
+}

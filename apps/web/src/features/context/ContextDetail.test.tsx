@@ -85,12 +85,12 @@ describe('ContextDetail', () => {
       .getAllByRole('button', { expanded: false })
       .map((button) => button.textContent.replace(/\s+/g, ' ').trim());
     expect(labels.slice(0, 6)).toEqual([
+      'Usage and performance',
       'Skills1',
       'Instructions1',
       'Workspace observationsAttention',
       'Conversation',
       'Agents1',
-      'Memory1',
     ]);
   });
 

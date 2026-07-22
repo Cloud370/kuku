@@ -336,7 +336,9 @@ describe('TaskNavigation', () => {
     list.mockResolvedValue(taskPage([]));
     const commands = setupCommands();
     const nextTaskId = 'tsk_000000000000000000000002';
-    commands.createTask.mockResolvedValue(created(nextTaskId));
+    const response = created(nextTaskId);
+    response.projection.task.title = 'Freshly created task';
+    commands.createTask.mockResolvedValue(response);
     const props = navigationProps(api, commands);
 
     render(<TaskNavigation {...props} />);
@@ -346,6 +348,8 @@ describe('TaskNavigation', () => {
 
     expect(commands.createTask).toHaveBeenCalledWith(workspaceId);
     expect(props.onSelectTask).toHaveBeenCalledWith(nextTaskId);
+    expect(screen.getByRole('button', { name: 'Freshly created task' })).toBeVisible();
+    expect(list).toHaveBeenCalledTimes(1);
   });
 
   it('keeps New Task open after an unknown outcome and selects only after retry acknowledgement', async () => {

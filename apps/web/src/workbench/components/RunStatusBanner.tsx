@@ -27,7 +27,7 @@ export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunSta
   return (
     <section
       aria-label="Run status"
-      className="h-24 overflow-hidden border-b border-[var(--color-border)] px-4 py-3"
+      className="sticky top-0 z-10 h-24 overflow-hidden border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3"
     >
       <div className="flex items-center gap-2 text-sm font-medium">
         {taskState === 'needs_attention' || taskState === 'failed' ? (

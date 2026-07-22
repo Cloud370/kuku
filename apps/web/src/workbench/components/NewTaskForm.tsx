@@ -12,7 +12,7 @@ export interface NewTaskFormProps {
   createTask: (workspaceId: WorkspaceId) => Promise<CreateTaskResponse | undefined>;
   retryPendingCommand: () => Promise<PendingCommandResult>;
   abandonConflictedCommand: () => void;
-  onCreated: (taskId: string) => void;
+  onCreated: (response: CreateTaskResponse) => void;
   onReviewTasks: () => void;
   onCancel: () => void;
 }
@@ -105,7 +105,7 @@ export function NewTaskForm({
                 void retryPendingCommand()
                   .then((result) => {
                     if (isCreateTaskResponse(result)) {
-                      onCreated(result.projection.task.task_id);
+                      onCreated(result);
                       return;
                     }
                     onReviewTasks();
@@ -141,7 +141,7 @@ export function NewTaskForm({
               void createTask(workspaceId)
                 .then((result) => {
                   if (isCreateTaskResponse(result)) {
-                    onCreated(result.projection.task.task_id);
+                    onCreated(result);
                     return;
                   }
                   onReviewTasks();
