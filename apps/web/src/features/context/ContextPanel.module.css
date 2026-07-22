@@ -112,6 +112,44 @@
   padding: var(--space-md);
 }
 
+.messageLayout {
+  display: grid;
+  grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-md);
+}
+
+.messageNavigator {
+  position: sticky;
+  top: 0;
+  display: flex;
+  min-width: 0;
+  max-height: 28rem;
+  flex-direction: column;
+  gap: var(--space-xs);
+  overflow: auto;
+}
+
+.messageButton {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-left: 2px solid transparent;
+  padding: var(--space-sm);
+  text-align: left;
+}
+
+.messageButton:hover {
+  background: var(--color-surface-hover);
+}
+
+.messageButtonSelected {
+  border-left-color: var(--color-accent);
+  background: var(--color-accent-muted);
+}
+
 @media (max-width: 420px) {
   .dialogBackdrop {
     padding: 0;
@@ -123,5 +161,30 @@
     height: 100dvh;
     border: 0;
     border-radius: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .messageLayout {
+    display: block;
+  }
+
+  .messageNavigator {
+    position: static;
+    max-height: none;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: var(--space-xs);
+  }
+
+  .messageButton {
+    min-width: 7rem;
+    border-bottom: 2px solid transparent;
+    border-left: 0;
+  }
+
+  .messageButtonSelected {
+    border-bottom-color: var(--color-accent);
+    border-left-color: transparent;
   }
 }

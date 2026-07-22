@@ -1,8 +1,9 @@
 import { ChevronDown, Check, Copy, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 
-import type { ExactContentBlock, ExactRequest } from '../../api/generated';
+import type { ExactContentBlock, ExactRequest, UsageSummary } from '../../api/generated';
 import { SafeCodeBlock } from '../../components/content/SafeCodeBlock';
+import { cn } from '../../lib/cn';
 import { activateFocusTrap } from '../../workbench/accessibility/focusTrap';
 import styles from './ContextPanel.module.css';
 
@@ -12,6 +13,7 @@ interface ExactRequestDialogProps {
   open: boolean;
   onClose: () => void;
   returnFocusRef?: RefObject<HTMLElement | null>;
+  usage: UsageSummary | null;
 }
 
 function hasClipboard(value: unknown): value is Pick<Clipboard, 'writeText'> {
@@ -30,6 +32,25 @@ function formatThinking(request: ExactRequest): string {
   return budget === null
     ? 'Thinking enabled'
     : `Thinking · ${budget.toLocaleString('en-US')} tokens`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? 'Unavailable' : `${String(Math.round(value * 100))}%`;
+}
+
+function formatCount(value: number | null): string {
+  return value === null ? 'Unavailable' : value.toLocaleString('en-US');
+}
+
+function formatElapsed(value: number | null): string {
+  if (value === null) return 'Unavailable';
+  if (value < 1_000) return `${String(value)}ms`;
+  return `${(value / 1_000).toFixed(1)}s`;
+}
+
+function formatCost(usage: UsageSummary | null): string {
+  if (usage?.cost === null || usage?.cost === undefined) return 'Unavailable';
+  return `${usage.cost.currency} ${(usage.cost.micros / 1_000_000).toFixed(4)}`;
 }
 
 function ExactBlock({ block }: { block: ExactContentBlock }) {
@@ -104,10 +125,18 @@ export function ExactRequestDialog({
   open,
   onClose,
   returnFocusRef,
+  usage,
 }: ExactRequestDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'unavailable'>('idle');
+  const [selectedMessageIndex, setSelectedMessageIndex] = useState(0);
   const exactRequestJson = JSON.stringify(exactRequest, null, 2);
+  const activeMessageIndex =
+    exactRequest.messages.length === 0
+      ? -1
+      : Math.min(selectedMessageIndex, exactRequest.messages.length - 1);
+  const activeMessage =
+    activeMessageIndex < 0 ? undefined : exactRequest.messages[activeMessageIndex];
 
   async function copyRequest() {
     const clipboardValue = (navigator as unknown as { clipboard?: unknown }).clipboard;
@@ -219,6 +248,43 @@ export function ExactRequestDialog({
               </span>
             </span>
           </div>
+          <div
+            aria-label="Request usage"
+            className="mb-4 grid grid-cols-2 gap-2 border-y border-[var(--color-border)] py-3 sm:grid-cols-5"
+          >
+            <span className="min-w-0 px-2 first:pl-0">
+              <span className="block text-[10px] text-[var(--color-text-muted)]">Cache hit</span>
+              <span className="mt-0.5 block truncate text-sm font-semibold tabular-nums">
+                {formatPercent(usage?.cached_input_ratio ?? null)}
+              </span>
+            </span>
+            <span className="min-w-0 px-2">
+              <span className="block text-[10px] text-[var(--color-text-muted)]">Input tokens</span>
+              <span className="mt-0.5 block truncate text-sm font-semibold tabular-nums">
+                {formatCount(usage?.input_tokens ?? null)}
+              </span>
+            </span>
+            <span className="min-w-0 px-2">
+              <span className="block text-[10px] text-[var(--color-text-muted)]">
+                Output tokens
+              </span>
+              <span className="mt-0.5 block truncate text-sm font-semibold tabular-nums">
+                {formatCount(usage?.output_tokens ?? null)}
+              </span>
+            </span>
+            <span className="min-w-0 px-2">
+              <span className="block text-[10px] text-[var(--color-text-muted)]">Elapsed</span>
+              <span className="mt-0.5 block truncate text-sm font-semibold tabular-nums">
+                {formatElapsed(usage?.elapsed_ms ?? null)}
+              </span>
+            </span>
+            <span className="min-w-0 px-2 last:pr-0">
+              <span className="block text-[10px] text-[var(--color-text-muted)]">Cost</span>
+              <span className="mt-0.5 block truncate text-sm font-semibold tabular-nums">
+                {formatCost(usage)}
+              </span>
+            </span>
+          </div>
           <div className="space-y-3">
             <CollapsibleSection count={1} label="Parameters">
               <SafeCodeBlock
@@ -227,27 +293,65 @@ export function ExactRequestDialog({
               />
             </CollapsibleSection>
             <CollapsibleSection count={exactRequest.messages.length} label="Messages">
-              {exactRequest.messages.map((message, messageIndex) => (
-                <article
-                  className="mt-3 border-l-2 border-[var(--color-accent)] pl-3 first:mt-0"
-                  key={`${message.role}:${String(messageIndex)}`}
-                >
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="font-semibold uppercase tracking-wide">{message.role}</span>
-                    <span className="text-[var(--color-text-muted)]">
-                      {message.content.length} {message.content.length === 1 ? 'block' : 'blocks'}
-                    </span>
-                  </div>
-                  {message.content.map((block, blockIndex) => (
-                    <div className="mt-2" key={`${block.kind}:${String(blockIndex)}`}>
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
-                        {block.kind}
-                      </span>
-                      <ExactBlock block={block} />
-                    </div>
-                  ))}
-                </article>
-              ))}
+              {exactRequest.messages.length === 0 ? (
+                <p className="text-xs text-[var(--color-text-muted)]">No messages</p>
+              ) : (
+                <div className={styles.messageLayout}>
+                  <nav aria-label="Message navigator" className={styles.messageNavigator}>
+                    {exactRequest.messages.map((message, messageIndex) => {
+                      const selected = messageIndex === activeMessageIndex;
+                      return (
+                        <button
+                          aria-label={`Select message ${String(messageIndex + 1)} ${message.role}`}
+                          aria-pressed={selected}
+                          className={cn(
+                            styles.messageButton,
+                            selected && styles.messageButtonSelected,
+                          )}
+                          key={`${message.role}:${String(messageIndex)}`}
+                          onClick={() => {
+                            setSelectedMessageIndex(messageIndex);
+                          }}
+                          type="button"
+                        >
+                          <span className="min-w-0 truncate font-semibold uppercase tracking-wide">
+                            {String(messageIndex + 1)} · {message.role}
+                          </span>
+                          <span className="text-[10px] text-[var(--color-text-muted)]">
+                            {message.content.length}{' '}
+                            {message.content.length === 1 ? 'block' : 'blocks'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </nav>
+                  {activeMessage === undefined ? null : (
+                    <section
+                      aria-label={`Message ${String(activeMessageIndex + 1)} details`}
+                      className="min-w-0"
+                      role="region"
+                    >
+                      <div className="flex items-center gap-2 border-b border-[var(--color-border)] pb-2 text-xs">
+                        <span className="font-semibold uppercase tracking-wide">
+                          {activeMessage.role}
+                        </span>
+                        <span className="text-[var(--color-text-muted)]">
+                          Message {String(activeMessageIndex + 1)} of{' '}
+                          {String(exactRequest.messages.length)}
+                        </span>
+                      </div>
+                      {activeMessage.content.map((block, blockIndex) => (
+                        <div className="mt-2" key={`${block.kind}:${String(blockIndex)}`}>
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+                            {block.kind}
+                          </span>
+                          <ExactBlock block={block} />
+                        </div>
+                      ))}
+                    </section>
+                  )}
+                </div>
+              )}
             </CollapsibleSection>
             <CollapsibleSection count={exactRequest.tools.length} label="Tools">
               {exactRequest.tools.length === 0 ? (

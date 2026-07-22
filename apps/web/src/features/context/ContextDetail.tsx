@@ -114,12 +114,7 @@ export function ContextDetail({
   }));
 
   return (
-    <div
-      aria-busy={loading}
-      aria-label="Context details"
-      className={styles.detail}
-      role="region"
-    >
+    <div aria-busy={loading} aria-label="Context details" className={styles.detail} role="region">
       {loading ? (
         <div
           aria-label="Loading selected Request"
@@ -175,6 +170,7 @@ export function ContextDetail({
           }}
           open={exactOpen}
           returnFocusRef={exactTriggerRef}
+          usage={view.usage.thisRequest}
         />
       )}
     </div>

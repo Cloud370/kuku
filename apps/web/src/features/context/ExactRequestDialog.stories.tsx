@@ -21,5 +21,6 @@ export const Historical: Story = {
     exactRequest,
     onClose: () => undefined,
     open: true,
+    usage: fixture.usage.this_request,
   },
 };

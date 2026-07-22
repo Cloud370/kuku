@@ -18,6 +18,7 @@ describe('ExactRequestDialog', () => {
         exactRequest={fixture.exact_request}
         onClose={vi.fn()}
         open
+        usage={fixture.usage.this_request}
       />,
     );
   }
@@ -29,6 +30,16 @@ describe('ExactRequestDialog', () => {
     expect(screen.getByLabelText('Request metadata')).toHaveTextContent('Streaming');
     expect(screen.getByLabelText('Request metadata')).toHaveTextContent('2 messages');
     expect(screen.getByLabelText('Request metadata')).toHaveTextContent('1 tool');
+  });
+
+  it('surfaces request usage next to the exact payload', () => {
+    renderDialog();
+
+    const usage = screen.getByLabelText('Request usage');
+    expect(usage).toHaveTextContent('40%');
+    expect(usage).toHaveTextContent('100');
+    expect(usage).toHaveTextContent('20');
+    expect(usage).toHaveTextContent('1.2s');
   });
 
   it('organizes the payload into collapsible debug sections', async () => {
@@ -45,13 +56,25 @@ describe('ExactRequestDialog', () => {
     expect(screen.getByRole('button', { name: 'Expand Parameters' })).toBeVisible();
   });
 
-  it('labels message roles and content block kinds for fast scanning', () => {
+  it('provides a compact message navigator and focused message detail', async () => {
+    const user = userEvent.setup();
     renderDialog();
 
     const messages = screen.getByRole('group', { name: 'Messages' });
-    expect(within(messages).getByText('system')).toBeVisible();
-    expect(within(messages).getByText('user')).toBeVisible();
-    expect(within(messages).getAllByText('text')).toHaveLength(4);
+    const navigator = within(messages).getByRole('navigation', { name: 'Message navigator' });
+    expect(
+      within(navigator).getByRole('button', { name: 'Select message 1 system' }),
+    ).toBeVisible();
+    expect(within(navigator).getByRole('button', { name: 'Select message 2 user' })).toBeVisible();
+    expect(within(messages).getByRole('region', { name: 'Message 1 details' })).toHaveTextContent(
+      'System prompt',
+    );
+
+    await user.click(within(navigator).getByRole('button', { name: 'Select message 2 user' }));
+    expect(within(messages).getByRole('region', { name: 'Message 2 details' })).toHaveTextContent(
+      'Review this change',
+    );
+    expect(within(messages).queryByText('System prompt')).toBeNull();
   });
 
   it('copies the complete exact request as JSON', async () => {

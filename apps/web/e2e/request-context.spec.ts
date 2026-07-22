@@ -48,6 +48,9 @@ test('opens an exact immutable historical request from typed Context history', a
   expect(dialogBounds).not.toBeNull();
   expect(dialogBounds?.width ?? 0).toBeGreaterThanOrEqual(900);
   expect(dialogBounds?.height ?? 0).toBeGreaterThanOrEqual(600);
+  await expect(dialog.getByRole('navigation', { name: 'Message navigator' })).toBeVisible();
+  await expect(dialog.getByLabel('Request usage')).toContainText('Cache hit');
+  await expect(dialog.getByLabel('Request usage')).toContainText('Input tokens');
   await expect(dialog).toContainText('Exercise the full deterministic browser scenario');
   await expect(dialog).toContainText(historical.exact_payload_hash ?? 'missing-payload-hash');
   await expect(
