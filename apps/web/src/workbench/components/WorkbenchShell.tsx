@@ -11,6 +11,7 @@ export interface WorkbenchShellProps {
   chat: ReactNode;
   context: ReactNode;
   onOpenContext: () => void;
+  onOpenSettings: () => void;
   onStop: () => void;
   platformStatus: PlatformStatus;
   stagedSkillCount: number;
@@ -89,6 +90,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                   setContextCollapsed(false);
                 }
           }
+          onOpenSettings={props.onOpenSettings}
           onOpenTasks={
             narrow
               ? () => {

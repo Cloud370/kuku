@@ -105,6 +105,7 @@ describe('WorkbenchEntry', () => {
         onOpenLoadedSkills={vi.fn()}
         onOpenRequestContext={vi.fn()}
         onOpenReview={vi.fn()}
+        onOpenSettings={vi.fn()}
       />,
     );
 
@@ -129,6 +130,7 @@ describe('WorkbenchEntry', () => {
         onOpenLoadedSkills={vi.fn()}
         onOpenRequestContext={vi.fn()}
         onOpenReview={vi.fn()}
+        onOpenSettings={vi.fn()}
         renderContext={(view) => <p>Context for {view.snapshot.selectedTaskId}</p>}
       />,
     );
@@ -148,6 +150,7 @@ describe('WorkbenchEntry', () => {
       onOpenLoadedSkills: vi.fn(),
       onOpenRequestContext: vi.fn(),
       onOpenReview: vi.fn(),
+      onOpenSettings: vi.fn(),
       platformStatus: structuredClone(platformStatusJson) as PlatformStatus,
       renderContext: (view: WorkbenchControllerView) => (
         <p>Context for {view.snapshot.selectedTaskId}</p>

@@ -119,6 +119,9 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
       onOpenReview={(selectedTaskId) => {
         void navigate(`/tasks/${encodeURIComponent(selectedTaskId)}/review`);
       }}
+      onOpenSettings={() => {
+        void navigate('/settings');
+      }}
       onTaskDeltaCommitted={experience.onTaskDeltaCommitted}
       renderContext={(view) => {
         scopeRef.current =

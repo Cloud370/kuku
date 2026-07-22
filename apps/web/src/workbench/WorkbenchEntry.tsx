@@ -24,6 +24,7 @@ export interface WorkbenchEntryProps {
   onOpenLoadedSkills: (taskId: string) => void;
   onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
+  onOpenSettings: () => void;
   onNavigateTask?: (taskId: string) => void;
   onTaskDeltaCommitted?: (taskId: string, delta: TaskDelta) => void;
   onStop?: () => void;
@@ -41,6 +42,7 @@ export function WorkbenchEntry({
   onOpenLoadedSkills,
   onOpenRequestContext,
   onOpenReview,
+  onOpenSettings,
   onNavigateTask,
   onStop,
   onTaskDeltaCommitted,
@@ -67,6 +69,7 @@ export function WorkbenchEntry({
               onOpenLoadedSkills={onOpenLoadedSkills}
               onOpenRequestContext={onOpenRequestContext}
               onOpenReview={onOpenReview}
+              onOpenSettings={onOpenSettings}
               onStop={onStop}
               platformStatus={platformStatus}
               renderContext={renderContext}
@@ -88,6 +91,7 @@ interface WorkbenchViewProps {
   onOpenLoadedSkills: (taskId: string) => void;
   onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
+  onOpenSettings: () => void;
   onStop?: () => void;
   platformStatus: PlatformStatus;
   renderContext?: (view: WorkbenchControllerView) => ReactNode;
@@ -103,6 +107,7 @@ export function WorkbenchView({
   onOpenLoadedSkills,
   onOpenRequestContext,
   onOpenReview,
+  onOpenSettings,
   onStop,
   platformStatus,
   renderContext,
@@ -237,6 +242,7 @@ export function WorkbenchView({
         </div>
       }
       onOpenContext={onOpenContext}
+      onOpenSettings={onOpenSettings}
       onStop={() => {
         void view.store.stopRun();
         onStop?.();

@@ -48,6 +48,7 @@ describe('Workbench journeys', () => {
         onOpenLoadedSkills={vi.fn()}
         onOpenRequestContext={vi.fn()}
         onOpenReview={vi.fn()}
+        onOpenSettings={vi.fn()}
         route={{ kind: 'task', taskId: server.taskId }}
       />,
     );

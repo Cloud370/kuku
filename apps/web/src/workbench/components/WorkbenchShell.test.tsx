@@ -66,6 +66,7 @@ function shellProps(overrides: Partial<WorkbenchShellProps> = {}): WorkbenchShel
     chat: <p>Conversation content</p>,
     context: <p>Context content</p>,
     onOpenContext: vi.fn(),
+    onOpenSettings: vi.fn(),
     onStop: vi.fn(),
     platformStatus: structuredClone(platformStatusJson) as PlatformStatus,
     stagedSkillCount: 2,
@@ -97,6 +98,17 @@ describe('WorkbenchShell', () => {
 
     expect(screen.getByRole('separator', { name: 'Resize Tasks and Chat' })).toBeVisible();
     expect(screen.getByRole('separator', { name: 'Resize Chat and Agent Context' })).toBeVisible();
+  });
+
+  it.each([360, 1440])('keeps Settings available from the header at %ipx', async (width) => {
+    const user = userEvent.setup();
+    const onOpenSettings = vi.fn();
+    renderAt(width, { onOpenSettings });
+
+    const trigger = screen.getByRole('button', { name: 'Open Settings' });
+    expect(trigger).toBeVisible();
+    await user.click(trigger);
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   it('delegates scrolling to one content owner in each desktop sidebar', () => {
@@ -183,6 +195,7 @@ describe('WorkbenchShell', () => {
     const { rerender } = render(
       <WorkbenchHeader
         onOpenContext={props.onOpenContext}
+        onOpenSettings={props.onOpenSettings}
         onOpenTasks={vi.fn()}
         onStop={props.onStop}
         platformStatus={props.platformStatus}
@@ -196,6 +209,7 @@ describe('WorkbenchShell', () => {
     rerender(
       <WorkbenchHeader
         onOpenContext={props.onOpenContext}
+        onOpenSettings={props.onOpenSettings}
         onOpenTasks={vi.fn()}
         onStop={props.onStop}
         platformStatus={props.platformStatus}

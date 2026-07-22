@@ -12,11 +12,12 @@ import App from './App';
 interface MockWorkbenchProps {
   initialDraft?: LocalDraft;
   onNavigateTask?: (taskId: string) => void;
+  onOpenSettings: () => void;
   route?: WorkbenchRoute;
 }
 
 vi.mock('./workbench/WorkbenchEntry', () => ({
-  WorkbenchEntry: ({ initialDraft, onNavigateTask, route }: MockWorkbenchProps) => (
+  WorkbenchEntry: ({ initialDraft, onNavigateTask, onOpenSettings, route }: MockWorkbenchProps) => (
     <section aria-label="Production Workbench">
       <p>{route?.kind === 'task' ? `task:${route.taskId}` : (route?.kind ?? 'latest')}</p>
       <p>{initialDraft?.text ?? 'No initial draft'}</p>
@@ -27,6 +28,9 @@ vi.mock('./workbench/WorkbenchEntry', () => ({
         type="button"
       >
         Select second Task
+      </button>
+      <button onClick={onOpenSettings} type="button">
+        Open Settings
       </button>
     </section>
   ),
@@ -131,6 +135,16 @@ describe('App routing', () => {
     expect(screen.getByRole('status', { name: 'Location' })).toHaveTextContent(
       '/tasks/tsk_000000000000000000000002',
     );
+  });
+
+  it('opens Settings from the Workbench without leaving the application router', async () => {
+    const user = userEvent.setup();
+    renderAt('/tasks/tsk_000000000000000000000001');
+
+    await user.click(screen.getByRole('button', { name: 'Open Settings' }));
+
+    expect(screen.getByRole('status', { name: 'Location' })).toHaveTextContent('/settings');
+    expect(screen.getByRole('main', { name: 'Production Settings' })).toBeVisible();
   });
 
   it('carries the Guide first Task prefill into the new Task Workbench', async () => {

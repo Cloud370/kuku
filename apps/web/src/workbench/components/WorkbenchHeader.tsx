@@ -1,4 +1,4 @@
-import { GitBranch, PanelLeftOpen, Square, Workflow } from 'lucide-react';
+import { GitBranch, PanelLeftOpen, Settings, Square, Workflow } from 'lucide-react';
 
 import type { PlatformStatus, WorkspaceSummary } from '../../api/generated';
 import type { WorkbenchSnapshot } from '../state';
@@ -6,6 +6,7 @@ import { ContextDrawerTrigger } from './ContextDrawerTrigger';
 
 export interface WorkbenchHeaderProps {
   onOpenContext: () => void;
+  onOpenSettings: () => void;
   onOpenTasks: () => void;
   onStop: () => void;
   platformStatus: PlatformStatus;
@@ -25,6 +26,7 @@ function stateLabel(state: string): string {
 
 export function WorkbenchHeader({
   onOpenContext,
+  onOpenSettings,
   onOpenTasks,
   onStop,
   platformStatus,
@@ -99,6 +101,15 @@ export function WorkbenchHeader({
           <Square aria-hidden="true" fill="currentColor" size={14} />
         </button>
       ) : null}
+      <button
+        aria-label="Open Settings"
+        className="inline-flex size-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+        onClick={onOpenSettings}
+        title="Open Settings"
+        type="button"
+      >
+        <Settings aria-hidden="true" size={18} />
+      </button>
       {showContextTrigger ? <ContextDrawerTrigger onOpen={onOpenContext} /> : null}
     </header>
   );
