@@ -13,7 +13,7 @@ import { ExactRequestDialog } from './ExactRequestDialog';
 import { RequestHistory } from './RequestHistory';
 import { ContextSectionContent } from './ContextSectionContent';
 import { ContextSummary } from './ContextSummary';
-import type { ContextSectionKey } from './ContextPanel';
+import type { ContextSectionKey } from './contextSections';
 import styles from './ContextPanel.module.css';
 import { selectContextView } from './contextSelectors';
 
@@ -116,6 +116,7 @@ export function ContextDetail({
           health={view.health}
           historical={historical}
           selectedRequest={view.selectedRequest}
+          usage={view.usage.thisTask}
         />
         {view.exactRequest === null ? null : (
           <button

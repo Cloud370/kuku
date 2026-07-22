@@ -4,21 +4,9 @@ import { webApi } from '../../api/client';
 import type { ConversationId, RequestId, TaskId, WorkspaceId } from '../../api/generated';
 import { ContextDetail } from './ContextDetail';
 import styles from './ContextPanel.module.css';
+import type { ContextSectionKey } from './contextSections';
 import type { ContextPanelState } from './contextState';
 import { toApiError } from './contextState';
-
-export type ContextSectionKey =
-  | 'staged'
-  | 'skills'
-  | 'instructions'
-  | 'memory'
-  | 'conversation'
-  | 'observations'
-  | 'agents'
-  | 'discoverable'
-  | 'capabilities'
-  | 'usage'
-  | 'health';
 
 export interface ContextPanelProps {
   taskId: TaskId;
@@ -32,6 +20,7 @@ export interface ContextPanelProps {
   onStageSkill: (skillId: string) => void;
   onUnstageSkill: (skillId: string) => void;
   onOpenSectionsChange: (keys: ContextSectionKey[]) => void;
+  refreshRevision?: number;
 }
 
 function StateSummary({ label, detail }: { label: string; detail: string }) {
@@ -62,6 +51,7 @@ export function ContextPanel({
   onStageSkill,
   onUnstageSkill,
   onOpenSectionsChange,
+  refreshRevision = 0,
 }: ContextPanelProps) {
   const [state, setState] = useState<ContextPanelState>({ kind: 'loading' });
 
@@ -92,7 +82,7 @@ export function ContextPanel({
     return () => {
       active = false;
     };
-  }, [selectedRequestId, taskId, workspaceId]);
+  }, [refreshRevision, selectedRequestId, taskId, workspaceId]);
 
   return (
     <section aria-label="Context" className={styles.panel}>

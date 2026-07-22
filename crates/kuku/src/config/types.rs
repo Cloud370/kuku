@@ -29,6 +29,18 @@ impl ProviderFormat {
             ProviderFormat::OpenAiResponses => "openai-responses",
         }
     }
+
+    pub fn endpoint_url(&self, base_url: &str) -> String {
+        let base = base_url.trim_end_matches('/');
+        match self {
+            ProviderFormat::Anthropic if base.ends_with("/v1") => {
+                format!("{base}/messages")
+            }
+            ProviderFormat::Anthropic => format!("{base}/v1/messages"),
+            ProviderFormat::OpenAiChat => format!("{base}/chat/completions"),
+            ProviderFormat::OpenAiResponses => format!("{base}/responses"),
+        }
+    }
 }
 
 impl std::str::FromStr for ProviderFormat {

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { FileEntry, WorkspaceId } from '@/api/generated';
 
 import type { ReviewDataSource } from './ReviewRoute';
+import { retryReviewRead } from './retryReviewRead';
 
 type SearchState =
   | { kind: 'loading' }
@@ -30,8 +31,9 @@ export function FileSearch({
 
   useEffect(() => {
     let current = true;
-    void dataSource
-      .tree(workspaceId, { cursor: null, limit: 100, prefix: '' })
+    void retryReviewRead(() =>
+      dataSource.tree(workspaceId, { cursor: null, limit: 100, prefix: '' }),
+    )
       .then((page) => {
         if (current) {
           setState({
@@ -56,12 +58,14 @@ export function FileSearch({
     if (!normalized) return;
     setState({ kind: 'loading' });
     try {
-      const page = await dataSource.search(workspaceId, {
-        cursor: null,
-        limit: 100,
-        prefix: '',
-        query: normalized,
-      });
+      const page = await retryReviewRead(() =>
+        dataSource.search(workspaceId, {
+          cursor: null,
+          limit: 100,
+          prefix: '',
+          query: normalized,
+        }),
+      );
       setState({
         kind: 'ready',
         entries: page.matches.map((match) => match.entry),
@@ -81,20 +85,25 @@ export function FileSearch({
       let entries: FileEntry[];
       let nextCursor: string | null;
       if (state.request.kind === 'tree') {
-        const page = await dataSource.tree(workspaceId, {
-          cursor: state.nextCursor,
-          limit: 100,
-          prefix: '',
-        });
+        const page = await retryReviewRead(() =>
+          dataSource.tree(workspaceId, {
+            cursor: state.nextCursor,
+            limit: 100,
+            prefix: '',
+          }),
+        );
         entries = page.entries;
         nextCursor = page.next_cursor;
       } else {
-        const page = await dataSource.search(workspaceId, {
-          cursor: state.nextCursor,
-          limit: 100,
-          prefix: '',
-          query: state.request.query,
-        });
+        const searchQuery = state.request.query;
+        const page = await retryReviewRead(() =>
+          dataSource.search(workspaceId, {
+            cursor: state.nextCursor,
+            limit: 100,
+            prefix: '',
+            query: searchQuery,
+          }),
+        );
         entries = page.matches.map((match) => match.entry);
         nextCursor = page.next_cursor;
       }

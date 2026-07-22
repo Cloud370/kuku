@@ -535,7 +535,6 @@ fn task_event_matrix_constructs_all_complex_variants() {
     completed.summary = Some("done".into());
     let events = vec![
         TaskEvent::InteractionOpened { interaction },
-        TaskEvent::SkillLoaded(skill),
         TaskEvent::RequestSnapshot(snapshot),
         TaskEvent::RequestStarted(request_started),
         TaskEvent::RequestCompleted(request_completed),
@@ -552,6 +551,24 @@ fn task_event_matrix_constructs_all_complex_variants() {
         )
         .is_err());
     }
+    let selected_skill = TaskEvent::SkillLoaded(skill.clone());
+    assert_eq!(selected_skill.record_class(), TaskRecordClass::Activity);
+    assert!(TaskTransaction::try_new(
+        TaskRevision::try_new(0).unwrap(),
+        receipt(),
+        vec![selected_skill]
+    )
+    .is_ok());
+    let agent_skill = TaskEvent::SkillLoaded(SkillLoadFact {
+        origin: SkillLoadOrigin::Agent,
+        ..skill
+    });
+    assert!(TaskTransaction::try_new(
+        TaskRevision::try_new(0).unwrap(),
+        receipt(),
+        vec![agent_skill]
+    )
+    .is_err());
     let review_event = TaskEvent::ReviewSubmissionRecorded(review);
     assert_eq!(review_event.record_class(), TaskRecordClass::Control);
     assert!(TaskActivityBatch::try_new(vec![review_event]).is_err());

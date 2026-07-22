@@ -337,10 +337,8 @@ async fn auth_middleware(
 }
 
 fn initialized_route(_method: &Method, path: &str) -> bool {
-    matches!(
-        path,
-        "/api/v1/settings" | "/api/v1/workspaces" | "/api/v1/catalog"
-    ) || path.starts_with("/api/v1/workspaces/")
+    matches!(path, "/api/v1/settings" | "/api/v1/workspaces")
+        || path.starts_with("/api/v1/workspaces/")
         || path == "/api/v1/tasks"
         || path.starts_with("/api/v1/tasks/")
 }
@@ -724,8 +722,42 @@ impl ProviderProbe for HttpProviderProbe {
                     "provider-probe",
                 )
             })?;
-            let url = format!("{}/v1/messages", provider.base_url.trim_end_matches('/'));
-            let response = wreq::Client::new().post(url).header("x-api-key", credential.expose()).header("anthropic-version", "2023-06-01").json(&serde_json::json!({"model": tier_config.model, "max_tokens": 1, "messages": [{"role": "user", "content": "probe"}]})).send().await.map_err(|_| crate::api::ApiError::new(crate::api::ApiErrorCode::ProviderUnavailable, "provider probe failed", "provider-probe"))?;
+            let url = provider.format.endpoint_url(&provider.base_url);
+            let client = wreq::Client::new();
+            let request = match provider.format {
+                kuku::config::ProviderFormat::Anthropic => client
+                    .post(url)
+                    .header("x-api-key", credential.expose())
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&serde_json::json!({
+                        "model": tier_config.model,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "probe"}]
+                    })),
+                kuku::config::ProviderFormat::OpenAiChat => client
+                    .post(url)
+                    .bearer_auth(credential.expose())
+                    .json(&serde_json::json!({
+                        "model": tier_config.model,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "probe"}]
+                    })),
+                kuku::config::ProviderFormat::OpenAiResponses => client
+                    .post(url)
+                    .bearer_auth(credential.expose())
+                    .json(&serde_json::json!({
+                        "model": tier_config.model,
+                        "max_output_tokens": 1,
+                        "input": "probe"
+                    })),
+            };
+            let response = request.send().await.map_err(|_| {
+                crate::api::ApiError::new(
+                    crate::api::ApiErrorCode::ProviderUnavailable,
+                    "provider probe failed",
+                    "provider-probe",
+                )
+            })?;
             if !response.status().is_success() {
                 return Err(crate::api::ApiError::new(
                     crate::api::ApiErrorCode::ProviderUnavailable,

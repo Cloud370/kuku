@@ -1,7 +1,7 @@
 import { ChevronDown } from 'lucide-react';
 import { useId, type ReactNode } from 'react';
 
-import type { ContextSectionKey } from './ContextPanel';
+import type { ContextSectionKey } from './contextSections';
 import styles from './ContextPanel.module.css';
 
 export interface ContextAccordionItem {

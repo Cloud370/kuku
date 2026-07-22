@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 
 import type { SkillLoadOrigin, WorkspaceId } from '../../api/generated';
 import { SafeMarkdown } from '../../components/content/SafeMarkdown';
-import type { ContextSectionKey } from './ContextPanel';
+import type { ContextSectionKey } from './contextSections';
 import type { ContextViewModel } from './contextSelectors';
 import { isWorkspaceRelativePath } from './contextSelectors';
 

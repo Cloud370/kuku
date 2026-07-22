@@ -54,7 +54,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use catalog_reducer::CatalogReducer;
-use kuku::event::{SourceFact, SourceScope, WorkspaceId};
+use kuku::event::{SkillLoadOrigin, SourceFact, SourceScope, WorkspaceId};
 use kuku_server::run_manager::{DomainError, SkillSelectionValidator};
 use sdk_catalog::{
     CatalogCapabilities, CatalogEntries, CatalogEntry, CatalogKind, CatalogSource, TierMetadata,
@@ -199,6 +199,11 @@ fn valid_selection_preserves_requested_ids() {
 
     assert_eq!("tier:default", validated.selection.tier_id);
     assert_eq!(vec!["skill:project:tdd"], validated.selection.skill_ids);
+    assert_eq!(1, validated.selected_skills.len());
+    assert_eq!("skill:project:tdd", validated.selected_skills[0].skill_id);
+    assert_eq!("source:tdd", validated.selected_skills[0].source.id);
+    assert_eq!("sha256:skill", validated.selected_skills[0].content_hash);
+    assert_eq!(SkillLoadOrigin::You, validated.selected_skills[0].origin);
     assert_eq!(1, provider.requested.load(Ordering::SeqCst));
 }
 

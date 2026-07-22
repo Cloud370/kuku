@@ -4,6 +4,8 @@ import { Check, LoaderCircle, ServerCog } from 'lucide-react';
 import type {
   CompleteInitRequest,
   InitStatus,
+  PlatformCatalog,
+  RegistrationRootSummary,
   RegisterInitialWorkspaceRequest,
   TestProviderRequest,
   TestProviderResult,
@@ -18,6 +20,8 @@ export interface InitOperations {
   workspace: (body: RegisterInitialWorkspaceRequest) => Promise<InitStatus>;
   test: (body: TestProviderRequest) => Promise<TestProviderResult>;
   complete: (body: CompleteInitRequest) => Promise<InitStatus>;
+  catalog: () => Promise<PlatformCatalog>;
+  registrationRoots: () => Promise<{ items: RegistrationRootSummary[] }>;
 }
 
 interface InitScreenProps {
@@ -27,13 +31,14 @@ interface InitScreenProps {
 
 interface PhaseFormProps {
   children: ReactNode;
+  disabled?: boolean;
   error: string | null;
   label: string;
   pending: boolean;
   onSubmit: (event: SyntheticEvent<HTMLFormElement, SubmitEvent>) => void;
 }
 
-function PhaseForm({ children, error, label, pending, onSubmit }: PhaseFormProps) {
+function PhaseForm({ children, disabled = false, error, label, pending, onSubmit }: PhaseFormProps) {
   return (
     <form className="mt-6 space-y-4" onSubmit={onSubmit}>
       {children}
@@ -44,7 +49,7 @@ function PhaseForm({ children, error, label, pending, onSubmit }: PhaseFormProps
       ) : null}
       <button
         className="w-full rounded-[var(--radius-md)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-        disabled={pending}
+        disabled={disabled || pending}
         type="submit"
       >
         {pending ? 'Saving' : label}
@@ -84,6 +89,76 @@ function Field({
   );
 }
 
+function ApiFormatSelect({ onChange, value }: { onChange: (value: string) => void; value: string }) {
+  return (
+    <label className="block space-y-2 text-sm font-medium">
+      <span>API format</span>
+      <select
+        aria-label="API format"
+        className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]"
+        name="provider-format"
+        onChange={(event) => {
+          onChange(event.target.value);
+        }}
+        required
+        value={value}
+      >
+        <option disabled value="">
+          Select API format
+        </option>
+        <option value="openai-responses">OpenAI Responses</option>
+        <option value="openai-chat">OpenAI Chat Completions</option>
+        <option value="anthropic">Anthropic Messages</option>
+      </select>
+    </label>
+  );
+}
+
+function providerEndpoint(format: string, baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/u, '');
+  if (base.length === 0) return '';
+  if (format === 'anthropic') return `${base}${base.endsWith('/v1') ? '' : '/v1'}/messages`;
+  if (format === 'openai-chat') return `${base}/chat/completions`;
+  if (format === 'openai-responses') return `${base}/responses`;
+  return '';
+}
+
+function WorkspaceRootSelect({
+  disabled,
+  onChange,
+  roots,
+  value,
+}: {
+  disabled: boolean;
+  onChange: (value: string) => void;
+  roots: RegistrationRootSummary[];
+  value: string;
+}) {
+  return (
+    <label className="block space-y-2 text-sm font-medium">
+      <span>Workspace Root</span>
+      <select
+        aria-label="Workspace Root"
+        className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)] disabled:opacity-40"
+        disabled={disabled}
+        name="workspace-root"
+        onChange={(event) => {
+          onChange(event.target.value);
+        }}
+        required
+        value={value}
+      >
+        {roots.length === 0 ? <option value="">Loading workspace roots</option> : null}
+        {roots.map((root) => (
+          <option key={root.root_id} value={root.root_id}>
+            {root.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function InitScreen({ operations, onComplete }: InitScreenProps) {
   const [status, setStatus] = useState<InitStatus | null>(null);
   const [loadingError, setLoadingError] = useState(false);
@@ -98,9 +173,12 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
   const [model, setModel] = useState('');
   const [defaultTierId, setDefaultTierId] = useState('tier:local:balanced');
   const [workspaceLabel, setWorkspaceLabel] = useState('Workspace');
-  const [workspaceRootId, setWorkspaceRootId] = useState('root:default');
+  const [workspaceRootId, setWorkspaceRootId] = useState('');
   const [workspacePath, setWorkspacePath] = useState('.');
-  const [testTierId, setTestTierId] = useState('tier:local:balanced');
+  const [testTierId, setTestTierId] = useState('');
+  const [catalog, setCatalog] = useState<PlatformCatalog | null>(null);
+  const [workspaceRoots, setWorkspaceRoots] = useState<RegistrationRootSummary[]>([]);
+  const [workspaceRootsError, setWorkspaceRootsError] = useState(false);
 
   async function refresh() {
     const next = await operations.status();
@@ -124,6 +202,51 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
     };
   }, [operations]);
 
+  useEffect(() => {
+    if (status?.phase !== 'default_tier_ready') return;
+    let active = true;
+    operations.registrationRoots().then(
+      (page) => {
+        if (!active) return;
+        setWorkspaceRoots(page.items);
+        setWorkspaceRootsError(false);
+        setWorkspaceRootId((current) =>
+          page.items.some((root) => root.root_id === current)
+            ? current
+            : (page.items[0]?.root_id ?? ''),
+        );
+      },
+      () => {
+        if (active) setWorkspaceRootsError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [operations, status?.phase]);
+
+  useEffect(() => {
+    if (status?.phase !== 'workspace_ready') return;
+    let active = true;
+    operations.catalog().then(
+      (next) => {
+        if (!active) return;
+        setCatalog(next);
+        setTestTierId((current) =>
+          next.tiers.some((tier) => tier.tier_id === current)
+            ? current
+            : next.default_tier.tier_id || (next.tiers[0]?.tier_id ?? ''),
+        );
+      },
+      () => {
+        if (active) setError('Configured Tiers could not be loaded. Try again.');
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [operations, status?.phase]);
+
   async function run(operation: () => Promise<unknown>, finish = false) {
     setPending(true);
     setError(null);
@@ -131,8 +254,12 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
       await operation();
       const next = await refresh();
       if (finish && next.phase === 'complete') await onComplete();
-    } catch {
-      setError('This setup step could not be saved. Try again.');
+    } catch (operationError) {
+      setError(
+        operationError instanceof Error
+          ? operationError.message
+          : 'This setup step could not be saved. Try again.',
+      );
     } finally {
       setPending(false);
     }
@@ -143,10 +270,12 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
     children: ReactNode,
     operation: () => Promise<unknown>,
     finish = false,
+    disabled = false,
   ) {
     return (
       <PhaseForm
         error={error}
+        disabled={disabled}
         label={label}
         onSubmit={(event) => {
           event.preventDefault();
@@ -185,11 +314,17 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
       'Save providers',
       <>
         <Field label="Provider ID" name="provider-id" onChange={setProviderId} value={providerId} />
-        <Field label="API format" name="provider-format" onChange={setFormat} value={format} />
+        <ApiFormatSelect onChange={setFormat} value={format} />
         <Field label="Base URL" name="base-url" onChange={setBaseUrl} value={baseUrl} />
+        {providerEndpoint(format, baseUrl) !== '' ? (
+          <p className="text-sm text-[var(--color-text-secondary)]">
+            Final endpoint:{' '}
+            <code className="break-all">{providerEndpoint(format, baseUrl)}</code>
+          </p>
+        ) : null}
         <Field
-          label="Provider credential"
-          name="provider-credential"
+          label="API Key"
+          name="api-key"
           onChange={setCredential}
           type="password"
           value={credential}
@@ -197,8 +332,8 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
         <Field label="Tier ID" name="tier-id" onChange={setTierId} value={tierId} />
         <Field label="Model" name="model" onChange={setModel} value={model} />
       </>,
-      () =>
-        operations.providers({
+      async () => {
+        const result = await operations.providers({
           expected_revision: status.server_revision,
           providers: [
             {
@@ -217,7 +352,10 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
               tier_id: tierId,
             },
           ],
-        }),
+        });
+        setDefaultTierId(tierId);
+        return result;
+      },
     );
   } else if (status.phase === 'providers_ready') {
     content = form(
@@ -244,12 +382,17 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
           onChange={setWorkspaceLabel}
           value={workspaceLabel}
         />
-        <Field
-          label="Registration root ID"
-          name="workspace-root-id"
+        <WorkspaceRootSelect
+          disabled={workspaceRoots.length === 0 || workspaceRootsError}
           onChange={setWorkspaceRootId}
+          roots={workspaceRoots}
           value={workspaceRootId}
         />
+        {workspaceRootsError ? (
+          <p className="text-sm text-[var(--color-error)]" role="alert">
+            Workspace roots are unavailable. Try again.
+          </p>
+        ) : null}
         <Field
           label="Workspace path"
           name="workspace-path"
@@ -266,21 +409,39 @@ export function InitScreen({ operations, onComplete }: InitScreenProps) {
             root_id: workspaceRootId,
           },
         }),
+      false,
+      workspaceRootId === '' || workspaceRootsError,
     );
   } else if (status.phase === 'workspace_ready') {
     content = form(
       'Test provider',
-      <Field
-        label="Test Tier ID"
-        name="test-tier-id"
-        onChange={setTestTierId}
-        value={testTierId}
-      />,
-      () =>
-        operations.test({
+      <label className="block space-y-2 text-sm font-medium">
+        <span>Test Tier</span>
+        <select
+          aria-label="Test Tier"
+          className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)] disabled:opacity-40"
+          disabled={catalog === null || catalog.tiers.length === 0}
+          onChange={(event) => {
+            setTestTierId(event.target.value);
+          }}
+          value={testTierId}
+        >
+          {catalog?.tiers.map((tier) => (
+            <option key={tier.tier_id} value={tier.tier_id}>
+              {tier.label || tier.tier_id}
+              {tier.is_default ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
+      </label>,
+      () => {
+        return operations.test({
           expected_revision: status.server_revision,
           tier_id: testTierId,
-        }),
+        });
+      },
+      false,
+      testTierId === '',
     );
   } else if (status.phase === 'probe_passed') {
     content = form(

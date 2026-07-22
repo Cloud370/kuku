@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnnotationDraft, DiffDocument, FileContent, ReviewSnapshot } from '@/api/generated';
+import { WebApiError } from '../../api/client';
 
 import { DiffViewer } from './DiffViewer';
 import { ReviewCode, ReviewRoute, type ReviewDataSource } from './ReviewRoute';
@@ -82,6 +83,16 @@ function source(snapshot = changes()): ReviewDataSource {
   };
 }
 
+function serverBusy(): WebApiError {
+  return new WebApiError(503, {
+    api_version: 1,
+    code: 'server_busy',
+    details: null,
+    message: 'review capacity is busy',
+    trace_id: 'review-service',
+  });
+}
+
 afterEach(cleanup);
 
 describe('ReviewRoute', () => {
@@ -142,6 +153,42 @@ describe('ReviewRoute', () => {
     );
     await userEvent.click(screen.getByRole('tab', { name: 'Changes' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load changes');
+  });
+
+  it('retries a transient busy response while loading a diff', async () => {
+    const snapshot = changes();
+    snapshot.entries = [
+      {
+        additions: 3,
+        binary: false,
+        deletions: 0,
+        kind: 'modified',
+        old_path: null,
+        path: 'src/lib.ts',
+        revision,
+        staged: false,
+        worktree: true,
+      },
+    ];
+    const api = source(snapshot);
+    api.diff = vi.fn().mockRejectedValueOnce(serverBusy()).mockResolvedValueOnce(diff());
+    render(
+      <ReviewRoute
+        dataSource={api}
+        mode="changes"
+        onDraftRange={vi.fn()}
+        onLeave={vi.fn()}
+        presentation="full"
+        taskId={taskId}
+        workspaceId={workspaceId}
+      />,
+    );
+
+    const changesList = await screen.findByLabelText('Workspace changes');
+    await userEvent.click(within(changesList).getByRole('button'));
+
+    expect(await screen.findByRole('button', { name: 'Select new line 18' })).toBeVisible();
+    expect(api.diff).toHaveBeenCalledTimes(2);
   });
 });
 

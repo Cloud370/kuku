@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { webApi } from '../../api/client';
 import { ContextPanel } from './ContextPanel';
+import { resolveInitialOpenSections } from './contextSections';
 import { catalogFixture, contextFixture, requestOne, taskId, workspaceId } from './testFixtures';
 
 const callbacks = {
@@ -16,11 +17,16 @@ const callbacks = {
   onOpenSectionsChange: vi.fn(),
 };
 
-function renderPanel(stagedSkillIds: string[] = [], selectedRequestId: string | null = null) {
+function renderPanel(
+  stagedSkillIds: string[] = [],
+  selectedRequestId: string | null = null,
+  refreshRevision = 0,
+) {
   return render(
     <ContextPanel
       {...callbacks}
       openSections={['skills', 'observations', 'discoverable']}
+      refreshRevision={refreshRevision}
       selectedRequestId={selectedRequestId}
       stagedSkillIds={stagedSkillIds}
       taskId={taskId}
@@ -36,6 +42,26 @@ afterEach(() => {
 });
 
 describe('ContextPanel', () => {
+  it('opens all useful sections by default while preserving saved choices', () => {
+    expect(resolveInitialOpenSections([])).toEqual([
+      'staged',
+      'skills',
+      'instructions',
+      'memory',
+      'conversation',
+      'observations',
+      'agents',
+      'discoverable',
+      'capabilities',
+      'usage',
+      'health',
+    ]);
+    expect(resolveInitialOpenSections(['usage', 'health', 'invalid'])).toEqual([
+      'usage',
+      'health',
+    ]);
+  });
+
   it('loads current and historical snapshots through the canonical client', async () => {
     const historicalRequest = contextFixture().request_history.at(0);
     if (historicalRequest === undefined) throw new Error('historical fixture is missing');
@@ -53,6 +79,9 @@ describe('ContextPanel', () => {
     const current = renderPanel();
     expect(screen.getByRole('status')).toHaveTextContent('Loading Context');
     expect(await screen.findByText('2,048 tokens')).toBeVisible();
+    expect(screen.getByLabelText('Context usage')).toHaveTextContent('25%');
+    expect(screen.getByLabelText('Cache hit rate')).toHaveTextContent('25%');
+    expect(screen.getByLabelText('Task request count')).toHaveTextContent('4');
     expect(webApi.context.current).toHaveBeenCalledWith(taskId);
     current.unmount();
 
@@ -83,6 +112,29 @@ describe('ContextPanel', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Context loaded');
     await userEvent.click(screen.getByRole('button', { name: /Remove Documentation guide/ }));
     expect(callbacks.onUnstageSkill).toHaveBeenCalledWith('skill:project:docs');
+  });
+
+  it('reloads current Context after a relevant committed task delta', async () => {
+    vi.spyOn(webApi.context, 'current').mockResolvedValue(contextFixture());
+    vi.spyOn(webApi.catalog, 'workspace').mockResolvedValue(catalogFixture());
+    const view = renderPanel();
+    await screen.findByText('2,048 tokens');
+
+    view.rerender(
+      <ContextPanel
+        {...callbacks}
+        openSections={['skills']}
+        refreshRevision={1}
+        selectedRequestId={null}
+        stagedSkillIds={[]}
+        taskId={taskId}
+        workspaceId={workspaceId}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(webApi.context.current).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('uses the fixed empty state without an accordion or phantom Staged section', async () => {

@@ -24,6 +24,12 @@ function isAuthRequired(error: unknown): error is WebApiError {
   return error instanceof WebApiError && error.code === 'auth_required';
 }
 
+const initOperations: InitOperations = {
+  ...webApi.init,
+  catalog: webApi.catalog.platform,
+  registrationRoots: webApi.workspaces.registrationRoots,
+};
+
 export function EntryGate({ renderWorkbench }: EntryGateProps) {
   useState(importFragmentCredential);
   const status = useQuery({
@@ -80,9 +86,11 @@ export function EntryGate({ renderWorkbench }: EntryGateProps) {
   }
 
   if (status.data.init.phase !== 'complete') {
-    const operations: InitOperations = webApi.init;
     return (
-      <InitScreen onComplete={async () => void (await status.refetch())} operations={operations} />
+      <InitScreen
+        onComplete={async () => void (await status.refetch())}
+        operations={initOperations}
+      />
     );
   }
 

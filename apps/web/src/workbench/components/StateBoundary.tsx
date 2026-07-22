@@ -40,7 +40,7 @@ export function StateBoundary({ children, onRetry, snapshot }: StateBoundaryProp
   }
 
   return (
-    <div className="min-h-full">
+    <div className="flex h-full min-h-0 flex-col">
       <ConnectionBanner state={snapshot.connection} />
       {children}
     </div>

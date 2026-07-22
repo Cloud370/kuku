@@ -52,6 +52,19 @@ impl SkillSelectionValidator for AcceptSkills {
                 tier_id: tier_id.to_owned(),
                 skill_ids: skill_ids.to_vec(),
             },
+            selected_skills: skill_ids
+                .iter()
+                .map(|skill_id| kuku::event::SkillContextFact {
+                    skill_id: skill_id.clone(),
+                    source: kuku::event::SourceFact {
+                        scope: kuku::event::SourceScope::Project,
+                        id: format!("source:{skill_id}"),
+                        relative_path: None,
+                    },
+                    origin: kuku::event::SkillLoadOrigin::You,
+                    content_hash: format!("sha256:{skill_id}"),
+                })
+                .collect(),
         })
     }
 }

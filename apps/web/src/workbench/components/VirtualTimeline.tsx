@@ -32,6 +32,14 @@ interface TimelineLayout {
   starts: number[];
 }
 
+function findScrollElement(root: HTMLElement | null): HTMLElement | null {
+  return (
+    root?.closest<HTMLElement>('[data-chat-scroll]') ??
+    root?.closest<HTMLElement>('main[aria-label="Chat"]') ??
+    null
+  );
+}
+
 export function VirtualTimeline<Item>({
   gapAfter,
   gapAfterIndex,
@@ -77,8 +85,7 @@ export function VirtualTimeline<Item>({
     count: virtualCount,
     estimateSize: () => 96,
     getItemKey: itemKey,
-    getScrollElement: () =>
-      rootRef.current?.closest<HTMLElement>('main[aria-label="Chat"]') ?? null,
+    getScrollElement: () => findScrollElement(rootRef.current),
     initialRect: { height: 800, width: 800 },
     overscan: 8,
     rangeExtractor: (range) => {
@@ -186,7 +193,7 @@ export function VirtualTimeline<Item>({
       rootRef.current?.querySelectorAll<HTMLElement>('[data-timeline-id]') ?? [],
     );
     const currentAnchor = anchorSnapshotRef.current;
-    const scrollElement = rootRef.current?.closest<HTMLElement>('main[aria-label="Chat"]') ?? null;
+    const scrollElement = findScrollElement(rootRef.current);
     const viewport = scrollElement?.getBoundingClientRect();
     const visibleRow =
       viewport === undefined
@@ -221,7 +228,7 @@ export function VirtualTimeline<Item>({
   };
 
   const captureLayoutAnchor = (): Anchor | null => {
-    const scrollElement = rootRef.current?.closest<HTMLElement>('main[aria-label="Chat"]') ?? null;
+    const scrollElement = findScrollElement(rootRef.current);
     const root = rootRef.current;
     if (scrollElement === null || root === null) return null;
     const viewport = scrollElement.getBoundingClientRect();
@@ -247,7 +254,7 @@ export function VirtualTimeline<Item>({
   captureScrolledAnchorRef.current = () => captureLayoutAnchor() ?? captureAnchor(false);
 
   useLayoutEffect(() => {
-    const scrollElement = rootRef.current?.closest<HTMLElement>('main[aria-label="Chat"]') ?? null;
+    const scrollElement = findScrollElement(rootRef.current);
     if (scrollElement === null) return;
     const captureScrolledAnchor = () => {
       if (pendingPrependRef.current !== null) return;
@@ -263,7 +270,7 @@ export function VirtualTimeline<Item>({
   }, [getItemId, items, measurementRevision]);
 
   useLayoutEffect(() => {
-    const scrollElement = rootRef.current?.closest<HTMLElement>('main[aria-label="Chat"]') ?? null;
+    const scrollElement = findScrollElement(rootRef.current);
     const measurementRows = Array.from(
       rootRef.current?.querySelectorAll<HTMLElement>('[data-timeline-measurement-id]') ?? [],
     );

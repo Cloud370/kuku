@@ -122,7 +122,7 @@ test('restores selected Context state after a Review file range', async ({
   expect(selectedRequest).not.toBeNull();
 
   const observations = agentContext.getByRole('button', { name: /Workspace observations/ });
-  await observations.click();
+  if ((await observations.getAttribute('aria-expanded')) !== 'true') await observations.click();
   await expect(observations).toHaveAttribute('aria-expanded', 'true');
   await agentContext.getByRole('button', { name: 'Open src/lib.rs' }).click();
 

@@ -15,6 +15,7 @@ import type {
   TaskDelta,
   TaskProjection,
   TaskStreamEvent,
+  TimelineItemProjection,
   TimelineQuery,
 } from '../api/generated';
 import { ContractDecodeError } from '../api/decode';
@@ -116,10 +117,34 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
   let draftGeneration = 0;
   let commandSequence = 0;
   let stopCommandPromise: Promise<PendingCommandResult> | null = null;
+  const resolvedInteractions = new Map<InteractionId, string>();
 
   const store = createStore<WorkbenchStoreState>((set, get) => {
+    const applyResolvedInteractions = (snapshot: WorkbenchSnapshot): WorkbenchSnapshot => {
+      const resolve = (item: TimelineItemProjection): TimelineItemProjection => {
+        if (item.type !== 'interaction') return item;
+        const choiceId = resolvedInteractions.get(item.item.interaction_id);
+        if (choiceId === undefined) return item;
+        return {
+          ...item,
+          item: { ...item.item, status: 'resolved' as const, selected_choice_id: choiceId },
+        };
+      };
+      return {
+        ...snapshot,
+        projection:
+          snapshot.projection === null
+            ? null
+            : { ...snapshot.projection, timeline: snapshot.projection.timeline.map(resolve) },
+        timelineHistory: {
+          ...snapshot.timelineHistory,
+          items: snapshot.timelineHistory.items.map(resolve),
+        },
+      };
+    };
+
     const acceptFrame = (event: TaskStreamEvent): void => {
-      const next = applyStreamEvent(get().snapshot, event);
+      const next = applyResolvedInteractions(applyStreamEvent(get().snapshot, event));
       set({ snapshot: next });
       observer?.(event.task_id, event.event);
     };
@@ -134,7 +159,7 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
       if (taskGeneration !== expectedTaskGeneration || get().snapshot.selectedTaskId !== taskId) {
         return projection;
       }
-      const snapshot = applyProjection(get().snapshot, projection);
+      const snapshot = applyResolvedInteractions(applyProjection(get().snapshot, projection));
       snapshot.localDraft =
         draftGeneration === expectedDraftGeneration ? localDraft : get().snapshot.localDraft;
       set({ snapshot });
@@ -244,12 +269,36 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
             return result;
           }
           case 'respond': {
-            const result = await api.tasks.respond(
-              pending.taskId,
-              pending.interactionId,
-              pending.body,
-            );
-            if (isCurrentCommand(get().pendingCommand, pending)) set({ pendingCommand: null });
+            let result;
+            try {
+              result = await api.tasks.respond(
+                pending.taskId,
+                pending.interactionId,
+                pending.body,
+              );
+            } catch (error) {
+              if (!(error instanceof WebApiError) || error.code !== 'stale_command') throw error;
+              const projection = await recoverProjection(pending.taskId, pending.taskGeneration);
+              if (!isCurrentCommand(get().pendingCommand, pending)) throw error;
+              result = await api.tasks.respond(pending.taskId, pending.interactionId, {
+                ...pending.body,
+                expected_task_revision: projection.task_revision,
+              });
+            }
+            if (isCurrentCommand(get().pendingCommand, pending)) {
+              resolvedInteractions.set(pending.interactionId, pending.body.choice_id);
+              const snapshot = applyResolvedInteractions(get().snapshot);
+              set({
+                snapshot: {
+                  ...snapshot,
+                  projection:
+                    snapshot.projection === null
+                      ? null
+                      : { ...snapshot.projection, task_revision: result.task_revision },
+                },
+              });
+              if (isCurrentCommand(get().pendingCommand, pending)) set({ pendingCommand: null });
+            }
             return result;
           }
         }
@@ -271,6 +320,7 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         taskGeneration += 1;
         draftGeneration += 1;
         stoppedRunId = null;
+        resolvedInteractions.clear();
         set({ snapshot: createWorkbenchSnapshot() });
       },
       setTaskError(message) {
@@ -287,6 +337,7 @@ export function createWorkbenchStore(api: WebApi = webApi): StoreApi<WorkbenchSt
         subscriptionController?.abort();
         subscriptionController = null;
         stoppedRunId = null;
+        resolvedInteractions.clear();
         const previousTaskId = get().snapshot.selectedTaskId;
         taskGeneration += 1;
         if (previousTaskId !== taskId) draftGeneration += 1;

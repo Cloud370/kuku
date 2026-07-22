@@ -58,6 +58,8 @@ export function WorkbenchController({
   const incomingRouteKind = route?.kind ?? 'latest';
   const incomingRouteTaskId = route?.kind === 'task' ? route.taskId : null;
   const [requestedRoute, setRequestedRoute] = useState<WorkbenchRoute>(route ?? { kind: 'latest' });
+  const requestedRouteRef = useRef(requestedRoute);
+  requestedRouteRef.current = requestedRoute;
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState<WorkspaceId | null>(null);
   const [catalog, setCatalog] = useState<ContextCatalog | null>(null);
@@ -88,7 +90,9 @@ export function WorkbenchController({
         if (!current) return;
         setWorkspaces(page.items);
         setWorkspaceId(
-          page.items.find((entry) => entry.is_default)?.workspace_id ??
+          (current) =>
+            current ??
+            page.items.find((entry) => entry.is_default)?.workspace_id ??
             page.items[0]?.workspace_id ??
             null,
         );
@@ -133,7 +137,7 @@ export function WorkbenchController({
             ? { kind: 'new' as const }
             : requestedRoute;
       if (!current) return;
-      setResolvedRoute(next);
+      setResolvedRoute((resolved) => (sameRoute(resolved, next) ? resolved : next));
     };
     void resolve().catch((error: unknown) => {
       if (current) store.getState().setTaskError(errorMessage(error, 'Tasks unavailable'));
@@ -157,8 +161,13 @@ export function WorkbenchController({
     void store
       .getState()
       .loadTask(taskId)
-      .then(() => {
-        if (current) unsubscribe = store.getState().subscribeTask(taskId);
+      .then((projection) => {
+        if (!current) return;
+        const currentRoute = requestedRouteRef.current;
+        if (currentRoute.kind === 'task' && currentRoute.taskId === taskId) {
+          setWorkspaceId(projection.task.workspace_id);
+        }
+        unsubscribe = store.getState().subscribeTask(taskId);
       })
       .catch((error: unknown) => {
         if (current) store.getState().setTaskError(errorMessage(error, 'Task unavailable'));
@@ -213,7 +222,9 @@ export function WorkbenchController({
       void api.catalog
         .workspace(selectedWorkspaceId, { search: query.trim().length === 0 ? null : query.trim() })
         .then((value) => {
-          if (generation === catalogSearchGeneration.current) setCatalog(value);
+          if (generation === catalogSearchGeneration.current) {
+            setCatalog((current) => ({ ...value, tiers: current?.tiers ?? value.tiers }));
+          }
         })
         .catch((error: unknown) => {
           if (generation === catalogSearchGeneration.current) {
@@ -230,6 +241,11 @@ export function WorkbenchController({
 }
 
 export type ComposerSubmit = SubmitRunInput;
+
+function sameRoute(left: WorkbenchRoute | null, right: WorkbenchRoute): boolean {
+  if (left === null || left.kind !== right.kind) return false;
+  return left.kind !== 'task' || (right.kind === 'task' && left.taskId === right.taskId);
+}
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;

@@ -175,6 +175,43 @@ fn main_execution_scope_is_stable_and_advances_with_sdk_turn_facts() {
     assert_eq!(resumed, second);
 }
 
+#[test]
+fn task_skill_fact_anchors_the_run_execution_scope() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let task_id = TaskId::parse("tsk_0123456789abcdef01234567").unwrap();
+    let workspace_id = workspace_id();
+    let run_id = RunId::parse("run_0123456789abcdef01234567").unwrap();
+    let expected = execution_scope_for_run(&[], &workspace_id, &task_id, &run_id).unwrap();
+    let skill = kuku::event::SkillLoadFact {
+        execution: expected.clone(),
+        caused_by_request_id: None,
+        skill_id: "skill:project:tdd".to_owned(),
+        source: kuku::event::SourceFact {
+            scope: kuku::event::SourceScope::Project,
+            id: "source:tdd".to_owned(),
+            relative_path: None,
+        },
+        origin: kuku::event::SkillLoadOrigin::You,
+        content_hash: "sha256:tdd".to_owned(),
+    };
+    let batch =
+        kuku::event::TaskActivityBatch::try_new(vec![kuku::event::TaskEvent::SkillLoaded(skill)])
+            .unwrap();
+    let mut store = kuku::event::EventStore::open(&path).unwrap();
+    store
+        .append(kuku::event::EventPayload::TaskLedger(
+            kuku::event::TaskLedgerRecord::Activity(batch),
+        ))
+        .unwrap();
+
+    let resumed =
+        execution_scope_for_run(&store.read_all().unwrap(), &workspace_id, &task_id, &run_id)
+            .unwrap();
+
+    assert_eq!(expected, resumed);
+}
+
 fn create(key: &str) -> CreateTaskCommand {
     CreateTaskCommand {
         workspace_id: workspace_id(),

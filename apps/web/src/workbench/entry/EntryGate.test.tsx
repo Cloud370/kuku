@@ -10,6 +10,7 @@ import type {
   ApiError,
   InitPhase,
   InitStatus,
+  PlatformCatalog,
   PlatformStatus,
   TestProviderResult,
 } from '../../api/generated';
@@ -29,6 +30,7 @@ vi.mock('../../api/client', async (importOriginal) => {
         current: vi.fn(),
       },
       platform: { status: vi.fn() },
+      catalog: { ...actual.webApi.catalog, platform: vi.fn() },
       init: {
         status: vi.fn(),
         providers: vi.fn(),
@@ -37,12 +39,44 @@ vi.mock('../../api/client', async (importOriginal) => {
         test: vi.fn(),
         complete: vi.fn(),
       },
+      workspaces: {
+        ...actual.webApi.workspaces,
+        registrationRoots: vi.fn(),
+      },
     },
   };
 });
 
 const statusMock = vi.mocked(webApi.platform.status);
 const initStatusMock = vi.mocked(webApi.init.status);
+const registrationRootsMock = vi.mocked(webApi.workspaces.registrationRoots);
+const registrationRootId = 'root_000000000000000000000000';
+const catalogMock = vi.mocked(webApi.catalog.platform);
+const catalog: PlatformCatalog = {
+  api_version: 1,
+  credentials: [],
+  default_tier: {
+    is_default: true,
+    label: 'k3',
+    model: 'k3',
+    provider: 'kimi',
+    purpose: 'General use',
+    think: null,
+    tier_id: 'k3',
+  },
+  revision: 'revision-catalog',
+  tiers: [
+    {
+      is_default: true,
+      label: 'k3',
+      model: 'k3',
+      provider: 'kimi',
+      purpose: 'General use',
+      think: null,
+      tier_id: 'k3',
+    },
+  ],
+};
 
 function apiError(code: ApiError['code']): WebApiError {
   return new WebApiError(401, {
@@ -97,16 +131,21 @@ function renderEntry(workbench: ReactNode = <p>Workbench</p>) {
 
 async function fillProviderForm(user: ReturnType<typeof userEvent.setup>) {
   await user.type(await screen.findByLabelText('Provider ID'), 'provider-local');
-  await user.type(screen.getByLabelText('API format'), 'openai');
+  await user.selectOptions(screen.getByLabelText('API format'), 'openai-responses');
   await user.type(screen.getByLabelText('Base URL'), 'http://127.0.0.1:9000');
-  await user.type(screen.getByLabelText('Provider credential'), 'provider-secret');
+  await user.type(screen.getByLabelText('API Key'), 'provider-secret');
   await user.type(screen.getByLabelText('Tier ID'), 'tier:local:balanced');
   await user.type(screen.getByLabelText('Model'), 'fixture-model');
 }
 
 describe('EntryGate', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    registrationRootsMock.mockResolvedValue({
+      api_version: 1,
+      items: [{ label: 'Current directory', root_id: registrationRootId }],
+    });
+    catalogMock.mockResolvedValue(catalog);
     history.replaceState(null, '', '/');
   });
 
@@ -179,7 +218,18 @@ describe('EntryGate', () => {
     vi.mocked(webApi.init.providers).mockResolvedValue(initStatus('providers_ready'));
     renderEntry();
 
+    const format = await screen.findByRole('combobox', { name: 'API format' });
+    expect(format).toHaveValue('');
+    expect(screen.getAllByRole('option').map((option) => option.getAttribute('value'))).toEqual([
+      '',
+      'openai-responses',
+      'openai-chat',
+      'anthropic',
+    ]);
     await fillProviderForm(user);
+    expect(screen.getByText('Final endpoint:')).toHaveTextContent(
+      'http://127.0.0.1:9000/responses',
+    );
     await user.click(screen.getByRole('button', { name: 'Save providers' }));
 
     await waitFor(() => {
@@ -191,7 +241,7 @@ describe('EntryGate', () => {
         {
           base_url: 'http://127.0.0.1:9000',
           credential: { source: 'direct_value', value: 'provider-secret' },
-          format: 'openai',
+          format: 'openai-responses',
           provider_id: 'provider-local',
         },
       ],
@@ -206,6 +256,27 @@ describe('EntryGate', () => {
       ],
     });
     expect(webApi.init.defaultTier).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText('Default Tier ID')).toHaveValue('tier:local:balanced');
+  });
+
+  it('uses the saved Tier ID as the next default Tier value', async () => {
+    const user = userEvent.setup();
+    statusMock.mockResolvedValue(platformStatus('required'));
+    initStatusMock
+      .mockResolvedValueOnce(initStatus('required'))
+      .mockResolvedValueOnce(initStatus('providers_ready'));
+    vi.mocked(webApi.init.providers).mockResolvedValue(initStatus('providers_ready'));
+    renderEntry();
+
+    await user.type(await screen.findByLabelText('Provider ID'), 'provider-local');
+    await user.selectOptions(screen.getByLabelText('API format'), 'anthropic');
+    await user.type(screen.getByLabelText('Base URL'), 'https://example.invalid');
+    await user.type(screen.getByLabelText('API Key'), 'provider-secret');
+    await user.type(screen.getByLabelText('Tier ID'), 'k3');
+    await user.type(screen.getByLabelText('Model'), 'k3');
+    await user.click(screen.getByRole('button', { name: 'Save providers' }));
+
+    expect(await screen.findByLabelText('Default Tier ID')).toHaveValue('k3');
   });
 
   it.each([
@@ -232,7 +303,7 @@ describe('EntryGate', () => {
           expected_revision: 'revision-default_tier_ready',
           label: 'kuku',
           relative_path: '.',
-          root_id: 'root:default',
+          root_id: registrationRootId,
         },
       },
       next: 'workspace_ready' as const,
@@ -240,12 +311,12 @@ describe('EntryGate', () => {
     {
       phase: 'workspace_ready' as const,
       button: 'Test provider',
-      field: 'Test Tier ID',
-      value: 'tier:local:balanced',
+      field: 'Test Tier',
+      value: 'k3',
       operation: 'test' as const,
       body: {
         expected_revision: 'revision-workspace_ready',
-        tier_id: 'tier:local:balanced',
+        tier_id: 'k3',
       },
       next: 'probe_passed' as const,
     },
@@ -269,8 +340,23 @@ describe('EntryGate', () => {
     }
     renderEntry();
 
-    await user.clear(await screen.findByLabelText(entry.field));
-    await user.type(screen.getByLabelText(entry.field), entry.value);
+    if (entry.operation === 'workspace') {
+      const root = await screen.findByRole('combobox', { name: 'Workspace Root' });
+      await waitFor(() => {
+        expect(root).toHaveValue(registrationRootId);
+      });
+    }
+    const field = await screen.findByLabelText(entry.field);
+    if (entry.operation === 'test') {
+      expect(field).toHaveRole('combobox');
+      await waitFor(() => {
+        expect(field).toHaveValue('k3');
+      });
+      expect(screen.queryByRole('option', { name: 'tier:local:balanced' })).toBeNull();
+    } else {
+      await user.clear(field);
+      await user.type(field, entry.value);
+    }
     await user.click(screen.getByRole('button', { name: entry.button }));
 
     await waitFor(() => {

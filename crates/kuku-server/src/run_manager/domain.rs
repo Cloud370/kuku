@@ -411,7 +411,7 @@ impl TaskAggregate {
                         skill_id: skill_id.clone(),
                         name: skill_id.clone(),
                         description: String::new(),
-                        loaded_by: "user".to_string(),
+                        loaded_by: "you".to_string(),
                     })
                     .collect();
                 changes.push(TaskChange::SkillsChanged {

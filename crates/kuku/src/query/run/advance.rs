@@ -3,7 +3,7 @@ use super::{
     has_permission_decision, is_inline_skill_tool, permission_candidate, permission_rule,
     persist_blocked_tool_result, requires_ordered_simple_execution, resolved_tool_available,
     run_tool_pre_hooks, PendingPermission, PendingStep, PermissionChoice, PermissionRequest,
-    QueuedToolCall, Result, Run, RunState, StreamingChunkState, UiEvent,
+    QueuedToolCall, Result, Run, RunState, UiEvent,
 };
 
 impl Run {
@@ -54,27 +54,33 @@ impl Run {
         }
     }
 
-    pub(super) async fn advance_from_streaming(
-        &mut self,
-        mut streaming: Box<StreamingChunkState>,
-    ) -> Result<Option<UiEvent>> {
+    pub(super) async fn advance_from_streaming(&mut self) -> Result<Option<UiEvent>> {
+        let RunState::Streaming(streaming) = &mut self.state else {
+            unreachable!("streaming advancement requires streaming state");
+        };
         if let Some(event) = streaming.lead_events.pop() {
-            self.state = RunState::Streaming(streaming);
             return Ok(Some(event));
         }
-        let poll = Self::poll_stream_chunk(&self.cancel_token, &mut streaming).await;
+        let poll = Self::poll_stream_chunk(&self.cancel_token, streaming).await;
         match poll {
             Err(error) => {
+                let RunState::Streaming(mut streaming) =
+                    std::mem::replace(&mut self.state, RunState::Done(None))
+                else {
+                    unreachable!("streaming state changed while polling provider");
+                };
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
                 super::stream::record_streaming_provider_error_facts(&streaming, &error)?;
                 streaming.pending.flush_runtime_logs();
                 Err(error)
             }
-            Ok(Some(event)) => {
-                self.state = RunState::Streaming(streaming);
-                Ok(Some(event))
-            }
+            Ok(Some(event)) => Ok(Some(event)),
             Ok(None) => {
+                let RunState::Streaming(mut streaming) =
+                    std::mem::replace(&mut self.state, RunState::Done(None))
+                else {
+                    unreachable!("streaming state changed while polling provider");
+                };
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
                 let step = crate::query::step::finish_streaming(*streaming).await?;
                 match step {

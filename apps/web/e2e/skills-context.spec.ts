@@ -132,7 +132,7 @@ test('keeps staged Skills distinct from agent-loaded Context facts', async ({
   await expect(page.getByText('Next Request preview', { exact: false })).toHaveCount(0);
   const skillsSection = page.getByRole('button', { name: /^Skills 2$/ });
   if ((await skillsSection.getAttribute('aria-expanded')) !== 'true') await skillsSection.click();
-  await expect(page.getByText('Loaded', { exact: true })).toBeVisible();
+  await expect(page.getByText('Loaded by You', { exact: true })).toBeVisible();
   await expect(
     page.getByText(`.agents/skills/${skillName}/SKILL.md`, { exact: false }),
   ).toBeVisible();

@@ -76,11 +76,6 @@ export function Composer({
     taskId === null ||
     !catalogReady ||
     selectedTierId === null;
-  useEffect(() => {
-    if (selectedTierId !== null && draft.tierId !== selectedTierId) {
-      onDraftChange({ ...draft, tierId: selectedTierId });
-    }
-  }, [draft, onDraftChange, selectedTierId]);
 
   const submit = async () => {
     const message = draft.text.trim();

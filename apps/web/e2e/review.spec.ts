@@ -62,7 +62,7 @@ test('preserves typed file return state and one durable idempotent mixed-note Re
 
   const context = page.getByRole('complementary', { name: 'Agent Context' });
   const observations = context.getByRole('button', { name: /Workspace observations/ });
-  await observations.click();
+  if ((await observations.getAttribute('aria-expanded')) !== 'true') await observations.click();
   const openFromContext = context.getByRole('button', { name: `Open ${unchangedPath}` });
   await expect(openFromContext).toBeVisible();
   const contextFileRequest = page.waitForRequest(
@@ -169,7 +169,13 @@ test('preserves typed file return state and one durable idempotent mixed-note Re
   expect(submitted.submission.task_revision).toBe(expectedTaskRevision + 1);
 
   await expect
-    .poll(async () => (await reviewSubmissions(request, unifiedBinary, taskId)).items.length)
+    .poll(async () => {
+      try {
+        return (await reviewSubmissions(request, unifiedBinary, taskId)).items.length;
+      } catch {
+        return -1;
+      }
+    })
     .toBe(before.items.length + 1);
   const after = await taskProjection(request, unifiedBinary, taskId);
   expect(after.review_summary.total_submissions).toBe(

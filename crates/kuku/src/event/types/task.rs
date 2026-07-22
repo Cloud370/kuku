@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::{
     ConversationId, InteractionId, ObservationFact, RequestCompleted, RequestFailed, RequestId,
     RequestSnapshot, RequestStarted, ReviewSubmissionId, ReviewSubmissionRecorded, SkillLoadFact,
-    TaskId, WorkspaceId, WorkspaceRelativePath,
+    SkillLoadOrigin, TaskId, WorkspaceId, WorkspaceRelativePath,
 };
 
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
@@ -655,6 +655,7 @@ impl TaskEvent {
 
     fn allowed_in_control(&self) -> bool {
         self.record_class() == TaskRecordClass::Control
+            || matches!(self, Self::SkillLoaded(skill) if skill.origin == SkillLoadOrigin::You)
     }
 
     fn allowed_in_activity(&self) -> bool {

@@ -4,6 +4,7 @@ import taskProjectionJson from '../api/generated/fixtures/task_projection.json';
 import type {
   ApiError,
   CreateTaskResponse,
+  InteractionProjection,
   TaskProjection,
   TaskStreamEvent,
   TimelineItemProjection,
@@ -383,6 +384,93 @@ describe('idempotent Task commands', () => {
 
     expect(tasks.stopRun).toHaveBeenCalledTimes(2);
     expect(tasks.stopRun.mock.calls[1]?.[1].expected_task_revision).toBe(5);
+  });
+
+  it('keeps a resolved interaction visible without replacing it from a stale projection', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    const interaction: InteractionProjection = {
+      interaction_id: 'int_000000000000000000000001',
+      order_key: 8,
+      prompt: 'Permission request',
+      choices: [{ choice_id: 'approve', label: 'Approve' }],
+      status: 'pending',
+      selected_choice_id: null,
+    };
+    store.setState({
+      snapshot: readySnapshot(
+        projection(taskId, 8, 4, [{ type: 'interaction', item: interaction }]),
+      ),
+    });
+    tasks.respond.mockResolvedValue({
+      api_version: 1,
+      replayed: false,
+      task_id: taskId,
+      task_revision: 5,
+    });
+    tasks.get.mockResolvedValue(projection(taskId, 7, 4));
+
+    await store.getState().respond(interaction.interaction_id, 'approve');
+
+    expect(tasks.get).not.toHaveBeenCalled();
+    expect(store.getState().snapshot.projection?.task_revision).toBe(5);
+    expect(selectTimelineItems(store.getState().snapshot)).toMatchObject([
+      {
+        type: 'interaction',
+        item: { status: 'resolved', selected_choice_id: 'approve' },
+      },
+    ]);
+  });
+
+  it('retries an interaction once with the recovered task revision', async () => {
+    const { api, tasks } = mockApi();
+    const store = createWorkbenchStore(api);
+    store.setState({ snapshot: readySnapshot() });
+    const reconciled = projection(taskId, 8, 5);
+    const currentWindow = projection(taskId, 9, 6);
+    const delayedInteraction: InteractionProjection = {
+      interaction_id: 'int_000000000000000000000001',
+      order_key: 9,
+      prompt: 'Permission request',
+      choices: [{ choice_id: 'approve', label: 'Approve' }],
+      status: 'pending',
+      selected_choice_id: null,
+    };
+    tasks.respond.mockRejectedValueOnce(apiError('stale_command'));
+    tasks.get.mockResolvedValueOnce(reconciled).mockResolvedValueOnce(currentWindow);
+    tasks.respond.mockResolvedValueOnce({
+      api_version: 1,
+      replayed: false,
+      task_id: taskId,
+      task_revision: 6,
+    });
+
+    await store.getState().respond('int_000000000000000000000001', 'approve');
+
+    expect(tasks.respond).toHaveBeenCalledTimes(2);
+    expect(tasks.respond.mock.calls[0]?.[2].expected_task_revision).toBe(4);
+    expect(tasks.respond.mock.calls[1]?.[2].expected_task_revision).toBe(5);
+    expect(tasks.respond.mock.calls[1]?.[2].idempotency_key).toBe(
+      tasks.respond.mock.calls[0]?.[2].idempotency_key,
+    );
+    expect(tasks.get).toHaveBeenCalledTimes(1);
+    store.getState().acceptFrame({
+      api_version: 1,
+      cursor: 10,
+      task_id: taskId,
+      task_revision: 7,
+      event: {
+        type: 'changes_applied',
+        changes: [{ type: 'interaction_upserted', interaction: delayedInteraction }],
+        timeline_window: { evicted_items: [], next_cursor: null },
+      },
+    });
+    expect(selectTimelineItems(store.getState().snapshot)).toMatchObject([
+      {
+        type: 'interaction',
+        item: { status: 'resolved', selected_choice_id: 'approve' },
+      },
+    ]);
   });
 });
 

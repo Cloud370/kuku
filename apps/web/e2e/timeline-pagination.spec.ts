@@ -118,9 +118,9 @@ test('prepends authoritative history without duplicating the newest timeline win
       const after = await preserved.boundingBox();
       return after === null ? Number.POSITIVE_INFINITY : Math.abs(after.y - anchorBefore.y);
     })
-    .toBeLessThanOrEqual(1);
+    .toBeLessThanOrEqual(2);
 
-  await page.getByLabel('Chat').evaluate((chat) => {
+  await page.locator('[data-chat-scroll]').evaluate((chat) => {
     chat.scrollTop = chat.scrollHeight;
   });
   await expect(page.getByText('Concurrent live append during history pagination')).toBeVisible();

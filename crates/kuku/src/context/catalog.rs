@@ -453,6 +453,7 @@ fn skill_entry(
         SkillSource::Project => (CatalogSource::Project, SourceScope::Project),
         SkillSource::Workspace => (CatalogSource::Workspace, SourceScope::Workspace),
     };
+    let source_path = definition.source_path.as_deref().map(skill_definition_path);
     CatalogEntry::new(
         CatalogKind::Skill,
         source_scope,
@@ -464,13 +465,22 @@ fn skill_entry(
             contained_path(
                 source_scope,
                 canonical_workspace_root,
-                definition.source_path.as_deref(),
+                source_path.as_deref().and_then(Path::to_str),
             ),
         ),
         &definition.hash,
         bounded_preview(&definition.name, &definition.description),
         CatalogCapabilities::selectable(),
     )
+}
+
+fn skill_definition_path(path: &str) -> std::path::PathBuf {
+    let path = Path::new(path);
+    if path.file_name().is_some_and(|name| name == "SKILL.md") {
+        path.to_owned()
+    } else {
+        path.join("SKILL.md")
+    }
 }
 
 fn agent_entry(
@@ -634,7 +644,7 @@ fn empty_revision() -> RevisionToken {
 
 #[cfg(test)]
 mod tests {
-    use super::{contained_path, CatalogSource};
+    use super::{contained_path, skill_definition_path, CatalogSource};
 
     #[test]
     fn system_and_user_paths_are_not_workspace_provenance() {
@@ -649,6 +659,18 @@ mod tests {
         assert_eq!(
             None,
             contained_path(CatalogSource::User, None, Some("skills/tdd/SKILL.md"))
+        );
+    }
+
+    #[test]
+    fn skill_definition_path_accepts_loader_directories_and_explicit_files() {
+        assert_eq!(
+            std::path::Path::new(".agents/skills/tdd/SKILL.md"),
+            skill_definition_path(".agents/skills/tdd")
+        );
+        assert_eq!(
+            std::path::Path::new(".agents/skills/tdd/SKILL.md"),
+            skill_definition_path(".agents/skills/tdd/SKILL.md")
         );
     }
 }

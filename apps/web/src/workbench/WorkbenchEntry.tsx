@@ -88,22 +88,23 @@ export function WorkbenchEntry({
                         </button>
                       </div>
                     )}
-                    <ChatTimeline
-                      loadOlder={view.loadOlder}
-                      onOpenFile={onOpenFile}
-                      onOpenRequestContext={onOpenRequestContext}
-                      onOpenReview={onOpenReview}
-                      onRespond={(selectedTaskId, interactionId, choiceId) => {
-                        void view.store.respond(interactionId, choiceId);
-                        void selectedTaskId;
-                      }}
-                      onReturnToRecent={() => {
-                        view.store.returnToRecent();
-                      }}
-                      projection={projection}
-                      timelineHistory={view.snapshot.timelineHistory}
-                      timelineItems={view.timelineItems}
-                    />
+                    <div className="min-h-0 flex-1 overflow-y-auto" data-chat-scroll>
+                      <ChatTimeline
+                        loadOlder={view.loadOlder}
+                        onOpenFile={onOpenFile}
+                        onOpenRequestContext={onOpenRequestContext}
+                        onOpenReview={onOpenReview}
+                        onRespond={(_selectedTaskId, interactionId, choiceId) => {
+                          return view.store.respond(interactionId, choiceId).then(() => undefined);
+                        }}
+                        onReturnToRecent={() => {
+                          view.store.returnToRecent();
+                        }}
+                        projection={projection}
+                        timelineHistory={view.snapshot.timelineHistory}
+                        timelineItems={view.timelineItems}
+                      />
+                    </div>
                     <Composer
                       activeRunId={projection?.active_run?.run_id ?? null}
                       catalogReady={view.catalog !== null && view.catalogError === null}

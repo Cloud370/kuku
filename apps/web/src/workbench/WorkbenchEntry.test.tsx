@@ -68,6 +68,11 @@ afterEach(() => {
 
 describe('WorkbenchEntry', () => {
   beforeEach(() => {
+    window.ResizeObserver = class implements ResizeObserver {
+      disconnect = vi.fn();
+      observe = vi.fn();
+      unobserve = vi.fn();
+    };
     window.matchMedia = vi.fn().mockImplementation(
       (query: string) =>
         ({
@@ -101,6 +106,10 @@ describe('WorkbenchEntry', () => {
     expect(screen.getByRole('complementary', { name: 'Agent Context' })).toBeVisible();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
     expect(screen.getByRole('status', { name: 'Run status' })).toBeInTheDocument();
+    const composer = screen.getByLabelText('Composer');
+    expect(composer.parentElement).toHaveClass('flex', 'h-full', 'min-h-0', 'flex-col');
+    expect(composer.previousElementSibling).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+    expect(composer.previousElementSibling).toHaveAttribute('data-chat-scroll');
   });
 
   it('renders the Context slot from the current Workbench view when provided', () => {

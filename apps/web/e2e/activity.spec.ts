@@ -67,6 +67,13 @@ test('shows ordered activity and a server-owned interaction without inventing a 
     choice: 'approve',
     status: 'resolved',
   });
+  await page.reload();
+  await page.locator('[data-chat-scroll]').evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event('scroll'));
+  });
+  await page.locator('[data-chat-scroll]').hover();
+  await page.mouse.wheel(0, 100_000);
   await expect(page.getByText('Delegated Agent', { exact: true })).toBeVisible();
   const context = await contextSnapshot(request, unifiedBinary, taskId);
   const delegated = context.sections.agents[0];

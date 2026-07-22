@@ -1,5 +1,5 @@
 import type { ContextCatalog, ContextSnapshot, SkillCatalogEntry } from '../../api/generated';
-import type { ContextSectionKey } from './ContextPanel';
+import type { ContextSectionKey } from './contextSections';
 
 export interface DiscoverableSkill extends SkillCatalogEntry {
   truth: 'Discoverable';

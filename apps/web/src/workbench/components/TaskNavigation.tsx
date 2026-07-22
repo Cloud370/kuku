@@ -1,4 +1,14 @@
-import { AlertCircle, ChevronRight, LoaderCircle, Plus, RotateCcw } from 'lucide-react';
+import {
+  AlertCircle,
+  Check,
+  ChevronRight,
+  ChevronsUpDown,
+  FolderGit2,
+  GitBranch,
+  LoaderCircle,
+  Plus,
+  RotateCcw,
+} from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
@@ -60,7 +70,22 @@ export function TaskNavigation({
   const [creating, setCreating] = useState(pendingCommand?.kind === 'create_task');
   const [dismissedCreateId, setDismissedCreateId] = useState<number | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const listGeneration = useRef(0);
+  const previousInitialWorkspaceId = useRef(initialWorkspaceId);
+  const workspaceMenu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (previousInitialWorkspaceId.current === initialWorkspaceId) return;
+    previousInitialWorkspaceId.current = initialWorkspaceId;
+    listGeneration.current += 1;
+    setLoadingMore(false);
+    setWorkspaceId(initialWorkspaceId);
+    setQuery('');
+    setDebouncedQuery('');
+    setCreating(false);
+    setWorkspaceMenuOpen(false);
+  }, [initialWorkspaceId]);
 
   useEffect(() => {
     let current = true;
@@ -136,6 +161,29 @@ export function TaskNavigation({
     !hasNonCreatePending &&
     (creating || (pendingCreate !== null && pendingCreateId !== dismissedCreateId));
   const noWorkspaces = workspacesLoaded && workspaces.length === 0;
+  const selectedWorkspace = workspaces.find((workspace) => workspace.workspace_id === workspaceId);
+
+  useEffect(() => {
+    if (!workspaceMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!workspaceMenu.current?.contains(event.target as Node)) setWorkspaceMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+    };
+  }, [workspaceMenuOpen]);
+
+  const selectWorkspace = (nextWorkspace: WorkspaceId) => {
+    listGeneration.current += 1;
+    setLoadingMore(false);
+    setWorkspaceId(nextWorkspace);
+    setQuery('');
+    setDebouncedQuery('');
+    setCreating(false);
+    setWorkspaceMenuOpen(false);
+    onWorkspaceChange(nextWorkspace);
+  };
 
   const loadMore = async (): Promise<void> => {
     if (workspaceId === null || nextCursor === null || loadingMore) return;
@@ -169,47 +217,98 @@ export function TaskNavigation({
   return (
     <aside aria-label="Task navigation" className="flex min-h-0 flex-col gap-3">
       <div className="flex items-center gap-2">
-        <label className="sr-only" htmlFor="workbench-workspace">
-          Workspace
-        </label>
-        <select
-          id="workbench-workspace"
-          aria-label="Workspace"
-          disabled={noWorkspaces || hasNonCreatePending}
-          value={workspaceId ?? ''}
-          className="h-9 min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[var(--text-sm)] text-[var(--color-text-primary)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
-          onChange={(event) => {
-            const nextWorkspace = event.currentTarget.value;
-            listGeneration.current += 1;
-            setLoadingMore(false);
-            setWorkspaceId(nextWorkspace);
-            setQuery('');
-            setDebouncedQuery('');
-            setCreating(false);
-            onWorkspaceChange(nextWorkspace);
-          }}
-        >
-          {workspaceId !== null &&
-          !workspaces.some((workspace) => workspace.workspace_id === workspaceId) ? (
-            <option value={workspaceId}>{workspaceId}</option>
+        <div className="relative min-w-0 flex-1" ref={workspaceMenu}>
+          <button
+            aria-controls="workbench-workspace-options"
+            aria-expanded={workspaceMenuOpen}
+            aria-haspopup="listbox"
+            aria-label="Workspace"
+            className="flex min-h-10 w-full min-w-0 items-center gap-2 border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-left outline-none hover:bg-[var(--color-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] disabled:opacity-40"
+            disabled={noWorkspaces || hasNonCreatePending}
+            onClick={() => {
+              setWorkspaceMenuOpen((open) => !open);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setWorkspaceMenuOpen(false);
+            }}
+            role="combobox"
+            type="button"
+          >
+            <FolderGit2 aria-hidden="true" className="shrink-0" size={16} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">
+                {selectedWorkspace?.label ?? workspaceId ?? 'Select workspace'}
+              </span>
+              <span className="flex min-w-0 items-center gap-1 text-xs text-[var(--color-text-muted)]">
+                {selectedWorkspace?.branch === null || selectedWorkspace?.branch === undefined ? (
+                  <span className="truncate">No branch</span>
+                ) : (
+                  <>
+                    <GitBranch aria-hidden="true" className="shrink-0" size={12} />
+                    <span className="truncate">{selectedWorkspace.branch}</span>
+                  </>
+                )}
+              </span>
+            </span>
+            <ChevronsUpDown aria-hidden="true" className="shrink-0" size={15} />
+          </button>
+          {workspaceMenuOpen ? (
+            <div
+              aria-label="Workspace options"
+              className="absolute left-0 right-0 z-30 mt-1 max-h-72 overflow-y-auto border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] p-1 shadow-[var(--shadow-elevated)]"
+              id="workbench-workspace-options"
+              role="listbox"
+            >
+              {workspaces.map((workspace) => {
+                const selected = workspace.workspace_id === workspaceId;
+                return (
+                  <button
+                    aria-selected={selected}
+                    className="flex w-full min-w-0 items-start gap-2 px-2 py-2 text-left hover:bg-[var(--color-surface-hover)] focus-visible:bg-[var(--color-surface-hover)] focus-visible:outline-none"
+                    key={workspace.workspace_id}
+                    onClick={() => {
+                      selectWorkspace(workspace.workspace_id);
+                    }}
+                    role="option"
+                    type="button"
+                  >
+                    <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                      {selected ? <Check aria-hidden="true" size={14} /> : null}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 break-words text-sm font-medium">
+                          {workspace.label}
+                        </span>
+                        {workspace.is_default ? (
+                          <span className="shrink-0 text-xs text-[var(--color-accent)]">
+                            Default
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="mt-0.5 block break-all text-xs text-[var(--color-text-muted)]">
+                        {workspace.branch ?? 'No branch'} · {workspace.availability} ·{' '}
+                        {workspace.workspace_id}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           ) : null}
-          {workspaces.map((workspace) => (
-            <option key={workspace.workspace_id} value={workspace.workspace_id}>
-              {workspace.label}
-            </option>
-          ))}
-        </select>
+        </div>
         <button
+          aria-label="New Task"
           type="button"
           disabled={noWorkspaces || hasNonCreatePending}
-          className="inline-flex h-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 text-[var(--text-xs)] font-medium text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+          className="inline-flex size-10 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
           onClick={() => {
             setDismissedCreateId(null);
             setCreating(true);
           }}
+          title="New Task"
         >
-          <Plus aria-hidden="true" className="mr-1.5 size-4" />
-          New Task
+          <Plus aria-hidden="true" className="size-4" />
         </button>
       </div>
 

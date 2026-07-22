@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { expect, within } from 'storybook/test';
 
 import type { ContextSnapshot } from '../../api/generated';
-import { ContextPanel, type ContextSectionKey } from './ContextPanel';
+import { ContextPanel } from './ContextPanel';
+import type { ContextSectionKey } from './contextSections';
 import { defaultOpenSections } from './contextSelectors';
 import {
   catalogFixture,

@@ -52,6 +52,26 @@ source = "github"
 channel = "stable"
 "#;
 
+#[test]
+fn provider_endpoints_normalize_the_selected_wire_format() {
+    assert_eq!(
+        ProviderFormat::Anthropic.endpoint_url("https://api.example/v1"),
+        "https://api.example/v1/messages"
+    );
+    assert_eq!(
+        ProviderFormat::Anthropic.endpoint_url("https://api.example"),
+        "https://api.example/v1/messages"
+    );
+    assert_eq!(
+        ProviderFormat::OpenAiChat.endpoint_url("https://api.example/v1/"),
+        "https://api.example/v1/chat/completions"
+    );
+    assert_eq!(
+        ProviderFormat::OpenAiResponses.endpoint_url("https://api.example/v1"),
+        "https://api.example/v1/responses"
+    );
+}
+
 // ── set_value tests ──
 
 #[test]

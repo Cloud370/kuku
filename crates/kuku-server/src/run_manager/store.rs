@@ -223,6 +223,18 @@ impl TaskCommandService {
             .validate(workspace_id, &command.tier_id, &command.skill_ids)?;
         let reservation = self.queue.clone().reserve()?;
         let run_id = kuku::event::RunId::try_new().map_err(|_| DomainError::StorageExhausted)?;
+        let execution = kuku::event::task_execution_scope(
+            &self
+                .repository
+                .event_store(&command.task_id)?
+                .read_all()
+                .map_err(|_| DomainError::LedgerCorrupt)?,
+            workspace_id,
+            &command.task_id,
+            &run_id,
+            "main",
+        )
+        .map_err(|_| DomainError::StorageExhausted)?;
         let next_revision = command
             .expected_task_revision
             .checked_next()
@@ -236,54 +248,61 @@ impl TaskCommandService {
         )
         .map_err(|_| DomainError::LedgerCorrupt)?;
         let started_at = current_timestamp()?;
-        let transaction = TaskTransaction::try_new(
-            next_revision,
-            receipt,
-            vec![
-                TaskEvent::MessageAppended {
-                    message: MessageFact {
-                        message_id: format!("msg_{}", run_id.as_str()),
-                        task_id: command.task_id.clone(),
-                        run_id: Some(run_id.clone()),
-                        role: MessageRoleFact::User,
-                        text: command.message,
-                        finalized: true,
-                        request_ids: Vec::new(),
-                        file_references: Vec::new(),
-                    },
+        let mut events = vec![
+            TaskEvent::MessageAppended {
+                message: MessageFact {
+                    message_id: format!("msg_{}", run_id.as_str()),
+                    task_id: command.task_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    role: MessageRoleFact::User,
+                    text: command.message,
+                    finalized: true,
+                    request_ids: Vec::new(),
+                    file_references: Vec::new(),
                 },
-                TaskEvent::MessageAppended {
-                    message: MessageFact {
-                        message_id: format!("msg_agent_{}", run_id.as_str()),
-                        task_id: command.task_id.clone(),
-                        run_id: Some(run_id.clone()),
-                        role: MessageRoleFact::Agent,
-                        text: String::new(),
-                        finalized: false,
-                        request_ids: Vec::new(),
-                        file_references: Vec::new(),
-                    },
+            },
+            TaskEvent::MessageAppended {
+                message: MessageFact {
+                    message_id: format!("msg_agent_{}", run_id.as_str()),
+                    task_id: command.task_id.clone(),
+                    run_id: Some(run_id.clone()),
+                    role: MessageRoleFact::Agent,
+                    text: String::new(),
+                    finalized: false,
+                    request_ids: Vec::new(),
+                    file_references: Vec::new(),
                 },
-                TaskEvent::SkillsChanged {
-                    selection: validated.selection,
-                },
-                TaskEvent::RunQueued {
-                    run: RunFact {
-                        run_id: run_id.clone(),
-                        task_id: command.task_id.clone(),
-                        state: RunState::Queued,
-                        started_at,
-                        finished_at: None,
-                        summary: None,
-                        warnings: Vec::new(),
-                        checks: None,
-                        metrics: None,
-                        workspace_changes: None,
-                    },
-                },
-            ],
-        )
-        .map_err(|_| DomainError::LedgerCorrupt)?;
+            },
+            TaskEvent::SkillsChanged {
+                selection: validated.selection,
+            },
+        ];
+        events.extend(validated.selected_skills.into_iter().map(|skill| {
+            TaskEvent::SkillLoaded(kuku::event::SkillLoadFact {
+                execution: execution.clone(),
+                caused_by_request_id: None,
+                skill_id: skill.skill_id,
+                source: skill.source,
+                origin: skill.origin,
+                content_hash: skill.content_hash,
+            })
+        }));
+        events.push(TaskEvent::RunQueued {
+            run: RunFact {
+                run_id: run_id.clone(),
+                task_id: command.task_id.clone(),
+                state: RunState::Queued,
+                started_at,
+                finished_at: None,
+                summary: None,
+                warnings: Vec::new(),
+                checks: None,
+                metrics: None,
+                workspace_changes: None,
+            },
+        });
+        let transaction = TaskTransaction::try_new(next_revision, receipt, events)
+            .map_err(|_| DomainError::LedgerCorrupt)?;
         self.append_submission(
             &command.task_id,
             &command.idempotency_key,

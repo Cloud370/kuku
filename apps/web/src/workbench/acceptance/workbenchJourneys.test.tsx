@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,12 +53,24 @@ describe('Workbench journeys', () => {
     );
 
     const message = await screen.findByRole('textbox', { name: 'Message' });
-    await user.type(message, 'inspect workspace');
+    await waitFor(() => {
+      expect(message).toBeEnabled();
+    });
+    expect(message).toBeInTheDocument();
+    message.focus();
+    await user.type(message, 'inspect workspace', { skipClick: true });
+    expect(message).toHaveValue('inspect workspace');
     await user.click(screen.getByRole('button', { name: 'Add Skill' }));
+    expect(message).toHaveValue('inspect workspace');
     await user.click(screen.getByRole('option', { name: 'rust-review' }));
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(message).toHaveValue('inspect workspace');
+    const send = screen.getByRole('button', { name: 'Send' });
+    expect(send).toBeEnabled();
+    await user.click(send);
 
-    expect(server.submitBodies).toHaveLength(1);
+    await waitFor(() => {
+      expect(server.submitBodies).toHaveLength(1);
+    });
     expect(server.submitBodies[0]).toMatchObject({
       message: 'inspect workspace',
       skill_ids: ['skill:project:rust-review'],

@@ -20,7 +20,10 @@ export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunSta
   const completion = run?.completion ?? null;
   const active = ['queued', 'running', 'needs_attention', 'stopping'].includes(taskState);
   return (
-    <section className="border-b border-[var(--color-border)] px-4 py-3" aria-label="Run status">
+    <section
+      aria-label="Run status"
+      className="h-24 overflow-hidden border-b border-[var(--color-border)] px-4 py-3"
+    >
       <div className="flex items-center gap-2 text-sm font-medium">
         {taskState === 'needs_attention' || taskState === 'failed' ? (
           <AlertCircle aria-hidden="true" size={16} />
@@ -38,30 +41,38 @@ export function RunStatusBanner({ run, taskId, taskState, onOpenReview }: RunSta
         {label(taskState)}
       </div>
       {completion !== null ? (
-        <div className="mt-3 space-y-2 text-sm">
-          <p>{completion.summary}</p>
-          <p className="text-xs text-[var(--color-text-secondary)]">
-            {completion.checks === null
-              ? 'Checks unavailable'
-              : `${String(completion.checks.filter((check) => check.passed).length)} of ${String(completion.checks.length)} checks passed`}
+        <div className="mt-2 min-w-0 text-sm">
+          <p className="overflow-hidden text-ellipsis whitespace-nowrap" title={completion.summary}>
+            {completion.summary}
           </p>
-          {completion.workspace_changes === null ? (
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              Workspace changes unavailable
+          <div className="mt-1 grid min-w-0 grid-cols-2 gap-3 text-xs text-[var(--color-text-secondary)]">
+            <p className="overflow-hidden text-ellipsis whitespace-nowrap">
+              {completion.checks === null
+                ? 'Checks unavailable'
+                : `${String(completion.checks.filter((check) => check.passed).length)} of ${String(completion.checks.length)} checks passed`}
             </p>
-          ) : (
-            <button
-              className="text-xs font-medium text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
-              onClick={() => {
-                onOpenReview(taskId);
-              }}
-              type="button"
-            >
-              View changes
-            </button>
-          )}
+            {completion.workspace_changes === null ? (
+              <p className="overflow-hidden text-ellipsis whitespace-nowrap">
+                Workspace changes unavailable
+              </p>
+            ) : (
+              <button
+                className="justify-self-start font-medium text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+                onClick={() => {
+                  onOpenReview(taskId);
+                }}
+                type="button"
+              >
+                View changes
+              </button>
+            )}
+          </div>
         </div>
-      ) : null}
+      ) : run === null ? null : (
+        <p className="mt-2 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-[var(--color-text-secondary)]">
+          Run in progress
+        </p>
+      )}
     </section>
   );
 }

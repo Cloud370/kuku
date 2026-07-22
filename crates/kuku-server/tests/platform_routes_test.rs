@@ -14,7 +14,7 @@ fn bearer(request: wreq::RequestBuilder) -> wreq::RequestBuilder {
 }
 
 #[tokio::test]
-async fn init_gate_allows_status_init_and_registration_roots_only() {
+async fn init_gate_allows_status_init_registration_roots_and_catalog() {
     let server = common::TestServer::start_unconfigured().await;
     let client = wreq::Client::new();
 
@@ -43,6 +43,14 @@ async fn init_gate_allows_status_init_and_registration_roots_only() {
     let roots_body: serde_json::Value = roots.json().await.unwrap();
     assert!(roots_body.to_string().contains("root_"));
     assert!(!roots_body.to_string().contains("\"path\""));
+
+    let catalog = bearer(client.get(format!("{}/api/v1/catalog", server.base_url)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, catalog.status());
+    let catalog_body: serde_json::Value = catalog.json().await.unwrap();
+    assert!(catalog_body["tiers"].is_array());
 
     let settings = bearer(client.get(format!("{}/api/v1/settings", server.base_url)))
         .send()

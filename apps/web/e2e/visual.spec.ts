@@ -112,7 +112,7 @@ for (const width of [360, 768, 1440]) {
       width,
     });
     await page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}`);
-    await expect(page.getByLabel('Chat')).toBeVisible();
+    await expect(page.getByRole('main', { name: 'Chat' })).toBeVisible();
     await capture(page, `workbench-populated-${String(width)}.png`);
     await context.close();
   });
@@ -142,10 +142,10 @@ test('captures loading, empty, transport error, and Needs Attention Workbench st
 
   const empty = await newVisualPage(browser, unifiedBinary);
   await empty.page.goto(`${unifiedBinary.baseUrl}/tasks/${encodeURIComponent(taskId)}`);
-  await empty.page.getByRole('combobox', { name: 'Workspace' }).selectOption({
-    label: 'Plain fixture',
-  });
+  await empty.page.getByRole('combobox', { name: 'Workspace' }).click();
+  await empty.page.getByRole('option', { name: /Plain fixture/u }).click();
   await expect(empty.page.getByText('No Tasks yet')).toBeVisible();
+  await expect(empty.page.getByText('Choose a Task to start chatting.')).toBeVisible();
   await capture(empty.page, 'workbench-empty.png');
   await empty.context.close();
 

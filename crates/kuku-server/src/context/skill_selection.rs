@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::run_manager::{DomainError, SkillSelectionValidator, ValidatedSkillSelection};
-use kuku::event::{SkillsChangedFact, WorkspaceId};
+use kuku::event::{SkillContextFact, SkillLoadOrigin, SkillsChangedFact, WorkspaceId};
 
 use super::catalog_contract::CatalogEntries;
 
@@ -64,22 +64,30 @@ impl<'a> SubmissionContextBuilder<'a> {
             return Err(DomainError::InvalidRequest);
         }
         let mut unique = BTreeSet::new();
+        let mut selected_skills = Vec::with_capacity(skill_ids.len());
         for skill_id in skill_ids {
-            if !unique.insert(skill_id.as_str())
-                || !self
-                    .catalog
-                    .skills
-                    .iter()
-                    .any(|entry| entry.id == *skill_id && entry.capabilities.selectable)
-            {
+            if !unique.insert(skill_id.as_str()) {
                 return Err(DomainError::InvalidRequest);
             }
+            let entry = self
+                .catalog
+                .skills
+                .iter()
+                .find(|entry| entry.id == *skill_id && entry.capabilities.selectable)
+                .ok_or(DomainError::InvalidRequest)?;
+            selected_skills.push(SkillContextFact {
+                skill_id: entry.id.clone(),
+                source: entry.source.clone(),
+                origin: SkillLoadOrigin::You,
+                content_hash: entry.content_hash.clone(),
+            });
         }
         Ok(ValidatedSkillSelection {
             selection: SkillsChangedFact {
                 tier_id: tier_id.to_owned(),
                 skill_ids: skill_ids.to_vec(),
             },
+            selected_skills,
         })
     }
 }

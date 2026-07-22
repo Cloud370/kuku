@@ -13,7 +13,7 @@ function timelineId(item: TimelineItemProjection): string {
 }
 
 async function scrollToHistoryGap(page: Page): Promise<void> {
-  const chat = page.getByLabel('Chat');
+  const chat = page.locator('[data-chat-scroll]');
   const returnRecent = page.getByRole('button', { name: 'Return to recent messages' });
   for (let attempt = 0; attempt < 100 && (await returnRecent.count()) === 0; attempt += 1) {
     const advanced = await chat.evaluate((element) => {

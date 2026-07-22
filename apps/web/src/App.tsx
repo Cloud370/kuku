@@ -12,7 +12,11 @@ import {
 
 import { webApi } from './api/client';
 import { AgentThreadDialog } from './features/context/AgentThreadDialog';
-import { ContextPanel, type ContextSectionKey } from './features/context/ContextPanel';
+import { ContextPanel } from './features/context/ContextPanel';
+import {
+  resolveInitialOpenSections,
+  type ContextSectionKey,
+} from './features/context/contextSections';
 import {
   createExperienceSlots,
   type ExperienceScope,
@@ -52,6 +56,7 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
   const queryClient = useQueryClient();
   const { taskId } = useParams<{ taskId: string }>();
   const scopeRef = useRef<ExperienceScope | null>(null);
+  const [contextRefreshRevision, setContextRefreshRevision] = useState(0);
   const initialDraft = useMemo(
     () => (kind === 'new' ? guideDraftFromLocationState(location.state) : undefined),
     [kind, location.state],
@@ -73,6 +78,7 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
         },
         invalidateTaskQuery: (changedTaskId, query) => {
           void queryClient.invalidateQueries({ queryKey: [query, changedTaskId] });
+          if (query === 'context') setContextRefreshRevision((revision) => revision + 1);
         },
         presentationStore,
         readPresentation: (selectedTaskId) => presentationStore.read(selectedTaskId),
@@ -124,6 +130,7 @@ function WorkbenchRouteView({ kind = 'latest' }: { kind?: WorkbenchRoute['kind']
               };
         return (
           <TaskContextSlot
+            contextRefreshRevision={contextRefreshRevision}
             key={view.snapshot.selectedTaskId ?? 'no-task'}
             onOpenFile={experience.context.onOpenFile}
             onScopeChange={(scope) => {
@@ -147,10 +154,12 @@ function ContextUnavailable() {
 }
 
 function TaskContextSlot({
+  contextRefreshRevision,
   onOpenFile,
   onScopeChange,
   view,
 }: {
+  contextRefreshRevision: number;
   onOpenFile: (workspaceId: string, relativePath: string) => void;
   onScopeChange: (scope: ExperienceScope | null) => void;
   view: WorkbenchControllerView;
@@ -163,7 +172,7 @@ function TaskContextSlot({
   const [openSections, setOpenSections] = useState<ContextSectionKey[]>(() =>
     taskId === null
       ? []
-      : presentationStore.read(taskId).openContextSections.filter(isContextSectionKey),
+      : resolveInitialOpenSections(presentationStore.read(taskId).openContextSections),
   );
   const selectedRequestId = searchParams.get('request');
   const selectedAgentId = searchParams.get('agent');
@@ -219,6 +228,7 @@ function TaskContextSlot({
           });
         }}
         openSections={openSections}
+        refreshRevision={contextRefreshRevision}
         selectedRequestId={selectedRequestId}
         stagedSkillIds={view.snapshot.localDraft.skillIds}
         taskId={taskId}
@@ -345,22 +355,6 @@ function ReviewRouteView() {
       </aside>
     </main>
   );
-}
-
-function isContextSectionKey(value: string): value is ContextSectionKey {
-  return [
-    'staged',
-    'skills',
-    'instructions',
-    'memory',
-    'conversation',
-    'observations',
-    'agents',
-    'discoverable',
-    'capabilities',
-    'usage',
-    'health',
-  ].includes(value);
 }
 
 function reviewRouteState(value: unknown): ReviewFileRouteState | null {

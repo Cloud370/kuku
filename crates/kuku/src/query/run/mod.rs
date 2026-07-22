@@ -203,17 +203,20 @@ impl Run {
                 }
             }
 
+            if matches!(&self.state, RunState::Streaming(_)) {
+                if let Some(event) = self.advance_from_streaming().await? {
+                    return Ok(Some(self.defer_runtime_log_if_needed(event)));
+                }
+                continue;
+            }
+
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
                         return Ok(Some(self.defer_runtime_log_if_needed(event)));
                     }
                 }
-                RunState::Streaming(streaming) => {
-                    if let Some(event) = self.advance_from_streaming(streaming).await? {
-                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
-                    }
-                }
+                RunState::Streaming(_) => unreachable!("streaming state advanced in place"),
                 RunState::WaitingForPermission(waiting) => {
                     let request = waiting.request.clone();
                     self.state = RunState::WaitingForPermission(waiting);

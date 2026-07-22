@@ -17,6 +17,7 @@ import { FileSearch } from './FileSearch';
 import { FileViewer } from './FileViewer';
 import { resolveReviewLanguage } from './reviewLanguage';
 import { ReviewModeTabs, type ReviewMode } from './ReviewModeTabs';
+import { retryReviewRead } from './retryReviewRead';
 
 type ReviewOperation = 'changes' | 'diff' | 'file' | 'search' | 'tree';
 export type ReviewDataSource = {
@@ -66,7 +67,9 @@ export function ReviewRoute({
     async (path: string) => {
       setFileState({ kind: 'loading' });
       try {
-        const value = await dataSource.file(workspaceId, { end_line: 2000, path, start_line: 1 });
+        const value = await retryReviewRead(() =>
+          dataSource.file(workspaceId, { end_line: 2000, path, start_line: 1 }),
+        );
         setFileState({ kind: 'ready', value });
       } catch {
         setFileState({ kind: 'error' });
@@ -83,8 +86,7 @@ export function ReviewRoute({
     if (activeMode !== 'changes') return;
     let current = true;
     setChangesState({ kind: 'loading' });
-    void dataSource
-      .changes(workspaceId, { cursor: null, limit: 100 })
+    void retryReviewRead(() => dataSource.changes(workspaceId, { cursor: null, limit: 100 }))
       .then((value) => {
         if (current) setChangesState({ kind: 'ready', value });
       })
@@ -104,12 +106,14 @@ export function ReviewRoute({
   async function openDiff(entry: ChangeEntry) {
     setDiffState({ kind: 'loading' });
     try {
-      const value = await dataSource.diff(workspaceId, {
-        cursor: null,
-        limit: 4000,
-        path: entry.path,
-        revision: entry.revision,
-      });
+      const value = await retryReviewRead(() =>
+        dataSource.diff(workspaceId, {
+          cursor: null,
+          limit: 4000,
+          path: entry.path,
+          revision: entry.revision,
+        }),
+      );
       setDiffState({ kind: 'ready', value });
     } catch {
       setDiffState({ kind: 'error' });
@@ -119,7 +123,9 @@ export function ReviewRoute({
   async function loadMoreChanges(cursor: string) {
     if (changesState.kind !== 'ready') return;
     try {
-      const page = await dataSource.changes(workspaceId, { cursor, limit: 100 });
+      const page = await retryReviewRead(() =>
+        dataSource.changes(workspaceId, { cursor, limit: 100 }),
+      );
       if (page.revision !== changesState.value.revision) {
         setChangesState({ kind: 'error' });
         return;
@@ -140,11 +146,13 @@ export function ReviewRoute({
   async function loadMoreFile(nextStartLine: number) {
     if (fileState.kind !== 'ready') return;
     try {
-      const page = await dataSource.file(workspaceId, {
-        end_line: nextStartLine + 1999,
-        path: fileState.value.path,
-        start_line: nextStartLine,
-      });
+      const page = await retryReviewRead(() =>
+        dataSource.file(workspaceId, {
+          end_line: nextStartLine + 1999,
+          path: fileState.value.path,
+          start_line: nextStartLine,
+        }),
+      );
       if (page.revision !== fileState.value.revision || page.text === null) {
         setFileState({ kind: 'error' });
         return;
@@ -168,12 +176,14 @@ export function ReviewRoute({
   async function loadMoreDiff(cursor: string) {
     if (diffState.kind !== 'ready') return;
     try {
-      const page = await dataSource.diff(workspaceId, {
-        cursor,
-        limit: 4000,
-        path: diffState.value.path,
-        revision: diffState.value.revision,
-      });
+      const page = await retryReviewRead(() =>
+        dataSource.diff(workspaceId, {
+          cursor,
+          limit: 4000,
+          path: diffState.value.path,
+          revision: diffState.value.revision,
+        }),
+      );
       if (page.revision !== diffState.value.revision) {
         setDiffState({ kind: 'error' });
         return;

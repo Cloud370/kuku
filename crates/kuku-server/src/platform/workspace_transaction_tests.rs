@@ -144,3 +144,56 @@ async fn task_query_rejects_a_replaced_registered_workspace_root() {
 
     assert_eq!(error.code(), crate::api::ApiErrorCode::WorkspaceUnavailable);
 }
+
+#[tokio::test]
+async fn registration_allows_the_active_root_and_restores_it_after_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let revision = ServerRevisionCoordinator::open(home.path());
+    let roots = RegistrationRootRegistry::from_server_config(
+        home.path(),
+        vec![RegistrationRootSpec {
+            label: "Projects".to_owned(),
+            path: allowed.path().to_owned(),
+        }],
+    )
+    .unwrap();
+    let registry = WorkspaceRegistry::open(
+        home.path(),
+        roots,
+        Arc::new(UnusedUsage),
+        Arc::clone(&revision),
+    )
+    .unwrap();
+    let root_id = registry.registration_roots().list()[0].root_id.clone();
+    let registered = registry
+        .register(RegisterWorkspaceRequest {
+            root_id,
+            relative_path: ".".to_owned(),
+            label: "Workspace".to_owned(),
+            expected_revision: registry.revision().await.unwrap(),
+        })
+        .await
+        .unwrap();
+
+    assert!(registry.capability(&registered.workspace_id).is_ok());
+    assert!(registry
+        .capability(&registered.workspace_id)
+        .unwrap()
+        .resolve(".")
+        .is_err());
+
+    let restored_roots = RegistrationRootRegistry::from_server_config(
+        home.path(),
+        vec![RegistrationRootSpec {
+            label: "Projects".to_owned(),
+            path: allowed.path().to_owned(),
+        }],
+    )
+    .unwrap();
+    let restored =
+        WorkspaceRegistry::open(home.path(), restored_roots, Arc::new(UnusedUsage), revision)
+            .unwrap();
+
+    assert!(restored.capability(&registered.workspace_id).is_ok());
+}

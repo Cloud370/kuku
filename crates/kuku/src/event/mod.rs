@@ -56,6 +56,23 @@ pub fn task_execution_scope(
     }) {
         return Ok(scope);
     }
+    if let Some(scope) = events.iter().rev().find_map(|event| {
+        let EventPayload::TaskLedger(record) = &event.payload else {
+            return None;
+        };
+        let events = match record {
+            TaskLedgerRecord::Control(transaction) => transaction.events(),
+            TaskLedgerRecord::Activity(batch) => batch.events(),
+        };
+        events.iter().rev().find_map(|event| match event {
+            TaskEvent::SkillLoaded(skill) if &skill.execution.run_id == run_id => {
+                Some(skill.execution.clone())
+            }
+            _ => None,
+        })
+    }) {
+        return Ok(scope);
+    }
     Ok(ExecutionScope {
         workspace_id: workspace_id.clone(),
         task_id: task_id.clone(),

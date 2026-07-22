@@ -130,6 +130,46 @@ describe('ChatTimeline', () => {
     expect(onRespond).toHaveBeenCalledWith(taskId, 'int_000000000000000000000001', 'allow');
   });
 
+  it('shows a stable active-run status without exposing an opaque run ID', () => {
+    const value = projection();
+    value.task.state = 'running';
+    value.active_run = {
+      completion: null,
+      finished_at: null,
+      run_id: 'run_000000000000000000000001',
+      started_at: '2026-07-18T00:00:00Z',
+      state: 'running',
+    };
+
+    render(<ChatTimeline {...props({ projection: value })} />);
+
+    expect(screen.getByText('Run in progress')).toBeVisible();
+    expect(screen.queryByText('run_000000000000000000000001')).toBeNull();
+  });
+
+  it('marks an interaction resolved only after its response is accepted', async () => {
+    const user = userEvent.setup();
+    const onRespond = vi.fn().mockResolvedValue(undefined);
+    const items = [interaction()];
+    render(<ChatTimeline {...props({ onRespond, projection: projection(items), timelineItems: items })} />);
+
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByText('Resolved')).toBeVisible();
+  });
+
+  it('keeps an interaction pending when its response is rejected', async () => {
+    const user = userEvent.setup();
+    const onRespond = vi.fn().mockRejectedValue(new Error('offline'));
+    const items = [interaction()];
+    render(<ChatTimeline {...props({ onRespond, projection: projection(items), timelineItems: items })} />);
+
+    await user.click(screen.getByRole('button', { name: 'Allow' }));
+
+    expect(await screen.findByRole('button', { name: 'Allow' })).toBeEnabled();
+    expect(screen.queryByText('Resolved')).toBeNull();
+  });
+
   it('does not invent a delegated Agent thread action without a canonical identity', () => {
     const items = [activity('delegated_agent')];
     render(<ChatTimeline {...props({ projection: projection(items), timelineItems: items })} />);
@@ -241,6 +281,31 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('Checks unavailable')).toBeVisible();
     expect(screen.getByText('Workspace changes unavailable')).toBeVisible();
     expect(screen.queryByText('0 files')).toBeNull();
+  });
+
+  it('preserves received agent text when a provider stream fails', () => {
+    const items = [message('partial-response', 'Partial response')];
+    const value = projection(items);
+    value.task.state = 'failed';
+    value.latest_run = {
+      completion: {
+        checks: null,
+        metrics: null,
+        summary: 'provider stream ended before message_stop',
+        warnings: [],
+        workspace_changes: null,
+      },
+      finished_at: '2026-07-18T00:01:00Z',
+      run_id: 'run_000000000000000000000001',
+      started_at: '2026-07-18T00:00:00Z',
+      state: 'failed',
+    };
+
+    render(<ChatTimeline {...props({ projection: value, timelineItems: items })} />);
+
+    expect(screen.getByText('Failed')).toBeVisible();
+    expect(screen.getByText('provider stream ended before message_stop')).toBeVisible();
+    expect(screen.getByText('Partial response')).toBeVisible();
   });
 
   it('loads earlier messages, disables while loading, and hides at the beginning', async () => {

@@ -31,6 +31,12 @@ function setViewport(width: number, height = 900) {
   });
 }
 
+class TestResizeObserver implements ResizeObserver {
+  disconnect = vi.fn();
+  observe = vi.fn();
+  unobserve = vi.fn();
+}
+
 function projection(): TaskProjection {
   return structuredClone(taskProjectionJson) as TaskProjection;
 }
@@ -81,7 +87,18 @@ afterEach(() => {
 
 describe('WorkbenchShell', () => {
   beforeEach(() => {
+    window.ResizeObserver = TestResizeObserver;
+    window.localStorage.clear();
     setViewport(1440);
+  });
+
+  it('exposes persistent resize handles between all three desktop columns', () => {
+    renderAt(1440);
+
+    expect(screen.getByRole('separator', { name: 'Resize Tasks and Chat' })).toBeVisible();
+    expect(
+      screen.getByRole('separator', { name: 'Resize Chat and Agent Context' }),
+    ).toBeVisible();
   });
 
   it.each([768, 1440])(

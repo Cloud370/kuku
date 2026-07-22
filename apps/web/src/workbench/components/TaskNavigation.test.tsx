@@ -110,6 +110,51 @@ function navigationProps(api: WebApi, commands: TaskNavigationCommands): TaskNav
 }
 
 describe('TaskNavigation', () => {
+  it('follows Workspace prop changes and loads that Workspace Task list', async () => {
+    const { api, list } = setupApi();
+    api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
+      api_version: 1,
+      items: [
+        {
+          availability: 'available',
+          branch: 'main',
+          is_default: true,
+          label: 'Workspace A',
+          workspace_id: workspaceId,
+        },
+        {
+          availability: 'available',
+          branch: 'feature/docs',
+          is_default: false,
+          label: 'Workspace B',
+          workspace_id: otherWorkspaceId,
+        },
+      ],
+      server_revision: 'rev_1',
+    });
+    list.mockImplementation((query) =>
+      Promise.resolve(
+        query.workspace_id === otherWorkspaceId
+          ? taskPage([taskForWorkspace('Task B', otherWorkspaceId)])
+          : taskPage([task('Task A', 'completed')]),
+      ),
+    );
+    const props = navigationProps(api, setupCommands());
+    const { rerender } = render(<TaskNavigation {...props} />);
+
+    expect(await screen.findByRole('button', { name: 'Task A' })).toBeVisible();
+    rerender(<TaskNavigation {...props} initialWorkspaceId={otherWorkspaceId} />);
+
+    expect(await screen.findByRole('button', { name: 'Task B' })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('Workspace B');
+    expect(list).toHaveBeenLastCalledWith({
+      workspace_id: otherWorkspaceId,
+      search: null,
+      limit: 100,
+      cursor: null,
+    });
+  });
+
   it.each(['submit_run', 'stop_run', 'respond'] as const)(
     'does not open Task creation while a %s command is pending',
     async (kind) => {
@@ -168,8 +213,40 @@ describe('TaskNavigation', () => {
 
     expect(await screen.findByRole('button', { name: 'Retry Task creation' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Cancel Task creation' })).toBeDisabled();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), otherWorkspaceId);
+    await user.click(screen.getByRole('combobox', { name: 'Workspace' }));
+    await user.click(screen.getByRole('option', { name: /Workspace B/ }));
     expect(screen.getByRole('button', { name: 'Retry Task creation' })).toBeVisible();
+  });
+
+  it('shows complete workspace metadata in the custom picker', async () => {
+    const user = userEvent.setup();
+    const { api, list } = setupApi();
+    api.workspaces.list = vi.fn<WebApi['workspaces']['list']>().mockResolvedValue({
+      api_version: 1,
+      items: [
+        {
+          availability: 'available',
+          branch: 'feature/workbench',
+          is_default: true,
+          label: 'Workspace A',
+          workspace_id: workspaceId,
+        },
+      ],
+      server_revision: 'rev_1',
+    });
+    list.mockResolvedValue(taskPage([]));
+
+    render(<TaskNavigation {...navigationProps(api, setupCommands())} />);
+
+    const picker = await screen.findByRole('combobox', { name: 'Workspace' });
+    expect(picker.tagName).toBe('BUTTON');
+    expect(picker).toHaveTextContent('feature/workbench');
+    await user.click(picker);
+    const option = screen.getByRole('option', { name: /Workspace A/ });
+    expect(option).toHaveTextContent('Default');
+    expect(option).toHaveTextContent('feature/workbench');
+    expect(option).toHaveTextContent('available');
+    expect(option).toHaveTextContent(workspaceId);
   });
 
   it('renders an explicit empty-workspace state instead of loading forever', async () => {
@@ -325,7 +402,8 @@ describe('TaskNavigation', () => {
     render(<TaskNavigation {...navigationProps(api, setupCommands())} />);
     await screen.findByRole('button', { name: 'Task A' });
     await user.click(screen.getByRole('button', { name: 'Load more Tasks' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Workspace' }), otherWorkspaceId);
+    await user.click(screen.getByRole('combobox', { name: 'Workspace' }));
+    await user.click(screen.getByRole('option', { name: /Workspace B/ }));
     expect(await screen.findByRole('button', { name: 'Task B' })).toBeVisible();
     oldPage.reject(new TypeError('stale A failure'));
     await new Promise((resolve) => window.setTimeout(resolve, 0));

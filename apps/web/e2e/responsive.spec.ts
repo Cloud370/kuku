@@ -44,7 +44,7 @@ for (const width of [360, 768, 1440]) {
 
     const shell = page.getByTestId('workbench-shell');
     await expect(shell).toBeVisible();
-    await expect(page.getByLabel('Chat')).toBeVisible();
+    await expect(page.getByRole('main', { name: 'Chat' })).toBeVisible();
     await expect(page.getByLabel('Composer')).toBeVisible();
     const rem = await page.evaluate(() =>
       Number.parseFloat(getComputedStyle(document.documentElement).fontSize),

@@ -25,6 +25,7 @@ impl SkillSelectionValidator for AllowSkills {
                 tier_id: tier_id.to_owned(),
                 skill_ids: skill_ids.to_vec(),
             },
+            selected_skills: Vec::new(),
         })
     }
 }

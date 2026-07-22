@@ -11,7 +11,7 @@ export interface ChatTimelineProps {
   onOpenFile: (workspaceId: string, relativePath: string) => void;
   onOpenRequestContext: (taskId: string, requestId: string) => void;
   onOpenReview: (taskId: string) => void;
-  onRespond: (taskId: string, interactionId: string, choiceId: string) => void;
+  onRespond: (taskId: string, interactionId: string, choiceId: string) => Promise<void> | void;
   onReturnToRecent: () => void;
   projection: TaskProjection | null;
   timelineHistory: TimelineHistory;

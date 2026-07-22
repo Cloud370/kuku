@@ -37,7 +37,7 @@ test('runs packaged Workbench, Composer, Review, Settings, and Guide behavior', 
     unifiedBinary,
     `/tasks/${encodeURIComponent(unifiedBinary.scenario.taskId)}`,
   );
-  await expect(page.getByLabel('Chat')).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Chat' })).toBeVisible();
   await expect(page.getByLabel('Composer')).toBeVisible();
   const message = page.getByRole('textbox', { name: 'Message' });
   await message.fill('Verify the packaged Composer path');

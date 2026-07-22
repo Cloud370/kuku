@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -110,7 +110,7 @@ describe('Composer', () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(draft());
   });
 
-  it('initializes an unselected draft from the catalog default before submitting', async () => {
+  it('uses the catalog default without overwriting an unselected draft', async () => {
     const user = userEvent.setup();
     const onDraftChange = vi.fn();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
@@ -125,9 +125,7 @@ describe('Composer', () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(onDraftChange).toHaveBeenCalledWith(draft({ text: 'inspect' }));
-    });
+    expect(onDraftChange).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
     expect(onSubmit).toHaveBeenCalledWith({

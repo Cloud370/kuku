@@ -27,7 +27,7 @@ pub use process::{
     ProcessCancellation, ProcessChunk, ProcessChunkSink, ProcessLimits, ProcessOutput,
     ProcessStatus, ProcessStream, RootCommand,
 };
-use support::encode_link_target;
+use support::{encode_link_target, open_workspace_root, WorkspaceRegistrationPath};
 
 const ROOTS_FILE: &str = "registration-roots.json";
 const WORKSPACES_FILE: &str = "workspaces.json";
@@ -167,7 +167,7 @@ struct WorkspaceRecord {
     workspace_id: WorkspaceId,
     label: String,
     registration_root_id: RegistrationRootId,
-    relative_path: NormalizedRelativePath,
+    relative_path: WorkspaceRegistrationPath,
 }
 
 /// Provides handle-relative access to one registered workspace.
@@ -489,7 +489,7 @@ impl WorkspaceRegistry {
         if request.label.trim().is_empty() {
             return Err(invalid_request("workspace label must not be empty"));
         }
-        let relative_path = NormalizedRelativePath::parse(&request.relative_path)?;
+        let relative_path = WorkspaceRegistrationPath::parse(&request.relative_path)?;
         let _registry_gate = self.gate.write().await;
         let root = self.roots.resolve(&request.root_id)?;
         let opened = open_workspace_root(&root.root, &relative_path)?;
@@ -711,7 +711,7 @@ impl WorkspaceRegistry {
             .map_err(|_| unavailable("workspace registration root is unavailable"))?;
         let opened = open_workspace_root(&root.root, &record.relative_path)
             .map_err(|_| unavailable("workspace directory is unavailable"))?;
-        let process_path = root.process_path.join(&record.relative_path.0);
+        let process_path = record.relative_path.process_path(&root.process_path);
         Ok(WorkspaceCapability {
             workspace_id: record.workspace_id.clone(),
             process_root: IdentityBoundProcessRoot::new(
@@ -884,10 +884,6 @@ fn validate_workspace_file(state: &WorkspaceFile) -> Result<(), ApiError> {
         return Err(internal_error("workspace registry has no default"));
     }
     Ok(())
-}
-
-fn open_workspace_root(root: &Dir, relative: &NormalizedRelativePath) -> Result<Dir, ApiError> {
-    open_directory_relative(root, relative)
 }
 
 fn open_directory_relative(root: &Dir, relative: &NormalizedRelativePath) -> Result<Dir, ApiError> {

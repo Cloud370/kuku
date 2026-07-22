@@ -17,9 +17,9 @@ test('authenticates with a fragment credential and opens the configured first ta
     await expect(page.getByText(server.credential, { exact: false })).toHaveCount(0);
 
     await page.getByLabel('Provider ID').fill('e2e-init-provider');
-    await page.getByLabel('API format').fill('anthropic');
+    await page.getByLabel('API format').selectOption('anthropic');
     await page.getByLabel('Base URL').fill(server.providerOrigin);
-    await page.getByLabel('Provider credential').fill('e2e-init-provider-key');
+    await page.getByLabel('API Key').fill('e2e-init-provider-key');
     await page.getByLabel('Tier ID').fill('e2e-init-balanced');
     await page.getByLabel('Model').fill('deterministic-fixture');
     await page.getByRole('button', { name: 'Save providers' }).click();
@@ -37,12 +37,11 @@ test('authenticates with a fragment credential and opens the configured first ta
     if (root === undefined) throw new Error('fresh server has no registration root');
     await expect(page.getByLabel('Workspace label')).toBeVisible();
     await page.getByLabel('Workspace label').fill('Git fixture');
-    await page.getByLabel('Registration root ID').fill(root.root_id);
+    await expect(page.getByLabel('Workspace Root')).toHaveValue(root.root_id);
     await page.getByLabel('Workspace path').fill('git-workspace');
     await page.getByRole('button', { name: 'Register workspace' }).click();
 
-    await expect(page.getByLabel('Test Tier ID')).toBeVisible();
-    await page.getByLabel('Test Tier ID').fill('e2e-init-balanced');
+    await expect(page.getByLabel('Test Tier')).toHaveValue('e2e-init-balanced');
     await page.getByRole('button', { name: 'Test provider' }).click();
     await expect(page.getByText('Provider and workspace checks passed.')).toBeVisible();
     let initialTaskLists = 0;

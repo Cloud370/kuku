@@ -48,7 +48,7 @@ describe('ContextDetail', () => {
     const user = userEvent.setup();
     function Harness() {
       const [openSections, setOpenSections] = useState<
-        import('./ContextPanel').ContextSectionKey[]
+        import('./contextSections').ContextSectionKey[]
       >([]);
       return (
         <ContextDetail

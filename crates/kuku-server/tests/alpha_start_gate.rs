@@ -230,7 +230,7 @@ async fn complete_init(
                 "providers": [{
                     "provider_id": "scenario",
                     "format": "anthropic",
-                    "base_url": format!("http://127.0.0.1:{provider_port}"),
+                    "base_url": format!("http://127.0.0.1:{provider_port}/v1"),
                     "credential": {"source": "direct_value", "value": "scenario-key"}
                 }],
                 "tiers": [{

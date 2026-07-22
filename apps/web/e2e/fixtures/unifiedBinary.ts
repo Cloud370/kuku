@@ -64,7 +64,7 @@ interface DeterministicProvider {
   stop(): Promise<void>;
 }
 
-type WorkerFixtures = {
+type TestFixtures = {
   unifiedBinary: UnifiedBinary;
   workspaces: WorkspaceFixtures;
 };
@@ -486,9 +486,7 @@ async function stopProcess(child: ChildProcess): Promise<void> {
   }
 }
 
-type TestFixtures = { __e2eTypeMarker?: never };
-
-export const test = baseTest.extend<TestFixtures, WorkerFixtures>({
+export const test = baseTest.extend<TestFixtures>({
   workspaces: [
     async ({ browserName: _browserName }, use, workerInfo) => {
       const root = await mkdtemp(join(tmpdir(), `kuku-e2e-${String(workerInfo.workerIndex)}-`));
@@ -499,7 +497,7 @@ export const test = baseTest.extend<TestFixtures, WorkerFixtures>({
         await rm(root, { force: true, recursive: true });
       }
     },
-    { scope: 'worker' },
+    { scope: 'test' },
   ],
   unifiedBinary: [
     async ({ workspaces }, use, workerInfo) => {
@@ -579,7 +577,7 @@ export const test = baseTest.extend<TestFixtures, WorkerFixtures>({
         await rm(home, { force: true, recursive: true });
       }
     },
-    { scope: 'worker' },
+    { scope: 'test' },
   ],
 });
 

@@ -156,6 +156,79 @@ async fn cancel_during_streaming_aborts_stream() {
 }
 
 #[tokio::test]
+async fn cancelled_next_call_preserves_streaming_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let events_path = dir.path().join("events.jsonl");
+    let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
+    let pending = make_test_pending(events_path, dir.path(), cancel_token.clone());
+    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(8);
+    chunk_tx
+        .send(Ok(crate::provider::chunk::ProviderChunk::TextDelta {
+            text: "Hi!".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    let streaming = StreamingChunkState {
+        pending,
+        conversation: crate::conversation::address::ConversationAddress::MAIN,
+        request: test_request_scope(),
+        request_started: std::time::Instant::now(),
+        stream: Box::pin(tokio_stream::wrappers::ReceiverStream::new(chunk_rx)),
+        accumulated_text: String::new(),
+        accumulated_thinking: String::new(),
+        stop_reason: None,
+        tool_calls: Vec::new(),
+        tool_arg_buffers: Vec::new(),
+        provider_request_id: None,
+        usage: None,
+        lead_events: Vec::new(),
+        handoff_detector: None,
+        thinking_start: None,
+        thinking_duration_ms: 0,
+    };
+    let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
+    let mut run = Run {
+        execution_scope: test_execution_scope(),
+        session_id: "test".to_string(),
+        state: RunState::Streaming(Box::new(streaming)),
+        slots: std::collections::HashMap::new(),
+        slot_event_tx,
+        slot_event_rx,
+        cancel_token,
+        lock_path: std::path::PathBuf::new(),
+        deferred_runtime_logs: std::collections::VecDeque::new(),
+    };
+
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::TextDelta { text }) if text == "Hi!"
+    ));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), run.next())
+            .await
+            .is_err()
+    );
+
+    chunk_tx
+        .send(Ok(crate::provider::chunk::ProviderChunk::StopReason {
+            reason: "end_turn".to_string(),
+        }))
+        .await
+        .expect("cancelled next call must not drop the provider stream");
+    chunk_tx
+        .send(Ok(crate::provider::chunk::ProviderChunk::StreamEnd))
+        .await
+        .unwrap();
+    drop(chunk_tx);
+
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::Done { output, .. }) if output.text == "Hi!"
+    ));
+}
+
+#[tokio::test]
 async fn malformed_tool_call_arguments_fail_instead_of_staying_empty_object() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use kuku::event::{
-    ReviewAnnotationFact, ReviewSubmissionId, ReviewSubmissionRecorded, RunId, SkillsChangedFact,
-    TaskId, TaskRevision, WorkspaceId,
+    ReviewAnnotationFact, ReviewSubmissionId, ReviewSubmissionRecorded, RunId, SkillContextFact,
+    SkillsChangedFact, TaskId, TaskRevision, WorkspaceId,
 };
 
 use crate::api::{
@@ -36,6 +36,7 @@ pub struct SubmitReviewCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedSkillSelection {
     pub selection: SkillsChangedFact,
+    pub selected_skills: Vec<SkillContextFact>,
 }
 
 pub trait SkillSelectionValidator: Send + Sync {
@@ -112,6 +113,7 @@ impl SkillSelectionValidator for TestSkillValidator {
                 tier_id: tier_id.to_owned(),
                 skill_ids: skill_ids.to_vec(),
             },
+            selected_skills: Vec::new(),
         })
     }
 }
