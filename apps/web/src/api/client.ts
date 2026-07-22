@@ -59,7 +59,7 @@ const API_ROOT = "/api/v1";
 const CREDENTIAL_STORAGE_KEY = "kuku.web.credential";
 
 function credentialStorage(): Storage | null {
-  return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  return typeof localStorage === "undefined" ? null : localStorage;
 }
 
 const credentials = {
@@ -156,7 +156,8 @@ function segment(value: string): string {
 
 export const webApi = {
   platform: {
-    status: (): Promise<PlatformStatus> => requestJson("GET", `${API_ROOT}/status`),
+    status: (signal?: AbortSignal): Promise<PlatformStatus> =>
+      requestJson("GET", `${API_ROOT}/status`, undefined, signal),
   },
   init: {
     status: (): Promise<InitStatus> => requestJson("GET", `${API_ROOT}/init/status`),

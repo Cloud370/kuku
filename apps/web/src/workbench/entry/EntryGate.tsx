@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
@@ -30,36 +30,89 @@ const initOperations: InitOperations = {
   registrationRoots: webApi.workspaces.registrationRoots,
 };
 
+const platformStatusKey = ['platform-status'] as const;
+const platformStatusTimeoutMs = 10_000;
+
+async function loadPlatformStatus(signal: AbortSignal): Promise<PlatformStatus> {
+  const controller = new AbortController();
+  const abort = () => {
+    controller.abort();
+  };
+  let timeout: number | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = window.setTimeout(() => {
+      reject(new Error('Platform status request timed out'));
+      controller.abort();
+    }, platformStatusTimeoutMs);
+  });
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    return await Promise.race([webApi.platform.status(controller.signal), timedOut]);
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    signal.removeEventListener('abort', abort);
+  }
+}
+
 export function EntryGate({ renderWorkbench }: EntryGateProps) {
   useState(importFragmentCredential);
+  const queryClient = useQueryClient();
+  const [credentialEntryOpen, setCredentialEntryOpen] = useState(false);
   const status = useQuery({
-    queryKey: ['platform-status'],
-    queryFn: webApi.platform.status,
+    queryKey: platformStatusKey,
+    queryFn: async ({ signal }) => {
+      try {
+        return await loadPlatformStatus(signal);
+      } catch (error) {
+        if (isAuthRequired(error) && webApi.credentials.current() !== null) {
+          webApi.credentials.clear();
+        }
+        throw error;
+      }
+    },
     retry: false,
   });
 
-  if (status.isPending) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center" role="status">
-        <LoaderCircle aria-hidden="true" className="mr-2 animate-spin" size={18} />
-        Connecting to kuku
-      </main>
-    );
+  const openCredentialEntry = () => {
+    webApi.credentials.clear();
+    setCredentialEntryOpen(true);
+    void queryClient.cancelQueries({ queryKey: platformStatusKey });
+  };
+
+  const authenticate = async (credential: string) => {
+    webApi.credentials.set(credential);
+    try {
+      const result = await loadPlatformStatus(new AbortController().signal);
+      queryClient.setQueryData(platformStatusKey, result);
+      setCredentialEntryOpen(false);
+    } catch (error) {
+      webApi.credentials.clear();
+      throw error;
+    }
+  };
+
+  if (credentialEntryOpen || (status.isError && isAuthRequired(status.error))) {
+    return <AuthScreen onSubmit={authenticate} serverName="kuku" />;
   }
 
-  if (status.isError && isAuthRequired(status.error)) {
+  if (status.isPending) {
     return (
-      <AuthScreen
-        onSubmit={async (credential) => {
-          webApi.credentials.set(credential);
-          const result = await status.refetch();
-          if (result.error !== null) {
-            webApi.credentials.clear();
-            throw result.error;
-          }
-        }}
-        serverName="kuku"
-      />
+      <main
+        className="flex min-h-dvh flex-col items-center justify-center gap-4"
+        role="status"
+      >
+        <span className="inline-flex items-center">
+          <LoaderCircle aria-hidden="true" className="mr-2 animate-spin" size={18} />
+          Connecting to kuku
+        </span>
+        <button
+          className="rounded-[var(--radius-md)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
+          onClick={openCredentialEntry}
+          type="button"
+        >
+          Use another credential
+        </button>
+      </main>
     );
   }
 
@@ -73,13 +126,22 @@ export function EntryGate({ renderWorkbench }: EntryGateProps) {
             size={24}
           />
           <p>Server status is unavailable.</p>
-          <button
-            className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
-            onClick={() => void status.refetch()}
-            type="button"
-          >
-            Retry
-          </button>
+          <div className="mt-4 flex justify-center gap-2">
+            <button
+              className="rounded-[var(--radius-md)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
+              onClick={() => void status.refetch()}
+              type="button"
+            >
+              Retry
+            </button>
+            <button
+              className="rounded-[var(--radius-md)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
+              onClick={openCredentialEntry}
+              type="button"
+            >
+              Use another credential
+            </button>
+          </div>
         </section>
       </main>
     );

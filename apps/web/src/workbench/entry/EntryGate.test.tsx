@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -141,6 +141,7 @@ async function fillProviderForm(user: ReturnType<typeof userEvent.setup>) {
 describe('EntryGate', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(webApi.credentials).current.mockReturnValue(null);
     registrationRootsMock.mockResolvedValue({
       api_version: 1,
       items: [{ label: 'Current directory', root_id: registrationRootId }],
@@ -151,6 +152,7 @@ describe('EntryGate', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     history.replaceState(null, '', '/');
   });
 
@@ -163,12 +165,62 @@ describe('EntryGate', () => {
     expect(screen.queryByText('Workbench')).toBeNull();
   });
 
+  it('allows a pending connection to be replaced with a fresh credential', async () => {
+    const user = userEvent.setup();
+    statusMock
+      .mockReturnValueOnce(new Promise(() => undefined))
+      .mockResolvedValueOnce(platformStatus());
+
+    renderEntry();
+
+    await user.click(screen.getByRole('button', { name: 'Use another credential' }));
+    await user.type(screen.getByLabelText('Credential'), 'fresh-token');
+    await user.click(screen.getByRole('button', { name: 'Connect' }));
+
+    expect(await screen.findByText('Workbench')).toBeVisible();
+    expect(vi.mocked(webApi.credentials).clear.mock.calls).toHaveLength(1);
+    expect(vi.mocked(webApi.credentials).set.mock.calls).toContainEqual(['fresh-token']);
+    expect(statusMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the connection screen when the status request times out', async () => {
+    vi.useFakeTimers();
+    let receivedSignal: AbortSignal | undefined;
+    statusMock.mockImplementation(
+      (signal?: AbortSignal) => {
+        receivedSignal = signal;
+        if (typeof signal?.addEventListener !== 'function') {
+          return new Promise(() => undefined);
+        }
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted', 'AbortError'));
+          });
+        });
+      },
+    );
+
+    renderEntry();
+    expect(statusMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('Server status is unavailable.');
+  });
+
   it('shows Auth and does not expose Workbench for an unauthenticated response', async () => {
     statusMock.mockRejectedValue(apiError('auth_required'));
+    vi.mocked(webApi.credentials).current.mockReturnValue('stale-token');
 
     renderEntry();
 
     expect(await screen.findByRole('heading', { name: 'Connect to kuku' })).toBeVisible();
+    await waitFor(() => {
+      expect(vi.mocked(webApi.credentials).clear.mock.calls).toHaveLength(1);
+    });
     expect(screen.queryByText('Workbench')).toBeNull();
     expect(screen.queryByRole('button', { name: /skip/i })).toBeNull();
   });

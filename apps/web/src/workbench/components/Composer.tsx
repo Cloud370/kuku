@@ -115,7 +115,7 @@ export function Composer({
         <textarea
           aria-label="Message"
           className="min-h-20 w-full resize-y border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-3 text-sm outline-none focus-visible:border-[var(--color-accent)]"
-          disabled={disabled || hasActiveRun}
+          disabled={disabled}
           onChange={(event) => {
             onDraftChange({ ...draft, text: event.target.value });
           }}

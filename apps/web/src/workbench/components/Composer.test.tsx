@@ -234,6 +234,28 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
+  it('keeps the next message editable while a Run is active but does not send it', async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <Composer
+        {...props({
+          activeRunId: 'run_000000000000000000000001',
+          onDraftChange,
+          onSubmit,
+        })}
+      />,
+    );
+
+    const message = screen.getByRole('textbox', { name: 'Message' });
+    expect(message).toBeEnabled();
+    await user.type(message, 'follow up');
+    expect(onDraftChange).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('does not clear a new Task draft when an earlier submission resolves', async () => {
     const user = userEvent.setup();
     let resolveSubmit: (() => void) | undefined;

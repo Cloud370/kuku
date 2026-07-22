@@ -30,6 +30,7 @@ describe("webApi", () => {
     fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({ api_version: 1 })));
     vi.stubGlobal("fetch", fetchMock);
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -222,6 +223,14 @@ describe("webApi", () => {
     expect(new Headers(request?.headers).get("Authorization")).toBe("Bearer fixture-token");
     webApi.credentials.clear();
     expect(webApi.credentials.current()).toBeNull();
+  });
+
+  it("keeps the bearer credential when the tab session ends", () => {
+    webApi.credentials.set("fixture-token");
+
+    sessionStorage.clear();
+
+    expect(webApi.credentials.current()).toBe("fixture-token");
   });
 
   it("throws the typed API error returned by a failed request", async () => {
