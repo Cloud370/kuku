@@ -96,8 +96,9 @@
 .dialog {
   display: grid;
   grid-template-rows: 3rem minmax(0, 1fr);
-  width: min(46rem, 100%);
-  max-height: min(46rem, calc(100dvh - 2rem));
+  width: min(72rem, calc(100vw - 3rem));
+  height: min(56rem, calc(100dvh - 3rem));
+  max-height: min(56rem, calc(100dvh - 3rem));
   overflow: hidden;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);

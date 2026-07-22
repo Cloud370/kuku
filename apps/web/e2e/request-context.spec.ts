@@ -44,6 +44,10 @@ test('opens an exact immutable historical request from typed Context history', a
   await page.getByRole('button', { name: 'View exact Request' }).click();
   const dialog = page.getByRole('dialog', { name: 'Exact Request' });
   await expect(dialog).toBeVisible();
+  const dialogBounds = await dialog.boundingBox();
+  expect(dialogBounds).not.toBeNull();
+  expect(dialogBounds?.width ?? 0).toBeGreaterThanOrEqual(900);
+  expect(dialogBounds?.height ?? 0).toBeGreaterThanOrEqual(600);
   await expect(dialog).toContainText('Exercise the full deterministic browser scenario');
   await expect(dialog).toContainText(historical.exact_payload_hash ?? 'missing-payload-hash');
   await expect(
