@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -128,6 +128,22 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('Needs Attention')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Allow' }));
     expect(onRespond).toHaveBeenCalledWith(taskId, 'int_000000000000000000000001', 'allow');
+  });
+
+  it('portals a pending permission into the viewport even when its timeline row is not mounted', () => {
+    const items = [
+      ...Array.from({ length: 140 }, (_, index) => message(`message-${String(index)}`)),
+      interaction(),
+    ];
+
+    render(
+      <ChatTimeline {...props({ projection: projection(items), timelineItems: items })} />,
+    );
+
+    const dialog = screen.getByRole('dialog', { name: 'Permission required' });
+    expect(dialog).toBeVisible();
+    expect(dialog.closest('[data-testid="virtual-timeline"]')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Allow' })).toBeVisible();
   });
 
   it('shows a stable active-run status without exposing an opaque run ID', () => {

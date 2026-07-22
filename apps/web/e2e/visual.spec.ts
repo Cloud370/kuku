@@ -175,6 +175,14 @@ test('captures loading, empty, transport error, and Needs Attention Workbench st
     .getByRole('searchbox')
     .fill('Exercise the full deterministic browser scenario');
   await capture(attention.page, 'workbench-needs-attention.png');
+  await attention.page.setViewportSize({ height: 640, width: 360 });
+  const permissionDialog = attention.page.getByRole('dialog', { name: 'Permission required' });
+  const dialogBounds = await permissionDialog.boundingBox();
+  expect(dialogBounds).not.toBeNull();
+  expect(dialogBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect(dialogBounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((dialogBounds?.x ?? 361) + (dialogBounds?.width ?? 0)).toBeLessThanOrEqual(360);
+  expect((dialogBounds?.y ?? 641) + (dialogBounds?.height ?? 0)).toBeLessThanOrEqual(640);
   await attention.context.close();
 });
 

@@ -3,6 +3,7 @@ import type { TimelineHistory } from '../state';
 import { ActivityItem } from './ActivityItem';
 import { ChatMessage } from './ChatMessage';
 import { InteractionCard } from './InteractionCard';
+import { InteractionDialog } from './InteractionDialog';
 import { RunStatusBanner } from './RunStatusBanner';
 import { VirtualTimeline } from './VirtualTimeline';
 
@@ -46,6 +47,13 @@ export function ChatTimeline({
   }
   const taskId = projection.task.task_id;
   const run = projection.active_run ?? projection.latest_run;
+  const pendingInteraction = timelineItems.reduce<
+    Extract<TimelineItemProjection, { type: 'interaction' }>['item'] | null
+  >(
+    (pending, item) =>
+      item.type === 'interaction' && item.item.status === 'pending' ? item.item : pending,
+    null,
+  );
 
   return (
     <section aria-label="Conversation" className="min-w-0">
@@ -102,9 +110,22 @@ export function ChatTimeline({
               return <ActivityItem activity={item.item} onOpenFile={onOpenFile} />;
             }
             return (
-              <InteractionCard interaction={item.item} onRespond={onRespond} taskId={taskId} />
+              <InteractionCard
+                actions={item.item.status !== 'pending'}
+                interaction={item.item}
+                onRespond={onRespond}
+                taskId={taskId}
+              />
             );
           }}
+        />
+      )}
+      {pendingInteraction === null ? null : (
+        <InteractionDialog
+          interaction={pendingInteraction}
+          key={pendingInteraction.interaction_id}
+          onRespond={onRespond}
+          taskId={taskId}
         />
       )}
     </section>

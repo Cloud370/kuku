@@ -24,6 +24,8 @@ interface ContextDetailProps {
   stagedSkillIds: string[];
   openSections: ContextSectionKey[];
   historical?: boolean;
+  loading?: boolean;
+  selectedRequestId?: RequestId | null;
   onSelectRequest: (id: RequestId) => void;
   onOpenAgent: (conversationId: ConversationId) => void;
   onOpenFile: (workspaceId: WorkspaceId, relativePath: string) => void;
@@ -53,6 +55,8 @@ export function ContextDetail({
   stagedSkillIds,
   openSections,
   historical = false,
+  loading = false,
+  selectedRequestId,
   onSelectRequest,
   onOpenAgent,
   onOpenFile,
@@ -110,7 +114,21 @@ export function ContextDetail({
   }));
 
   return (
-    <div aria-label="Context details" className={styles.detail} role="region">
+    <div
+      aria-busy={loading}
+      aria-label="Context details"
+      className={styles.detail}
+      role="region"
+    >
+      {loading ? (
+        <div
+          aria-label="Loading selected Request"
+          className="pointer-events-none absolute inset-x-0 top-0 z-20 h-0.5 overflow-hidden bg-[var(--color-accent-muted)]"
+          role="status"
+        >
+          <span className="block h-full w-full animate-pulse bg-[var(--color-accent)]" />
+        </div>
+      ) : null}
       <div className={styles.summarySticky}>
         <ContextSummary
           health={view.health}
@@ -136,7 +154,11 @@ export function ContextDetail({
       <RequestHistory
         onSelect={onSelectRequest}
         requests={view.requestHistory}
-        selectedRequestId={view.selectedRequest?.request_id ?? null}
+        selectedRequestId={
+          loading && selectedRequestId !== undefined
+            ? selectedRequestId
+            : (view.selectedRequest?.request_id ?? null)
+        }
         truncated={view.requestHistoryTruncated}
       />
       <ContextAccordion

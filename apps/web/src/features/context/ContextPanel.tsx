@@ -32,8 +32,9 @@ function StateSummary({ label, detail }: { label: string; detail: string }) {
   );
 }
 
-function announcement(state: ContextPanelState): string {
+function announcement(state: ContextPanelState, loading: boolean): string {
   if (state.kind === 'loading') return 'Loading Context';
+  if (loading) return 'Loading selected Context';
   if (state.kind === 'error') return 'Context unavailable';
   if (state.kind === 'empty') return 'Context is empty';
   return 'Context loaded';
@@ -54,10 +55,13 @@ export function ContextPanel({
   refreshRevision = 0,
 }: ContextPanelProps) {
   const [state, setState] = useState<ContextPanelState>({ kind: 'loading' });
+  const [loading, setLoading] = useState(true);
+  const [displayedRequestId, setDisplayedRequestId] = useState<RequestId | null>(null);
 
   useEffect(() => {
     let active = true;
-    setState({ kind: 'loading' });
+    setLoading(true);
+    setState((current) => (current.kind === 'ready' ? current : { kind: 'loading' }));
     const snapshot =
       selectedRequestId === null
         ? webApi.context.current(taskId)
@@ -67,6 +71,7 @@ export function ContextPanel({
         if (!active) return;
         if (nextSnapshot.selected_request === null) {
           setState({ kind: 'empty', reason: 'no_request' });
+          setLoading(false);
           return;
         }
         setState({
@@ -75,9 +80,14 @@ export function ContextPanel({
           catalog,
           mode: 'verified',
         });
+        setDisplayedRequestId(selectedRequestId);
+        setLoading(false);
       })
       .catch((error: unknown) => {
-        if (active) setState({ kind: 'error', error: toApiError(error) });
+        if (active) {
+          setState({ kind: 'error', error: toApiError(error) });
+          setLoading(false);
+        }
       });
     return () => {
       active = false;
@@ -93,12 +103,13 @@ export function ContextPanel({
         ) : null}
       </header>
       <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">
-        {announcement(state)}
+        {announcement(state, loading)}
       </div>
       {state.kind === 'ready' ? (
         <ContextDetail
           catalog={state.catalog}
-          historical={selectedRequestId !== null}
+          historical={displayedRequestId !== null}
+          loading={loading}
           onOpenAgent={onOpenAgent}
           onOpenFile={onOpenFile}
           onOpenSectionsChange={onOpenSectionsChange}
@@ -106,6 +117,7 @@ export function ContextPanel({
           onStageSkill={onStageSkill}
           onUnstageSkill={onUnstageSkill}
           openSections={openSections}
+          selectedRequestId={selectedRequestId}
           snapshot={state.snapshot}
           stagedSkillIds={stagedSkillIds}
           workspaceId={workspaceId}

@@ -96,6 +96,62 @@ describe('ContextPanel', () => {
     expect(webApi.context.historical).toHaveBeenCalledWith(taskId, requestOne);
   });
 
+  it('keeps the previous Context visible while a selected Request loads', async () => {
+    let resolveHistorical: ((value: ReturnType<typeof contextFixture>) => void) | undefined;
+    vi.spyOn(webApi.context, 'current').mockResolvedValue(contextFixture());
+    vi.spyOn(webApi.context, 'historical').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveHistorical = resolve;
+        }),
+    );
+    vi.spyOn(webApi.catalog, 'workspace').mockResolvedValue(catalogFixture());
+    const view = renderPanel();
+    const details = await screen.findByRole('region', { name: 'Context details' });
+    expect(details).toHaveAttribute('aria-busy', 'false');
+    expect(screen.getByText('Current Context')).toBeVisible();
+
+    view.rerender(
+      <ContextPanel
+        {...callbacks}
+        openSections={['skills', 'observations', 'discoverable']}
+        selectedRequestId={requestOne}
+        stagedSkillIds={[]}
+        taskId={taskId}
+        workspaceId={workspaceId}
+      />,
+    );
+
+    expect(screen.getByRole('region', { name: 'Context details' })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    );
+    expect(screen.getByText('Current Context')).toBeVisible();
+    expect(screen.queryByText('Loading Context')).toBeNull();
+    expect(screen.getByRole('button', { name: `Select Request ${requestOne}` })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    const historicalRequest = contextFixture().request_history.find(
+      (request) => request.request_id === requestOne,
+    );
+    if (historicalRequest === undefined || resolveHistorical === undefined) {
+      throw new Error('historical fixture is missing');
+    }
+    resolveHistorical(
+      contextFixture({
+        selected_request: historicalRequest,
+      }),
+    );
+
+    expect(await screen.findByText('Historical Request')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Context details' })).toHaveAttribute(
+      'aria-busy',
+      'false',
+    );
+  });
+
   it('uses compact labels for unavailable summary metrics', async () => {
     const snapshot = contextFixture();
     snapshot.health.context_tokens_used = null;

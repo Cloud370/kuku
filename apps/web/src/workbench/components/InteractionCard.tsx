@@ -4,12 +4,20 @@ import { useState } from 'react';
 import type { InteractionProjection } from '../../api/generated';
 
 interface InteractionCardProps {
+  actions?: boolean;
+  framed?: boolean;
   interaction: InteractionProjection;
   taskId: string;
   onRespond: (taskId: string, interactionId: string, choiceId: string) => Promise<void> | void;
 }
 
-export function InteractionCard({ interaction, taskId, onRespond }: InteractionCardProps) {
+export function InteractionCard({
+  actions = true,
+  framed = true,
+  interaction,
+  taskId,
+  onRespond,
+}: InteractionCardProps) {
   const [confirmedChoiceId, setConfirmedChoiceId] = useState<string | null>(null);
   const [responding, setResponding] = useState(false);
   const status = confirmedChoiceId === null ? interaction.status : 'resolved';
@@ -27,14 +35,18 @@ export function InteractionCard({ interaction, taskId, onRespond }: InteractionC
   return (
     <section
       aria-label="Permission request"
-      className="border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4"
-      role="group"
+      className={
+        framed
+          ? 'border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4'
+          : 'bg-[var(--color-surface-raised)]'
+      }
+      role={actions ? 'group' : 'status'}
     >
       <div className="flex items-start gap-2">
         <ShieldQuestion aria-hidden="true" className="mt-0.5 shrink-0" size={18} />
         <p className="min-w-0 flex-1 text-sm font-medium">{interaction.prompt}</p>
       </div>
-      {status === 'pending' ? (
+      {status === 'pending' && actions ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {interaction.choices.map((choice) => (
             <button
@@ -50,6 +62,10 @@ export function InteractionCard({ interaction, taskId, onRespond }: InteractionC
             </button>
           ))}
         </div>
+      ) : status === 'pending' ? (
+        <p className="mt-3 text-xs text-[var(--color-text-secondary)]">
+          Waiting for a response in the permission dialog
+        </p>
       ) : (
         <p className="mt-3 text-xs text-[var(--color-text-secondary)]">
           {status === 'resolved' ? 'Resolved' : 'Cancelled'}
