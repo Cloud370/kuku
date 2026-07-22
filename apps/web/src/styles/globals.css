@@ -6,6 +6,31 @@
   box-sizing: border-box;
 }
 
+* {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
 html {
   font-family: var(--font-ui);
   font-size: var(--text-base);
@@ -109,6 +134,10 @@ code {
 }
 
 @media (forced-colors: active) {
+  * {
+    scrollbar-color: auto;
+  }
+
   :focus-visible {
     outline-color: Highlight;
   }

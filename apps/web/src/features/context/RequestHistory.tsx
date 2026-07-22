@@ -11,6 +11,8 @@ interface RequestHistoryProps {
   onSelect: (requestId: RequestId) => void;
 }
 
+const COLLAPSED_REQUEST_COUNT = 5;
+
 const STATUS_LABELS: Record<RequestStatus, string> = {
   completed: 'Completed',
   failed: 'Failed',
@@ -42,11 +44,36 @@ export function RequestHistory({
   onSelect,
 }: RequestHistoryProps) {
   const [expandedRequestIds, setExpandedRequestIds] = useState<RequestId[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const numberedRequests = requests
+    .map((request, index) => ({ number: index + 1, request }))
+    .reverse();
+  let visibleRequests = numberedRequests;
+  if (!showAll && numberedRequests.length > COLLAPSED_REQUEST_COUNT) {
+    visibleRequests = numberedRequests.slice(0, COLLAPSED_REQUEST_COUNT);
+    const selected = numberedRequests.find(
+      ({ request }) => request.request_id === selectedRequestId,
+    );
+    if (
+      selected !== undefined &&
+      !visibleRequests.some(({ request }) => request.request_id === selected.request.request_id)
+    ) {
+      visibleRequests = [...visibleRequests.slice(0, COLLAPSED_REQUEST_COUNT - 1), selected].sort(
+        (left, right) => right.number - left.number,
+      );
+    }
+  }
+  const requestCountLabel = `${String(requests.length)} ${requests.length === 1 ? 'Request' : 'Requests'}`;
   return (
     <section aria-label="Request history" className={styles.history}>
-      <div className="flex items-center gap-2">
-        <History aria-hidden="true" className="text-[var(--color-text-muted)]" size={14} />
-        <h3 className="text-xs font-semibold">Request history</h3>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <History aria-hidden="true" className="text-[var(--color-text-muted)]" size={14} />
+          <h3 className="text-xs font-semibold">Request history</h3>
+        </div>
+        <span className="text-xs tabular-nums text-[var(--color-text-muted)]">
+          {requestCountLabel}
+        </span>
       </div>
       {truncated ? (
         <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
@@ -54,10 +81,10 @@ export function RequestHistory({
         </p>
       ) : null}
       <ol className="mt-2 divide-y divide-[var(--color-border)]">
-        {requests.map((request, index) => {
+        {visibleRequests.map(({ number, request }) => {
           const selected = request.request_id === selectedRequestId;
           const expanded = expandedRequestIds.includes(request.request_id);
-          const requestNumber = String(index + 1);
+          const requestNumber = String(number);
           const detailId = `request-${requestNumber}-details`;
           const startedAt = formatStartedAt(request.started_at);
           return (
@@ -129,6 +156,29 @@ export function RequestHistory({
           );
         })}
       </ol>
+      {requests.length > COLLAPSED_REQUEST_COUNT ? (
+        <button
+          aria-label={
+            showAll
+              ? `Show recent ${String(COLLAPSED_REQUEST_COUNT)} Requests`
+              : `Show all ${String(requests.length)} Requests`
+          }
+          className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+          onClick={() => {
+            setShowAll((current) => !current);
+          }}
+          type="button"
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={`transition-transform motion-reduce:transition-none ${showAll ? 'rotate-180' : ''}`}
+            size={14}
+          />
+          {showAll
+            ? `Show recent ${String(COLLAPSED_REQUEST_COUNT)}`
+            : `Show all ${String(requests.length)}`}
+        </button>
+      ) : null}
     </section>
   );
 }

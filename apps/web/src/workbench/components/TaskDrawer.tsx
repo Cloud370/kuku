@@ -61,11 +61,11 @@ export function TaskDrawer({
           </button>
         </div>
         {contentRole === 'navigation' ? (
-          <nav aria-label={label} className="h-[calc(100%-3rem)] overflow-y-auto p-3">
+          <nav aria-label={label} className="h-[calc(100%-3rem)] overflow-hidden p-3">
             {children}
           </nav>
         ) : (
-          <aside aria-label={label} className="h-[calc(100%-3rem)] overflow-y-auto p-3">
+          <aside aria-label={label} className="h-[calc(100%-3rem)] overflow-hidden p-3">
             {children}
           </aside>
         )}

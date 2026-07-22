@@ -10,6 +10,8 @@
   --color-text-primary: rgba(255, 255, 255, 0.92);
   --color-text-secondary: rgba(255, 255, 255, 0.6);
   --color-text-muted: rgba(255, 255, 255, 0.38);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
   --color-warning: rgba(234, 179, 8, 0.15);
   --color-warning-border: rgba(234, 179, 8, 0.3);
   --color-error: rgba(239, 68, 68, 0.15);
@@ -56,6 +58,8 @@
   --color-text-primary: rgba(0, 0, 0, 0.88);
   --color-text-secondary: rgba(0, 0, 0, 0.55);
   --color-text-muted: rgba(0, 0, 0, 0.35);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
   --color-warning: rgba(180, 83, 9, 0.1);
   --color-warning-border: rgba(180, 83, 9, 0.25);
   --color-error: rgba(220, 38, 38, 0.08);

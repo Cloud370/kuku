@@ -10,6 +10,23 @@ import { catalogFixture, contextFixture, requestOne } from './testFixtures';
 afterEach(cleanup);
 
 describe('ContextDetail', () => {
+  function requestHistory(count: number) {
+    const template = contextFixture().request_history[0];
+    if (template === undefined) throw new Error('request fixture is missing');
+    return Array.from({ length: count }, (_, index) => ({
+      ...template,
+      request_id: `req_${String(index + 1).padStart(24, '0')}`,
+      model: `model-${String(index + 1)}`,
+      started_at: `2026-07-21T00:${String(index + 1).padStart(2, '0')}:00Z`,
+    }));
+  }
+
+  function requestIdAt(requests: ReturnType<typeof requestHistory>, index: number) {
+    const request = requests[index];
+    if (request === undefined) throw new Error(`request ${String(index)} is missing`);
+    return request.request_id;
+  }
+
   it('renders bounded history honestly and exposes immutable exact content', async () => {
     const user = userEvent.setup();
     const onSelectRequest = vi.fn();
@@ -104,6 +121,75 @@ describe('ContextDetail', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show Request 1 details' }));
     expect(screen.getByText(requestOne)).toBeVisible();
+  });
+
+  it('shows the five latest Requests first and expands the complete bounded history', async () => {
+    const user = userEvent.setup();
+    const requests = requestHistory(8);
+    render(
+      <ContextDetail
+        catalog={catalogFixture()}
+        onOpenAgent={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenSectionsChange={vi.fn()}
+        onSelectRequest={vi.fn()}
+        onStageSkill={vi.fn()}
+        onUnstageSkill={vi.fn()}
+        openSections={[]}
+        snapshot={contextFixture({
+          request_history: requests,
+          selected_request: requests[7],
+        })}
+        stagedSkillIds={[]}
+        workspaceId="wsp_000000000000000000000001"
+      />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: `Select Request ${requestIdAt(requests, 2)}` }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('button', { name: `Select Request ${requestIdAt(requests, 7)}` }),
+    ).toBeVisible();
+    expect(screen.getByText('8 Requests')).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: 'Show all 8 Requests' }));
+    expect(
+      screen.getByRole('button', { name: `Select Request ${requestIdAt(requests, 0)}` }),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Show recent 5 Requests' })).toBeVisible();
+  });
+
+  it('keeps an older selected Request visible while history is collapsed', () => {
+    const requests = requestHistory(8);
+    render(
+      <ContextDetail
+        catalog={catalogFixture()}
+        onOpenAgent={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenSectionsChange={vi.fn()}
+        onSelectRequest={vi.fn()}
+        onStageSkill={vi.fn()}
+        onUnstageSkill={vi.fn()}
+        openSections={[]}
+        snapshot={contextFixture({
+          request_history: requests,
+          selected_request: requests[0],
+        })}
+        stagedSkillIds={[]}
+        workspaceId="wsp_000000000000000000000001"
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: `Select Request ${requestIdAt(requests, 0)}` }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: `Select Request ${requestIdAt(requests, 7)}` }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: `Select Request ${requestIdAt(requests, 3)}` }),
+    ).toBeNull();
   });
 
   it('uses native keyboard accordion controls', async () => {

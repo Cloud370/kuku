@@ -218,7 +218,10 @@ export function TaskNavigation({
   };
 
   return (
-    <aside aria-label="Task navigation" className="flex min-h-0 flex-col gap-3">
+    <aside
+      aria-label="Task navigation"
+      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden"
+    >
       <div className="flex items-center gap-2">
         <div className="relative min-w-0 flex-1" ref={workspaceMenu}>
           <button

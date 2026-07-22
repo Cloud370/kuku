@@ -96,9 +96,20 @@ describe('WorkbenchShell', () => {
     renderAt(1440);
 
     expect(screen.getByRole('separator', { name: 'Resize Tasks and Chat' })).toBeVisible();
-    expect(
-      screen.getByRole('separator', { name: 'Resize Chat and Agent Context' }),
-    ).toBeVisible();
+    expect(screen.getByRole('separator', { name: 'Resize Chat and Agent Context' })).toBeVisible();
+  });
+
+  it('delegates scrolling to one content owner in each desktop sidebar', () => {
+    renderAt(1440, {
+      context: <div data-testid="context-scroll-owner">Context content</div>,
+      taskNavigation: <div data-testid="tasks-scroll-owner">Task content</div>,
+    });
+
+    const tasksSlot = screen.getByTestId('tasks-scroll-owner').parentElement;
+    const contextSlot = screen.getByTestId('context-scroll-owner').parentElement;
+    expect(tasksSlot).toHaveClass('overflow-hidden');
+    expect(tasksSlot).not.toHaveClass('overflow-y-auto');
+    expect(contextSlot).toHaveClass('overflow-hidden');
   });
 
   it.each([768, 1440])(
@@ -126,7 +137,10 @@ describe('WorkbenchShell', () => {
 
     await user.click(trigger);
     expect(screen.getByRole('dialog', { name: 'Tasks' })).toBeVisible();
-    expect(screen.getByRole('navigation', { name: 'Tasks' })).toBeVisible();
+    const taskNavigation = screen.getByRole('navigation', { name: 'Tasks' });
+    expect(taskNavigation).toBeVisible();
+    expect(taskNavigation).toHaveClass('overflow-hidden');
+    expect(taskNavigation).not.toHaveClass('overflow-y-auto');
     expect(screen.getByRole('button', { name: 'Close Tasks' })).toHaveFocus();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Tasks' })).toBeNull();
@@ -156,9 +170,10 @@ describe('WorkbenchShell', () => {
 
     expect(onOpenContext).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('dialog', { name: 'Agent Context' })).toBeVisible();
-    expect(screen.getByRole('complementary', { name: 'Agent Context' })).toHaveTextContent(
-      'Context content',
-    );
+    const context = screen.getByRole('complementary', { name: 'Agent Context' });
+    expect(context).toHaveTextContent('Context content');
+    expect(context).toHaveClass('overflow-hidden');
+    expect(context).not.toHaveClass('overflow-y-auto');
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Agent Context' })).toBeNull();
   });
