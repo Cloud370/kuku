@@ -11,6 +11,9 @@ npm run dev
 
 Requires `kuku-server` running on `127.0.0.1:17777`.
 
+For the full contributor workflow, embedded-binary setup, and browser-diagnostic rules, see
+[Web UI development](../../docs/en/contributing/web-ui.md).
+
 ## Commands
 
 | Command | Description |
@@ -19,8 +22,16 @@ Requires `kuku-server` running on `127.0.0.1:17777`.
 | `npm run typecheck` | Run TypeScript type checking |
 | `npm run lint` | Run ESLint |
 | `npm run test` | Run Vitest tests |
+| `npm run test:storybook` | Run Storybook component tests |
 | `npm run build` | Production build to `dist/` |
 | `npm run storybook` | Start Storybook component explorer |
+| `npm run test:e2e` | Run embedded-browser journeys |
+
+## Generated API and test diagnostics
+
+- Do not edit `src/api/generated/**` by hand. Run `npm run generate:api` after an API-contract change.
+- `test-results/`, Playwright reports, traces, and videos are failure diagnostics. They are ignored
+  and must not be committed.
 
 ## Tech stack
 

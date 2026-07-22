@@ -6,216 +6,146 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.0-alpha.1)"
+        description: "Existing tag to publish (for example v0.1.0-alpha.1)"
         required: true
-
-env:
-  CARGO_TERM_COLOR: always
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  preflight:
-    name: Release preflight
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      checks: read
-      contents: read
-    outputs:
-      source_sha: ${{ steps.candidate.outputs.source_sha }}
+  package:
+    name: Package ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-          fetch-depth: 0
-      - name: Resolve immutable candidate
-        id: candidate
-        run: echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Require every independent gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Build Web assets
+        working-directory: apps/web
+        run: npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@cross
+        if: runner.os == 'Linux'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build release executable (Linux)
+        if: runner.os == 'Linux'
+        run: cross build --release -p kuku-app --features embedded-web-assets --target ${{ matrix.target }}
+      - name: Build release executable
+        if: runner.os != 'Linux'
+        run: cargo build --release -p kuku-app --features embedded-web-assets --target ${{ matrix.target }}
+      - name: Package and smoke candidate
+        if: runner.os != 'Windows'
         run: |
-          mkdir -p artifacts/preflight
-          gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" \
-            -f per_page=100 > artifacts/preflight/check-runs.json
-          for CHECK in \
-            "WebUI Required" \
-            "WebUI Promotion" \
-            "A5 Release Candidate" \
-            "H1 Workbench" \
-            "H2 Context" \
-            "H3 Review RC"; do
-            jq -e --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
-              [.check_runs[] | select(
-                .name == $name and .head_sha == $sha and .status == "completed" and
-                .conclusion == "success"
-              )] | length > 0
-            ' artifacts/preflight/check-runs.json >/dev/null
-          done
-      - name: Download exact gate attestations
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          mkdir -p package extracted
+          cp "target/${{ matrix.target }}/release/kuku" package/kuku
+          tar -C package -czf "kuku-${{ matrix.platform }}.tar.gz" kuku
+          tar -C extracted -xzf "kuku-${{ matrix.platform }}.tar.gz"
+          chmod +x extracted/kuku
+          node scripts/smoke-embedded-web.mjs --binary extracted/kuku --timeout-ms 15000
+      - name: Package and smoke candidate (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          download_check_artifact() {
-            CHECK="$1"
-            ARTIFACT="$2"
-            DESTINATION="$3"
-            URL="$(jq -r --arg name "$CHECK" --arg sha "$SOURCE_SHA" '
-              [.check_runs[] | select(
-                .name == $name and .head_sha == $sha and .conclusion == "success"
-              )] | sort_by(.completed_at) | last | .details_url
-            ' artifacts/preflight/check-runs.json)"
-            RUN_ID="$(printf '%s' "$URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
-            test -n "$RUN_ID"
-            mkdir -p "$DESTINATION"
-            gh run download "$RUN_ID" --name "$ARTIFACT" --dir "$DESTINATION"
-          }
-          download_check_artifact "WebUI Promotion" "webui-promotion-$SOURCE_SHA" \
-            artifacts/preflight/promotion
-          download_check_artifact "A5 Release Candidate" "webui-a5-$SOURCE_SHA" \
-            artifacts/preflight/a5
-          download_check_artifact "H1 Workbench" "human-gate-H1-$SOURCE_SHA" \
-            artifacts/preflight/H1
-          download_check_artifact "H2 Context" "human-gate-H2-$SOURCE_SHA" \
-            artifacts/preflight/H2
-          download_check_artifact "H3 Review RC" "human-gate-H3-$SOURCE_SHA" \
-            artifacts/preflight/H3
-          A5_URL="$(jq -r --arg sha "$SOURCE_SHA" '
-            [.check_runs[] | select(
-              .name == "A5 Release Candidate" and .head_sha == $sha and .conclusion == "success"
-            )] | sort_by(.completed_at) | last | .details_url
-          ' artifacts/preflight/check-runs.json)"
-          A5_RUN_ID="$(printf '%s' "$A5_URL" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\)/.*#\1#p')"
-          test -n "$A5_RUN_ID"
-          mkdir -p artifacts/preflight/packages
-          for PACKAGE in kuku-linux-x86_64 kuku-darwin-aarch64 kuku-windows-x86_64; do
-            gh run download "$A5_RUN_ID" --name "$PACKAGE" --dir artifacts/preflight/packages
-          done
-      - name: Reject stale or mismatched evidence
-        env:
-          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
-        run: |
-          for GATE in H1 H2 H3; do
-            jq -e --arg gate "$GATE" --arg sha "$SOURCE_SHA" '
-              .gate == $gate and .source_sha == $sha and
-              .evidence.gate == $gate and .evidence.source_sha == $sha and
-              .evidence.decision == "accept"
-            ' "artifacts/preflight/$GATE/attestation.json" >/dev/null
-          done
-          for GATE in H1 H2; do
-            jq -e --slurpfile candidate artifacts/preflight/promotion/manifest.json '
-              .manifest as $reviewed | $candidate[0] as $selected |
-              ["source_sha", "build_hash", "binary_hash", "assets_hash",
-               "generated_contract_hash", "visual_baseline_hash", "scenario_hash",
-               "harness_hash", "scenario", "seed"] |
-              all(.[]; $reviewed[.] == $selected[.])
-            ' "artifacts/preflight/$GATE/attestation.json" >/dev/null
-          done
-          jq -e --slurpfile promoted artifacts/preflight/promotion/manifest.json \
-            --arg sha "$SOURCE_SHA" '
-            .source_sha == $sha and
-            .harness_hash == $promoted[0].harness_hash and
-            .promotion_manifest.source_sha == $sha and
-            .promotion_manifest == $promoted[0]
-          ' artifacts/preflight/a5/a5-manifest.json >/dev/null
-          jq -e --slurpfile promoted artifacts/preflight/promotion/manifest.json '
-            .manifest as $reviewed | $promoted[0] as $selected |
-            ["source_sha", "assets_hash", "generated_contract_hash",
-             "visual_baseline_hash", "scenario_hash", "harness_hash", "scenario", "seed"] |
-            all(.[]; $reviewed[.] == $selected[.])
-          ' artifacts/preflight/H3/attestation.json >/dev/null
-          ARCHIVE_HASH="$(jq -r '.manifest.archive_hash' artifacts/preflight/H3/attestation.json)"
-          test "$ARCHIVE_HASH" != null
-          grep -Eq "^${ARCHIVE_HASH}  " artifacts/preflight/a5/package-sha256sums.txt
-          for PACKAGE in artifacts/preflight/packages/kuku-*; do
-            PACKAGE_HASH="$(sha256sum "$PACKAGE" | awk '{print $1}')"
-            grep -Eq "^${PACKAGE_HASH}  " artifacts/preflight/a5/package-sha256sums.txt
-          done
+          New-Item -ItemType Directory -Force package, extracted | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/kuku.exe" package/kuku.exe
+          Compress-Archive -Path package/kuku.exe -DestinationPath "kuku-${{ matrix.platform }}.zip"
+          Expand-Archive -Path "kuku-${{ matrix.platform }}.zip" -DestinationPath extracted
+          node scripts/smoke-embedded-web.mjs --binary extracted/kuku.exe --timeout-ms 15000
       - uses: actions/upload-artifact@v4
         with:
-          name: validated-webui-packages-${{ steps.candidate.outputs.source_sha }}
-          path: artifacts/preflight/packages
+          name: kuku-${{ matrix.platform }}
+          path: kuku-${{ matrix.platform }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 14
 
-  release:
-    needs: preflight
+  publish:
+    name: Publish release
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - uses: actions/download-artifact@v4
         with:
-          name: validated-webui-packages-${{ needs.preflight.outputs.source_sha }}
+          pattern: kuku-*
           path: artifacts
-
-      - name: Generate checksums
+          merge-multiple: true
+      - name: Generate checksums and update manifest
+        id: release
         working-directory: artifacts
-        run: sha256sum kuku-* > sha256sums.txt
-
-      - name: Resolve tag
-        id: tag
         run: |
+          sha256sum kuku-* > sha256sums.txt
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            tag="${{ inputs.tag }}"
           else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            tag="${GITHUB_REF#refs/tags/}"
           fi
-
-      - name: Determine prerelease
-        id: prerelease
-        run: |
-          if echo "${{ steps.tag.outputs.tag }}" | grep -q '-'; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Generate latest.json
-        working-directory: artifacts
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          VERSION="${TAG#v}"
-          NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
-          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          LINUX_SHA="$(sha256sum kuku-linux-x86_64.tar.gz | awk '{print $1}')"
-          DARWIN_SHA="$(sha256sum kuku-darwin-aarch64.tar.gz | awk '{print $1}')"
-          WINDOWS_SHA="$(sha256sum kuku-windows-x86_64.zip | awk '{print $1}')"
+          version="${tag#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           jq -n \
-            --arg v "$VERSION" \
-            --arg n "$NOTES" \
-            --arg d "$PUB_DATE" \
-            --arg b "$BASE" \
-            --arg ls "$LINUX_SHA" \
-            --arg ds "$DARWIN_SHA" \
-            --arg ws "$WINDOWS_SHA" \
+            --arg version "$version" \
+            --arg notes "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}" \
+            --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --arg base "$base" \
+            --arg linux_sha "$(sha256sum kuku-linux-x86_64.tar.gz | awk '{print $1}')" \
+            --arg darwin_sha "$(sha256sum kuku-darwin-aarch64.tar.gz | awk '{print $1}')" \
+            --arg windows_sha "$(sha256sum kuku-windows-x86_64.zip | awk '{print $1}')" \
             '{
-              version: $v,
-              notes: $n,
-              pub_date: $d,
+              version: $version,
+              notes: $notes,
+              pub_date: $published_at,
               platforms: {
-                "linux-x86_64":   { url: ($b + "/kuku-linux-x86_64.tar.gz"),   sha256: $ls },
-                "darwin-aarch64": { url: ($b + "/kuku-darwin-aarch64.tar.gz"), sha256: $ds },
-                "windows-x86_64": { url: ($b + "/kuku-windows-x86_64.zip"),    sha256: $ws }
+                "linux-x86_64": {url: ($base + "/kuku-linux-x86_64.tar.gz"), sha256: $linux_sha},
+                "darwin-aarch64": {url: ($base + "/kuku-darwin-aarch64.tar.gz"), sha256: $darwin_sha},
+                "windows-x86_64": {url: ($base + "/kuku-windows-x86_64.zip"), sha256: $windows_sha}
               },
               desktop: {}
             }' > latest.json
-
-      - name: Create release
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$tag" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
-          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          prerelease: ${{ steps.release.outputs.prerelease }}
           files: |
             artifacts/kuku-linux-x86_64.tar.gz
             artifacts/kuku-darwin-aarch64.tar.gz

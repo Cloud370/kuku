@@ -37,3 +37,5 @@ For docs-only work, still verify the pages you changed by reading them back and 
 `cargo clippy -- -D warnings` is part of the contract. If a lint must be allowed, document the reason inline at the allow site.
 
 See [Development](development.md) for the general workflow and [Code Style](code-style.md) for code-level rules.
+For Web UI commands, embedded-browser coverage, and browser-diagnostic rules, see
+[Web UI Development](web-ui.md).

@@ -37,3 +37,4 @@ cargo test -p kuku -p kuku-cli -p kuku-server
 `cargo clippy -- -D warnings` 是契约的一部分。如果某个 lint 必须允许，请在允许位置内联说明理由。
 
 通用工作流见 [Development](development.md)，代码层级规则见 [Code Style](code-style.md)。
+Web UI 命令、内嵌浏览器覆盖和诊断产物规则见 [Web UI 开发](web-ui.md)。

@@ -46,4 +46,5 @@ Use the default glibc target for normal development. Use the musl release path o
 
 Default to Linux, Windows 10+, and macOS. Avoid shell-specific behavior in product code. Normalize paths with `std::path::Component` rather than string slicing.
 
-Use [Code Style](code-style.md), [Testing](testing.md), and [Release](release.md) as the concrete working rules.
+Use [Web UI Development](web-ui.md), [Code Style](code-style.md), [Testing](testing.md), and
+[Release](release.md) as the concrete working rules.

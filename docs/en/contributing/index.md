@@ -5,6 +5,7 @@ Use this section when working on the repository itself.
 ## Pages
 
 - [Development](development.md)
+- [Web UI Development](web-ui.md)
 - [Code Style](code-style.md)
 - [Testing](testing.md)
 - [Release](release.md)
