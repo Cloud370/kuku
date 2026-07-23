@@ -89,6 +89,7 @@ async fn registration_blocks_snapshots_until_revision_is_published() {
     assert_eq!(revision.current().await.unwrap(), page.server_revision);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn task_query_rejects_a_replaced_registered_workspace_root() {
     let home = tempfile::tempdir().unwrap();

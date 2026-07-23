@@ -19,6 +19,19 @@ struct CancellingSink {
 
 struct SilentSink;
 
+#[test]
+fn execution_path_rejects_a_different_directory_identity() {
+    let workspace = tempfile::tempdir().unwrap();
+    let replacement = tempfile::tempdir().unwrap();
+    let directory =
+        Arc::new(Dir::open_ambient_dir(workspace.path(), cap_std::ambient_authority()).unwrap());
+    let root = IdentityBoundProcessRoot::new(directory, replacement.path().to_path_buf()).unwrap();
+
+    let error = root.verify_execution_path().unwrap_err();
+
+    assert_eq!(error.code(), crate::api::ApiErrorCode::WorkspaceUnavailable);
+}
+
 #[cfg(unix)]
 struct ProcessTreeBarrierSink {
     started: Option<tokio::sync::oneshot::Sender<(i32, i32)>>,
