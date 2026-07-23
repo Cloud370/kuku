@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::io::{self, Read};
+#[cfg(unix)]
+use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
@@ -8,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cap_std::fs::{Dir, Metadata, MetadataExt};
+use cap_std::fs::{Dir, Metadata};
 use tokio::sync::mpsc;
 
 use crate::api::{ApiError, ApiErrorCode};
@@ -746,25 +748,13 @@ fn resume_suspended_process(process_id: u32) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn identity_from_metadata(metadata: &Metadata) -> Result<FileIdentity, ApiError> {
+    use cap_fs_ext::MetadataExt;
+
     Ok(FileIdentity {
         first: metadata.dev(),
         second: metadata.ino(),
-    })
-}
-
-#[cfg(windows)]
-fn identity_from_metadata(metadata: &Metadata) -> Result<FileIdentity, ApiError> {
-    let first = metadata
-        .volume_serial_number()
-        .ok_or_else(|| unavailable("workspace volume identity is unavailable"))?;
-    let second = metadata
-        .file_index()
-        .ok_or_else(|| unavailable("workspace file identity is unavailable"))?;
-    Ok(FileIdentity {
-        first: u64::from(first),
-        second,
     })
 }
 

@@ -2,11 +2,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-fn private_file(file: &File) -> io::Result<()> {
+fn private_file(_file: &File) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        _file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }

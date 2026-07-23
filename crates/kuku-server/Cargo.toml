@@ -33,6 +33,7 @@ schemars = { workspace = true }
 getrandom = { workspace = true }
 typed-path = { workspace = true }
 cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
 fslock = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }

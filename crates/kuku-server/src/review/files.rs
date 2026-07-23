@@ -893,19 +893,11 @@ fn validate_prefix(prefix: &str, limits: &ReviewLimits) -> Result<(), ApiError> 
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn same_identity(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
-    use cap_std::fs::MetadataExt;
+    use cap_fs_ext::MetadataExt;
 
     left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(windows)]
-fn same_identity(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
-    use cap_std::fs::MetadataExt;
-
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
 }
 
 #[cfg(not(any(unix, windows)))]
