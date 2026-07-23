@@ -7,6 +7,9 @@ import path from 'node:path';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    chunkSizeWarningLimit: 1200,
+  },
   optimizeDeps: {
     include: ['aria-query', 'lz-string', 'marked', 'pretty-format', 'storybook/test'],
   },

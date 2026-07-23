@@ -3,7 +3,11 @@ import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { expect, test, type UnifiedBinary } from './fixtures/unifiedBinary';
 import { expectNoProductOverflow, firstTaskId, openAuthenticatedRoute } from './fixtures/journey';
 import { taskPage } from './fixtures/productApi';
-import { failScenarioBarrier, releaseScenarioBarrier } from './fixtures/scenarioControl';
+import {
+  failScenarioBarrier,
+  releaseScenarioBarrier,
+  SCENARIO_SETTLE_TIMEOUT_MS,
+} from './fixtures/scenarioControl';
 
 async function expectFocusInside(page: Page, surface: Locator): Promise<void> {
   expect(
@@ -178,7 +182,7 @@ test('announces Run, interaction, and completion changes politely without usage 
   await interaction.getByRole('button').first().click();
   await expect(interaction).toContainText('Resolved');
   await releaseScenarioBarrier(request, unifiedBinary, 'continuity-before-finish');
-  await expect(live).toContainText(/run completed/i);
+  await expect(live).toContainText(/run completed/i, { timeout: SCENARIO_SETTLE_TIMEOUT_MS });
   await expectNoUsageAnnouncements(page);
   await context.close();
 });

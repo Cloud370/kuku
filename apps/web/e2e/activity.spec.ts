@@ -1,7 +1,10 @@
 import { expect, test } from './fixtures/unifiedBinary';
 import { firstTaskId, openAuthenticatedRoute } from './fixtures/journey';
 import { contextSnapshot, taskProjection, timelinePage } from './fixtures/productApi';
-import { releaseScenarioBarrier } from './fixtures/scenarioControl';
+import {
+  releaseScenarioBarrier,
+  SCENARIO_SETTLE_TIMEOUT_MS,
+} from './fixtures/scenarioControl';
 
 async function durableInteractionReceipt(
   request: Parameters<typeof timelinePage>[0],
@@ -55,13 +58,16 @@ test('shows ordered activity and a server-owned interaction without inventing a 
   await choice.click();
   await expect(interaction).toContainText('Resolved');
   await expect
-    .poll(async () => {
-      const current = await taskProjection(request, unifiedBinary, taskId);
-      return current.timeline.some(
-        ({ type, item }) =>
-          type === 'activity' && 'kind' in item && item.kind === 'delegated_agent',
-      );
-    })
+    .poll(
+      async () => {
+        const current = await taskProjection(request, unifiedBinary, taskId);
+        return current.timeline.some(
+          ({ type, item }) =>
+            type === 'activity' && 'kind' in item && item.kind === 'delegated_agent',
+        );
+      },
+      { timeout: SCENARIO_SETTLE_TIMEOUT_MS },
+    )
     .toBeTruthy();
   expect(await durableInteractionReceipt(request, unifiedBinary, taskId)).toEqual({
     choice: 'approve',

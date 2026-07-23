@@ -59,9 +59,14 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: taiki-e/install-action@cross
         if: runner.os == 'Linux'
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v6
         with:
-          key: release-${{ matrix.target }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-${{ matrix.target }}-
       - name: Build release executable (Linux)
         if: runner.os == 'Linux'
         run: cross build --release -p kuku-app --features embedded-web-assets --target ${{ matrix.target }}

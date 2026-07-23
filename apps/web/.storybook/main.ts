@@ -7,6 +7,20 @@ const config: StorybookConfig = {
     name: '@storybook/react-vite',
     options: {},
   },
+  viteFinal: async (config) => ({
+    ...config,
+    build: {
+      ...config.build,
+      chunkSizeWarningLimit: 1200,
+      rolldownOptions: {
+        ...config.build?.rolldownOptions,
+        checks: {
+          ...config.build?.rolldownOptions?.checks,
+          pluginTimings: false,
+        },
+      },
+    },
+  }),
 };
 
 export default config;

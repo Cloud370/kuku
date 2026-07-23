@@ -6,7 +6,10 @@ import type {
   SubmitRunResponse,
 } from '../src/api/generated';
 import { taskProjection, workspacePage } from './fixtures/productApi';
-import { releaseScenarioBarrier } from './fixtures/scenarioControl';
+import {
+  releaseScenarioBarrier,
+  SCENARIO_SETTLE_TIMEOUT_MS,
+} from './fixtures/scenarioControl';
 
 test('an independent phone follows the same committed task after desktop closes', async ({
   browser,
@@ -98,6 +101,7 @@ test('an independent phone follows the same committed task after desktop closes'
   await releaseScenarioBarrier(request, unifiedBinary, 'continuity-before-finish');
   await expect(phonePage.getByRole('status', { name: 'Run status' })).toContainText(
     /run completed/i,
+    { timeout: SCENARIO_SETTLE_TIMEOUT_MS },
   );
   const terminal = await taskProjection(request, unifiedBinary, taskId);
   expect(terminal.latest_run?.run_id).toBe(accepted.run_id);

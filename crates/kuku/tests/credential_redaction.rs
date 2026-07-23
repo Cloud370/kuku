@@ -44,7 +44,8 @@ fn nested_debug_redacts_direct_credential_value() {
 
 #[test]
 fn tagged_credentials_preserve_direct_and_environment_sources_across_reopen() {
-    let home = std::env::var("HOME").expect("HOME must be set for this test");
+    const ENVIRONMENT_VALUE: &str = "environment-secret";
+    std::env::set_var("KUKU_TEST_CREDENTIAL_VALUE", ENVIRONMENT_VALUE);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -72,7 +73,7 @@ credential = { source = "direct_value", value = "$HOME" }
 [provider.environment]
 format = "openai-responses"
 base_url = "https://example.com"
-credential = { source = "environment_reference", value = "HOME" }
+credential = { source = "environment_reference", value = "KUKU_TEST_CREDENTIAL_VALUE" }
 "#,
     )
     .unwrap();
@@ -95,7 +96,7 @@ credential = { source = "environment_reference", value = "HOME" }
         .unwrap();
 
     assert_eq!("$HOME", direct.expose());
-    assert_eq!(home, environment.expose());
+    assert_eq!(ENVIRONMENT_VALUE, environment.expose());
 }
 
 #[test]

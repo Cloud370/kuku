@@ -3,6 +3,8 @@ import { expect, type APIRequestContext } from '@playwright/test';
 import type { InteractionResponseRequest, TaskProjection } from '../../src/api/generated';
 import type { UnifiedBinary } from './unifiedBinary';
 
+export const SCENARIO_SETTLE_TIMEOUT_MS = 30_000;
+
 function controlHeaders(server: UnifiedBinary): Record<string, string> {
   return { Authorization: `Bearer ${server.credential}` };
 }
@@ -105,6 +107,8 @@ export async function completeScenario(
   await respondToPendingInteraction(request, server);
   await releaseScenarioBarrier(request, server, 'continuity-before-finish');
   await expect
-    .poll(async () => (await projection(request, server)).task.state)
+    .poll(async () => (await projection(request, server)).task.state, {
+      timeout: SCENARIO_SETTLE_TIMEOUT_MS,
+    })
     .toMatch(/completed|stopped|failed|interrupted/);
 }

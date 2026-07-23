@@ -9,7 +9,11 @@ import type {
 import { expect, test, type UnifiedBinary } from './fixtures/unifiedBinary';
 import { firstTaskId, openAuthenticatedRoute } from './fixtures/journey';
 import { taskProjection, timelinePage } from './fixtures/productApi';
-import { releaseScenarioBarrier, respondToPendingInteraction } from './fixtures/scenarioControl';
+import {
+  releaseScenarioBarrier,
+  respondToPendingInteraction,
+  SCENARIO_SETTLE_TIMEOUT_MS,
+} from './fixtures/scenarioControl';
 
 function timelineId(item: TimelineItemProjection): string {
   if (item.type === 'message') return `message:${item.item.message_id}`;
@@ -101,15 +105,18 @@ test('prepends authoritative history without duplicating the newest timeline win
   for (const id of authoritativeIds) expect(newestIds.has(id), `overlap ${id}`).toBeFalsy();
 
   await expect
-    .poll(async () => {
-      const projection = await taskProjection(request, unifiedBinary, appended.task_id);
-      const item = projection.timeline.find(
-        (candidate) =>
-          candidate.type === 'message' &&
-          candidate.item.text === 'Concurrent live append during history pagination',
-      );
-      return item === undefined ? null : { item, projection };
-    })
+    .poll(
+      async () => {
+        const projection = await taskProjection(request, unifiedBinary, appended.task_id);
+        const item = projection.timeline.find(
+          (candidate) =>
+            candidate.type === 'message' &&
+            candidate.item.text === 'Concurrent live append during history pagination',
+        );
+        return item === undefined ? null : { item, projection };
+      },
+      { timeout: SCENARIO_SETTLE_TIMEOUT_MS },
+    )
     .not.toBeNull();
   const preserved = timeline.locator(`[data-timeline-id=${JSON.stringify(anchorId)}]`);
   await expect(preserved).toBeVisible();
