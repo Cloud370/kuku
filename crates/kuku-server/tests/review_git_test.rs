@@ -638,7 +638,7 @@ async fn revision_deadline_is_shared_by_probe_and_all_git_commands() {
     let repo = Repository::new().await;
     repo.write("slow.txt", "content\n");
     let limits = ReviewLimits {
-        revision_deadline: std::time::Duration::from_millis(1),
+        revision_deadline: std::time::Duration::from_nanos(1),
         ..ReviewLimits::default()
     };
     let service = GitReviewService::new(repo.capability.clone(), limits);
