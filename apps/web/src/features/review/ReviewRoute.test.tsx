@@ -529,8 +529,10 @@ describe('ReviewRoute', () => {
       />,
     );
 
-    expect(screen.queryByRole('button', { name: 'Add annotation' })).toBeNull();
-    expect(screen.getByText('Select a file')).toBeVisible();
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Add annotation' })).toBeNull();
+      expect(screen.getByText('Select a file')).toBeVisible();
+    });
   });
 });
 

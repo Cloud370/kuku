@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -281,8 +281,10 @@ describe('Composer', () => {
         })}
       />,
     );
-    resolveSubmit?.();
-    await Promise.resolve();
+    await act(async () => {
+      resolveSubmit?.();
+      await Promise.resolve();
+    });
 
     expect(onDraftChange).not.toHaveBeenCalled();
   });
