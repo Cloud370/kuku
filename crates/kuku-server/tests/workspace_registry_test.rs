@@ -314,13 +314,8 @@ async fn query_capability_prevents_workspace_root_replacement() {
         capability.read_file("identity.txt", 1024).unwrap(),
         b"original"
     );
-    capability
-        .write_file("created.txt", b"capability", 1024)
-        .unwrap();
-    assert_eq!(
-        std::fs::read_to_string(root.join("created.txt")).unwrap(),
-        "capability"
-    );
+    let entries = capability.list_entries(".", 100).unwrap();
+    assert!(entries.iter().any(|entry| entry.path == "identity.txt"));
     assert!(!displaced.exists());
 }
 
