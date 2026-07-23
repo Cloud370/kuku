@@ -7,9 +7,11 @@ use kuku::{WorkspaceCommandRequest, WorkspaceQueryCapability};
 use kuku_server::api::{
     ApiError, ApiErrorCode, RegisterWorkspaceRequest, RemoveWorkspaceRequest, WorkspaceAvailability,
 };
+#[cfg(unix)]
+use kuku_server::platform::{ProcessChunk, ProcessChunkSink, ProcessLimits, RootCommand};
 use kuku_server::platform::{
-    ProcessChunk, ProcessChunkSink, ProcessLimits, RegistrationRootRegistry, RegistrationRootSpec,
-    RootCommand, ServerRevisionCoordinator, WorkspaceRegistry, WorkspaceUsagePort,
+    RegistrationRootRegistry, RegistrationRootSpec, ServerRevisionCoordinator, WorkspaceRegistry,
+    WorkspaceUsagePort,
 };
 
 struct UsageFixture {
@@ -17,12 +19,15 @@ struct UsageFixture {
 }
 
 #[derive(Default)]
+#[cfg(unix)]
 struct ChunkFixture {
     chunks: Vec<ProcessChunk>,
 }
 
+#[cfg(unix)]
 struct RejectingChunkFixture;
 
+#[cfg(unix)]
 impl ProcessChunkSink for ChunkFixture {
     fn push<'a>(
         &'a mut self,
@@ -35,6 +40,7 @@ impl ProcessChunkSink for ChunkFixture {
     }
 }
 
+#[cfg(unix)]
 impl ProcessChunkSink for RejectingChunkFixture {
     fn push<'a>(
         &'a mut self,
@@ -431,6 +437,7 @@ async fn query_capability_uses_the_sdk_portable_relative_path_rules() {
 async fn registry_rejects_lexical_escape_duplicates_and_symlinks() {
     let home = tempfile::tempdir().unwrap();
     let allowed = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
     let outside = tempfile::tempdir().unwrap();
     std::fs::create_dir(allowed.path().join("project")).unwrap();
     let usage = Arc::new(UsageFixture {

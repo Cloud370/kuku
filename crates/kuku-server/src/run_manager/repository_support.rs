@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::fs::File;
 use std::hash::Hash;
 use std::path::{Component, Path, PathBuf};
@@ -22,10 +23,16 @@ pub(super) fn valid_task_component(task_id: &TaskId) -> bool {
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
+#[cfg(unix)]
 pub(super) fn sync_directory(path: &Path) -> Result<(), DomainError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| DomainError::LedgerCorrupt)
+}
+
+#[cfg(not(unix))]
+pub(super) fn sync_directory(_path: &Path) -> Result<(), DomainError> {
+    Ok(())
 }
 
 pub(super) fn shared_state(root: &Path) -> Arc<RepositoryState> {
