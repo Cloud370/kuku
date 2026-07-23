@@ -12,7 +12,7 @@ test.skip(
   'release-package checks require an extracted production-feature binary',
 );
 
-test('runs packaged Workbench, Composer, Review, Settings, and Guide behavior', async ({
+test('@release runs packaged Workbench, Composer, Review, Settings, and Guide behavior', async ({
   browser,
   request,
   unifiedBinary,
@@ -77,7 +77,7 @@ test('runs packaged Workbench, Composer, Review, Settings, and Guide behavior', 
   await context.close();
 });
 
-test('keeps packaged mobile drawers, Composer, Review notes, and viewport bounds usable', async ({
+test('@release keeps packaged mobile drawers, Composer, Review notes, and viewport bounds usable', async ({
   browser,
   request,
   unifiedBinary,

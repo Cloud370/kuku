@@ -50,7 +50,7 @@ async function completeLongScenario(
     .toMatch(/completed|stopped|failed|interrupted/);
 }
 
-test('keeps long history bounded while opaque pagination continues', async ({
+test('@extended keeps long history bounded while opaque pagination continues', async ({
   browser,
   request,
   unifiedBinary,

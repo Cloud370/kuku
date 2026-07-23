@@ -2,6 +2,16 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Validation profile
+        type: choice
+        options:
+          - fast
+          - full
+        default: fast
+  schedule:
+    - cron: "17 2 * * *"
   push:
     branches: [main]
     paths-ignore:
@@ -23,6 +33,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CI_PROFILE: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'full')) && 'full' || 'fast' }}
 
 permissions:
   contents: read
@@ -74,6 +85,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ github.job }}-
-      - run: cargo test -p kuku -p kuku-cli -p kuku-server
+          key: cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-
+      - name: Run full Rust test suite
+        if: runner.os == 'Linux' || env.CI_PROFILE == 'full'
+        run: cargo test -p kuku -p kuku-cli -p kuku-server
+      - name: Run native platform smoke tests
+        if: runner.os != 'Linux' && env.CI_PROFILE == 'fast'
+        run: |
+          cargo test -p kuku-server --test platform_bootstrap_test --test platform_contract_test --test platform_routes_test --test platform_security_test --test workspace_registry_test
+          cargo test -p kuku --test session_paths --test workspace_capability_access
+          cargo test -p kuku-cli --lib

@@ -91,6 +91,22 @@ jobs:
           Compress-Archive -Path package/kuku.exe -DestinationPath "kuku-${{ matrix.platform }}.zip"
           Expand-Archive -Path "kuku-${{ matrix.platform }}.zip" -DestinationPath extracted
           node scripts/smoke-embedded-web.mjs --binary extracted/kuku.exe --timeout-ms 15000
+      - uses: actions/cache@v6
+        if: runner.os == 'Linux'
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-release-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Install release browser engines
+        if: runner.os == 'Linux'
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium webkit
+      - name: Run packaged browser journeys
+        if: runner.os == 'Linux'
+        working-directory: apps/web
+        env:
+          KUKU_E2E_BINARY: ${{ github.workspace }}/extracted/kuku
+          KUKU_E2E_RELEASE_PACKAGE: "1"
+        run: npm run test:e2e -- release-package.spec.ts --project=chromium --project=webkit-360 --ignore-snapshots --grep @release
       - uses: actions/upload-artifact@v7
         with:
           name: kuku-${{ matrix.platform }}

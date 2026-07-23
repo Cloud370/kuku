@@ -2,6 +2,16 @@ name: WebUI CI
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Validation profile
+        type: choice
+        options:
+          - fast
+          - full
+        default: fast
+  schedule:
+    - cron: "47 2 * * *"
   push:
     branches: [main]
     paths:
@@ -29,6 +39,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  WEBUI_PROFILE: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'full')) && 'full' || 'fast' }}
 
 concurrency:
   group: webui-${{ github.workflow }}-${{ github.ref }}
@@ -94,6 +107,10 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
         working-directory: apps/web
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
       - run: npm run typecheck
@@ -122,7 +139,6 @@ jobs:
   embedded-chromium:
     name: A3 Embedded Chromium
     runs-on: ubuntu-latest
-    needs: [contract, deterministic-backend, web-static]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -141,6 +157,10 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ github.job }}-
       - run: npm ci
         working-directory: apps/web
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
       - run: npm run build
@@ -148,7 +168,12 @@ jobs:
       - run: cargo build -p kuku-app --features embedded-web-assets,test-scenarios
       - name: Run embedded Chromium journeys
         working-directory: apps/web
-        run: npm run test:e2e -- --project=chromium --ignore-snapshots
+        run: |
+          if [ "$WEBUI_PROFILE" = full ]; then
+            npm run test:e2e -- --project=chromium --ignore-snapshots --grep-invert @release
+          else
+            npm run test:e2e -- --project=chromium --ignore-snapshots --grep-invert '@extended|@release'
+          fi
       - name: Upload A3 failures
         if: failure()
         uses: actions/upload-artifact@v7
