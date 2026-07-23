@@ -15,6 +15,8 @@ import {
   SCENARIO_SETTLE_TIMEOUT_MS,
 } from './fixtures/scenarioControl';
 
+test.use({ scenarioName: 'full_task' });
+
 function timelineId(item: TimelineItemProjection): string {
   if (item.type === 'message') return `message:${item.item.message_id}`;
   if (item.type === 'activity') return `activity:${item.item.activity_id}`;

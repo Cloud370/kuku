@@ -65,6 +65,7 @@ interface DeterministicProvider {
 }
 
 type TestFixtures = {
+  scenarioName: 'full_task' | 'full_task_compact';
   unifiedBinary: UnifiedBinary;
   workspaces: WorkspaceFixtures;
 };
@@ -395,12 +396,15 @@ async function initializeScenario(
   return { runId: accepted.run_id, taskId: accepted.task_id };
 }
 
-function serverEnvironment(releasePackage: boolean): NodeJS.ProcessEnv {
+function serverEnvironment(
+  releasePackage: boolean,
+  scenarioName: TestFixtures['scenarioName'],
+): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   delete environment.KUKU_TEST_SCENARIO;
   delete environment.KUKU_TEST_SEED;
   if (!releasePackage) {
-    environment.KUKU_TEST_SCENARIO = 'full_task';
+    environment.KUKU_TEST_SCENARIO = scenarioName;
     environment.KUKU_TEST_SEED = '7';
   }
   environment.NO_PROXY = '127.0.0.1,localhost';
@@ -434,7 +438,7 @@ export async function startFreshUnifiedBinary(
     ],
     {
       cwd: REPOSITORY_ROOT,
-      env: { ...serverEnvironment(true), KUKU_HOME: home },
+      env: { ...serverEnvironment(true, 'full_task_compact'), KUKU_HOME: home },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     },
@@ -487,6 +491,7 @@ async function stopProcess(child: ChildProcess): Promise<void> {
 }
 
 export const test = baseTest.extend<TestFixtures>({
+  scenarioName: ['full_task_compact', { option: true }],
   workspaces: [
     async ({ browserName: _browserName }, use, workerInfo) => {
       const root = await mkdtemp(join(tmpdir(), `kuku-e2e-${String(workerInfo.workerIndex)}-`));
@@ -500,7 +505,7 @@ export const test = baseTest.extend<TestFixtures>({
     { scope: 'test' },
   ],
   unifiedBinary: [
-    async ({ workspaces }, use, workerInfo) => {
+    async ({ scenarioName, workspaces }, use, workerInfo) => {
       const releasePackage = process.env.KUKU_E2E_RELEASE_PACKAGE === '1';
       const home = await mkdtemp(join(tmpdir(), `kuku-home-${String(workerInfo.workerIndex)}-`));
       const credentialFile = join(home, 'e2e-credential');
@@ -524,7 +529,7 @@ export const test = baseTest.extend<TestFixtures>({
         ],
         {
           cwd: REPOSITORY_ROOT,
-          env: { ...serverEnvironment(releasePackage), KUKU_HOME: home },
+          env: { ...serverEnvironment(releasePackage, scenarioName), KUKU_HOME: home },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
         },
@@ -556,7 +561,7 @@ export const test = baseTest.extend<TestFixtures>({
           home,
           releasePackage,
           scenario: {
-            name: releasePackage ? 'release_package' : 'full_task',
+            name: releasePackage ? 'release_package' : scenarioName,
             runId: scenario.runId,
             seed: releasePackage ? 0 : 7,
             taskId: scenario.taskId,

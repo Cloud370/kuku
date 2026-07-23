@@ -415,6 +415,23 @@ fn feature_scenarios_include_required_runtime_inputs() {
 }
 
 #[test]
+fn compact_full_task_scenario_omits_long_history() {
+    let factory = ScenarioDriverFactory::from_fixture("full_task_compact", 11).unwrap();
+
+    assert_eq!("full_task_compact", factory.fixture().name);
+    assert!(factory
+        .fixture()
+        .events
+        .iter()
+        .any(|event| matches!(event, DriverEvent::Interaction { .. })));
+    assert!(!factory
+        .fixture()
+        .events
+        .iter()
+        .any(|event| matches!(event, DriverEvent::TimelineHistory { .. })));
+}
+
+#[test]
 fn ledger_replay_rebuilds_projection_before_newer_record() {
     let records = [
         (Cursor::try_new(1).unwrap(), created_record()),

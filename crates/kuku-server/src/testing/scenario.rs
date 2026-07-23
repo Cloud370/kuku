@@ -139,8 +139,9 @@ impl ScenarioFixture {
         let fixture = match name {
             "core_task" => serde_json::from_str(CORE_TASK_FIXTURE)
                 .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?,
-            "full_task" => feature_fixture(FULL_TASK_FIXTURE)?,
-            "human_acceptance" => feature_fixture(HUMAN_ACCEPTANCE_FIXTURE)?,
+            "full_task" => feature_fixture(FULL_TASK_FIXTURE, name, true)?,
+            "full_task_compact" => feature_fixture(FULL_TASK_FIXTURE, name, false)?,
+            "human_acceptance" => feature_fixture(HUMAN_ACCEPTANCE_FIXTURE, name, true)?,
             _ => return Err(ScenarioError::UnknownFixture(name.to_owned())),
         };
         fixture.validate(name)?;
@@ -210,9 +211,24 @@ struct FeatureTask {
     message: String,
 }
 
-fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioError> {
+fn feature_fixture(
+    source: &'static str,
+    name: &str,
+    include_long_history: bool,
+) -> Result<ScenarioFixture, ScenarioError> {
     let input: FeatureFixture = serde_json::from_str(source)
         .map_err(|error| ScenarioError::InvalidFixture(error.to_string()))?;
+    let source_name = if name == "full_task_compact" {
+        "full_task"
+    } else {
+        name
+    };
+    if input.name != source_name {
+        return Err(ScenarioError::InvalidFixture(format!(
+            "fixture name is {}, requested {source_name}",
+            input.name
+        )));
+    }
     let file = input.workspace.working_files.first();
     let path = file.map_or("README.md", |file| file.path.as_str());
     let arguments = ScenarioToolArguments {
@@ -238,47 +254,52 @@ fn feature_fixture(source: &'static str) -> Result<ScenarioFixture, ScenarioErro
         input.workspace.revision_update,
     );
     let _ = input.review;
+    let mut events = vec![
+        DriverEvent::AgentSkillLoaded {
+            skill_id: "skill:project:status".to_owned(),
+            source: skill_source,
+        },
+        DriverEvent::ProviderResponse {
+            text: format!("I will inspect the workspace for: {}", input.task.message),
+        },
+        DriverEvent::ToolCall {
+            name: "read_file".to_owned(),
+            arguments,
+        },
+        DriverEvent::Interaction {
+            name: "permission".to_owned(),
+            payload: serde_json::json!({
+                "prompt": "Permission request"
+            }),
+        },
+    ];
+    if include_long_history {
+        events.push(DriverEvent::TimelineHistory {
+            count: 10_000,
+            batch_size: 250,
+        });
+    }
+    events.extend([
+        DriverEvent::DelegatedConversation {
+            conversation_id: "scenario-helper".to_owned(),
+            summary: if observation.is_empty() {
+                "The workspace observation is empty.".to_owned()
+            } else {
+                "A deterministic helper inspected the workspace.".to_owned()
+            },
+        },
+        DriverEvent::Usage {
+            input_tokens: 5,
+            output_tokens: 10,
+        },
+        DriverEvent::ProviderResponse {
+            text: input.provider.response,
+        },
+    ]);
     Ok(ScenarioFixture {
-        name: input.name,
+        name: name.to_owned(),
         provider: input.provider.model,
-        events: vec![
-            DriverEvent::AgentSkillLoaded {
-                skill_id: "skill:project:status".to_owned(),
-                source: skill_source,
-            },
-            DriverEvent::ProviderResponse {
-                text: format!("I will inspect the workspace for: {}", input.task.message),
-            },
-            DriverEvent::ToolCall {
-                name: "read_file".to_owned(),
-                arguments,
-            },
-            DriverEvent::Interaction {
-                name: "permission".to_owned(),
-                payload: serde_json::json!({
-                    "prompt": "Permission request"
-                }),
-            },
-            DriverEvent::TimelineHistory {
-                count: 10_000,
-                batch_size: 250,
-            },
-            DriverEvent::DelegatedConversation {
-                conversation_id: "scenario-helper".to_owned(),
-                summary: if observation.is_empty() {
-                    "The workspace observation is empty.".to_owned()
-                } else {
-                    "A deterministic helper inspected the workspace.".to_owned()
-                },
-            },
-            DriverEvent::Usage {
-                input_tokens: 5,
-                output_tokens: 10,
-            },
-            DriverEvent::ProviderResponse {
-                text: input.provider.response,
-            },
-        ],
+        events,
         barriers: input.barriers,
     })
 }
@@ -405,7 +426,7 @@ impl ScenarioDriverFactory {
         let fixture = ScenarioFixture::embedded(name)?;
         let fixture_source = match name {
             "core_task" => CORE_TASK_FIXTURE,
-            "full_task" => FULL_TASK_FIXTURE,
+            "full_task" | "full_task_compact" => FULL_TASK_FIXTURE,
             "human_acceptance" => HUMAN_ACCEPTANCE_FIXTURE,
             _ => return Err(ScenarioError::UnknownFixture(name.to_owned())),
         };

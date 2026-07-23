@@ -6,6 +6,8 @@ import { firstTaskId, openAuthenticatedRoute } from './fixtures/journey';
 import { taskProjection, timelinePage } from './fixtures/productApi';
 import { releaseScenarioBarrier, respondToPendingInteraction } from './fixtures/scenarioControl';
 
+test.use({ scenarioName: 'full_task' });
+
 function timelineId(item: TimelineItemProjection): string {
   if (item.type === 'message') return `message:${item.item.message_id}`;
   if (item.type === 'activity') return `activity:${item.item.activity_id}`;
