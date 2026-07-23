@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewSubmissionPage } from '@/api/generated';
+import { WebApiError } from '../../api/client';
 
 import { SubmittedReviewNotes, type ReviewSubmissionSource } from './SubmittedReviewNotes';
 
@@ -39,6 +40,27 @@ function page(comment = 'Please rename this'): ReviewSubmissionPage {
 afterEach(cleanup);
 
 describe('SubmittedReviewNotes', () => {
+  it('retries transient review capacity errors before showing submissions', async () => {
+    const submissions = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new WebApiError(503, {
+          api_version: 1,
+          code: 'server_busy',
+          details: null,
+          message: 'review capacity is busy',
+          trace_id: 'review-service',
+        }),
+      )
+      .mockResolvedValueOnce(page());
+    const source: ReviewSubmissionSource = { submissions };
+
+    render(<SubmittedReviewNotes refreshKey={0} source={source} taskId={taskId} />);
+
+    expect(await screen.findByText('Please rename this')).toBeVisible();
+    expect(submissions).toHaveBeenCalledTimes(2);
+  });
+
   it('loads server-backed submissions and renders the follow-up Run', async () => {
     const source: ReviewSubmissionSource = { submissions: vi.fn().mockResolvedValue(page()) };
     render(<SubmittedReviewNotes refreshKey={0} source={source} taskId={taskId} />);

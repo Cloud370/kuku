@@ -3,6 +3,7 @@ import type { ReviewSubmissionProjection, RunId, TaskId } from '@/api/generated'
 import { webApi } from '../../api/client';
 
 import { mergeSubmissionPage } from './reviewSubmissionCache';
+import { retryReviewRead } from './retryReviewRead';
 
 export type ReviewSubmissionSource = Pick<typeof webApi.review, 'submissions'>;
 
@@ -27,8 +28,7 @@ export function SubmittedReviewNotes({
   useEffect(() => {
     let current = true;
     setState({ kind: 'loading' });
-    void source
-      .submissions(taskId, { cursor: null, limit: 50 })
+    void retryReviewRead(() => source.submissions(taskId, { cursor: null, limit: 50 }))
       .then((page) => {
         if (current) {
           setState({
@@ -48,7 +48,9 @@ export function SubmittedReviewNotes({
 
   async function loadMore() {
     if (state.kind !== 'ready' || state.nextCursor === null) return;
-    const page = await source.submissions(taskId, { cursor: state.nextCursor, limit: 50 });
+    const page = await retryReviewRead(() =>
+      source.submissions(taskId, { cursor: state.nextCursor, limit: 50 }),
+    );
     setState({
       items: mergeSubmissionPage(state.items, page),
       kind: 'ready',
