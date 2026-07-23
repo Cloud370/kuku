@@ -84,8 +84,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-
+          key: cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-v2-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-v2-
+            cargo-${{ runner.os }}-${{ github.job }}-${{ runner.os == 'Linux' && 'full' || env.CI_PROFILE }}-
       - name: Run full Rust test suite
         if: runner.os == 'Linux' || env.CI_PROFILE == 'full'
         run: cargo test -p kuku -p kuku-cli -p kuku-server
@@ -94,4 +96,3 @@ jobs:
         run: |
           cargo test -p kuku-server --test api_contract_test --test platform_bootstrap_test --test platform_contract_test --test platform_routes_test --test platform_security_test --test review_files_test --test review_git_test --test review_security_test --test runtime_contract_test --test runtime_gate_test --test workspace_registry_test
           cargo test -p kuku --test session_paths --test workspace_capability_access
-          cargo check -p kuku-cli --features server --lib

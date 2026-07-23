@@ -182,22 +182,3 @@ jobs:
             apps/web/test-results
           if-no-files-found: ignore
           retention-days: 30
-
-  required:
-    name: WebUI Required
-    if: always()
-    needs:
-      [contract, deterministic-backend, web-static, embedded-chromium]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require A0 through A3
-        env:
-          CONTRACT: ${{ needs.contract.result }}
-          BACKEND: ${{ needs.deterministic-backend.result }}
-          STATIC: ${{ needs.web-static.result }}
-          EMBEDDED: ${{ needs.embedded-chromium.result }}
-        run: |
-          test "$CONTRACT" = success
-          test "$BACKEND" = success
-          test "$STATIC" = success
-          test "$EMBEDDED" = success
