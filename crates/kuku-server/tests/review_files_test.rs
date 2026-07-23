@@ -2,6 +2,8 @@
 
 use std::fs::{File, FileTimes};
 use std::future::Future;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -60,6 +62,38 @@ struct TestWorkspace {
     project: std::path::PathBuf,
     workspace_id: WorkspaceId,
     provider: Arc<RegistryProvider>,
+}
+
+#[cfg(windows)]
+fn create_sparse_file(path: &std::path::Path, length: u64) -> File {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    let file = File::create(path).unwrap();
+    let mut returned = 0;
+    let result = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle() as _,
+            FSCTL_SET_SPARSE,
+            null(),
+            0,
+            null_mut(),
+            0,
+            &mut returned,
+            null_mut(),
+        )
+    };
+    assert_ne!(result, 0, "could not mark test file sparse");
+    file.set_len(length).unwrap();
+    file
+}
+
+#[cfg(not(windows))]
+fn create_sparse_file(path: &std::path::Path, length: u64) -> File {
+    let file = File::create(path).unwrap();
+    file.set_len(length).unwrap();
+    file
 }
 
 impl TestWorkspace {
@@ -399,10 +433,7 @@ async fn file_revision_overflow_returns_no_partial_content() {
 async fn sparse_huge_file_rejects_before_full_size_allocation() {
     let workspace = TestWorkspace::new().await;
     std::fs::create_dir(workspace.project.join("root")).unwrap();
-    File::create(workspace.project.join("root/sparse.bin"))
-        .unwrap()
-        .set_len(1_u64 << 40)
-        .unwrap();
+    create_sparse_file(&workspace.project.join("root/sparse.bin"), 1_u64 << 40);
 
     let error = workspace
         .service()
