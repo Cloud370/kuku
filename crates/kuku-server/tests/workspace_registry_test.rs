@@ -317,6 +317,7 @@ async fn capability_opens_and_enumerates_the_registered_workspace_root() {
     assert_eq!(vec![std::ffi::OsString::from("root-file.txt")], names);
 }
 
+#[cfg(unix)]
 #[test]
 fn process_limits_allow_bounded_review_streams_up_to_one_gibibyte() {
     assert!(ProcessLimits::new(std::time::Duration::from_secs(5), 1024 * 1024 * 1024).is_ok());
