@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, ChangeKindFact, ChangesAvailabilityFact,
@@ -124,6 +124,7 @@ pub struct TaskAggregate {
     latest_run_id: Option<RunId>,
     interactions: BTreeMap<InteractionId, InteractionFact>,
     timeline: Vec<TimelineItemProjection>,
+    activity_ids: HashSet<String>,
     loaded_skills: Vec<LoadedSkillProjection>,
     selected_tier_id: String,
     review_total: u32,
@@ -144,6 +145,7 @@ impl Default for TaskAggregate {
             latest_run_id: None,
             interactions: BTreeMap::new(),
             timeline: Vec::new(),
+            activity_ids: HashSet::new(),
             loaded_skills: Vec::new(),
             selected_tier_id: String::new(),
             review_total: 0,
@@ -393,9 +395,11 @@ impl TaskAggregate {
             }
             TaskEvent::ActivityUpserted { activity } => {
                 let projection = activity_projection(activity, self.cursor);
-                self.timeline.retain(|item| {
-                    !matches!(item, TimelineItemProjection::Activity(value) if value.activity_id == projection.activity_id)
-                });
+                if !self.activity_ids.insert(projection.activity_id.clone()) {
+                    self.timeline.retain(|item| {
+                        !matches!(item, TimelineItemProjection::Activity(value) if value.activity_id == projection.activity_id)
+                    });
+                }
                 self.timeline
                     .push(TimelineItemProjection::Activity(projection.clone()));
                 changes.push(TaskChange::ActivityUpserted {

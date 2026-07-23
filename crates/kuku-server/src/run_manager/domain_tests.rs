@@ -1,6 +1,7 @@
 use kuku::event::{
-    CommandIntent, CommandReceipt, CommandResult, RunFact, RunId, RunState, TaskEvent, TaskId,
-    TaskLedgerRecord, TaskRevision, TaskTransaction, WorkspaceId,
+    ActivityFact, ActivityKindFact, ActivityStatusFact, CommandIntent, CommandReceipt,
+    CommandResult, RunFact, RunId, RunState, TaskEvent, TaskId, TaskLedgerRecord, TaskRevision,
+    TaskTransaction, WorkspaceId,
 };
 
 use super::domain::{DomainError, TaskAggregate};
@@ -60,6 +61,65 @@ fn created() -> TaskLedgerRecord {
         }],
         0,
     )
+}
+
+fn activity(activity_id: &str, title: &str) -> TaskEvent {
+    TaskEvent::ActivityUpserted {
+        activity: ActivityFact {
+            activity_id: activity_id.to_owned(),
+            run_id: run_id('a'),
+            title: title.to_owned(),
+            kind: ActivityKindFact::System,
+            status: ActivityStatusFact::Completed,
+            detail: None,
+            conversation_id: None,
+            agent: None,
+            tier: None,
+            result_in_main: None,
+            file_references: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn activity_upsert_preserves_uniqueness_and_moves_updates_to_the_end() {
+    let mut task = TaskAggregate::default();
+    task.apply_record(kuku::event::Cursor::try_new(1).unwrap(), &created())
+        .unwrap();
+    task.apply_record(
+        kuku::event::Cursor::try_new(2).unwrap(),
+        &TaskLedgerRecord::Activity(
+            kuku::event::TaskActivityBatch::try_new(vec![
+                activity("activity-a", "Initial"),
+                activity("activity-b", "Second"),
+            ])
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+    task.apply_record(
+        kuku::event::Cursor::try_new(3).unwrap(),
+        &TaskLedgerRecord::Activity(
+            kuku::event::TaskActivityBatch::try_new(vec![activity("activity-a", "Updated")])
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+
+    let activities = task
+        .timeline_items()
+        .iter()
+        .filter_map(|item| match item {
+            crate::api::TimelineItemProjection::Activity(activity) => {
+                Some((activity.activity_id.as_str(), activity.title.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec![("activity-b", "Second"), ("activity-a", "Updated")],
+        activities
+    );
 }
 
 #[test]
