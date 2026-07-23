@@ -5,20 +5,16 @@
 默认监听地址：
 
 ```text
-127.0.0.1:17777
+0.0.0.0:17777
 ```
 
-非 loopback 监听要求 `--password`。
+可使用 `--auth-token-file <path>` 指定 credential，替代默认生成值。
 
 ## Authentication
 
-- loopback 客户端跳过密码检查。
-- 远程客户端必须发送 `Authorization: Bearer <token>`。
-- 认证失败时返回 HTTP 200：
-
-```json
-{"ok": false, "code": "auth_required", "message": "password required"}
-```
+- `/health` 可公开访问；其他请求必须发送 `Authorization: Bearer <token>`。
+- 默认 credential 是首次生成并持久化到 `KUKU_HOME` 的 6 位数字。
+- 认证失败限速为每个 IP 每分钟 10 次、全局每分钟 100 次，并返回 HTTP 401。
 
 ## Endpoints
 

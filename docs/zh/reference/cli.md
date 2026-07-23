@@ -2,7 +2,7 @@
 
 ## 入口模式
 
-- `kuku` 在当前 workspace 中启动交互模式。
+- `kuku` 启动内嵌 Web UI。
 - `kuku run ...` 启动一次非交互运行。
 
 ## 顶层命令
@@ -123,14 +123,16 @@ kuku skills [list | show <name>]
 ## `kuku server` 和 `kuku web`
 
 ```text
-kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server [--listen <addr>] [--config <path>] [--auth-token-file <path>] [--max-concurrent-runs <n>]
 ```
 
 默认值：
 
-- `--listen 127.0.0.1:17777`
+- `--listen 0.0.0.0:17777`
 - `--max-concurrent-runs 16`
 
 `kuku web` 需要二进制包含内嵌 Web UI 资源。发布流程和发布产物会包含这些资源。对于本地源码构建，请先准备 `apps/web/dist`，再使用 `--features embedded-web-assets` 构建 `kuku-app`。
+
+不带 subcommand 运行 `kuku`，等同于使用默认参数运行 `kuku web`。
 
 请求和流格式见 [Server API](server-api.md)。

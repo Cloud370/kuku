@@ -18,7 +18,11 @@ fn generated_token_is_private_stable_and_redacted() {
     let first = BearerTokenStore::open(home.path(), None).unwrap();
     let second = BearerTokenStore::open(home.path(), None).unwrap();
 
-    assert_eq!(64, first.expose_for_terminal().len());
+    assert_eq!(6, first.expose_for_terminal().len());
+    assert!(first
+        .expose_for_terminal()
+        .bytes()
+        .all(|byte| byte.is_ascii_digit()));
     assert_eq!(first.expose_for_terminal(), second.expose_for_terminal());
     assert_eq!(BearerTokenSource::Generated, first.source());
     assert_eq!(BearerTokenSource::Persisted, second.source());
@@ -36,6 +40,49 @@ fn generated_token_is_private_stable_and_redacted() {
             & 0o777;
         assert_eq!(0o600, mode);
     }
+}
+
+#[test]
+fn repeated_failures_rate_limit_one_ip() {
+    let store = BearerTokenStore::from_token(TOKEN.to_owned()).unwrap();
+    let policy = AuthPolicy {
+        loopback_trust: false,
+    };
+    let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 17777);
+
+    for _ in 0..10 {
+        let error = store
+            .authorize(&policy, peer, Some("Bearer 000000"))
+            .unwrap_err();
+        assert_eq!(ApiErrorCode::AuthRequired, error.code());
+    }
+
+    let error = store
+        .authorize(&policy, peer, Some(&format!("Bearer {TOKEN}")))
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::AuthRequired, error.code());
+}
+
+#[test]
+fn distributed_failures_trigger_global_rate_limit() {
+    let store = BearerTokenStore::from_token(TOKEN.to_owned()).unwrap();
+    let policy = AuthPolicy {
+        loopback_trust: false,
+    };
+
+    for host in 1..=100 {
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, host)), 17777);
+        let error = store
+            .authorize(&policy, peer, Some("Bearer 000000"))
+            .unwrap_err();
+        assert_eq!(ApiErrorCode::AuthRequired, error.code());
+    }
+
+    let fresh_peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)), 17777);
+    let error = store
+        .authorize(&policy, fresh_peer, Some(&format!("Bearer {TOKEN}")))
+        .unwrap_err();
+    assert_eq!(ApiErrorCode::AuthRequired, error.code());
 }
 
 #[test]

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use kuku::config::SecretString;
 
@@ -10,8 +12,12 @@ use crate::api::{ApiError, ApiErrorCode, AuthMode, AuthStatus};
 
 use super::write_private_atomic;
 
-const TOKEN_BYTES: usize = 32;
-const TOKEN_HEX_BYTES: usize = TOKEN_BYTES * 2;
+const TOKEN_DIGITS: usize = 6;
+const TOKEN_SPACE: u32 = 1_000_000;
+const LEGACY_TOKEN_HEX_BYTES: usize = 64;
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const PER_IP_FAILURE_LIMIT: u32 = 10;
+const GLOBAL_FAILURE_LIMIT: u32 = 100;
 
 /// Identifies how the active bearer token was loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +34,7 @@ pub enum BearerTokenSource {
 pub struct BearerTokenStore {
     token: SecretString,
     source: BearerTokenSource,
+    rate_limiter: Mutex<AuthRateLimiter>,
 }
 
 impl BearerTokenStore {
@@ -39,6 +46,7 @@ impl BearerTokenStore {
         Ok(Arc::new(Self {
             token: SecretString::new(token),
             source: BearerTokenSource::ExplicitFile,
+            rate_limiter: Mutex::new(AuthRateLimiter::new()),
         }))
     }
 
@@ -61,6 +69,7 @@ impl BearerTokenStore {
         Ok(Arc::new(Self {
             token: SecretString::new(token),
             source: BearerTokenSource::Generated,
+            rate_limiter: Mutex::new(AuthRateLimiter::new()),
         }))
     }
 
@@ -72,10 +81,23 @@ impl BearerTokenStore {
         authorization: Option<&str>,
     ) -> Result<AuthContext, ApiError> {
         if let Some(header) = authorization {
-            let supplied = parse_bearer(header).ok_or_else(auth_required)?;
-            if !constant_time_equal(self.token.expose().as_bytes(), supplied.as_bytes()) {
+            let now = Instant::now();
+            if self.rate_limiter.lock().unwrap().is_blocked(peer.ip(), now) {
                 return Err(auth_required());
             }
+            let authenticated = parse_bearer(header)
+                .map(|supplied| {
+                    constant_time_equal(self.token.expose().as_bytes(), supplied.as_bytes())
+                })
+                .unwrap_or(false);
+            if !authenticated {
+                self.rate_limiter
+                    .lock()
+                    .unwrap()
+                    .record_failure(peer.ip(), now);
+                return Err(auth_required());
+            }
+            self.rate_limiter.lock().unwrap().clear(peer.ip());
             return Ok(AuthContext {
                 authenticated: true,
                 mode: AuthMode::Bearer,
@@ -143,6 +165,69 @@ pub struct AuthPolicy {
     pub loopback_trust: bool,
 }
 
+struct FailureWindow {
+    started_at: Instant,
+    failures: u32,
+}
+
+impl FailureWindow {
+    fn new(now: Instant) -> Self {
+        Self {
+            started_at: now,
+            failures: 0,
+        }
+    }
+
+    fn refresh(&mut self, now: Instant) {
+        if now.duration_since(self.started_at) >= AUTH_FAILURE_WINDOW {
+            self.started_at = now;
+            self.failures = 0;
+        }
+    }
+}
+
+struct AuthRateLimiter {
+    global: FailureWindow,
+    per_ip: HashMap<IpAddr, FailureWindow>,
+}
+
+impl AuthRateLimiter {
+    fn new() -> Self {
+        Self {
+            global: FailureWindow::new(Instant::now()),
+            per_ip: HashMap::new(),
+        }
+    }
+
+    fn is_blocked(&mut self, ip: IpAddr, now: Instant) -> bool {
+        self.refresh(now);
+        self.global.failures >= GLOBAL_FAILURE_LIMIT
+            || self
+                .per_ip
+                .get(&ip)
+                .is_some_and(|window| window.failures >= PER_IP_FAILURE_LIMIT)
+    }
+
+    fn record_failure(&mut self, ip: IpAddr, now: Instant) {
+        self.refresh(now);
+        self.global.failures += 1;
+        self.per_ip
+            .entry(ip)
+            .or_insert_with(|| FailureWindow::new(now))
+            .failures += 1;
+    }
+
+    fn clear(&mut self, ip: IpAddr) {
+        self.per_ip.remove(&ip);
+    }
+
+    fn refresh(&mut self, now: Instant) {
+        self.global.refresh(now);
+        self.per_ip
+            .retain(|_, window| now.duration_since(window.started_at) < AUTH_FAILURE_WINDOW);
+    }
+}
+
 fn read_token(path: &Path, source: BearerTokenSource) -> Result<Arc<BearerTokenStore>, ApiError> {
     let bytes = fs::read(path)
         .map_err(|error| internal_error(format!("failed to read bearer credential: {error}")))?;
@@ -155,6 +240,7 @@ fn read_token(path: &Path, source: BearerTokenSource) -> Result<Arc<BearerTokenS
     Ok(Arc::new(BearerTokenStore {
         token: SecretString::new(value),
         source,
+        rate_limiter: Mutex::new(AuthRateLimiter::new()),
     }))
 }
 
@@ -187,28 +273,25 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), ApiError> {
 }
 
 fn generate_token() -> Result<String, ApiError> {
-    let mut bytes = [0_u8; TOKEN_BYTES];
-    getrandom::fill(&mut bytes).map_err(|error| {
-        internal_error(format!("failed to generate bearer credential: {error}"))
-    })?;
-    Ok(encode_hex(&bytes))
-}
-
-fn encode_hex(bytes: &[u8; TOKEN_BYTES]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(TOKEN_HEX_BYTES);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    let sample_limit = u32::MAX - (u32::MAX % TOKEN_SPACE);
+    loop {
+        let mut bytes = [0_u8; 4];
+        getrandom::fill(&mut bytes).map_err(|error| {
+            internal_error(format!("failed to generate bearer credential: {error}"))
+        })?;
+        let sample = u32::from_le_bytes(bytes);
+        if sample < sample_limit {
+            return Ok(format!("{:0TOKEN_DIGITS$}", sample % TOKEN_SPACE));
+        }
     }
-    encoded
 }
 
 fn valid_token(value: &str) -> bool {
-    value.len() == TOKEN_HEX_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    (value.len() == TOKEN_DIGITS && value.bytes().all(|byte| byte.is_ascii_digit()))
+        || (value.len() == LEGACY_TOKEN_HEX_BYTES
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
 }
 
 fn parse_bearer(header: &str) -> Option<&str> {

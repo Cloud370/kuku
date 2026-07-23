@@ -2,7 +2,7 @@
 
 ## Entry Modes
 
-- `kuku` starts interactive mode in the current workspace.
+- `kuku` starts the embedded Web UI.
 - `kuku run ...` starts a non-interactive run.
 
 ## Top-Level Commands
@@ -123,14 +123,16 @@ kuku skills [list | show <name>]
 ## `kuku server` and `kuku web`
 
 ```text
-kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server [--listen <addr>] [--config <path>] [--auth-token-file <path>] [--max-concurrent-runs <n>]
 ```
 
 Defaults:
 
-- `--listen 127.0.0.1:17777`
+- `--listen 0.0.0.0:17777`
 - `--max-concurrent-runs 16`
 
 `kuku web` requires a binary built with embedded Web UI assets. The release workflow and release artifacts include them. For local source builds, build `kuku-app` with `--features embedded-web-assets` after preparing `apps/web/dist`.
+
+Running `kuku` without a subcommand is equivalent to `kuku web` with its default options.
 
 For request and stream formats, see [Server API](server-api.md).

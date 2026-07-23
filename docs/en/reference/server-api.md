@@ -5,20 +5,16 @@
 Default listen address:
 
 ```text
-127.0.0.1:17777
+0.0.0.0:17777
 ```
 
-Non-loopback listeners require `--password`.
+Use `--auth-token-file <path>` to supply a credential instead of the generated default.
 
 ## Authentication
 
-- Loopback clients bypass password checks.
-- Remote clients must send `Authorization: Bearer <token>`.
-- Failed auth returns HTTP 200 with:
-
-```json
-{"ok": false, "code": "auth_required", "message": "password required"}
-```
+- `/health` is public. Other requests must send `Authorization: Bearer <token>`.
+- The default credential is a six-digit code generated once and persisted under `KUKU_HOME`.
+- Failed authentication is limited to 10 attempts per IP and 100 attempts globally per minute, and returns HTTP 401.
 
 ## Endpoints
 

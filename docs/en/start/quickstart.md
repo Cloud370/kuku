@@ -1,42 +1,28 @@
 # Quickstart
 
-## 1. Initialize kuku
+## 1. Start kuku
 
 ```bash
-kuku init
+kuku
 ```
 
-This creates the default runtime directories and a starter `config.toml`.
+Open the credential URL printed in the terminal. On first run, the Web UI guides you through provider and workspace setup.
 
-## 2. Set a Provider API Key
+## 2. Configure a Provider
 
-The default config expects one of these environment variables:
+Enter a provider API key in the Web setup. For terminal-only setup, the default config also accepts `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`:
 
 ```bash
 export ANTHROPIC_API_KEY="..."
-```
-
-or:
-
-```bash
-export OPENAI_API_KEY="..."
 ```
 
 See [Environment Variables](../reference/environment-variables.md) and [Config](../reference/config.md).
 
 ## 3. Run a First Task
 
-```bash
-kuku run say hello
-```
+Create and run the task in the Web UI.
 
-Or start interactive mode:
-
-```bash
-kuku
-```
-
-No subcommand starts an interactive session in the current workspace.
+To use the terminal instead, run `kuku run say hello` after setup.
 
 ## 4. Inspect the Result
 

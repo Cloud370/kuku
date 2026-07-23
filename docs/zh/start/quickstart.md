@@ -1,42 +1,28 @@
 # Quickstart
 
-## 1. Initialize kuku
-
-```bash
-kuku init
-```
-
-这会创建默认运行时目录，并生成一个起步用的 `config.toml`。
-
-## 2. Set a Provider API Key
-
-默认配置期望以下环境变量中的一个：
-
-```bash
-export ANTHROPIC_API_KEY="..."
-```
-
-或者：
-
-```bash
-export OPENAI_API_KEY="..."
-```
-
-参见 [Environment Variables](../reference/environment-variables.md) 和 [Config](../reference/config.md)。
-
-## 3. Run a First Task
-
-```bash
-kuku run say hello
-```
-
-或者启动交互模式：
+## 1. 启动 kuku
 
 ```bash
 kuku
 ```
 
-不带 subcommand 时，会在当前工作区启动一个交互式 Session。
+打开终端输出的 credential URL。首次运行时，Web UI 会引导你配置 provider 和 workspace。
+
+## 2. 配置 Provider
+
+在 Web 设置中填写 provider API key。若只使用终端，默认配置也支持 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`：
+
+```bash
+export ANTHROPIC_API_KEY="..."
+```
+
+参见 [Environment Variables](../reference/environment-variables.md) 和 [Config](../reference/config.md)。
+
+## 3. 运行第一个任务
+
+在 Web UI 中创建并运行任务。
+
+如需使用终端，请在完成配置后运行 `kuku run say hello`。
 
 ## 4. Inspect the Result
 
