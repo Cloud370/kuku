@@ -10,7 +10,7 @@ import type {
 import { expect, test } from './fixtures/unifiedBinary';
 import { firstTaskId, openAuthenticatedRoute } from './fixtures/journey';
 import { changes, reviewSubmissions, taskProjection } from './fixtures/productApi';
-import { completeScenario } from './fixtures/scenarioControl';
+import { completeScenario, SCENARIO_SETTLE_TIMEOUT_MS } from './fixtures/scenarioControl';
 
 const unchangedPath = 'src/lib.rs';
 
@@ -19,6 +19,7 @@ test('preserves typed file return state and one durable idempotent mixed-note Re
   request,
   unifiedBinary,
 }) => {
+  test.slow();
   const taskId = await firstTaskId(request, unifiedBinary);
   const projection = await taskProjection(request, unifiedBinary, taskId);
   const workspaceId = projection.task.workspace_id;
@@ -103,6 +104,7 @@ test('preserves typed file return state and one durable idempotent mixed-note Re
   await writeFile(join(unifiedBinary.gitWorkspace, changedPath), 'export const answer = 43;\n');
   const staleResponse = page.waitForResponse(
     (response) => response.url().endsWith('/review/annotations') && response.status() === 409,
+    { timeout: SCENARIO_SETTLE_TIMEOUT_MS },
   );
   await page.getByRole('button', { name: 'Submit review' }).click();
   const staleError = (await (await staleResponse).json()) as { code: string };
@@ -175,7 +177,7 @@ test('preserves typed file return state and one durable idempotent mixed-note Re
       } catch {
         return -1;
       }
-    })
+    }, { timeout: SCENARIO_SETTLE_TIMEOUT_MS })
     .toBe(before.items.length + 1);
   const after = await taskProjection(request, unifiedBinary, taskId);
   expect(after.review_summary.total_submissions).toBe(

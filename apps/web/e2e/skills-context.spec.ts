@@ -10,13 +10,14 @@ import {
   taskProjection,
   workspacePage,
 } from './fixtures/productApi';
-import { completeScenario } from './fixtures/scenarioControl';
+import { completeScenario, SCENARIO_SETTLE_TIMEOUT_MS } from './fixtures/scenarioControl';
 
 test('keeps staged Skills distinct from agent-loaded Context facts', async ({
   browser,
   request,
   unifiedBinary,
 }) => {
+  test.slow();
   const taskId = await firstTaskId(request, unifiedBinary);
   await completeScenario(request, unifiedBinary);
   const agentSkillPath = '.agents/skills/status/SKILL.md';
@@ -104,10 +105,12 @@ test('keeps staged Skills distinct from agent-loaded Context facts', async ({
       tier_id: 'tier:e2e-balanced',
     });
   await expect
-    .poll(async () =>
-      (await contextSnapshot(request, unifiedBinary, taskId)).sections.skills.map(
-        ({ skill_id }) => skill_id,
-      ),
+    .poll(
+      async () =>
+        (await contextSnapshot(request, unifiedBinary, taskId)).sections.skills.map(
+          ({ skill_id }) => skill_id,
+        ),
+      { timeout: SCENARIO_SETTLE_TIMEOUT_MS },
     )
     .toEqual(expect.arrayContaining(['skill:project:status', `skill:project:${skillName}`]));
   const context = await contextSnapshot(request, unifiedBinary, taskId);

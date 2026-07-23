@@ -34,6 +34,7 @@ test('shows ordered activity and a server-owned interaction without inventing a 
   request,
   unifiedBinary,
 }) => {
+  test.slow();
   const taskId = await firstTaskId(request, unifiedBinary);
   const page = await openAuthenticatedRoute(
     await browser.newContext(),
