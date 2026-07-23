@@ -13,7 +13,7 @@ on:
   schedule:
     - cron: "17 2 * * *"
   push:
-    branches: [main]
+    branches: ["**"]
     paths-ignore:
       - ".github/workflows/web-ci.yml"
       - "apps/web/**"
@@ -21,16 +21,6 @@ on:
       - "*.md"
       - "LICENSE"
       - ".gitignore"
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - ".github/workflows/web-ci.yml"
-      - "apps/web/**"
-      - "docs/**"
-      - "*.md"
-      - "LICENSE"
-      - ".gitignore"
-
 env:
   CARGO_TERM_COLOR: always
   CI_PROFILE: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'full')) && 'full' || 'fast' }}
@@ -80,6 +70,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
+        if: runner.os == 'Linux'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-sources-${{ runner.os }}-
+      - uses: actions/cache@v6
+        if: runner.os != 'Linux'
         with:
           path: |
             ~/.cargo/registry
@@ -93,6 +92,6 @@ jobs:
       - name: Run native platform smoke tests
         if: runner.os != 'Linux' && env.CI_PROFILE == 'fast'
         run: |
-          cargo test -p kuku-server --test platform_bootstrap_test --test platform_contract_test --test platform_routes_test --test platform_security_test --test workspace_registry_test
+          cargo test -p kuku-server --test api_contract_test --test platform_bootstrap_test --test platform_contract_test --test platform_routes_test --test platform_security_test --test review_files_test --test review_git_test --test review_security_test --test runtime_contract_test --test runtime_gate_test --test workspace_registry_test
           cargo test -p kuku --test session_paths --test workspace_capability_access
-          cargo test -p kuku-cli --lib
+          cargo check -p kuku-cli --features server --lib

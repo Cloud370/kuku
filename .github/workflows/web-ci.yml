@@ -13,27 +13,19 @@ on:
   schedule:
     - cron: "47 2 * * *"
   push:
-    branches: [main]
+    branches: ["**"]
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/web-ci.yml"
+      - ".gitattributes"
+      - ".cargo/**"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "rust-toolchain.toml"
       - "apps/kuku/**"
       - "apps/web/**"
       - "crates/kuku/**"
-      - "crates/kuku-server/**"
-      - "scripts/**"
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/web-ci.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "apps/kuku/**"
-      - "apps/web/**"
-      - "crates/kuku/**"
+      - "crates/kuku-cli/**"
       - "crates/kuku-server/**"
       - "scripts/**"
 
@@ -110,7 +102,10 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ github.job }}-${{ hashFiles('apps/web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ github.job }}-
+            playwright-${{ runner.os }}-
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
       - run: npm run typecheck
@@ -160,7 +155,10 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ github.job }}-${{ hashFiles('apps/web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ github.job }}-
+            playwright-${{ runner.os }}-
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
       - run: npm run build
