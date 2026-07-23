@@ -11,6 +11,7 @@ use super::{
 };
 use crate::api::ApiError;
 
+#[cfg(unix)]
 struct CancellingSink {
     cancellation: ProcessCancellation,
     child_pid: Option<i32>,
@@ -18,6 +19,7 @@ struct CancellingSink {
 
 struct SilentSink;
 
+#[cfg(unix)]
 struct ProcessTreeBarrierSink {
     started: Option<tokio::sync::oneshot::Sender<(i32, i32)>>,
 }
@@ -31,6 +33,7 @@ impl ProcessChunkSink for SilentSink {
     }
 }
 
+#[cfg(unix)]
 impl ProcessChunkSink for CancellingSink {
     fn push<'a>(
         &'a mut self,
@@ -46,6 +49,7 @@ impl ProcessChunkSink for CancellingSink {
     }
 }
 
+#[cfg(unix)]
 impl ProcessChunkSink for ProcessTreeBarrierSink {
     fn push<'a>(
         &'a mut self,

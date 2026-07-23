@@ -1,6 +1,7 @@
 name: Docs EN Change Report
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -23,6 +24,6 @@ jobs:
 
       - name: Report changed English docs pages
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          BEFORE_SHA: ${{ github.event.before || github.sha }}
           AFTER_SHA: ${{ github.sha }}
         run: bash scripts/docs-translate/report-docs-en-changes.sh "$BEFORE_SHA" "$AFTER_SHA"
