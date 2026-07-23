@@ -3,7 +3,9 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use kuku::{WorkspaceCommandRequest, WorkspaceQueryCapability};
+#[cfg(unix)]
+use kuku::WorkspaceCommandRequest;
+use kuku::WorkspaceQueryCapability;
 use kuku_server::api::{
     ApiError, ApiErrorCode, RegisterWorkspaceRequest, RemoveWorkspaceRequest, WorkspaceAvailability,
 };
@@ -162,6 +164,7 @@ async fn opaque_registry_persists_ids_without_exposing_host_roots() {
     assert_eq!(before_restart, reopened.revision().await.unwrap());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn query_capability_never_uses_a_replacement_workspace_root() {
     let home = tempfile::tempdir().unwrap();
@@ -285,6 +288,40 @@ async fn query_capability_never_uses_a_replacement_workspace_root() {
         }
         assert!(pids.iter().all(|pid| unsafe { kill(*pid, 0) } == -1));
     }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn query_capability_prevents_workspace_root_replacement() {
+    let home = tempfile::tempdir().unwrap();
+    let allowed = tempfile::tempdir().unwrap();
+    let root = allowed.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("identity.txt"), "original").unwrap();
+    let registry = open_registry(
+        home.path(),
+        allowed.path(),
+        Arc::new(UsageFixture {
+            in_use: AtomicBool::new(false),
+        }),
+    );
+    let workspace = register(&registry, "project", "kuku").await;
+    let capability = registry.capability(&workspace.workspace_id).unwrap();
+
+    let displaced = allowed.path().join("displaced");
+    assert!(std::fs::rename(&root, &displaced).is_err());
+    assert_eq!(
+        capability.read_file("identity.txt", 1024).unwrap(),
+        b"original"
+    );
+    capability
+        .write_file("created.txt", b"capability", 1024)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("created.txt")).unwrap(),
+        "capability"
+    );
+    assert!(!displaced.exists());
 }
 
 #[tokio::test]
