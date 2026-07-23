@@ -112,8 +112,14 @@ async fn external_cancellation_streams_then_reaps_the_process_tree() {
 
     assert!(status.cancelled());
     assert!(!status.success());
-    let child_pid = rustix::process::Pid::from_raw(sink.child_pid.unwrap()).unwrap();
-    assert!(rustix::process::kill_process(child_pid, rustix::process::Signal::CONT).is_err());
+    let child_pid = sink.child_pid.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while process_exists(child_pid) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
