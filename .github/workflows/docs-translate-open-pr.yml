@@ -7,6 +7,11 @@ on:
       - ".github/workflows/docs-translate-open-pr.yml"
   workflow_dispatch:
     inputs:
+      validate_only:
+        description: Validate the workflow without translating or opening a PR
+        required: true
+        default: true
+        type: boolean
       source_path:
         description: English docs page to translate, for example docs/en/start/install.md
         required: true
@@ -41,14 +46,14 @@ concurrency:
 
 jobs:
   register:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || inputs.validate_only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: bash -n scripts/docs-translate/translate-page-and-open-pr.sh
 
   translate:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.validate_only
     runs-on: ubuntu-latest
     permissions:
       contents: write
