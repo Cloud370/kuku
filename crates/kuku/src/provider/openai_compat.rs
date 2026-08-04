@@ -299,29 +299,31 @@ impl OpenAiCompatSseParser {
             self.started = true;
         }
 
+        if let Some(usage) = data.get("usage").and_then(Value::as_object) {
+            let input_tokens_total = usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let cache_read_input_tokens = usage
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(Value::as_u64)
+                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
+                .unwrap_or(0);
+            self.chunks.push(ProviderChunk::StreamUsage {
+                input_tokens: input_tokens_total.saturating_sub(cache_read_input_tokens),
+                output_tokens: usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                cache_read_input_tokens,
+                cache_creation_input_tokens: 0,
+            });
+        }
+
         let choices = match data.get("choices").and_then(Value::as_array) {
             Some(c) if !c.is_empty() => c,
-            _ => {
-                if let Some(usage) = data.get("usage").and_then(Value::as_object) {
-                    self.chunks.push(ProviderChunk::StreamUsage {
-                        input_tokens: usage
-                            .get("prompt_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                        output_tokens: usage
-                            .get("completion_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                        cache_read_input_tokens: usage
-                            .get("prompt_tokens_details")
-                            .and_then(|d| d.get("cached_tokens"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                        cache_creation_input_tokens: 0,
-                    });
-                }
-                return Ok(self.take_chunks());
-            }
+            _ => return Ok(self.take_chunks()),
         };
 
         let choice = &choices[0];
@@ -436,6 +438,42 @@ mod tests {
             }
             other => panic!("expected ServerError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn usage_on_completion_chunk_is_emitted() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34}}}"#;
+
+        let chunks = parser.feed(frame).unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StreamUsage {
+                input_tokens: 54,
+                output_tokens: 18,
+                cache_read_input_tokens: 34,
+                cache_creation_input_tokens: 0
+            }
+        )));
+    }
+
+    #[test]
+    fn deepseek_usage_reports_prompt_cache_hits() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let frame = r#"data: {"id":"chatcmpl_usage","choices":[],"usage":{"prompt_tokens":88,"completion_tokens":18,"prompt_cache_hit_tokens":34,"prompt_cache_miss_tokens":54}}"#;
+
+        let chunks = parser.feed(frame).unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StreamUsage {
+                input_tokens: 54,
+                output_tokens: 18,
+                cache_read_input_tokens: 34,
+                cache_creation_input_tokens: 0
+            }
+        )));
     }
 
     #[test]
