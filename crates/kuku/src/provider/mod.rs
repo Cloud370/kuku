@@ -28,7 +28,7 @@ pub(crate) async fn stream_provider(
 ) -> Result<ProviderChunkStream, ProviderFailure> {
     match config.kind {
         ProviderKind::Anthropic => anthropic::stream(config, request, trace).await,
-        ProviderKind::OpenAiCompatible => openai_compat::stream(config, request).await,
-        ProviderKind::OpenAiResponses => openai_responses::stream(config, request).await,
+        ProviderKind::OpenAiCompatible => openai_compat::stream(config, request, trace).await,
+        ProviderKind::OpenAiResponses => openai_responses::stream(config, request, trace).await,
     }
 }
