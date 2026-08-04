@@ -1,6 +1,8 @@
 name: WebUI CI
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       profile:
@@ -182,3 +184,21 @@ jobs:
             apps/web/test-results
           if-no-files-found: ignore
           retention-days: 30
+
+  required:
+    name: WebUI Required
+    if: always()
+    needs: [contract, deterministic-backend, web-static, embedded-chromium]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require A0-A3 success
+        env:
+          A0_RESULT: ${{ needs.contract.result }}
+          A1_RESULT: ${{ needs.deterministic-backend.result }}
+          A2_RESULT: ${{ needs.web-static.result }}
+          A3_RESULT: ${{ needs.embedded-chromium.result }}
+        run: |
+          test "$A0_RESULT" = success
+          test "$A1_RESULT" = success
+          test "$A2_RESULT" = success
+          test "$A3_RESULT" = success
