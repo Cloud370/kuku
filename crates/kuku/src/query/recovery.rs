@@ -100,14 +100,7 @@ fn preflight_context(
         Some(base.max_output_tokens()),
         Some(estimated_input),
     );
-    let suffix_bytes = base
-        .recovery_asset()
-        .text
-        .len()
-        .checked_add(RECOVERY_SUFFIX_OVERHEAD_BYTES)
-        .ok_or_else(|| Error::InvalidEventStream("recovery suffix size overflow".to_string()))?;
-    let suffix_tokens = u32::try_from(suffix_bytes.div_ceil(4))
-        .map_err(|_| Error::InvalidEventStream("recovery suffix is too large".to_string()))?;
+    let suffix_tokens = conservative_suffix_tokens(base.recovery_asset().text.len())?;
     if headroom
         .remaining_input_tokens
         .is_some_and(|remaining| remaining < suffix_tokens)
@@ -126,6 +119,14 @@ fn preflight_context(
         });
     }
     Ok(())
+}
+
+fn conservative_suffix_tokens(text_bytes: usize) -> Result<u32> {
+    let suffix_bytes = text_bytes
+        .checked_add(RECOVERY_SUFFIX_OVERHEAD_BYTES)
+        .ok_or_else(|| Error::InvalidEventStream("recovery suffix size overflow".to_string()))?;
+    u32::try_from(suffix_bytes)
+        .map_err(|_| Error::InvalidEventStream("recovery suffix is too large".to_string()))
 }
 
 fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Result<Option<u64>> {
@@ -324,5 +325,13 @@ mod tests {
             Err(Error::InvalidEventStream(message))
                 if message.contains("input usage overflow")
         ));
+    }
+
+    #[test]
+    fn suffix_estimate_reserves_one_token_per_byte() {
+        assert_eq!(
+            u32::try_from(4 + RECOVERY_SUFFIX_OVERHEAD_BYTES).unwrap(),
+            conservative_suffix_tokens(4).unwrap()
+        );
     }
 }
