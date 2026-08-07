@@ -66,12 +66,15 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             request_id: "req_1".to_string(),
             text: "Done.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(3),
+            output_tokens_total: None,
         })
         .unwrap();
 
@@ -334,12 +337,15 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             request_id: "req_1".to_string(),
             text: "I will inspect.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(10),
+            output_tokens_total: None,
         })
         .unwrap();
     store
@@ -385,12 +391,15 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:05Z".to_string(),
             request_id: "req_2".to_string(),
             text: "Done.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(12),
+            output_tokens_total: None,
         })
         .unwrap();
 
@@ -681,12 +690,15 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 3,
             payload: EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-18T00:00:02Z".to_string(),
                 request_id: "req_1".to_string(),
                 text: "old answer".to_string(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: Some(10),
+                output_tokens_total: None,
             },
         },
         kuku::event::StoredEvent {
@@ -713,12 +725,15 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 6,
             payload: EventPayload::ModelResponse {
+                conversation: None,
                 turn: 2,
                 ts: "2026-05-18T00:00:05Z".to_string(),
                 request_id: "req_2".to_string(),
                 text: "new answer".to_string(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: Some(12),
+                output_tokens_total: None,
             },
         },
     ];

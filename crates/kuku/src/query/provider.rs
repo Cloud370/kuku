@@ -126,6 +126,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             let request_id = format!("req_{}", pending.request_num);
             append_model_error(
                 &pending.events_path,
+                &pending.conversation,
                 pending.turn,
                 request_id,
                 "prompt_render",
@@ -533,6 +534,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 keep_turns: pending.handoff_keep_turns,
             })?;
             store.append(EventPayload::ModelError {
+                conversation: Some(pending.conversation.as_str().to_string()),
                 turn: pending.turn,
                 ts: now_timestamp()?,
                 request_id: request_id.clone(),
@@ -560,6 +562,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         Err(failure) => {
             append_model_error(
                 &pending.events_path,
+                &pending.conversation,
                 pending.turn,
                 request_id,
                 failure.kind.as_event_kind(),
@@ -652,6 +655,7 @@ fn check_loop_limit(pending: &PendingRun) -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         append_model_error(
             &pending.events_path,
+            &pending.conversation,
             pending.turn,
             format!("req_{}", pending.request_num),
             "loop_limit",
@@ -932,6 +936,7 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
             );
             append_model_error(
                 &pending.events_path,
+                &pending.conversation,
                 pending.turn,
                 request_id,
                 "missing_config",

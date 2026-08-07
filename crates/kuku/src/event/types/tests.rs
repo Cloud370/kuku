@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn model_response_round_trips_scoped_terminal_state_and_u64_usage() {
+    let event = StoredEvent {
+        id: 1,
+        payload: EventPayload::ModelResponse {
+            conversation: Some("delegate".to_string()),
+            turn: 7,
+            ts: "t".to_string(),
+            request_id: "req_1".to_string(),
+            text: "partial".to_string(),
+            thinking: None,
+            stop_reason: Some(ModelStopReason::Length),
+            input_tokens_total: Some(u64::from(u32::MAX) + 1),
+            output_tokens_total: Some(0),
+        },
+    };
+
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(Some("delegate"), json["conversation"].as_str());
+    assert_eq!(Some("length"), json["stop_reason"].as_str());
+    assert_eq!(Some(u64::from(u32::MAX) + 1), json["input_tokens_total"].as_u64());
+    assert_eq!(Some(0), json["output_tokens_total"].as_u64());
+    assert_eq!(event, serde_json::from_value(json).unwrap());
+}
+
+#[test]
+fn legacy_model_response_defaults_to_main_and_preserves_unknown_stop_reason() {
+    let event: StoredEvent = serde_json::from_value(serde_json::json!({
+        "id": 1,
+        "kind": "model.response",
+        "turn": 7,
+        "ts": "t",
+        "request_id": "req_1",
+        "text": "partial",
+        "stop_reason": "provider_limit",
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        event.payload,
+        EventPayload::ModelResponse {
+            conversation: None,
+            stop_reason: Some(ModelStopReason::Unknown(ref reason)),
+            ..
+        } if reason == "provider_limit"
+    ));
+}
+
+#[test]
 fn handoff_round_trip() {
     let event = StoredEvent {
         id: 43,

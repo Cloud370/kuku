@@ -1,4 +1,3 @@
-use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
@@ -6,53 +5,9 @@ use crate::context::provenance::{
     AgentRegistryProvenance, FileSource, PluginRegistryProvenance, PromptCapabilityMetadata,
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
 };
-/// A single event persisted in a session's events.jsonl.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEvent {
-    pub id: u64,
-    pub payload: EventPayload,
-}
 
-impl Serialize for StoredEvent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match &self.payload {
-            EventPayload::Unknown(value) => value.serialize(serializer),
-            payload => {
-                let value = payload
-                    .to_new_json(self.id)
-                    .map_err(serde::ser::Error::custom)?;
-                value.serialize(serializer)
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for StoredEvent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| de::Error::custom("stored event must be a JSON object"))?;
-        let id = object
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| de::Error::custom("stored event is missing numeric id"))?;
-
-        match EventPayload::from_json_object(object) {
-            Some(payload) => Ok(Self { id, payload }),
-            None => Ok(Self {
-                id,
-                payload: EventPayload::Unknown(value),
-            }),
-        }
-    }
-}
+pub use super::model_stop_reason::ModelStopReason;
+pub use super::stored_event::StoredEvent;
 
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +40,7 @@ impl RollbackScope {
 }
 
 /// All fact events that can be written to and read from a session's events.jsonl.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPayload {
     ContextSources {
@@ -102,14 +58,18 @@ pub enum EventPayload {
         bootstrap_loaded: Vec<String>,
     },
     ModelResponse {
+        conversation: Option<String>,
         turn: u64,
         ts: String,
         request_id: String,
         text: String,
         thinking: Option<String>,
-        input_tokens_total: Option<u32>,
+        stop_reason: Option<ModelStopReason>,
+        input_tokens_total: Option<u64>,
+        output_tokens_total: Option<u64>,
     },
     ModelError {
+        conversation: Option<String>,
         turn: u64,
         ts: String,
         request_id: String,
@@ -318,7 +278,7 @@ impl EventPayload {
         self.kind_name()
     }
 
-    fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
+    pub(super) fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
         let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
@@ -342,14 +302,18 @@ impl EventPayload {
                     .ok()?,
             }),
             "model.response" => Some(Self::ModelResponse {
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
                 text: string_field(object, "text")?,
                 thinking: optional_string_field(object, "thinking"),
-                input_tokens_total: optional_u32_field(object, "input_tokens_total"),
+                stop_reason: optional_stop_reason_field(object, "stop_reason"),
+                input_tokens_total: optional_u64_field(object, "input_tokens_total"),
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
             }),
             "model.error" => Some(Self::ModelError {
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
@@ -522,7 +486,7 @@ impl EventPayload {
         }
     }
 
-    fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
+    pub(super) fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
         match self {
             Self::Unknown(value) => Ok(value.clone()),
             Self::SessionCreated {
@@ -610,12 +574,15 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::ModelResponse {
+                conversation,
                 turn,
                 ts,
                 request_id,
                 text,
                 thinking,
+                stop_reason,
                 input_tokens_total,
+                output_tokens_total,
             } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
@@ -624,8 +591,17 @@ impl EventPayload {
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("request_id".into(), Value::from(request_id.clone()));
                 map.insert("text".into(), Value::from(text.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
                 if let Some(thinking) = thinking {
                     map.insert("thinking".into(), Value::from(thinking.clone()));
+                }
+                if let Some(stop_reason) = stop_reason {
+                    map.insert(
+                        "stop_reason".into(),
+                        Value::from(stop_reason.wire_value()),
+                    );
                 }
                 if let Some(input_tokens_total) = input_tokens_total {
                     map.insert(
@@ -633,23 +609,35 @@ impl EventPayload {
                         Value::from(*input_tokens_total),
                     );
                 }
+                if let Some(output_tokens_total) = output_tokens_total {
+                    map.insert(
+                        "output_tokens_total".into(),
+                        Value::from(*output_tokens_total),
+                    );
+                }
                 Ok(Value::Object(map))
             }
             Self::ModelError {
+                conversation,
                 turn,
                 ts,
                 request_id,
                 kind,
                 message,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "model.error",
-                "turn": turn,
-                "request_id": request_id,
-                "error_kind": kind,
-                "message": message,
-            })),
+            } => {
+                let mut map = Map::new();
+                map.insert("id".into(), Value::from(id));
+                map.insert("ts".into(), Value::from(ts.clone()));
+                map.insert("kind".into(), Value::from("model.error"));
+                map.insert("turn".into(), Value::from(*turn));
+                map.insert("request_id".into(), Value::from(request_id.clone()));
+                map.insert("error_kind".into(), Value::from(kind.clone()));
+                map.insert("message".into(), Value::from(message.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
+                Ok(Value::Object(map))
+            }
             Self::ToolCall {
                 turn,
                 ts,
@@ -963,11 +951,18 @@ fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
     u32::try_from(object.get(key)?.as_u64()?).ok()
 }
 
-fn optional_u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    object
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
+fn optional_u64_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
+    object.get(key).and_then(Value::as_u64)
+}
+
+fn optional_stop_reason_field(object: &Map<String, Value>, key: &str) -> Option<ModelStopReason> {
+    match object.get(key) {
+        None => None,
+        Some(Value::String(reason)) => {
+            ModelStopReason::from_wire(reason).or(Some(ModelStopReason::InvalidResponse))
+        }
+        Some(_) => Some(ModelStopReason::InvalidResponse),
+    }
 }
 
 fn bool_field(object: &Map<String, Value>, key: &str) -> Option<bool> {

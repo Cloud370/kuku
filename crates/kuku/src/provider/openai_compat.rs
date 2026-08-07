@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -181,14 +182,6 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
     msg
 }
 
-fn normalize_stop_reason(reason: &str) -> String {
-    match reason {
-        "tool_calls" => "tool_use".to_string(),
-        "stop" => "end_turn".to_string(),
-        other => other.to_string(),
-    }
-}
-
 pub(crate) async fn stream(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
@@ -362,24 +355,21 @@ impl OpenAiCompatSseParser {
         }
 
         if let Some(usage) = data.get("usage").and_then(Value::as_object) {
-            let input_tokens_total = usage
-                .get("prompt_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let input_tokens_total = usage.get("prompt_tokens").and_then(Value::as_u64);
             let cache_read_input_tokens = usage
                 .get("prompt_tokens_details")
                 .and_then(|details| details.get("cached_tokens"))
                 .and_then(Value::as_u64)
-                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
-                .unwrap_or(0);
+                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
             self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: input_tokens_total.saturating_sub(cache_read_input_tokens),
-                output_tokens: usage
-                    .get("completion_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
+                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
+                    (Some(total), None) => Some(total),
+                    (None, _) => None,
+                },
+                output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
                 cache_read_input_tokens,
-                cache_creation_input_tokens: 0,
+                cache_creation_input_tokens: None,
             });
         }
 
@@ -455,9 +445,9 @@ impl OpenAiCompatSseParser {
             }
             self.tool_call_indices.clear();
 
-            self.chunks.push(ProviderChunk::StopReason {
-                reason: normalize_stop_reason(reason),
-            });
+            if let Some(reason) = ModelStopReason::from_wire(reason) {
+                self.chunks.push(ProviderChunk::StopReason { reason });
+            }
         }
 
         Ok(self.take_chunks())
@@ -512,10 +502,10 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 54,
-                output_tokens: 18,
-                cache_read_input_tokens: 34,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(54),
+                output_tokens: Some(18),
+                cache_read_input_tokens: Some(34),
+                cache_creation_input_tokens: None
             }
         )));
     }
@@ -530,10 +520,10 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 54,
-                output_tokens: 18,
-                cache_read_input_tokens: 34,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(54),
+                output_tokens: Some(18),
+                cache_read_input_tokens: Some(34),
+                cache_creation_input_tokens: None
             }
         )));
     }

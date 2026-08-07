@@ -1,9 +1,11 @@
 use super::http_client;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -270,6 +272,8 @@ struct OpenAiResponsesSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
     completed: bool,
+    function_calls: BTreeMap<u64, (String, String, bool)>,
+    invalid_function_calls: bool,
 }
 
 impl OpenAiResponsesSseParser {
@@ -278,6 +282,8 @@ impl OpenAiResponsesSseParser {
             chunks: Vec::new(),
             started: false,
             completed: false,
+            function_calls: BTreeMap::new(),
+            invalid_function_calls: false,
         }
     }
 
@@ -338,6 +344,13 @@ impl OpenAiResponsesSseParser {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
+                    if self.function_calls.contains_key(&index) {
+                        self.invalid_function_calls = true;
+                    }
+                    self.function_calls.insert(
+                        index,
+                        (call_id.clone(), name.clone(), false),
+                    );
                     self.chunks.push(ProviderChunk::ToolCallStart {
                         index,
                         id: call_id,
@@ -382,20 +395,39 @@ impl OpenAiResponsesSseParser {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
+                let item = data.get("item");
+                if item.is_none() {
+                    self.invalid_function_calls = true;
+                }
+                if let Some((call_id, name, completed)) = self.function_calls.get_mut(&index) {
+                    let matches_call = item.is_some_and(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                            && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+                            && item.get("name").and_then(Value::as_str) == Some(name)
+                    });
+                    if *completed || !matches_call {
+                        self.invalid_function_calls = true;
+                    }
+                    *completed = true;
+                } else if item
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("function_call")
+                {
+                    self.invalid_function_calls = true;
+                }
                 self.chunks.push(ProviderChunk::ContentBlockStop { index });
             }
             "response.completed" => {
                 if let Some(resp) = data.get("response") {
                     self.push_usage(resp);
-                    if let Some(status) = resp.get("status").and_then(Value::as_str) {
-                        let reason = match status {
-                            "completed" => "end_turn",
-                            other => other,
-                        };
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
-                    }
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: self.completed_reason(resp),
+                    });
+                } else {
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: ModelStopReason::InvalidResponse,
+                    });
                 }
                 self.completed = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
@@ -403,15 +435,17 @@ impl OpenAiResponsesSseParser {
             "response.incomplete" => {
                 if let Some(resp) = data.get("response") {
                     self.push_usage(resp);
-                    if let Some(reason) = resp
+                    let reason = resp
                         .get("incomplete_details")
                         .and_then(|details| details.get("reason"))
                         .and_then(Value::as_str)
-                    {
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
-                    }
+                        .and_then(ModelStopReason::from_wire)
+                        .unwrap_or(ModelStopReason::Incomplete);
+                    self.chunks.push(ProviderChunk::StopReason { reason });
+                } else {
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: ModelStopReason::Incomplete,
+                    });
                 }
                 self.completed = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
@@ -450,22 +484,77 @@ impl OpenAiResponsesSseParser {
         if let Some(usage) = response.get("usage") {
             let input_tokens_total = usage
                 .get("input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+                .and_then(Value::as_u64);
             let cache_read_input_tokens = usage
                 .get("input_tokens_details")
                 .and_then(|details| details.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+                .and_then(Value::as_u64);
             self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: input_tokens_total.saturating_sub(cache_read_input_tokens),
-                output_tokens: usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
+                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
+                    (Some(total), None) => Some(total),
+                    (None, _) => None,
+                },
+                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
                 cache_read_input_tokens,
-                cache_creation_input_tokens: 0,
+                cache_creation_input_tokens: None,
             });
+        }
+    }
+
+    fn completed_reason(&self, response: &Value) -> ModelStopReason {
+        if response.get("status").and_then(Value::as_str) != Some("completed") {
+            return response
+                .get("status")
+                .and_then(Value::as_str)
+                .and_then(ModelStopReason::from_wire)
+                .unwrap_or(ModelStopReason::InvalidResponse);
+        }
+        if self.invalid_function_calls {
+            return ModelStopReason::InvalidResponse;
+        }
+
+        let output = response.get("output").and_then(Value::as_array);
+        let Some(output) = output else {
+            return if self.function_calls.is_empty() {
+                ModelStopReason::EndTurn
+            } else {
+                ModelStopReason::InvalidResponse
+            };
+        };
+        let mut expected_calls = BTreeMap::new();
+        for (index, item) in output.iter().enumerate() {
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                continue;
+            }
+            let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            let Some(name) = item.get("name").and_then(Value::as_str) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            if expected_calls
+                .insert(index as u64, (call_id, name))
+                .is_some()
+            {
+                return ModelStopReason::InvalidResponse;
+            }
+        }
+        if expected_calls.len() != self.function_calls.len() {
+            return ModelStopReason::InvalidResponse;
+        }
+        for (index, (call_id, name)) in expected_calls {
+            let Some((stream_id, stream_name, completed)) = self.function_calls.get(&index) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            if stream_id != call_id || stream_name != name || !completed {
+                return ModelStopReason::InvalidResponse;
+            }
+        }
+        if self.function_calls.is_empty() {
+            ModelStopReason::EndTurn
+        } else {
+            ModelStopReason::ToolUse
         }
     }
 
@@ -517,11 +606,15 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 50,
-                output_tokens: 30,
-                cache_read_input_tokens: 70,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(50),
+                output_tokens: Some(30),
+                cache_read_input_tokens: Some(70),
+                cache_creation_input_tokens: None
             }
+        )));
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::EndTurn
         )));
     }
 
@@ -555,19 +648,122 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 50,
-                output_tokens: 30,
-                cache_read_input_tokens: 70,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(50),
+                output_tokens: Some(30),
+                cache_read_input_tokens: Some(70),
+                cache_creation_input_tokens: None
             }
         )));
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
-            ProviderChunk::StopReason { reason } if reason == "max_tokens"
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Length
         )));
         assert!(chunks
             .last()
             .is_some_and(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    }
+
+    #[test]
+    fn incomplete_response_without_reason_is_explicitly_incomplete() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        let frame = concat!(
+            "event: response.incomplete\n",
+            r#"data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","usage":{"input_tokens":1,"output_tokens":2}}}"#,
+        );
+
+        let chunks = parser.feed(frame).unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Incomplete
+        )));
+    }
+
+    #[test]
+    fn completed_response_with_matching_function_call_is_tool_use() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::ToolUse
+        )));
+    }
+
+    #[test]
+    fn completed_response_with_missing_call_marker_item_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn completed_response_with_mismatched_call_marker_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_2","name":"read_file"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
     }
 
     #[test]

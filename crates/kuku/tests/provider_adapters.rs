@@ -9,6 +9,10 @@ mod context {
     };
 }
 
+mod event {
+    pub use kuku::event::ModelStopReason;
+}
+
 mod prompt {
     pub use kuku::prompt::{builtin_prompt_catalog, PromptCatalog};
 }
@@ -663,14 +667,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"stat
         .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 })));
     assert!(chunks
         .iter()
-        .any(|c| matches!(c, ProviderChunk::StopReason { reason } if reason == "end_turn")));
+        .any(|c| matches!(c, ProviderChunk::StopReason { reason } if reason == &kuku::event::ModelStopReason::EndTurn)));
     assert!(chunks.iter().any(|c| matches!(
         c,
         ProviderChunk::StreamUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None
         }
     )));
     assert!(chunks

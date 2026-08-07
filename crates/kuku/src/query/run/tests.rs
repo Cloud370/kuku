@@ -604,7 +604,7 @@ async fn completion_flush_failure_does_not_block_done() {
         stream: Box::pin(tokio_stream::empty()),
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
-        stop_reason: Some("end_turn".to_string()),
+        stop_reason: Some(crate::event::ModelStopReason::EndTurn),
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
         provider_request_id: None,
@@ -639,7 +639,7 @@ async fn completion_persists_runtime_model_usage_log() {
         stream: Box::pin(tokio_stream::empty()),
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
-        stop_reason: Some("end_turn".to_string()),
+        stop_reason: Some(crate::event::ModelStopReason::EndTurn),
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
         provider_request_id: None,
@@ -693,7 +693,7 @@ async fn incomplete_handoff_marker_does_not_leak_to_final_output() {
             text: "\n\n<kuku_handoff".to_string(),
         }),
         Ok(crate::provider::chunk::ProviderChunk::StopReason {
-            reason: "end_turn".to_string(),
+            reason: crate::event::ModelStopReason::EndTurn,
         }),
         Ok(crate::provider::chunk::ProviderChunk::StreamEnd),
     ]));
@@ -812,7 +812,10 @@ async fn cancel_during_streaming_aborts_stream() {
         .await
         .unwrap();
     assert!(result.is_none());
-    assert_eq!(streaming.stop_reason.as_deref(), Some("cancelled"));
+    assert_eq!(
+        Some(crate::event::ModelStopReason::Unknown("cancelled".to_string())),
+        streaming.stop_reason
+    );
 }
 
 #[tokio::test]
@@ -844,7 +847,7 @@ async fn malformed_tool_call_arguments_fail_instead_of_staying_empty_object() {
         }),
         Ok(crate::provider::chunk::ProviderChunk::ContentBlockStop { index: 0 }),
         Ok(crate::provider::chunk::ProviderChunk::StopReason {
-            reason: "tool_use".to_string(),
+            reason: crate::event::ModelStopReason::ToolUse,
         }),
         Ok(crate::provider::chunk::ProviderChunk::StreamEnd),
     ]));
@@ -1124,12 +1127,15 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
             .unwrap();
         store
             .append(EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-20T00:00:02Z".to_string(),
                 request_id: "req_1".to_string(),
                 text: "partial".to_string(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
             })
             .unwrap();
         store

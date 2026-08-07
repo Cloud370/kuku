@@ -20,15 +20,16 @@ pub(crate) enum ProviderChunk {
     ContentBlockStop { index: u64 },
     /// Usage statistics.
     StreamUsage {
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_input_tokens: u64,
-        cache_creation_input_tokens: u64,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_input_tokens: Option<u64>,
+        cache_creation_input_tokens: Option<u64>,
     },
     /// The model's final stop reason for the response.
-    StopReason { reason: String },
+    StopReason { reason: ModelStopReason },
     /// The provider returned an error event mid-stream.
     ServerError { code: String, message: String },
     /// The stream ended normally.
     StreamEnd,
 }
+use crate::event::ModelStopReason;

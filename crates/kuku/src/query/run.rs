@@ -326,10 +326,11 @@ impl Run {
                             turn,
                         }))
                     }
-                    _ => {
+                    PendingStep::Failed(error) => {
                         self.state = RunState::Done(None);
-                        Ok(None)
+                        Err(error)
                     }
+                    PendingStep::NeedPermission(_) | PendingStep::Streaming(_) => unreachable!(),
                 }
             }
         }
@@ -355,7 +356,9 @@ impl Run {
                     None => return Ok(None),
                 },
                 _ = cancel_token.notified() => {
-                    streaming.stop_reason = Some("cancelled".to_string());
+                    streaming.stop_reason = Some(crate::event::ModelStopReason::Unknown(
+                        "cancelled".to_string(),
+                    ));
                     return Ok(None);
                 }
             };
@@ -455,19 +458,23 @@ impl Run {
                         streaming
                             .usage
                             .get_or_insert(crate::provider::types::ProviderUsage {
-                                input_tokens: Some(0),
-                                output_tokens: Some(0),
-                                cache_read_input_tokens: Some(0),
-                                cache_creation_input_tokens: Some(0),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cache_read_input_tokens: None,
+                                cache_creation_input_tokens: None,
                             });
-                    entry.input_tokens = Some(entry.input_tokens.unwrap_or(0) + input_tokens);
-                    entry.output_tokens = Some(entry.output_tokens.unwrap_or(0) + output_tokens);
-                    entry.cache_read_input_tokens =
-                        Some(entry.cache_read_input_tokens.unwrap_or(0) + cache_read_input_tokens);
-                    entry.cache_creation_input_tokens = Some(
-                        entry.cache_creation_input_tokens.unwrap_or(0)
-                            + cache_creation_input_tokens,
-                    );
+                    if input_tokens.is_some() {
+                        entry.input_tokens = input_tokens;
+                    }
+                    if output_tokens.is_some() {
+                        entry.output_tokens = output_tokens;
+                    }
+                    if cache_read_input_tokens.is_some() {
+                        entry.cache_read_input_tokens = cache_read_input_tokens;
+                    }
+                    if cache_creation_input_tokens.is_some() {
+                        entry.cache_creation_input_tokens = cache_creation_input_tokens;
+                    }
                 }
                 ProviderChunk::ServerError { code, message } => {
                     return Err(crate::error::Error::Provider {
@@ -742,6 +749,7 @@ fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error:
     };
     let _ = append_model_error(
         &streaming.pending.events_path,
+        &streaming.conversation,
         streaming.pending.turn,
         streaming.request_id.clone(),
         provider_failure_event_kind(*kind),

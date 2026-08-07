@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -305,11 +306,10 @@ impl AnthropicSseParser {
                         self.chunks.push(ProviderChunk::StreamUsage {
                             input_tokens: usage
                                 .get("input_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
-                            output_tokens: 0,
-                            cache_read_input_tokens: 0,
-                            cache_creation_input_tokens: 0,
+                                .and_then(Value::as_u64),
+                            output_tokens: None,
+                            cache_read_input_tokens: None,
+                            cache_creation_input_tokens: None,
                         });
                     }
                 }
@@ -381,29 +381,25 @@ impl AnthropicSseParser {
             "message_delta" => {
                 if let Some(delta) = data.get("delta") {
                     if let Some(reason) = delta.get("stop_reason").and_then(Value::as_str) {
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
+                        if let Some(reason) = ModelStopReason::from_wire(reason) {
+                            self.chunks.push(ProviderChunk::StopReason { reason });
+                        }
                     }
                 }
                 if let Some(usage) = data.get("usage") {
                     self.chunks.push(ProviderChunk::StreamUsage {
                         input_tokens: usage
                             .get("input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                         output_tokens: usage
                             .get("output_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                         cache_read_input_tokens: usage
                             .get("cache_read_input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                         cache_creation_input_tokens: usage
                             .get("cache_creation_input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                     });
                 }
             }

@@ -328,16 +328,20 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
             request_id: "req_1".to_string(),
             text: "answer".to_string(),
             thinking: Some("reasoning".to_string()),
+            stop_reason: None,
             input_tokens_total: Some(123),
+            output_tokens_total: None,
         })
         .unwrap();
     store
         .append(EventPayload::ModelError {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
             request_id: "req_1".to_string(),
@@ -458,12 +462,15 @@ fn fact_event_json_omits_removed_observability_fields() {
     let response = StoredEvent {
         id: 11,
         payload: EventPayload::ModelResponse {
+            conversation: None,
             turn: 2,
             ts: "2026-05-18T00:01:00Z".to_string(),
             request_id: "req_2".to_string(),
             text: "hi".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(7),
+            output_tokens_total: None,
         },
     };
 

@@ -287,10 +287,10 @@ impl RunState {
 
 #[derive(Debug, Default)]
 pub(super) struct CumulativeUsage {
-    pub(super) input_tokens: u64,
-    pub(super) output_tokens: u64,
-    pub(super) cache_read_input_tokens: u64,
-    pub(super) cache_creation_input_tokens: u64,
+    pub(super) input_tokens: Option<u64>,
+    pub(super) output_tokens: Option<u64>,
+    pub(super) cache_read_input_tokens: Option<u64>,
+    pub(super) cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -452,7 +452,7 @@ pub(super) struct StreamingChunkState {
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
-    pub(super) stop_reason: Option<String>,
+    pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
     pub(super) provider_request_id: Option<String>,

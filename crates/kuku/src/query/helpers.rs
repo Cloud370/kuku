@@ -279,6 +279,7 @@ pub(super) fn append_permission_decision(
 
 pub(super) fn append_model_error(
     events_path: &std::path::Path,
+    conversation: &ConversationAddress,
     turn: u64,
     request_id: String,
     kind: &str,
@@ -287,6 +288,7 @@ pub(super) fn append_model_error(
     append_event(
         events_path,
         EventPayload::ModelError {
+            conversation: Some(conversation.as_str().to_string()),
             turn,
             ts: now_timestamp()?,
             request_id,
@@ -482,7 +484,7 @@ pub(super) fn last_input_tokens(
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ModelResponse {
             input_tokens_total, ..
-        } => *input_tokens_total,
+        } => input_tokens_total.and_then(|value| u32::try_from(value).ok()),
         _ => None,
     })
 }

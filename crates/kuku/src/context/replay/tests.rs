@@ -28,14 +28,126 @@ fn model_response(id: u64, turn: u64, request_id: &str, text: &str) -> StoredEve
     event(
         id,
         EventPayload::ModelResponse {
+            conversation: None,
             turn,
             ts: "2026-05-13T00:00:01Z".to_string(),
             request_id: request_id.to_string(),
             text: text.to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(10),
+            output_tokens_total: None,
         },
     )
+}
+
+#[test]
+fn explicit_non_success_model_response_is_excluded_from_history() {
+    let events = vec![
+        user_input(1, 1, "continue"),
+        event(
+            2,
+            EventPayload::ModelResponse {
+                conversation: Some("main".to_string()),
+                turn: 1,
+                ts: "2026-05-13T00:00:01Z".to_string(),
+                request_id: "req_1".to_string(),
+                text: "partial output".to_string(),
+                thinking: Some("partial reasoning".to_string()),
+                stop_reason: Some(crate::event::types::ModelStopReason::Length),
+                input_tokens_total: Some(10),
+                output_tokens_total: Some(5),
+            },
+        ),
+        event(
+            3,
+            EventPayload::TurnInterrupted {
+                turn: 1,
+                ts: "2026-05-13T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
+                reason: "length".to_string(),
+            },
+        ),
+    ];
+
+    let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+    assert!(history.is_empty());
+}
+
+#[test]
+fn scoped_model_responses_keep_delegated_request_identity_separate() {
+    let events = vec![
+        event(
+            1,
+            EventPayload::MessageUser {
+                turn: 1,
+                ts: "2026-05-13T00:00:00Z".to_string(),
+                conversation: "main".to_string(),
+                text: "main request".to_string(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        ),
+        event(
+            2,
+            EventPayload::ModelResponse {
+                conversation: Some("main".to_string()),
+                turn: 1,
+                ts: "2026-05-13T00:00:01Z".to_string(),
+                request_id: "req_1".to_string(),
+                text: "main response".to_string(),
+                thinking: None,
+                stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+                input_tokens_total: Some(1),
+                output_tokens_total: Some(1),
+            },
+        ),
+        event(
+            3,
+            EventPayload::MessageUser {
+                turn: 1,
+                ts: "2026-05-13T00:00:02Z".to_string(),
+                conversation: "delegate".to_string(),
+                text: "delegate request".to_string(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        ),
+        event(
+            4,
+            EventPayload::ModelResponse {
+                conversation: Some("delegate".to_string()),
+                turn: 1,
+                ts: "2026-05-13T00:00:03Z".to_string(),
+                request_id: "req_1".to_string(),
+                text: "delegate response".to_string(),
+                thinking: None,
+                stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+                input_tokens_total: Some(1),
+                output_tokens_total: Some(1),
+            },
+        ),
+    ];
+
+    let (_, main) = rebuild_history(&events, &ConversationAddress::MAIN);
+    let delegate_conversation = ConversationAddress::parse("delegate").unwrap();
+    let (_, delegate) = rebuild_history(&events, &delegate_conversation);
+    assert_eq!(
+        vec![
+            CanonicalMessage::user_text("main request"),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("main response".to_string())]),
+        ],
+        main
+    );
+    assert_eq!(
+        vec![
+            CanonicalMessage::user_text("delegate request"),
+            CanonicalMessage::assistant(vec![MessageBlock::Text(
+                "delegate response".to_string(),
+            )]),
+        ],
+        delegate
+    );
 }
 
 fn tool_call(
@@ -728,12 +840,15 @@ fn preserves_thinking_in_response_group() {
         event(
             2,
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-13T00:00:01Z".to_string(),
                 request_id: "req_1".to_string(),
                 text: "Hello!".to_string(),
                 thinking: Some("The user said hi".to_string()),
+                stop_reason: None,
                 input_tokens_total: Some(10),
+                output_tokens_total: None,
             },
         ),
         turn_end(3, 1),
@@ -760,12 +875,15 @@ fn preserves_thinking_with_tool_calls() {
         event(
             2,
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-13T00:00:01Z".to_string(),
                 request_id: "req_1".to_string(),
                 text: "I will inspect.".to_string(),
                 thinking: Some("Need to read the file first".to_string()),
+                stop_reason: None,
                 input_tokens_total: Some(10),
+                output_tokens_total: None,
             },
         ),
         tool_call(3, 1, "req_1", "tool_1", 0, "read"),
@@ -773,12 +891,15 @@ fn preserves_thinking_with_tool_calls() {
         event(
             5,
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-13T00:00:05Z".to_string(),
                 request_id: "req_2".to_string(),
                 text: "Done.".to_string(),
                 thinking: Some("File looks good".to_string()),
+                stop_reason: None,
                 input_tokens_total: Some(12),
+                output_tokens_total: None,
             },
         ),
         turn_end(6, 1),

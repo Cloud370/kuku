@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::event::{EventPayload, EventStore};
+use crate::event::{EventPayload, EventStore, ModelStopReason};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
@@ -7,8 +7,9 @@ use crate::permission::{
 
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
-    append_turn_completed, display_summary, gate_choice, gate_source_name, is_inline_skill_tool,
-    now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
+    append_turn_completed, append_turn_interrupted, display_summary, gate_choice,
+    gate_source_name, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    resolved_tool_available,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
@@ -205,11 +206,16 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     } = state;
 
     if let Some(ref u) = usage {
-        pending.cumulative.input_tokens += u.input_tokens.unwrap_or(0);
-        pending.cumulative.output_tokens += u.output_tokens.unwrap_or(0);
-        pending.cumulative.cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
-        pending.cumulative.cache_creation_input_tokens +=
-            u.cache_creation_input_tokens.unwrap_or(0);
+        add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
+        add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
+        add_usage_total(
+            &mut pending.cumulative.cache_read_input_tokens,
+            u.cache_read_input_tokens,
+        )?;
+        add_usage_total(
+            &mut pending.cumulative.cache_creation_input_tokens,
+            u.cache_creation_input_tokens,
+        )?;
         persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
     }
 
@@ -217,20 +223,31 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     pending.model_request_count += 1;
 
     let has_tool_calls = !tool_calls.is_empty();
-    if has_tool_calls {
-        pending.tool_rounds += 1;
-    }
-    let final_stop_reason = stop_reason.unwrap_or_else(|| {
+    let final_stop_reason = stop_reason.unwrap_or({
         if has_tool_calls {
-            "tool_use".to_string()
+            ModelStopReason::ToolUse
         } else {
-            "end_turn".to_string()
+            ModelStopReason::EndTurn
         }
     });
+    let final_stop_reason = match (final_stop_reason, has_tool_calls) {
+        (ModelStopReason::EndTurn, true) | (ModelStopReason::ToolUse, false) => {
+            ModelStopReason::InvalidResponse
+        }
+        (reason, _) => reason,
+    };
+    let is_success = matches!(
+        final_stop_reason,
+        ModelStopReason::EndTurn | ModelStopReason::ToolUse
+    );
+    if has_tool_calls && is_success {
+        pending.tool_rounds += 1;
+    }
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ModelResponse {
+            conversation: Some(pending.conversation.as_str().to_string()),
             turn: pending.turn,
             ts: now_timestamp()?,
             request_id: request_id.clone(),
@@ -240,14 +257,33 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             } else {
                 Some(accumulated_thinking.clone())
             },
-            input_tokens_total: usage.as_ref().and_then(|u| {
-                let input = u.input_tokens.unwrap_or(0);
-                let cache_read = u.cache_read_input_tokens.unwrap_or(0);
-                let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
-                let total = input + cache_read + cache_creation;
-                u32::try_from(total).ok().filter(|value| *value > 0)
-            }),
+            stop_reason: Some(final_stop_reason.clone()),
+            input_tokens_total: usage.as_ref().and_then(input_tokens_total),
+            output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
         })?;
+    }
+
+    if !is_success {
+        append_turn_interrupted(
+            &pending.events_path,
+            &conversation,
+            pending.turn,
+            final_stop_reason.wire_value(),
+        )?;
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Failed(crate::error::Error::Provider {
+            kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+            message: format!(
+                "model response ended with terminal state {}",
+                final_stop_reason.wire_value()
+            ),
+            provider: None,
+            model: None,
+        }));
+    }
+
+    {
+        let mut store = EventStore::open(&pending.events_path)?;
         if !pending.conversation.is_main() && !accumulated_text.is_empty() {
             store.append(EventPayload::MessageAssistant {
                 ts: now_timestamp()?,
@@ -341,10 +377,10 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             append_turn_completed(&pending.events_path, &conversation, pending.turn)?;
             pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
-                input_tokens: Some(pending.cumulative.input_tokens),
-                output_tokens: Some(pending.cumulative.output_tokens),
-                cache_read_input_tokens: Some(pending.cumulative.cache_read_input_tokens),
-                cache_creation_input_tokens: Some(pending.cumulative.cache_creation_input_tokens),
+                input_tokens: pending.cumulative.input_tokens,
+                output_tokens: pending.cumulative.output_tokens,
+                cache_read_input_tokens: pending.cumulative.cache_read_input_tokens,
+                cache_creation_input_tokens: pending.cumulative.cache_creation_input_tokens,
             });
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
@@ -405,13 +441,11 @@ fn persist_runtime_model_usage_log(
     request_id: &str,
     usage: &crate::provider::types::ProviderUsage,
 ) -> Result<()> {
-    let input_tokens = usage.input_tokens.unwrap_or(0);
-    let output_tokens = usage.output_tokens.unwrap_or(0);
-    let cache_read_input_tokens = usage.cache_read_input_tokens.unwrap_or(0);
-    let cache_creation_input_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
-    let input_tokens_total = input_tokens + cache_read_input_tokens + cache_creation_input_tokens;
-    let cache_hit_rate = (input_tokens_total > 0)
-        .then(|| cache_read_input_tokens as f64 / input_tokens_total as f64);
+    let input_tokens_total = input_tokens_total(usage);
+    let cache_hit_rate = match (input_tokens_total, usage.cache_read_input_tokens) {
+        (Some(total), Some(cache_read)) if total > 0 => Some(cache_read as f64 / total as f64),
+        _ => None,
+    };
 
     let mut record = LogRecord::new(now_timestamp()?, LogLevel::Info, LogScope::Runtime);
     record.kind = "runtime.model_usage".to_string();
@@ -422,14 +456,34 @@ fn persist_runtime_model_usage_log(
     record.request_id = Some(request_id.to_string());
     record.turn = Some(pending.turn);
     record.data = Some(serde_json::json!({
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_input_tokens": cache_read_input_tokens,
-        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
         "input_tokens_total": input_tokens_total,
         "cache_hit_rate": cache_hit_rate,
     }));
     let _ = pending.runtime_log_writer.push(record);
+    Ok(())
+}
+
+fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
+    usage
+        .input_tokens?
+        .checked_add(usage.cache_read_input_tokens?)?
+        .checked_add(usage.cache_creation_input_tokens?)
+}
+
+fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    *total = Some(
+        total
+            .unwrap_or(0)
+            .checked_add(value)
+            .ok_or_else(|| crate::error::Error::InvalidEventStream("model usage overflow".into()))?,
+    );
     Ok(())
 }
 
