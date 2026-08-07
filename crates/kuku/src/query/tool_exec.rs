@@ -31,16 +31,12 @@ fn finalize_persisted_tool_result(
 
 pub(crate) fn write_tool_result(
     slot: &ExecSlot,
-    status: &str,
-    summary: &str,
-    model_content: &str,
-    truncated: bool,
-    result: &Option<serde_json::Value>,
+    result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), result);
+    let structured = finalize_persisted_tool_result(store.next_id(), &result.structured);
     let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
@@ -49,10 +45,10 @@ pub(crate) fn write_tool_result(
             .as_ref()
             .map(|value| value.as_str().to_string()),
         tool_call_id: slot.tool_call_id.clone(),
-        status: status.to_string(),
-        summary: summary.to_string(),
-        model_content: model_content.to_string(),
-        truncated,
+        status: result.status.clone(),
+        summary: result.summary.clone(),
+        model_content: result.model_content.clone(),
+        truncated: result.truncated,
         files_read: Vec::new(),
         files_changed: Vec::new(),
         commands_run: Vec::new(),
@@ -600,17 +596,14 @@ mod tests {
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
 
-        write_tool_result(
-            &slot,
-            "ok",
-            "read README.md",
-            "README contents",
-            false,
-            &None,
-            &events_path,
-            1,
-        )
-        .unwrap();
+        let result = crate::tool::ToolResultEnvelope {
+            status: "ok".to_string(),
+            summary: "read README.md".to_string(),
+            model_content: "README contents".to_string(),
+            truncated: false,
+            structured: None,
+        };
+        write_tool_result(&slot, &result, &events_path, 1).unwrap();
 
         let events = crate::event::EventStore::replay(&events_path).unwrap();
         assert!(events.iter().any(|event| matches!(

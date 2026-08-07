@@ -145,16 +145,25 @@ impl Run {
                                     }));
                                 }
                             };
+                            let envelope = crate::tool::ToolResultEnvelope {
+                                status,
+                                summary,
+                                model_content,
+                                truncated,
+                                structured: result,
+                            };
                             let result = super::tool_exec::write_tool_result(
                                 &slot,
-                                &status,
-                                &summary,
-                                &model_content,
-                                truncated,
-                                &result,
+                                &envelope,
                                 events_path,
                                 turn,
                             )?;
+                            let crate::tool::ToolResultEnvelope {
+                                status,
+                                summary,
+                                model_content,
+                                ..
+                            } = envelope;
                             let mc = (!model_content.is_empty()).then_some(model_content);
                             return Ok(Some(UiEvent::ToolEnd {
                                 id: slot.tool_call_id,
