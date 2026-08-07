@@ -75,6 +75,8 @@
 | `truncated` | `model_content` 是否被截断 |
 | `structured` | 可选的机器可读细节 |
 
+与 snapshot 有关的 `edit_file` 和 `write_file` 错误会保留 `structured.kind: "error"`，并增加一个用于恢复的 `reason_code`：`snapshot_required`、`full_snapshot_required`、`snapshot_stale` 或 `old_text_not_visible`。
+
 ## Notes By Tool
 
 - `find_files` 返回相对路径，并跳过常见构建目录。

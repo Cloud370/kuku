@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::event::StoredEvent;
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
     content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief, resolve_path,
@@ -45,23 +45,35 @@ pub(crate) fn edit_file(
         Err(err) => return err,
     };
     let current_hash = content_hash(&bytes);
-    let Some(snapshot) = find_write_snapshot(
+    let snapshot = match find_write_snapshot(
         prior_events,
         conversation,
         &resolved.path,
         false,
         Some(&request.old_text),
-    ) else {
-        return ToolResultEnvelope::error(
-            format!("failed: read {} before editing", resolved.relative),
-            format!(
-                "edit_file requires a prior successful read_file snapshot for {}",
-                resolved.relative
-            ),
-        );
+    ) {
+        super::common::WriteSnapshotLookup::Found(snapshot) => snapshot,
+        super::common::WriteSnapshotLookup::Rejected(reason) => {
+            let model_content = if reason == ToolErrorReason::OldTextNotVisible {
+                format!(
+                    "old_text is outside the visible read_file snapshot; read the matching lines from {} before editing",
+                    resolved.relative
+                )
+            } else {
+                format!(
+                    "edit_file requires a prior successful read_file snapshot for {}",
+                    resolved.relative
+                )
+            };
+            return ToolResultEnvelope::error_with_reason(
+                format!("failed: read {} before editing", resolved.relative),
+                model_content,
+                reason,
+            );
+        }
     };
     if snapshot.content_hash != current_hash {
-        return ToolResultEnvelope::error(
+        return ToolResultEnvelope::error_with_reason(
             format!(
                 "failed: {} changed since event {}",
                 resolved.relative, snapshot.event_id
@@ -70,6 +82,7 @@ pub(crate) fn edit_file(
                 "file changed since it was read; read {} again before editing",
                 resolved.relative
             ),
+            ToolErrorReason::SnapshotStale,
         );
     }
 
@@ -197,6 +210,11 @@ mod tests {
             &[],
         );
         assert_eq!(missing.status, "error");
+        assert_eq!(missing.structured.as_ref().unwrap()["kind"], "error");
+        assert_eq!(
+            missing.structured.as_ref().unwrap()["reason_code"],
+            "snapshot_required"
+        );
         assert!(missing
             .model_content
             .contains("prior successful read_file snapshot"));
@@ -217,6 +235,10 @@ mod tests {
             &[snapshot],
         );
         assert_eq!(stale.status, "error");
+        assert_eq!(
+            stale.structured.as_ref().unwrap()["reason_code"],
+            "snapshot_stale"
+        );
         assert!(stale.model_content.contains("read README.md again"));
     }
 
@@ -367,10 +389,52 @@ mod tests {
         );
 
         assert_eq!(result.status, "error");
+        assert_eq!(
+            result.structured.as_ref().unwrap()["reason_code"],
+            "snapshot_stale"
+        );
         assert!(result.model_content.contains("read README.md again"));
         assert_eq!(
             std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
             "alpha\nbeta\nchanged\n"
+        );
+    }
+
+    #[test]
+    fn partial_snapshot_rejects_old_text_outside_visible_raw_text() {
+        let dir = workspace();
+        let content = b"alpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            false,
+            "alpha\n",
+            "1\talpha",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "beta",
+                "new_text": "gamma",
+                "brief": "change hidden line"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "error");
+        assert_eq!(result.structured.as_ref().unwrap()["kind"], "error");
+        assert_eq!(
+            result.structured.as_ref().unwrap()["reason_code"],
+            "old_text_not_visible"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "alpha\nbeta\n"
         );
     }
 }

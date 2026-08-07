@@ -75,6 +75,8 @@ Every tool returns the same top-level shape:
 | `truncated` | Whether `model_content` was cut |
 | `structured` | Optional machine-readable detail |
 
+Snapshot-related `edit_file` and `write_file` errors retain `structured.kind: "error"` and add one recovery-oriented `reason_code`: `snapshot_required`, `full_snapshot_required`, `snapshot_stale`, or `old_text_not_visible`.
+
 ## Notes By Tool
 
 - `find_files` returns relative paths and skips common build directories.

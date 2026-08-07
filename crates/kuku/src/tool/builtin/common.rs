@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 
 // ---------- Types ----------
@@ -28,6 +28,11 @@ pub(super) struct ReadSnapshot {
 pub(super) struct WriteSnapshot {
     pub(super) event_id: u64,
     pub(super) content_hash: String,
+}
+
+pub(super) enum WriteSnapshotLookup {
+    Found(WriteSnapshot),
+    Rejected(ToolErrorReason),
 }
 
 // ---------- Path resolution ----------
@@ -406,49 +411,58 @@ pub(super) fn find_write_snapshot(
     canonical_path: &Path,
     require_full_file: bool,
     required_text: Option<&str>,
-) -> Option<WriteSnapshot> {
+) -> WriteSnapshotLookup {
     let canonical_path = canonical_path.to_string_lossy();
-    crate::context::replay::effective_snapshot_events(events, conversation)
+    let mut saw_path_snapshot = false;
+    for event in crate::context::replay::effective_snapshot_events(events, conversation)
         .into_iter()
         .rev()
-        .find_map(|event| {
-            let EventPayload::ToolResult {
-                status,
-                structured: Some(structured),
-                ..
-            } = &event.payload
-            else {
-                return None;
-            };
-            if status != "ok"
-                || structured["kind"] != "file_content"
-                || structured["cached"] == true
-            {
-                return None;
-            }
-            if structured["canonical_path"].as_str()? != canonical_path {
-                return None;
-            }
-            let is_full_file_snapshot = structured["is_full_file_snapshot"]
-                .as_bool()
-                .unwrap_or(false);
-            if require_full_file && !is_full_file_snapshot {
-                return None;
-            }
-            if !is_full_file_snapshot
-                && required_text.is_some_and(|text| {
-                    !structured["raw_text"]
-                        .as_str()
-                        .is_some_and(|raw_text| raw_text.contains(text))
-                })
-            {
-                return None;
-            }
-            Some(WriteSnapshot {
-                event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-                content_hash: structured["content_hash"].as_str()?.to_string(),
+    {
+        let EventPayload::ToolResult {
+            status,
+            structured: Some(structured),
+            ..
+        } = &event.payload
+        else {
+            continue;
+        };
+        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
+            continue;
+        }
+        if structured["canonical_path"].as_str() != Some(canonical_path.as_ref()) {
+            continue;
+        }
+        let Some(content_hash) = structured["content_hash"].as_str() else {
+            continue;
+        };
+        saw_path_snapshot = true;
+        let is_full_file_snapshot = structured["is_full_file_snapshot"]
+            .as_bool()
+            .unwrap_or(false);
+        if require_full_file && !is_full_file_snapshot {
+            continue;
+        }
+        if !is_full_file_snapshot
+            && required_text.is_some_and(|text| {
+                !structured["raw_text"]
+                    .as_str()
+                    .is_some_and(|raw_text| raw_text.contains(text))
             })
-        })
+        {
+            continue;
+        }
+        return WriteSnapshotLookup::Found(WriteSnapshot {
+            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
+            content_hash: content_hash.to_string(),
+        });
+    }
+    if require_full_file {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::FullSnapshotRequired)
+    } else if saw_path_snapshot && required_text.is_some() {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::OldTextNotVisible)
+    } else {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired)
+    }
 }
 
 #[cfg(test)]
@@ -464,13 +478,16 @@ mod tests {
         require_full_file: bool,
         required_text: Option<&str>,
     ) -> Option<WriteSnapshot> {
-        super::find_write_snapshot(
+        match super::find_write_snapshot(
             events,
             &ConversationAddress::MAIN,
             canonical_path,
             require_full_file,
             required_text,
-        )
+        ) {
+            WriteSnapshotLookup::Found(snapshot) => Some(snapshot),
+            WriteSnapshotLookup::Rejected(_) => None,
+        }
     }
 
     fn snapshot_event(id: u64, turn: u64, conversation: Option<&str>, path: &Path) -> StoredEvent {
