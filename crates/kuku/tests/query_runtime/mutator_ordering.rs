@@ -174,7 +174,8 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
 #[tokio::test(flavor = "current_thread")]
 async fn command_mutation_finishes_before_same_run_memory_write_starts() {
     let env = TestEnv::new();
-    let memory_path = kuku::session::project_memory_path(env.home.path(), env.workspace.path())
+    let workspace = std::fs::canonicalize(env.workspace.path()).expect("canonical workspace path");
+    let memory_path = kuku::session::project_memory_path(env.home.path(), &workspace)
         .expect("project memory path");
     std::fs::create_dir_all(memory_path.parent().unwrap()).unwrap();
     std::fs::write(
