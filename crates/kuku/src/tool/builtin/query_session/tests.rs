@@ -201,7 +201,7 @@ fn query_session_output_cap_drops_earliest_events() {
     let dir = tempdir().unwrap();
     let big_text = "y".repeat(3000);
     let mut payloads = Vec::new();
-    for i in 0..5 {
+    for i in 0..20 {
         payloads.push(message_user(1, &format!("msg_{i}_{big_text}")));
     }
     let path = write_events(dir.path(), &payloads);
@@ -212,6 +212,7 @@ fn query_session_output_cap_drops_earliest_events() {
         "output too large: {} chars",
         result.model_content.len()
     );
+    assert!(result.truncated);
 }
 
 #[test]

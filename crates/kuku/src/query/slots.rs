@@ -41,6 +41,7 @@ pub(crate) fn spawn_simple_slot(
                 status: "cancelled".into(),
                 summary: "cancelled".into(),
                 model_content: String::new(),
+                truncated: false,
                 result: None,
             },
             r = crate::tool::dispatch::dispatch(
@@ -58,6 +59,7 @@ pub(crate) fn spawn_simple_slot(
                 status: r.status,
                 summary: r.summary,
                 model_content: r.model_content,
+                truncated: r.truncated,
                 result: r.structured,
             },
         };
@@ -119,6 +121,7 @@ pub(crate) fn spawn_agent_slot(
                             status: "error".into(),
                             summary: "agent: failed to start conversation".into(),
                             model_content: String::new(),
+                            truncated: false,
                             result: None,
                         },
                     ))
@@ -136,6 +139,7 @@ pub(crate) fn spawn_agent_slot(
                         status: "cancelled".into(),
                         summary: format!("{} cancelled", dispatch.conversation.as_str()),
                         model_content: String::new(),
+                        truncated: false,
                         result: None,
                     })).await;
                     return;
@@ -156,6 +160,7 @@ pub(crate) fn spawn_agent_slot(
                                     output.turn
                                 ),
                                 model_content: output.text,
+                                truncated: false,
                                 result: Some(serde_json::json!({
                                     "kind": "agent_result",
                                     "conversation": dispatch.conversation.as_str(),
@@ -203,6 +208,7 @@ pub(crate) fn spawn_agent_slot(
                                     dispatch.conversation.as_str()
                                 ),
                                 model_content: String::new(),
+                                truncated: false,
                                 result: None,
                             },
                         ))
@@ -265,6 +271,7 @@ pub(crate) fn spawn_command_slot(
             status: r.status,
             summary: r.summary,
             model_content: r.model_content,
+            truncated: r.truncated,
             result: r.structured,
         };
         let _ = event_tx.send((tc_id, result)).await;

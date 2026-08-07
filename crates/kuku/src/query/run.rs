@@ -126,6 +126,7 @@ impl Run {
                             status,
                             summary,
                             model_content,
+                            truncated,
                             result,
                         } => {
                             let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
@@ -151,15 +152,12 @@ impl Run {
                                 &status,
                                 &summary,
                                 &model_content,
+                                truncated,
                                 &result,
                                 events_path,
                                 turn,
                             )?;
-                            let mc = if model_content.is_empty() {
-                                None
-                            } else {
-                                Some(model_content)
-                            };
+                            let mc = (!model_content.is_empty()).then_some(model_content);
                             return Ok(Some(UiEvent::ToolEnd {
                                 id: slot.tool_call_id,
                                 status,
@@ -171,7 +169,6 @@ impl Run {
                     }
                 }
             }
-
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
