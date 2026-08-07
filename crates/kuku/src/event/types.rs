@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use super::json::{
+    bool_field, optional_json_field, optional_stop_reason_field, optional_string_field,
+    optional_u64_field, string_field, u32_field, u64_field, u8_field, usize_field,
+    vec_string_field,
+};
 use crate::context::provenance::{
     AgentRegistryProvenance, FileSource, PluginRegistryProvenance, PromptCapabilityMetadata,
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
@@ -75,6 +80,23 @@ pub enum EventPayload {
         request_id: String,
         kind: String,
         message: String,
+    },
+    ModelRecovery {
+        conversation: String,
+        turn: u64,
+        ts: String,
+        from_request_id: String,
+        to_request_id: String,
+        reason: ModelStopReason,
+        attempt: u8,
+        max_attempts: u8,
+        failed_max_output_tokens: u32,
+        retry_max_output_tokens: u32,
+        output_tokens_total: Option<u64>,
+        discarded_tool_calls: u64,
+        notice: String,
+        prompt_path: String,
+        prompt_hash: String,
     },
     ToolCall {
         turn: u64,
@@ -249,6 +271,7 @@ impl EventPayload {
             Self::ContextSkills { .. } => "context.skills",
             Self::ModelResponse { .. } => "model.response",
             Self::ModelError { .. } => "model.error",
+            Self::ModelRecovery { .. } => "model.recovery",
             Self::ToolCall { .. } => "tool.call",
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionAllow { .. } => "permission.allow",
@@ -319,6 +342,23 @@ impl EventPayload {
                 request_id: string_field(object, "request_id")?,
                 kind: string_field(object, "error_kind")?,
                 message: string_field(object, "message")?,
+            }),
+            "model.recovery" => Some(Self::ModelRecovery {
+                conversation: string_field(object, "conversation")?,
+                turn: u64_field(object, "turn")?,
+                ts: string_field(object, "ts")?,
+                from_request_id: string_field(object, "from_request_id")?,
+                to_request_id: string_field(object, "to_request_id")?,
+                reason: optional_stop_reason_field(object, "reason")?,
+                attempt: u8_field(object, "attempt")?,
+                max_attempts: u8_field(object, "max_attempts")?,
+                failed_max_output_tokens: u32_field(object, "failed_max_output_tokens")?,
+                retry_max_output_tokens: u32_field(object, "retry_max_output_tokens")?,
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
+                discarded_tool_calls: u64_field(object, "discarded_tool_calls")?,
+                notice: string_field(object, "notice")?,
+                prompt_path: string_field(object, "prompt_path")?,
+                prompt_hash: string_field(object, "prompt_hash")?,
             }),
             "tool.call" => Some(Self::ToolCall {
                 turn: u64_field(object, "turn")?,
@@ -598,10 +638,7 @@ impl EventPayload {
                     map.insert("thinking".into(), Value::from(thinking.clone()));
                 }
                 if let Some(stop_reason) = stop_reason {
-                    map.insert(
-                        "stop_reason".into(),
-                        Value::from(stop_reason.wire_value()),
-                    );
+                    map.insert("stop_reason".into(), Value::from(stop_reason.wire_value()));
                 }
                 if let Some(input_tokens_total) = input_tokens_total {
                     map.insert(
@@ -638,6 +675,41 @@ impl EventPayload {
                 }
                 Ok(Value::Object(map))
             }
+            Self::ModelRecovery {
+                conversation,
+                turn,
+                ts,
+                from_request_id,
+                to_request_id,
+                reason,
+                attempt,
+                max_attempts,
+                failed_max_output_tokens,
+                retry_max_output_tokens,
+                output_tokens_total,
+                discarded_tool_calls,
+                notice,
+                prompt_path,
+                prompt_hash,
+            } => Ok(serde_json::json!({
+                "id": id,
+                "ts": ts,
+                "kind": "model.recovery",
+                "conversation": conversation,
+                "turn": turn,
+                "from_request_id": from_request_id,
+                "to_request_id": to_request_id,
+                "reason": reason,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "failed_max_output_tokens": failed_max_output_tokens,
+                "retry_max_output_tokens": retry_max_output_tokens,
+                "output_tokens_total": output_tokens_total,
+                "discarded_tool_calls": discarded_tool_calls,
+                "notice": notice,
+                "prompt_path": prompt_path,
+                "prompt_hash": prompt_hash,
+            })),
             Self::ToolCall {
                 turn,
                 ts,
@@ -923,66 +995,3 @@ impl EventPayload {
         }
     }
 }
-
-fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object.get(key)?.as_str().map(ToOwned::to_owned)
-}
-
-fn optional_string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn optional_json_field(object: &Map<String, Value>, key: &str) -> Option<Value> {
-    object.get(key).cloned().filter(|value| !value.is_null())
-}
-
-fn u64_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
-    object.get(key)?.as_u64()
-}
-
-fn usize_field(object: &Map<String, Value>, key: &str) -> Option<usize> {
-    usize::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    u32::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn optional_u64_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
-    object.get(key).and_then(Value::as_u64)
-}
-
-fn optional_stop_reason_field(object: &Map<String, Value>, key: &str) -> Option<ModelStopReason> {
-    match object.get(key) {
-        None => None,
-        Some(Value::String(reason)) => {
-            ModelStopReason::from_wire(reason).or(Some(ModelStopReason::InvalidResponse))
-        }
-        Some(_) => Some(ModelStopReason::InvalidResponse),
-    }
-}
-
-fn bool_field(object: &Map<String, Value>, key: &str) -> Option<bool> {
-    object.get(key)?.as_bool()
-}
-
-fn vec_string_field(object: &Map<String, Value>, key: &str) -> Vec<String> {
-    object
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-#[path = "types/tests.rs"]
-mod tests;

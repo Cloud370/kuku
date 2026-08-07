@@ -368,11 +368,21 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
             Some(ToolEvent::PermissionRequested { request })
         }
         UiEvent::Error { code, message } => Some(ToolEvent::Error { code, message }),
+        UiEvent::ModelRequest {
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+            ..
+        } => Some(ToolEvent::ModelRequest {
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+        }),
+        UiEvent::ModelRecovery { info } => Some(ToolEvent::ModelRecovery { info }),
         UiEvent::Done { .. } => None,
-        UiEvent::TurnStart { .. }
-        | UiEvent::ModelRequest { .. }
-        | UiEvent::Log { .. }
-        | UiEvent::Cancelled { .. } => None,
+        UiEvent::TurnStart { .. } | UiEvent::Log { .. } | UiEvent::Cancelled { .. } => None,
     }
 }
 

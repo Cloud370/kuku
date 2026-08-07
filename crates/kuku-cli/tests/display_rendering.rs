@@ -29,6 +29,25 @@ fn tool_call_format() {
 }
 
 #[test]
+fn model_recovery_explains_discard_and_attempt() {
+    let d = Display::new(false, "medium");
+    let info = kuku::query::ModelRecoveryInfo {
+        conversation: kuku::conversation::address::ConversationAddress::MAIN,
+        turn: 1,
+        from_request_id: "req_1".to_string(),
+        to_request_id: "req_2".to_string(),
+        reason: kuku::event::ModelStopReason::Length,
+        attempt: 1,
+        max_attempts: 1,
+    };
+
+    let line = d.model_recovery(&info);
+    assert!(line.contains("output limit"));
+    assert!(line.contains("discarded"));
+    assert!(line.contains("1/1"));
+}
+
+#[test]
 fn permission_ask_format() {
     let d = Display::new(false, "medium");
     let line = d.permission_ask("run_command", "cargo build");
@@ -153,12 +172,15 @@ fn derive_final_output_defaults_to_main_conversation() {
         kuku::event::StoredEvent {
             id: 2,
             payload: kuku::event::EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "t1".into(),
                 request_id: "req_main".into(),
                 text: "main answer".into(),
                 thinking: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
+                stop_reason: None,
             },
         },
         kuku::event::StoredEvent {
@@ -297,12 +319,15 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
         kuku::event::StoredEvent {
             id: 3,
             payload: kuku::event::EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "t".into(),
                 request_id: "req_main".into(),
                 text: "main response".into(),
                 thinking: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
+                stop_reason: None,
             },
         },
     ];

@@ -153,6 +153,7 @@ pub fn reduce_conversations(events: &[StoredEvent]) -> Vec<ConversationState> {
             | EventPayload::ContextSkills { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::ToolCall { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionRequested { .. }
@@ -266,9 +267,8 @@ fn event_conversation(event: &StoredEvent) -> Option<&str> {
         | EventPayload::TurnCancelled { conversation, .. }
         | EventPayload::TurnInterrupted { conversation, .. }
         | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. } => {
-            Some(conversation.as_str())
-        }
+        | EventPayload::ConversationRollbackUndone { conversation, .. }
+        | EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
         EventPayload::SessionCreated { .. }
         | EventPayload::ContextSources { .. }
         | EventPayload::ContextSkills { .. }
@@ -358,6 +358,29 @@ mod tests {
                 conversation: conversation.into(),
                 turn,
                 reason: "interrupted".into(),
+            },
+        )
+    }
+
+    fn recovery(id: u64, conversation: &str) -> StoredEvent {
+        event(
+            id,
+            EventPayload::ModelRecovery {
+                conversation: conversation.into(),
+                turn: 1,
+                ts: "t".into(),
+                from_request_id: "req_1".into(),
+                to_request_id: "req_2".into(),
+                reason: crate::event::ModelStopReason::Length,
+                attempt: 1,
+                max_attempts: 1,
+                failed_max_output_tokens: 32,
+                retry_max_output_tokens: 32,
+                output_tokens_total: None,
+                discarded_tool_calls: 0,
+                notice: "notice".into(),
+                prompt_path: "runtime/recovery.md".into(),
+                prompt_hash: "sha256:test".into(),
             },
         )
     }
@@ -472,5 +495,18 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![1, 2, 4, 6]);
+    }
+
+    #[test]
+    fn conversation_events_scope_model_recovery_to_its_conversation() {
+        let review = ConversationAddress::parse("review").unwrap();
+        let events = vec![recovery(1, "review"), recovery(2, "explore")];
+
+        let ids = conversation_events(&events, &review)
+            .into_iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![1]);
     }
 }

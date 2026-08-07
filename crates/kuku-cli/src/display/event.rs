@@ -15,6 +15,7 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::TurnInterrupted { conversation, .. }
         | EventPayload::ConversationRollback { conversation, .. }
         | EventPayload::ConversationRollbackUndone { conversation, .. }
+        | EventPayload::ModelRecovery { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
         EventPayload::Unknown(value) => value.get("conversation").and_then(|item| item.as_str()),
         _ => None,
@@ -79,6 +80,15 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
             let preview: String = text.chars().take(60).collect();
             preview
         }
+        EventPayload::ModelRecovery {
+            from_request_id,
+            to_request_id,
+            attempt,
+            max_attempts,
+            ..
+        } => format!(
+            "from={from_request_id}  retry={to_request_id}  attempt={attempt}/{max_attempts}"
+        ),
         EventPayload::ContextSkills {
             registry,
             bootstrap_loaded,
@@ -305,12 +315,15 @@ mod tests {
             StoredEvent {
                 id: 2,
                 payload: EventPayload::ModelResponse {
+                    conversation: None,
                     turn: 1,
                     ts: "t1".to_string(),
                     request_id: "req_1".to_string(),
                     text: "tool phase".to_string(),
                     thinking: None,
                     input_tokens_total: Some(5),
+                    output_tokens_total: None,
+                    stop_reason: None,
                 },
             },
             StoredEvent {
@@ -329,12 +342,15 @@ mod tests {
             StoredEvent {
                 id: 3,
                 payload: EventPayload::ModelResponse {
+                    conversation: None,
                     turn: 1,
                     ts: "t3".to_string(),
                     request_id: "req_2".to_string(),
                     text: "final answer".to_string(),
                     thinking: None,
                     input_tokens_total: Some(7),
+                    output_tokens_total: None,
+                    stop_reason: None,
                 },
             },
             StoredEvent {
@@ -388,12 +404,15 @@ mod tests {
             StoredEvent {
                 id: 1,
                 payload: EventPayload::ModelResponse {
+                    conversation: None,
                     turn: 1,
                     ts: "t1".to_string(),
                     request_id: "req_1".to_string(),
                     text: "keep me".to_string(),
                     thinking: None,
                     input_tokens_total: Some(5),
+                    output_tokens_total: None,
+                    stop_reason: None,
                 },
             },
             StoredEvent {
@@ -415,12 +434,15 @@ mod tests {
             StoredEvent {
                 id: 5,
                 payload: EventPayload::ModelResponse {
+                    conversation: None,
                     turn: 2,
                     ts: "t3".to_string(),
                     request_id: "req_2".to_string(),
                     text: "rolled back answer".to_string(),
                     thinking: None,
                     input_tokens_total: Some(7),
+                    output_tokens_total: None,
+                    stop_reason: None,
                 },
             },
             StoredEvent {

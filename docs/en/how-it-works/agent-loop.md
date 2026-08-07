@@ -10,6 +10,7 @@ turn.started
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
+        length -> model.recovery -> model.response (at most once)
         no  -> turn.completed
 ```
 
@@ -18,8 +19,15 @@ turn.started
 1. kuku appends `turn.started` and `message.user`.
 2. It rebuilds the model context from files and persisted events.
 3. It streams the model response to the host and appends `model.response` when complete.
-4. If the response ends the turn, kuku appends `turn.completed` for the active conversation.
-5. If the response asks for tools, kuku appends `tool.call`, records pending permission with `permission.requested`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
+4. If the response reaches its output limit, kuku persists `model.recovery`, discards the incomplete response and its tool calls, and retries once with a short runtime notice appended to the current user message.
+5. If the response ends the turn, kuku appends `turn.completed` for the active conversation.
+6. If the response asks for tools, kuku appends `tool.call`, records pending permission with `permission.requested`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
+
+The stable system protocol tells the model that a response without tool calls is
+the final answer for the turn. When more inspection or action is required, the
+model must call the relevant tools in the current response instead of promising
+future work. The host still classifies completion from the provider terminal state:
+`length`, invalid responses, and interrupted streams are not successful turns.
 
 ## Tool execution
 

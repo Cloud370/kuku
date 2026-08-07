@@ -20,8 +20,40 @@ fn model_response_round_trips_scoped_terminal_state_and_u64_usage() {
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(Some("delegate"), json["conversation"].as_str());
     assert_eq!(Some("length"), json["stop_reason"].as_str());
-    assert_eq!(Some(u64::from(u32::MAX) + 1), json["input_tokens_total"].as_u64());
+    assert_eq!(
+        Some(u64::from(u32::MAX) + 1),
+        json["input_tokens_total"].as_u64()
+    );
     assert_eq!(Some(0), json["output_tokens_total"].as_u64());
+    assert_eq!(event, serde_json::from_value(json).unwrap());
+}
+
+#[test]
+fn model_recovery_round_trips_prompt_provenance_and_zero_usage() {
+    let event = StoredEvent {
+        id: 8,
+        payload: EventPayload::ModelRecovery {
+            conversation: "review".to_string(),
+            turn: 4,
+            ts: "t".to_string(),
+            from_request_id: "req_1".to_string(),
+            to_request_id: "req_2".to_string(),
+            reason: ModelStopReason::Length,
+            attempt: 1,
+            max_attempts: 1,
+            failed_max_output_tokens: 32_768,
+            retry_max_output_tokens: 32_768,
+            output_tokens_total: Some(0),
+            discarded_tool_calls: 2,
+            notice: "notice".to_string(),
+            prompt_path: "runtime/recovery.md".to_string(),
+            prompt_hash: "sha256:abc".to_string(),
+        },
+    };
+
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["kind"], "model.recovery");
+    assert_eq!(json["output_tokens_total"], 0);
     assert_eq!(event, serde_json::from_value(json).unwrap());
 }
 

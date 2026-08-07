@@ -217,6 +217,19 @@ fn assembly_with_multiblock_current_user() -> ContextAssembly {
     assembly
 }
 
+fn assembly_with_recovery_notice() -> ContextAssembly {
+    let mut assembly = assembly_with_multiblock_current_user();
+    assembly
+        .history
+        .last_mut()
+        .unwrap()
+        .blocks
+        .push(MessageBlock::Text(
+            "<kuku_recovery_notice>recover</kuku_recovery_notice>".to_string(),
+        ));
+    assembly
+}
+
 fn assembly_with_tool_history() -> ContextAssembly {
     ContextAssembly {
         system_prompt:
@@ -439,6 +452,45 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
 }
 
 #[test]
+fn anthropic_recovery_keeps_original_request_as_exact_prefix() {
+    let catalog = test_catalog();
+    let render = |assembly| {
+        render_anthropic_body(&ProviderRequest {
+            stream: false,
+            assembly,
+            catalog: &catalog,
+            current_input: current_input(),
+            model: "claude-sonnet-4-6".to_string(),
+            max_output_tokens: Some(37),
+            temperature: None,
+            think_level: kuku::config::ThinkLevel::Off,
+            thinking: ResolvedThinking::default(),
+        })
+    };
+    let original = render(assembly_with_multiblock_current_user());
+    let recovered = render(assembly_with_recovery_notice());
+    let original_messages = original["messages"].as_array().unwrap();
+    let recovered_messages = recovered["messages"].as_array().unwrap();
+    let original_current = original_messages.last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+    let recovered_current = recovered_messages.last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+
+    assert_eq!(original["system"], recovered["system"]);
+    assert_eq!(
+        &original_messages[..original_messages.len() - 1],
+        &recovered_messages[..recovered_messages.len() - 1]
+    );
+    assert_eq!(
+        original_current,
+        &recovered_current[..original_current.len()]
+    );
+    assert_eq!(recovered["max_tokens"], 37);
+}
+
+#[test]
 fn anthropic_render_body_uses_top_level_automatic_cache_control() {
     let catalog = test_catalog();
     let body = render_anthropic_body(&ProviderRequest {
@@ -614,6 +666,41 @@ fn openai_chat_render_body_joins_current_user_blocks_in_order() {
         current["content"],
         "<kuku_runtime_notices>notice</kuku_runtime_notices>\n\n<kuku_conversation_inbox>inbox</kuku_conversation_inbox>\n\nraw user input"
     );
+}
+
+#[test]
+fn openai_chat_recovery_keeps_original_request_as_exact_prefix() {
+    let catalog = test_catalog();
+    let render = |assembly| {
+        render_openai_body(&ProviderRequest {
+            stream: false,
+            assembly,
+            catalog: &catalog,
+            current_input: current_input(),
+            model: "gpt-5.4-mini".to_string(),
+            max_output_tokens: Some(37),
+            temperature: None,
+            think_level: kuku::config::ThinkLevel::Off,
+            thinking: ResolvedThinking::default(),
+        })
+    };
+    let original = render(assembly_with_multiblock_current_user());
+    let recovered = render(assembly_with_recovery_notice());
+    let original_messages = original["messages"].as_array().unwrap();
+    let recovered_messages = recovered["messages"].as_array().unwrap();
+    let original_current = original_messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    let recovered_current = recovered_messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+
+    assert_eq!(
+        &original_messages[..original_messages.len() - 1],
+        &recovered_messages[..recovered_messages.len() - 1]
+    );
+    assert!(recovered_current.starts_with(original_current));
+    assert_eq!(recovered["max_tokens"], 37);
 }
 
 #[test]
@@ -836,6 +923,45 @@ fn render_responses_body_maps_current_user_blocks_to_content_parts() {
         content[2],
         json!({"type": "input_text", "text": "raw user input"})
     );
+}
+
+#[test]
+fn responses_recovery_keeps_original_request_as_exact_prefix() {
+    let catalog = test_catalog();
+    let render = |assembly| {
+        render_responses_body(&ProviderRequest {
+            stream: false,
+            assembly,
+            catalog: &catalog,
+            current_input: current_input(),
+            model: "gpt-5.4".to_string(),
+            max_output_tokens: Some(37),
+            temperature: None,
+            think_level: kuku::config::ThinkLevel::Off,
+            thinking: ResolvedThinking::default(),
+        })
+    };
+    let original = render(assembly_with_multiblock_current_user());
+    let recovered = render(assembly_with_recovery_notice());
+    let original_input = original["input"].as_array().unwrap();
+    let recovered_input = recovered["input"].as_array().unwrap();
+    let original_current = original_input.last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+    let recovered_current = recovered_input.last().unwrap()["content"]
+        .as_array()
+        .unwrap();
+
+    assert_eq!(original["instructions"], recovered["instructions"]);
+    assert_eq!(
+        &original_input[..original_input.len() - 1],
+        &recovered_input[..recovered_input.len() - 1]
+    );
+    assert_eq!(
+        original_current,
+        &recovered_current[..original_current.len()]
+    );
+    assert_eq!(recovered["max_output_tokens"], 37);
 }
 
 #[test]

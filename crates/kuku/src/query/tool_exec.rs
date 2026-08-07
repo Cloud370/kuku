@@ -501,6 +501,8 @@ mod tests {
             tool_errors: 0,
             thinking_duration_ms: 0,
             runtime_log_writer: crate::log::BufferedLogWriter::new(workspace.join("runtime.jsonl")),
+            request_base: None,
+            recovery_count: 0,
         }
     }
 

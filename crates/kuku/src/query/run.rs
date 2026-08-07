@@ -330,7 +330,11 @@ impl Run {
                         self.state = RunState::Done(None);
                         Err(error)
                     }
-                    PendingStep::NeedPermission(_) | PendingStep::Streaming(_) => unreachable!(),
+                    PendingStep::NeedPermission(_) => unreachable!(),
+                    PendingStep::Streaming(streaming) => {
+                        self.state = RunState::Streaming(streaming);
+                        Ok(None)
+                    }
                 }
             }
         }

@@ -19,6 +19,7 @@ use super::helpers::{
     append_model_error, append_turn_interrupted, current_date_string, last_input_tokens,
     load_memory_sources, load_project_instruction_sources, now_timestamp, platform_label,
 };
+use super::request::OwnedRequestBase;
 use super::tool_exec::record_plugin_hooks;
 use super::types::{PendingRun, PendingStep, ResolvedRuntime, StreamingChunkState, UiEvent};
 
@@ -240,14 +241,17 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         .as_deref()
         .unwrap_or(&pending.query.prompt);
     let current_input = build_current_user_message(current_turn_prefix, current_body);
-    if !replace_current_user_message(
+    let current_user_index = if let Some(index) = replace_current_user_message(
         &mut assembly.history,
         &pending.query.prompt,
         current_body,
         current_input.clone(),
     ) {
+        index
+    } else {
         assembly.history.push(current_input.clone());
-    }
+        assembly.history.len() - 1
+    };
 
     if !pending.hook_context.is_empty() {
         let hook_text = pending.hook_context.join("\n");
@@ -439,19 +443,29 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         })?;
     }
 
-    let request = crate::provider::types::ProviderRequest {
+    let current_input = assembly
+        .history
+        .get(current_user_index)
+        .cloned()
+        .ok_or_else(|| {
+            crate::error::Error::InvalidEventStream(
+                "assembled request has no current user message".to_string(),
+            )
+        })?;
+    let request_base = OwnedRequestBase::new(
         assembly,
-        catalog: &catalog,
-        current_input: crate::provider::types::CanonicalPromptInput {
+        catalog,
+        crate::provider::types::CanonicalPromptInput {
             parts: vec![current_input],
         },
-        model: resolved_config.model.clone(),
-        max_output_tokens: Some(max_output),
-        temperature: pending.query.temperature,
-        stream: true,
-        think_level: think,
-        thinking: resolved_config.thinking.clone(),
-    };
+        resolved_config.model.clone(),
+        max_output,
+        pending.query.temperature,
+        think,
+        resolved_config.thinking.clone(),
+        current_user_index,
+    )?;
+    pending.request_base = Some(request_base);
 
     let provider_trace = Some(crate::provider::trace::ProviderTraceMetadata {
         kuku_home: pending.kuku_home.clone(),
@@ -478,12 +492,21 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     lead_events.push(UiEvent::ModelRequest {
         model: model_name,
         provider: provider_name,
+        conversation: pending.conversation.clone(),
+        turn: pending.turn,
+        request_id: request_id.clone(),
+        request_ordinal: pending.model_request_count + 1,
     });
     if pending.request_num == 1 {
         lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
 
     let handoff_active = pending.handoff_triggered;
+    let request = pending
+        .request_base
+        .as_ref()
+        .expect("request base captured")
+        .request();
     match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
         Ok(stream) => {
             let conversation = pending.conversation.clone();
@@ -611,7 +634,7 @@ impl ProviderFailureKindEventName for crate::provider::types::ProviderFailureKin
     }
 }
 
-fn pending_failure_step(
+pub(super) fn pending_failure_step(
     mut pending: PendingRun,
     lead_events: Vec<UiEvent>,
     error: crate::error::Error,
@@ -867,8 +890,8 @@ fn replace_latest_user_message(
     history: &mut [CanonicalMessage],
     prompt: &str,
     replacement: CanonicalMessage,
-) -> bool {
-    for message in history.iter_mut().rev() {
+) -> Option<usize> {
+    for (index, message) in history.iter_mut().enumerate().rev() {
         if message.role != Role::User || message.blocks.len() != 1 {
             continue;
         }
@@ -877,10 +900,10 @@ fn replace_latest_user_message(
         };
         if text == prompt {
             *message = replacement;
-            return true;
+            return Some(index);
         }
     }
-    false
+    None
 }
 
 fn replace_current_user_message(
@@ -888,11 +911,12 @@ fn replace_current_user_message(
     raw_prompt: &str,
     current_body: &str,
     replacement: CanonicalMessage,
-) -> bool {
-    if current_body != raw_prompt
-        && replace_latest_user_message(history, current_body, replacement.clone())
-    {
-        return true;
+) -> Option<usize> {
+    if current_body != raw_prompt {
+        if let Some(index) = replace_latest_user_message(history, current_body, replacement.clone())
+        {
+            return Some(index);
+        }
     }
     replace_latest_user_message(history, raw_prompt, replacement)
 }
@@ -966,67 +990,4 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn message_text(message: &CanonicalMessage) -> &str {
-        match &message.blocks[0] {
-            MessageBlock::Text(text) => text,
-            _ => panic!("expected text block"),
-        }
-    }
-
-    #[test]
-    fn handoff_trigger_requires_known_token_headroom() {
-        let headroom = compute_context_headroom(200_000, Some(64_000), None);
-
-        assert!(!should_trigger_handoff(&headroom, 0.7));
-    }
-
-    #[test]
-    fn handoff_trigger_uses_known_token_headroom() {
-        let headroom = compute_context_headroom(200_000, Some(64_000), Some(125_000));
-
-        assert!(should_trigger_handoff(&headroom, 0.7));
-    }
-
-    #[test]
-    fn delegated_body_replacement_prefers_current_wrapped_message() {
-        let raw = "same text";
-        let wrapped = "<kuku_delegated_prompt>\nsame text\n</kuku_delegated_prompt>";
-        let replacement = CanonicalMessage::user_text("provider body");
-        let mut history = vec![
-            CanonicalMessage::user_text(raw),
-            CanonicalMessage::assistant(vec![MessageBlock::Text("answer".to_string())]),
-            CanonicalMessage::user_text(wrapped),
-        ];
-
-        assert!(replace_current_user_message(
-            &mut history,
-            raw,
-            wrapped,
-            replacement
-        ));
-
-        assert_eq!(message_text(&history[0]), raw);
-        assert_eq!(message_text(&history[2]), "provider body");
-    }
-
-    #[test]
-    fn current_turn_prefix_is_appended_once_to_restored_prelude() {
-        let prefix = "You are a code and document reviewer";
-        let mut missing = vec![CanonicalMessage::user_text("old snapshot")];
-        append_current_turn_prefix_once(&mut missing, prefix);
-        assert_eq!(missing.len(), 2);
-        assert_eq!(message_text(&missing[1]), prefix);
-
-        append_current_turn_prefix_once(&mut missing, prefix);
-        assert_eq!(missing.len(), 2);
-
-        let mut existing = vec![CanonicalMessage::user_text(format!(
-            "before {prefix} after"
-        ))];
-        append_current_turn_prefix_once(&mut existing, prefix);
-        assert_eq!(existing.len(), 1);
-    }
-}
+mod tests;

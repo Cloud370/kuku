@@ -319,6 +319,7 @@ fn rebuild_history_internal(
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
@@ -388,6 +389,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ContextSources { turn, .. }
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
         | EventPayload::PermissionDeny { turn, .. }
@@ -486,19 +488,24 @@ fn event_belongs_to_history_conversation(
     conversation: &ConversationAddress,
 ) -> bool {
     match payload {
-            EventPayload::ModelResponse {
-                conversation: event_conversation,
-                ..
-            }
-            | EventPayload::ModelError {
-                conversation: event_conversation,
-                ..
-            } => event_conversation
-                .as_ref()
-                .map_or_else(|| conversation.is_main(), |value| value == conversation.as_str()),
-            EventPayload::ContextSources { .. } | EventPayload::Handoff { .. } => {
-                conversation.is_main()
-            }
+        EventPayload::ModelResponse {
+            conversation: event_conversation,
+            ..
+        }
+        | EventPayload::ModelError {
+            conversation: event_conversation,
+            ..
+        } => event_conversation.as_ref().map_or_else(
+            || conversation.is_main(),
+            |value| value == conversation.as_str(),
+        ),
+        EventPayload::ContextSources { .. } | EventPayload::Handoff { .. } => {
+            conversation.is_main()
+        }
+        EventPayload::ModelRecovery {
+            conversation: event_conversation,
+            ..
+        } => event_conversation == conversation.as_str(),
         EventPayload::ToolCall {
             conversation: None, ..
         }

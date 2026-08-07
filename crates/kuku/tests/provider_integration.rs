@@ -47,10 +47,30 @@ fn is_initial_request(req: &HttpMockRequest) -> bool {
     !has_tool_use && !has_tool_result
 }
 
+fn is_original_request(req: &HttpMockRequest) -> bool {
+    is_initial_request(req)
+        && !body_contains(req, b"previous model attempt reached its output limit")
+}
+
+fn is_original_frozen_notice_request(req: &HttpMockRequest) -> bool {
+    is_initial_request(req) && !body_contains(req, b"FROZEN_RECOVERY_NOTICE_V1")
+}
+
 fn body_contains(req: &HttpMockRequest, needle: &[u8]) -> bool {
     req.body
         .as_ref()
         .is_some_and(|body| body.windows(needle.len()).any(|window| window == needle))
+}
+
+fn responses_sse(id: &str, text: &str, terminal: &str) -> String {
+    format!(
+        "event: response.created\n\
+         data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{id}\",\"status\":\"in_progress\"}}}}\n\n\
+         event: response.output_text.delta\n\
+         data: {{\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":{text}}}\n\n\
+         {terminal}",
+        text = serde_json::to_string(text).unwrap(),
+    )
 }
 
 fn body_contains_first_input_not_live_input(req: &HttpMockRequest) -> bool {
@@ -281,6 +301,179 @@ async fn anthropic_success_returns_text_and_writes_events() {
         events[events.len() - 1].payload,
         EventPayload::TurnCompleted { .. }
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let prompts_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(prompts_dir.path().join("runtime")).unwrap();
+    let recovery_path = prompts_dir.path().join("runtime/recovery.md");
+    let frozen_notice = "FROZEN_RECOVERY_NOTICE_V1";
+    std::fs::write(&recovery_path, frozen_notice).unwrap();
+    let frozen_asset = kuku::prompt::PromptCatalog::load_from_dir(prompts_dir.path())
+        .unwrap()
+        .runtime["recovery"]
+        .clone();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_original_frozen_notice_request)
+            .body_contains(r#""max_tokens":37"#);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_length",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stop_reason": "max_tokens",
+                "usage": {"input_tokens": 7, "output_tokens": 32}
+            })));
+    });
+    let second = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("finish the task")
+            .body_contains(frozen_notice)
+            .body_contains(r#""max_tokens":37"#);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_recovered",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "completed"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 7, "output_tokens": 9}
+            })));
+    });
+
+    let mut run = anthro("finish the task", &server)
+        .max_output_tokens(37)
+        .prompts_dir(prompts_dir.path())
+        .start()
+        .await
+        .unwrap();
+    let mut live_order = Vec::new();
+    let output = loop {
+        match run.next().await.unwrap().unwrap() {
+            UiEvent::ModelRequest { request_id, .. } if request_id == "req_1" => {
+                live_order.push("request_1");
+                std::fs::write(&recovery_path, "MUTATED_RECOVERY_NOTICE_V2").unwrap();
+            }
+            UiEvent::ModelRecovery { .. } => live_order.push("recovery"),
+            UiEvent::ModelRequest { request_id, .. } if request_id == "req_2" => {
+                live_order.push("request_2");
+            }
+            UiEvent::Done { output, .. } => break output,
+            _ => {}
+        }
+    };
+    assert_eq!("completed", output.text);
+    assert_eq!(2, output.model_request_count);
+    assert_eq!(vec!["request_1", "recovery", "request_2"], live_order);
+    first.assert();
+    second.assert();
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    let response_ids = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelResponse { request_id, .. } => Some(request_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(vec!["req_1", "req_2"], response_ids);
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ModelRecovery {
+            from_request_id,
+            to_request_id,
+            reason: kuku::event::ModelStopReason::Length,
+            notice,
+            prompt_path,
+            prompt_hash,
+            ..
+        } if from_request_id == "req_1"
+            && to_request_id == "req_2"
+            && notice == frozen_notice
+            && prompt_path == &frozen_asset.path
+            && prompt_hash == &frozen_asset.hash
+    )));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. })));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_transport_failure_emits_invalidation_before_error() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .matches(is_original_request);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_length",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "discarded partial"}],
+                "stop_reason": "max_tokens",
+                "usage": {"input_tokens": 7, "output_tokens": 37}
+            })));
+    });
+    let retry = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .body_contains("previous model attempt reached its output limit");
+        then.status(503).body("retry unavailable");
+    });
+    let session_id = "s_recovery_transport_failure";
+    let mut run = anthro("finish despite a short first response", &server)
+        .session(session_id)
+        .max_output_tokens(37)
+        .start()
+        .await
+        .unwrap();
+    let mut live_order = Vec::new();
+    let error = loop {
+        match run.next().await {
+            Ok(Some(UiEvent::ModelRecovery { .. })) => live_order.push("recovery"),
+            Ok(Some(UiEvent::ModelRequest { request_id, .. })) if request_id == "req_2" => {
+                live_order.push("request_2");
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("run ended without reporting the recovery failure"),
+            Err(error) => break error,
+        }
+    };
+
+    assert!(matches!(error, Error::Provider { .. }));
+    assert_eq!(vec!["recovery", "request_2"], live_order);
+    first.assert();
+    retry.assert();
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelRecovery { .. }))
+            .count()
+    );
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelError { .. }))
+            .count()
+    );
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TurnInterrupted { .. }))
+            .count()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1969,6 +2162,138 @@ async fn openai_success_returns_text_and_writes_events() {
         event.payload,
         EventPayload::ModelResponse { ref text, .. } if text == "Hi from GPT!"
     )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_chat_second_length_interrupts_after_one_recovery() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .matches(is_original_request)
+            .body_contains(r#""max_tokens":37"#);
+        then.status(200)
+            .body(openai_sse_response(serde_json::json!({
+                "choices": [{"message": {"content": "partial one"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 37}
+            })));
+    });
+    let second = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .body_contains("finish the chat task")
+            .body_contains("previous model attempt reached its output limit")
+            .body_contains(r#""max_tokens":37"#);
+        then.status(200)
+            .body(openai_sse_response(serde_json::json!({
+                "choices": [{"message": {"content": "partial two"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 37}
+            })));
+    });
+
+    let session_id = "s_chat_length_twice";
+    let error = query("finish the chat task")
+        .session(session_id)
+        .provider(Provider::OpenAiCompatible)
+        .model("test-chat")
+        .base_url(server.base_url())
+        .api_key("openai-key")
+        .max_output_tokens(37)
+        .config(test_config())
+        .run()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        Error::Provider { ref message, .. }
+            if message.contains("max_output_tokens=37")
+                && message.contains("recovery attempt 1/1")
+    ));
+    first.assert();
+    second.assert();
+    let events = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert_eq!(
+        2,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelResponse { .. }))
+            .count()
+    );
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelRecovery { .. }))
+            .count()
+    );
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TurnInterrupted { .. }))
+            .count()
+    );
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. })));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_responses_length_recovery_keeps_original_input_prefix() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/responses")
+            .matches(is_original_request)
+            .body_contains(r#""max_output_tokens":37"#);
+        then.status(200).body(responses_sse(
+            "resp_length",
+            "partial",
+            concat!(
+                "event: response.incomplete\n",
+                "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_length\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":37}}}\n\n",
+            ),
+        ));
+    });
+    let second = server.mock(|when, then| {
+        when.method(POST)
+            .path("/responses")
+            .body_contains("finish the responses task")
+            .body_contains("previous model attempt reached its output limit")
+            .body_contains(r#""max_output_tokens":37"#);
+        then.status(200).body(responses_sse(
+            "resp_recovered",
+            "completed",
+            concat!(
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":6}}}\n\n",
+            ),
+        ));
+    });
+
+    let output = query("finish the responses task")
+        .provider(Provider::OpenAiResponses)
+        .model("test-responses")
+        .base_url(server.base_url())
+        .api_key("responses-key")
+        .max_output_tokens(37)
+        .config(test_config())
+        .run()
+        .await
+        .unwrap();
+
+    first.assert();
+    second.assert();
+    assert_eq!("completed", output.text);
+    assert_eq!(2, output.model_request_count);
+    assert_eq!(Some(43), output.usage.and_then(|usage| usage.output_tokens));
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. })));
 }
 
 // ---------------------------------------------------------------------------

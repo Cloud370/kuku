@@ -49,12 +49,15 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             ts: "2026-06-09T00:00:04.500Z".into(),
             turn: 1,
             request_id: "req_main".into(),
             text: "main model response".into(),
             thinking: None,
             input_tokens_total: None,
+            output_tokens_total: None,
+            stop_reason: None,
         })
         .unwrap();
     store

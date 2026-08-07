@@ -7,8 +7,8 @@ use crate::permission::{
 
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
-    append_turn_completed, append_turn_interrupted, display_summary, gate_choice,
-    gate_source_name, is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    append_turn_completed, append_turn_interrupted, display_summary, gate_choice, gate_source_name,
+    is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
@@ -210,24 +210,11 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         ..
     } = state;
 
-    if let Some(ref u) = usage {
-        add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
-        add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
-        add_usage_total(
-            &mut pending.cumulative.cache_read_input_tokens,
-            u.cache_read_input_tokens,
-        )?;
-        add_usage_total(
-            &mut pending.cumulative.cache_creation_input_tokens,
-            u.cache_creation_input_tokens,
-        )?;
-        persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
-    }
-
     pending.thinking_duration_ms += thinking_duration_ms;
     pending.model_request_count += 1;
 
     let has_streamed_tool_calls = !tool_calls.is_empty();
+    let discarded_tool_calls = tool_calls.len() as u64;
     let has_streamed_tool_artifacts = has_streamed_tool_calls
         || !tool_arg_buffers.is_empty()
         || !tool_call_completions.is_empty()
@@ -244,16 +231,18 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         ModelStopReason::InvalidResponse
     } else {
         match (stop_reason, has_streamed_tool_artifacts) {
-        (None, true) if validated_tool_calls.as_ref().is_some_and(|result| result.is_ok()) => {
-            ModelStopReason::ToolUse
-        }
-        (None, true) => ModelStopReason::InvalidResponse,
-        (None, false) => ModelStopReason::EndTurn,
-        (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
-        (Some(ModelStopReason::ToolUse), false) => {
-            ModelStopReason::InvalidResponse
-        }
-        (Some(reason), _) => reason,
+            (None, true)
+                if validated_tool_calls
+                    .as_ref()
+                    .is_some_and(|result| result.is_ok()) =>
+            {
+                ModelStopReason::ToolUse
+            }
+            (None, true) => ModelStopReason::InvalidResponse,
+            (None, false) => ModelStopReason::EndTurn,
+            (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
+            (Some(ModelStopReason::ToolUse), false) => ModelStopReason::InvalidResponse,
+            (Some(reason), _) => reason,
         }
     };
     let is_success = matches!(
@@ -277,6 +266,43 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             input_tokens_total: usage.as_ref().and_then(input_tokens_total),
             output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
         })?;
+    }
+
+    if let Some(ref u) = usage {
+        let accumulation = (|| -> Result<()> {
+            add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
+            add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
+            add_usage_total(
+                &mut pending.cumulative.cache_read_input_tokens,
+                u.cache_read_input_tokens,
+            )?;
+            add_usage_total(
+                &mut pending.cumulative.cache_creation_input_tokens,
+                u.cache_creation_input_tokens,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = accumulation {
+            append_turn_interrupted(
+                &pending.events_path,
+                &conversation,
+                pending.turn,
+                "usage_overflow",
+            )?;
+            pending.flush_runtime_logs();
+            return Ok(PendingStep::Failed(error));
+        }
+        persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
+    }
+
+    if matches!(final_stop_reason, ModelStopReason::Length) {
+        return super::recovery::schedule(
+            pending,
+            request_id,
+            discarded_tool_calls,
+            usage.as_ref(),
+        )
+        .await;
     }
 
     if !is_success {
@@ -311,7 +337,8 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 pending.flush_runtime_logs();
                 return Ok(PendingStep::Failed(crate::error::Error::Provider {
                     kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-                    message: "model response ended with terminal state invalid_response".to_string(),
+                    message: "model response ended with terminal state invalid_response"
+                        .to_string(),
                     provider: None,
                     model: None,
                 }));
@@ -511,22 +538,30 @@ fn persist_runtime_model_usage_log(
 }
 
 fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
-    usage
-        .input_tokens?
-        .checked_add(usage.cache_read_input_tokens?)?
-        .checked_add(usage.cache_creation_input_tokens?)
+    let mut total: u64 = 0;
+    let mut seen = false;
+    for value in [
+        usage.input_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        total = total.checked_add(value)?;
+        seen = true;
+    }
+    seen.then_some(total)
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
     let Some(value) = value else {
         return Ok(());
     };
-    *total = Some(
-        total
-            .unwrap_or(0)
-            .checked_add(value)
-            .ok_or_else(|| crate::error::Error::InvalidEventStream("model usage overflow".into()))?,
-    );
+    *total =
+        Some(total.unwrap_or(0).checked_add(value).ok_or_else(|| {
+            crate::error::Error::InvalidEventStream("model usage overflow".into())
+        })?);
     Ok(())
 }
 

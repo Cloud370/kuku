@@ -98,6 +98,8 @@ pub(super) fn make_test_pending(
         tool_denied: 0,
         tool_errors: 0,
         runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
+        request_base: None,
+        recovery_count: 0,
     }
 }
 
@@ -160,15 +162,17 @@ fn assert_rejected_tool_response(
         .expect("model.response with the expected terminal reason");
     let interrupted_index = events
         .iter()
-        .position(|event| matches!(
-            &event.payload,
-            EventPayload::TurnInterrupted { reason, .. }
-                if reason == if expected_stop_reason == crate::event::ModelStopReason::Length {
-                    "length"
-                } else {
-                    "invalid_response"
-                }
-        ))
+        .position(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::TurnInterrupted { reason, .. }
+                    if reason == if expected_stop_reason == crate::event::ModelStopReason::Length {
+                        "length"
+                    } else {
+                        "invalid_response"
+                    }
+            )
+        })
         .expect("turn.interrupted after rejected model response");
     assert!(response_index < interrupted_index);
     assert!(!events.iter().any(|event| matches!(
@@ -754,6 +758,70 @@ async fn completion_persists_runtime_model_usage_log() {
 }
 
 #[tokio::test]
+async fn usage_overflow_persists_attempt_and_interrupts_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let events_path = dir.path().join("events.jsonl");
+    let mut pending = make_test_pending(
+        events_path.clone(),
+        dir.path(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    pending.cumulative.output_tokens = Some(u64::MAX);
+    let state = StreamingChunkState {
+        pending,
+        conversation: crate::conversation::address::ConversationAddress::MAIN,
+        request_id: "req_2".to_string(),
+        stream: Box::pin(tokio_stream::empty()),
+        accumulated_text: "complete".to_string(),
+        accumulated_thinking: String::new(),
+        stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+        tool_calls: Vec::new(),
+        tool_arg_buffers: Vec::new(),
+        tool_call_completions: Vec::new(),
+        tool_stream_invalid: false,
+        terminal_stream_invalid: false,
+        stream_ended: false,
+        provider_request_id: None,
+        usage: Some(crate::provider::types::ProviderUsage {
+            input_tokens: None,
+            output_tokens: Some(1),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        }),
+        lead_events: Vec::new(),
+        handoff_detector: None,
+        thinking_start: None,
+        thinking_duration_ms: 0,
+    };
+
+    let step = crate::query::step::finish_streaming(state).await.unwrap();
+
+    assert!(matches!(
+        step,
+        PendingStep::Failed(crate::error::Error::InvalidEventStream(ref message))
+            if message == "model usage overflow"
+    ));
+    let events = EventStore::replay(&events_path).unwrap();
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::ModelResponse { .. }))
+            .count()
+    );
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload,
+                EventPayload::TurnInterrupted { reason, .. } if reason == "usage_overflow"
+            ))
+            .count()
+    );
+}
+
+#[tokio::test]
 async fn incomplete_handoff_marker_does_not_leak_to_final_output() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
@@ -909,7 +977,9 @@ async fn cancel_during_streaming_aborts_stream() {
         .unwrap();
     assert!(result.is_none());
     assert_eq!(
-        Some(crate::event::ModelStopReason::Unknown("cancelled".to_string())),
+        Some(crate::event::ModelStopReason::Unknown(
+            "cancelled".to_string()
+        )),
         streaming.stop_reason
     );
 }
@@ -994,10 +1064,7 @@ async fn duplicate_terminal_fact_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(
-        &events_path,
-        crate::event::ModelStopReason::InvalidResponse,
-    );
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -1237,13 +1304,16 @@ async fn complete_tool_call_without_stop_reason_infers_tool_use() {
         pending.queued_tool_calls[0].tool_call.id,
         "tool_without_terminal"
     );
-    assert!(EventStore::replay(&events_path).unwrap().iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ModelResponse {
-            stop_reason: Some(crate::event::ModelStopReason::ToolUse),
-            ..
-        }
-    )));
+    assert!(EventStore::replay(&events_path)
+        .unwrap()
+        .iter()
+        .any(|event| matches!(
+            &event.payload,
+            EventPayload::ModelResponse {
+                stop_reason: Some(crate::event::ModelStopReason::ToolUse),
+                ..
+            }
+        )));
 }
 
 #[tokio::test]
@@ -1285,10 +1355,7 @@ async fn incomplete_tool_lifecycle_without_stop_reason_is_rejected() {
         let step = finish_tool_stream(events_path.clone(), dir.path(), chunks).await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(
-            &events_path,
-            crate::event::ModelStopReason::InvalidResponse,
-        );
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -1338,10 +1405,7 @@ async fn later_stop_reason_cannot_replace_first_terminal_fact() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(
-        &events_path,
-        crate::event::ModelStopReason::InvalidResponse,
-    );
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -1374,10 +1438,7 @@ async fn length_then_tool_use_with_a_complete_call_never_queues_the_call() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(
-        &events_path,
-        crate::event::ModelStopReason::InvalidResponse,
-    );
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -1439,10 +1500,7 @@ async fn tool_artifacts_after_terminal_fact_are_rejected() {
         .await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(
-            &events_path,
-            crate::event::ModelStopReason::InvalidResponse,
-        );
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -1505,10 +1563,7 @@ async fn content_after_stop_reason_is_rejected() {
         .await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(
-            &events_path,
-            crate::event::ModelStopReason::InvalidResponse,
-        );
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -1558,10 +1613,7 @@ async fn protocol_facts_after_stream_end_are_rejected() {
         .await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(
-            &events_path,
-            crate::event::ModelStopReason::InvalidResponse,
-        );
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -1583,10 +1635,7 @@ async fn invalid_tool_signal_after_stream_end_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(
-        &events_path,
-        crate::event::ModelStopReason::InvalidResponse,
-    );
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -1612,10 +1661,7 @@ async fn usage_after_stream_end_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(
-        &events_path,
-        crate::event::ModelStopReason::InvalidResponse,
-    );
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -1811,11 +1857,17 @@ async fn empty_and_literal_object_tool_buffers_are_valid_empty_objects() {
             panic!("expected complete tool call to remain pending for execution");
         };
         assert_eq!(pending.queued_tool_calls.len(), 1);
-        assert_eq!(pending.queued_tool_calls[0].tool_call.args, serde_json::json!({}));
-        assert!(EventStore::replay(&events_path).unwrap().iter().any(|event| matches!(
-            &event.payload,
-            EventPayload::ToolCall { args, .. } if args == &serde_json::json!({})
-        )));
+        assert_eq!(
+            pending.queued_tool_calls[0].tool_call.args,
+            serde_json::json!({})
+        );
+        assert!(EventStore::replay(&events_path)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                &event.payload,
+                EventPayload::ToolCall { args, .. } if args == &serde_json::json!({})
+            )));
     }
 }
 

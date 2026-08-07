@@ -350,7 +350,7 @@ impl Query {
             workspace,
             policy_path,
             turn,
-            request_num: resumed_request_num(&existing_events, turn),
+            request_num: resumed_request_num(&existing_events, turn, &conversation),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: resumed_state.queued_tool_calls,
@@ -374,14 +374,16 @@ impl Query {
             plugin_registry,
             hook_context: Vec::new(),
             force_continue_count: 0,
-            model_request_count: resumed_model_request_count(&existing_events, turn),
-            tool_rounds: resumed_tool_rounds(&existing_events, turn),
+            model_request_count: resumed_model_request_count(&existing_events, turn, &conversation),
+            tool_rounds: resumed_tool_rounds(&existing_events, turn, &conversation),
             tool_calls: 0,
             tool_names: Vec::new(),
             tool_denied: 0,
             tool_errors: 0,
             thinking_duration_ms: 0,
             runtime_log_writer,
+            request_base: None,
+            recovery_count: 0,
         };
 
         let state = if let Some(request) = resumed_state.first_request {
@@ -543,30 +545,64 @@ fn reject_interrupted_open_tools(
     )))
 }
 
-fn resumed_model_request_count(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
-    events
-        .iter()
-        .filter(|event| {
-            matches!(
-                &event.payload,
-                EventPayload::ModelResponse { turn: event_turn, .. }
-                    | EventPayload::ModelError { turn: event_turn, .. }
-                    if *event_turn == turn
-            )
-        })
-        .count() as u64
+fn resumed_model_request_count(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
+    let mut request_ids = std::collections::BTreeSet::new();
+    for event in events {
+        match &event.payload {
+            EventPayload::ModelResponse {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            }
+            | EventPayload::ModelError {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation) =>
+            {
+                request_ids.insert(request_id.as_str());
+            }
+            EventPayload::ModelRecovery {
+                conversation: event_conversation,
+                turn: event_turn,
+                to_request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(Some(event_conversation), conversation) =>
+            {
+                request_ids.insert(to_request_id.as_str());
+            }
+            _ => {}
+        }
+    }
+    request_ids.len() as u64
 }
 
-fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
+fn resumed_tool_rounds(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
     let mut request_ids = Vec::<&str>::new();
     for event in events {
         if let EventPayload::ToolCall {
             turn: event_turn,
+            conversation: event_conversation,
             request_id,
             ..
         } = &event.payload
         {
-            if *event_turn == turn && !request_ids.iter().any(|id| *id == request_id) {
+            if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation)
+                && !request_ids.iter().any(|id| *id == request_id)
+            {
                 request_ids.push(request_id);
             }
         }
@@ -574,24 +610,54 @@ fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
     request_ids.len() as u64
 }
 
-fn resumed_request_num(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
+fn resumed_request_num(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
     events
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::ModelResponse {
+                conversation: event_conversation,
                 turn: event_turn,
                 request_id,
                 ..
             }
             | EventPayload::ModelError {
+                conversation: event_conversation,
                 turn: event_turn,
                 request_id,
                 ..
-            } if *event_turn == turn => Some(request_num_from_id(request_id)),
+            } if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation) =>
+            {
+                Some(request_num_from_id(request_id))
+            }
+            EventPayload::ModelRecovery {
+                conversation: event_conversation,
+                turn: event_turn,
+                to_request_id: request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(Some(event_conversation), conversation) =>
+            {
+                Some(request_num_from_id(request_id))
+            }
             _ => None,
         })
         .max()
         .unwrap_or(0)
+}
+
+fn event_matches_conversation(
+    event_conversation: Option<&str>,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> bool {
+    event_conversation.map_or_else(
+        || conversation.is_main(),
+        |value| value == conversation.as_str(),
+    )
 }
 
 fn request_num_from_id(request_id: &str) -> u64 {
@@ -634,5 +700,7 @@ fn startup_prune_options(active_path: &std::path::Path) -> crate::log::PruneOpti
     crate::log::PruneOptions::default().with_active_path(active_path.to_path_buf())
 }
 
+#[cfg(test)]
+mod recovery_resume_tests;
 #[cfg(test)]
 mod startup_prune_tests;

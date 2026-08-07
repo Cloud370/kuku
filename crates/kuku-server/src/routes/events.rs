@@ -30,6 +30,7 @@ fn event_conversation(payload: &kuku::event::EventPayload) -> Option<&str> {
         | kuku::event::EventPayload::TurnInterrupted { conversation, .. }
         | kuku::event::EventPayload::ConversationRollback { conversation, .. }
         | kuku::event::EventPayload::ConversationRollbackUndone { conversation, .. }
+        | kuku::event::EventPayload::ModelRecovery { conversation, .. }
         | kuku::event::EventPayload::ContextSkills { conversation, .. } => Some(conversation),
         kuku::event::EventPayload::Unknown(value) => {
             value.get("conversation").and_then(|item| item.as_str())

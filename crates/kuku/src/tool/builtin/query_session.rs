@@ -333,6 +333,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::ToolCall { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
@@ -361,6 +362,7 @@ fn unscoped_main_event(payload: &EventPayload) -> bool {
         EventPayload::SessionCreated { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::ToolCall {
                 conversation: None,
                 ..
@@ -413,6 +415,7 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollback { conversation, .. }
         | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
+        EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
         _ => None,
     }
 }
