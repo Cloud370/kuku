@@ -47,6 +47,48 @@ pub(crate) fn rebuild_history_for_provider(
     rebuild_history_internal(events, conversation, true)
 }
 
+pub(crate) fn effective_snapshot_events<'a>(
+    events: &'a [StoredEvent],
+    conversation: &ConversationAddress,
+) -> Vec<&'a StoredEvent> {
+    let filtered = filter_rolled_back_events(events);
+    let suppressed_turns = suppressed_turns(&filtered, conversation);
+    let handoff_pos = filtered
+        .iter()
+        .enumerate()
+        .rfind(|(_, event)| matches!(event.payload, EventPayload::Handoff { .. }));
+    let start_idx = handoff_pos.map_or(0, |(index, _)| {
+        let keep_turns = match &filtered[index].payload {
+            EventPayload::Handoff { keep_turns, .. } => *keep_turns,
+            _ => 0,
+        };
+        handoff_start_index(&filtered, index, keep_turns)
+    });
+
+    filtered[start_idx..]
+        .iter()
+        .copied()
+        .filter(|event| {
+            if !event_belongs_to_history_conversation(&event.payload, conversation) {
+                return false;
+            }
+            if event_turn(&event.payload).is_some_and(|turn| suppressed_turns.contains(&turn)) {
+                return false;
+            }
+            matches!(
+                &event.payload,
+                EventPayload::ToolResult {
+                    status,
+                    structured: Some(structured),
+                    ..
+                } if status == "ok"
+                    && structured["kind"] == "file_content"
+                    && structured["cached"] != true
+            )
+        })
+        .collect()
+}
+
 fn rebuild_history_internal(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
@@ -539,5 +581,7 @@ fn permission_metadata_args(args: &serde_json::Value) -> bool {
         && object.contains_key("source")
 }
 
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(test)]
 mod tests;

@@ -4,10 +4,11 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::event::StoredEvent;
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
     content_hash, find_write_snapshot, plural, require_brief, resolve_write_path, write_atomically,
+    WriteSnapshotLookup,
 };
 
 struct WriteRequest {
@@ -19,6 +20,7 @@ struct WriteRequest {
 pub(crate) fn write_file(
     args: &Value,
     workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
 ) -> ToolResultEnvelope {
     let request = match write_request(args) {
@@ -48,20 +50,32 @@ pub(crate) fn write_file(
             }
         };
         let current_hash = content_hash(&bytes);
-        let Some(snapshot) = find_write_snapshot(prior_events, &resolved.path, true, None) else {
-            return ToolResultEnvelope::error(
-                format!(
-                    "failed: fully read {} before overwriting",
-                    resolved.relative
-                ),
-                format!(
-                    "write_file requires a prior full read_file snapshot before overwriting {}",
-                    resolved.relative
-                ),
-            );
+        let snapshot_lookup = find_write_snapshot(
+            prior_events,
+            conversation,
+            &resolved.path,
+            true,
+            None,
+            Some(&current_hash),
+        );
+        let snapshot = match snapshot_lookup {
+            WriteSnapshotLookup::Found(snapshot) => snapshot,
+            WriteSnapshotLookup::Rejected(reason) => {
+                return ToolResultEnvelope::error_with_reason(
+                    format!(
+                        "failed: fully read {} before overwriting",
+                        resolved.relative
+                    ),
+                    format!(
+                        "write_file requires a prior full read_file snapshot before overwriting {}",
+                        resolved.relative
+                    ),
+                    reason,
+                );
+            }
         };
         if snapshot.content_hash != current_hash {
-            return ToolResultEnvelope::error(
+            return ToolResultEnvelope::error_with_reason(
                 format!(
                     "failed: {} changed since event {}",
                     resolved.relative, snapshot.event_id
@@ -70,6 +84,7 @@ pub(crate) fn write_file(
                     "file changed since it was read; read {} again before overwriting",
                     resolved.relative
                 ),
+                ToolErrorReason::SnapshotStale,
             );
         }
     }
@@ -138,6 +153,19 @@ mod tests {
     use super::super::test_helpers::{read_snapshot_event, workspace};
     use super::*;
 
+    fn write_file(
+        args: &Value,
+        workspace: &Path,
+        prior_events: &[StoredEvent],
+    ) -> ToolResultEnvelope {
+        super::write_file(
+            args,
+            workspace,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+        )
+    }
+
     #[test]
     fn write_file_creates_new_file_without_prior_read() {
         let dir = workspace();
@@ -195,7 +223,15 @@ mod tests {
         let dir = workspace();
         let original = b"alpha\nbeta\n";
         std::fs::write(dir.path().join("README.md"), original).unwrap();
-        let partial = read_snapshot_event(17, dir.path(), "README.md", original, false, "1\talpha");
+        let partial = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            original,
+            false,
+            "alpha\n",
+            "1\talpha",
+        );
 
         let partial_result = write_file(
             &serde_json::json!({"path": "README.md", "content": "replacement\n", "brief": "overwrite readme"}),
@@ -203,6 +239,10 @@ mod tests {
             &[partial],
         );
         assert_eq!(partial_result.status, "error");
+        assert_eq!(
+            partial_result.structured.as_ref().unwrap()["reason_code"],
+            "full_snapshot_required"
+        );
         assert!(partial_result
             .model_content
             .contains("prior full read_file snapshot"));
@@ -213,6 +253,7 @@ mod tests {
             "README.md",
             original,
             true,
+            "alpha\nbeta\n",
             "1\talpha\n2\tbeta",
         );
         std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
@@ -222,6 +263,11 @@ mod tests {
             std::slice::from_ref(&full),
         );
         assert_eq!(stale.status, "error");
+        assert_eq!(stale.structured.as_ref().unwrap()["kind"], "error");
+        assert_eq!(
+            stale.structured.as_ref().unwrap()["reason_code"],
+            "snapshot_stale"
+        );
         assert!(stale.model_content.contains("read README.md again"));
 
         std::fs::write(dir.path().join("README.md"), original).unwrap();

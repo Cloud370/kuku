@@ -31,15 +31,12 @@ fn finalize_persisted_tool_result(
 
 pub(crate) fn write_tool_result(
     slot: &ExecSlot,
-    status: &str,
-    summary: &str,
-    model_content: &str,
-    result: &Option<serde_json::Value>,
+    result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), result);
+    let structured = finalize_persisted_tool_result(store.next_id(), &result.structured);
     let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
@@ -48,10 +45,10 @@ pub(crate) fn write_tool_result(
             .as_ref()
             .map(|value| value.as_str().to_string()),
         tool_call_id: slot.tool_call_id.clone(),
-        status: status.to_string(),
-        summary: summary.to_string(),
-        model_content: model_content.to_string(),
-        truncated: false,
+        status: result.status.clone(),
+        summary: result.summary.clone(),
+        model_content: result.model_content.clone(),
+        truncated: result.truncated,
         files_read: Vec::new(),
         files_changed: Vec::new(),
         commands_run: Vec::new(),
@@ -278,6 +275,7 @@ pub(super) async fn execute_tool_call(
         &tool_call.args,
         &pending.workspace,
         &pending.kuku_home,
+        &pending.conversation,
         &prior_events,
         result_event_id,
         Some(&tool_call.id),
@@ -592,22 +590,20 @@ mod tests {
                     .unwrap(),
                 binding_id: "binding:review".to_string(),
             },
-            ordered_with_simple_tools: false,
+            workspace_ordered: false,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
 
-        write_tool_result(
-            &slot,
-            "ok",
-            "read README.md",
-            "README contents",
-            &None,
-            &events_path,
-            1,
-        )
-        .unwrap();
+        let result = crate::tool::ToolResultEnvelope {
+            status: "ok".to_string(),
+            summary: "read README.md".to_string(),
+            model_content: "README contents".to_string(),
+            truncated: false,
+            structured: None,
+        };
+        write_tool_result(&slot, &result, &events_path, 1).unwrap();
 
         let events = crate::event::EventStore::replay(&events_path).unwrap();
         assert!(events.iter().any(|event| matches!(

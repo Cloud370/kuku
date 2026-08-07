@@ -16,7 +16,11 @@ pub(crate) fn workspace() -> tempfile::TempDir {
     dir
 }
 
-pub(crate) fn stored_read_event(id: u64, structured: serde_json::Value) -> StoredEvent {
+pub(crate) fn stored_read_event(
+    id: u64,
+    model_content: &str,
+    structured: serde_json::Value,
+) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
@@ -26,7 +30,7 @@ pub(crate) fn stored_read_event(id: u64, structured: serde_json::Value) -> Store
             tool_call_id: format!("tool_{id}"),
             status: "ok".to_string(),
             summary: "read".to_string(),
-            model_content: "content".to_string(),
+            model_content: model_content.to_string(),
             truncated: false,
             files_read: Vec::new(),
             files_changed: Vec::new(),
@@ -43,6 +47,7 @@ pub(crate) fn read_snapshot_event(
     path: &str,
     content: &[u8],
     full: bool,
+    raw_text: &str,
     model_content: &str,
 ) -> StoredEvent {
     let canonical = dir.join(path).canonicalize().unwrap();
@@ -66,13 +71,10 @@ pub(crate) fn read_snapshot_event(
                 "path": path,
                 "canonical_path": canonical.to_string_lossy(),
                 "content_hash": content_hash(content),
+                "raw_text": raw_text,
                 "read_event_id": id,
                 "start_line": 1,
-                "line_count": if full {
-                    String::from_utf8_lossy(content).lines().count()
-                } else {
-                    1
-                },
+                "line_count": raw_text.lines().count(),
                 "total_lines": String::from_utf8_lossy(content).lines().count(),
                 "is_full_file_snapshot": full,
                 "cached": false,

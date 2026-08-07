@@ -34,7 +34,7 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
 }
 
 pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
-    let (content, count) = match run_query(args, events_path) {
+    let (content, count, truncated) = match run_query(args, events_path) {
         Ok(pair) => pair,
         Err(e) => {
             return ToolResultEnvelope::error(
@@ -47,15 +47,18 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
         status: "ok".to_string(),
         summary: format!("{count} events returned"),
         model_content: content,
-        truncated: false,
+        truncated,
         structured: None,
     }
 }
 
-fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate::error::Error> {
+fn run_query(
+    args: &Value,
+    events_path: &Path,
+) -> Result<(String, usize, bool), crate::error::Error> {
     let all_events = EventStore::replay(events_path)?;
     if all_events.is_empty() {
-        return Ok(("[]".to_string(), 0));
+        return Ok(("[]".to_string(), 0, false));
     }
 
     let skip_rolled_back = args
@@ -150,11 +153,13 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
 
     let mut output = String::from("[\n");
     let mut total_chars = 2;
+    let mut truncated = false;
     for (i, event) in matched.iter().enumerate() {
         let entry = format_event(event);
         let entry_chars = entry.chars().count();
         if total_chars + entry_chars + 4 > MAX_RESULT_CHARS && i > 0 {
             output.push_str("\n... (truncated, total output cap reached)");
+            truncated = true;
             break;
         }
         if i > 0 {
@@ -164,7 +169,7 @@ fn run_query(args: &Value, events_path: &Path) -> Result<(String, usize), crate:
         total_chars += entry_chars + 2;
     }
     output.push_str("\n]");
-    Ok((output, matched.len()))
+    Ok((output, matched.len(), truncated))
 }
 
 fn queryable_filtered_events(

@@ -1,7 +1,26 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
-use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
+use crate::query::types::{
+    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
+};
+
+#[cfg(unix)]
+const TRUNCATION_TEST_OUTPUT_CHARS: usize = 100_000;
+
+#[cfg(unix)]
+fn noisy_timeout_command() -> String {
+    format!(
+        "printf '{}'; sleep 2",
+        "x".repeat(TRUNCATION_TEST_OUTPUT_CHARS)
+    )
+}
+
+#[cfg(windows)]
+fn noisy_timeout_command() -> String {
+    let encoded = "JwB4ACcAIAAqACAAOAAwADEAMAAwADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAzAA==";
+    format!("powershell -EncodedCommand {encoded}")
+}
 
 fn test_config() -> crate::config::Config {
     crate::config::Config {
@@ -33,7 +52,7 @@ fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
     }
 }
 
-fn make_test_pending(
+pub(super) fn make_test_pending(
     events_path: std::path::PathBuf,
     dir: &std::path::Path,
     cancel_token: std::sync::Arc<tokio::sync::Notify>,
@@ -876,6 +895,36 @@ async fn cancelled_tool_result_envelope_has_correct_fields() {
     );
 }
 
+#[tokio::test]
+async fn command_slot_preserves_timeout_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let _slot = crate::query::slots::spawn_command_slot(
+        "tool_timeout".to_string(),
+        None,
+        serde_json::json!({
+            "command": noisy_timeout_command(),
+            "timeout": 1,
+            "brief": "produce bounded timeout output",
+        }),
+        "produce bounded timeout output".to_string(),
+        dir.path().to_path_buf(),
+        event_tx,
+    );
+
+    loop {
+        let (_, event) = event_rx.recv().await.unwrap();
+        if let SlotEvent::Done {
+            status, truncated, ..
+        } = event
+        {
+            assert_eq!("error", status);
+            assert!(truncated);
+            break;
+        }
+    }
+}
+
 #[test]
 fn cancel_pending_permission_rejects_mismatched_queued_tool() {
     let dir = tempfile::tempdir().unwrap();
@@ -987,7 +1036,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             tool_call_id: "tool_cancelled".to_string(),
             conversation: None,
             kind: ToolKind::Command { pid: None },
-            ordered_with_simple_tools: false,
+            workspace_ordered: false,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
@@ -1016,6 +1065,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
                 status: "ok".to_string(),
                 summary: "finished after cancellation".to_string(),
                 model_content: String::new(),
+                truncated: true,
                 result: Some(serde_json::json!({"kind": "command_result"})),
             },
         ))
@@ -1032,10 +1082,11 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     let events = EventStore::replay(&events_path).unwrap();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ToolResult { tool_call_id, status, summary, .. }
+        EventPayload::ToolResult { tool_call_id, status, summary, truncated, .. }
             if tool_call_id == "tool_cancelled"
                 && status == "ok"
                 && summary == "finished after cancellation"
+                && *truncated
     )));
 }
 

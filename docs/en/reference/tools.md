@@ -75,6 +75,10 @@ Every tool returns the same top-level shape:
 | `truncated` | Whether `model_content` was cut |
 | `structured` | Optional machine-readable detail |
 
+Snapshot-related `edit_file` and `write_file` errors retain `structured.kind: "error"` and add one recovery-oriented `reason_code`: `snapshot_required`, `full_snapshot_required`, `snapshot_stale`, or `old_text_not_visible`.
+
+Within one run, Kuku serializes `read_file`, `edit_file`, `write_file`, `remember_memory`, `forget_memory`, `run_command`, and `agent` slots against each other. Command and agent write paths cannot be determined statically, so independent commands or agents may also wait; other read-only tools remain concurrent. This ordering covers only Kuku-managed slots, not external processes, so snapshot hash checks still apply.
+
 ## Notes By Tool
 
 - `find_files` returns relative paths and skips common build directories.
@@ -83,8 +87,8 @@ Every tool returns the same top-level shape:
 - `fetch_url` downloads to a temp directory, rejects non-HTTP(S) URLs and embedded credentials, and enforces a 50 MB limit.
 - `fetch_web` is for HTML-like content, enforces a 10 MB body limit, returns small pages directly, and summarizes larger pages with the requested `model_tier`.
 - `query_session` filters the session ledger, defaults to excluding rolled-back events, and truncates individual event content.
-- `edit_file` requires a unique `old_text` match and a prior read snapshot.
-- `write_file` overwrites only after a prior full-file read snapshot.
+- `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
+- `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.
 - `run_command` requires `timeout` in seconds.
 - `remember_memory` and `forget_memory` write memory files through dedicated APIs.
 

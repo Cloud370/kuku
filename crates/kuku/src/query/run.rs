@@ -1,5 +1,8 @@
 use std::sync::Arc;
+#[cfg(test)]
+mod completion_tests;
 mod helpers;
+mod queued_calls;
 #[cfg(test)]
 mod tests;
 use crate::error::{Error, Result};
@@ -7,18 +10,17 @@ use crate::event::{EventPayload, EventStore};
 use crate::permission::append_project_allow_rule;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::ProviderToolCall;
-use helpers::{has_permission_decision, persist_blocked_tool_result};
+use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
-    append_model_error, append_permission_decision, append_permission_request,
-    append_turn_cancelled, append_turn_interrupted, display_summary, is_inline_skill_tool,
-    now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
+    append_model_error, append_permission_decision, append_turn_cancelled, append_turn_interrupted,
+    display_summary, now_timestamp, permission_candidate, permission_rule,
 };
-use super::slots::requires_ordered_simple_execution;
+use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
-    QueuedToolCall, Run, RunState, SlotEvent, StreamingChunkState, UiEvent,
+    PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
+    SlotEvent, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -28,10 +30,8 @@ impl Drop for Run {
 }
 
 impl Run {
-    fn has_active_ordered_simple_slot(&self) -> bool {
-        self.slots
-            .values()
-            .any(|slot| slot.ordered_with_simple_tools)
+    fn has_active_workspace_ordered_slot(&self) -> bool {
+        self.slots.values().any(|slot| slot.workspace_ordered)
     }
 
     /// The session ID for this run.
@@ -101,14 +101,11 @@ impl Run {
         loop {
             self.persist_deferred_runtime_logs();
 
-            // 1. Permission queue priority — don't wait for slots
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     return Ok(Some(self.defer_runtime_log_if_needed(event)));
                 }
             }
-
-            // 2. Poll running slots via shared channel
             if !self.slots.is_empty() {
                 let slot_event = tokio::select! {
                     event = self.slot_event_rx.recv() => event,
@@ -126,9 +123,11 @@ impl Run {
                             status,
                             summary,
                             model_content,
+                            truncated,
                             result,
                         } => {
                             let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
+                            self.state.record_tool_completion(&status);
                             let (events_path, turn) = match &self.state {
                                 RunState::Pending(p) => (&p.events_path, p.turn),
                                 RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
@@ -146,20 +145,26 @@ impl Run {
                                     }));
                                 }
                             };
+                            let envelope = crate::tool::ToolResultEnvelope {
+                                status,
+                                summary,
+                                model_content,
+                                truncated,
+                                structured: result,
+                            };
                             let result = super::tool_exec::write_tool_result(
                                 &slot,
-                                &status,
-                                &summary,
-                                &model_content,
-                                &result,
+                                &envelope,
                                 events_path,
                                 turn,
                             )?;
-                            let mc = if model_content.is_empty() {
-                                None
-                            } else {
-                                Some(model_content)
-                            };
+                            let crate::tool::ToolResultEnvelope {
+                                status,
+                                summary,
+                                model_content,
+                                ..
+                            } = envelope;
+                            let mc = (!model_content.is_empty()).then_some(model_content);
                             return Ok(Some(UiEvent::ToolEnd {
                                 id: slot.tool_call_id,
                                 status,
@@ -171,7 +176,6 @@ impl Run {
                     }
                 }
             }
-
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
@@ -327,206 +331,6 @@ impl Run {
                         Ok(None)
                     }
                 }
-            }
-        }
-    }
-
-    async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
-        let has_active_ordered_simple_slot = self.has_active_ordered_simple_slot();
-        let (front_tool_call_id, front_tool_name) = match &self.state {
-            RunState::Pending(pending) => match pending.queued_tool_calls.front() {
-                Some(queued) => (queued.tool_call.id.clone(), queued.tool_call.name.clone()),
-                None => return Ok(None),
-            },
-            _ => return Ok(None),
-        };
-        let resumed_request = match &mut self.state {
-            RunState::Pending(pending) => {
-                pending.take_resumed_permission_request(&front_tool_call_id)
-            }
-            _ => return Ok(None),
-        };
-        if let Some(request) = resumed_request {
-            let state = std::mem::replace(&mut self.state, RunState::Done(None));
-            if let RunState::Pending(pending) = state {
-                self.state = RunState::WaitingForPermission(Box::new(PendingPermission {
-                    pending: *pending,
-                    request: request.clone(),
-                }));
-                return Ok(Some(UiEvent::PermissionRequested { request }));
-            }
-        }
-
-        let pending = match &mut self.state {
-            RunState::Pending(p) => p.as_mut(),
-            _ => return Ok(None),
-        };
-        if front_tool_name == "agent"
-            || (is_inline_skill_tool(&front_tool_name)
-                && resolved_tool_available(pending, &front_tool_name))
-        {
-            return Ok(None);
-        }
-        if requires_ordered_simple_execution(&front_tool_name) && has_active_ordered_simple_slot {
-            return Ok(None);
-        }
-        super::provider::ensure_resolved(pending)?;
-        let queued = match pending.queued_tool_calls.front() {
-            Some(q) => q,
-            None => return Ok(None),
-        };
-
-        let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-        let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
-        let session_grants = crate::permission::recover_session_grants(&prior_events);
-
-        let definition = match find_tool_definition(pending, &queued.tool_call.name) {
-            Some(d) => d,
-            None => {
-                let QueuedToolCall { tool_call, .. } =
-                    pending.queued_tool_calls.pop_front().unwrap();
-                return Ok(Some(UiEvent::Error {
-                    code: "unknown_tool".to_string(),
-                    message: format!("unknown tool: {}", tool_call.name),
-                }));
-            }
-        };
-        let candidate = permission_candidate(
-            &pending.kuku_home,
-            &pending.workspace,
-            &queued.tool_call.name,
-            &queued.tool_call.args,
-        );
-        let decision = crate::permission::decide_tool_call(
-            &queued.tool_call.name,
-            &definition.risk,
-            &candidate,
-            &policy,
-            &session_grants,
-        );
-
-        match decision.kind {
-            crate::permission::GateDecisionKind::Ask => Ok(None),
-            crate::permission::GateDecisionKind::Allow => {
-                if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
-                    let choice = super::helpers::gate_choice(&decision.source);
-                    if !has_permission_decision(&prior_events, &queued.tool_call.id) {
-                        append_permission_decision(
-                            &pending.events_path,
-                            pending.turn,
-                            &queued.tool_call.id,
-                            choice,
-                            super::helpers::gate_source_name(decision.source),
-                            &permission_rule(
-                                &pending.kuku_home,
-                                &pending.workspace,
-                                &queued.tool_call.name,
-                                &queued.tool_call.args,
-                            ),
-                        )?;
-                    }
-                }
-                let QueuedToolCall {
-                    tool_call,
-                    display_summary,
-                } = pending.queued_tool_calls.pop_front().unwrap();
-                let hook_result = run_tool_pre_hooks(
-                    &mut *pending,
-                    &tool_call.name,
-                    &tool_call.args,
-                    &tool_call.id,
-                )
-                .await?;
-                if let Some(block) = hook_result.block {
-                    let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-                    pending.record_tool_call(&tool_call.name);
-                    persist_blocked_tool_result(
-                        &pending.events_path,
-                        pending.turn,
-                        &tool_call.id,
-                        &block.reason,
-                    )?;
-                    return Ok(Some(UiEvent::ToolEnd {
-                        id: tool_call.id,
-                        status: "blocked".to_string(),
-                        summary: block.reason,
-                        model_content: None,
-                        result: Some(blocked),
-                    }));
-                }
-                pending.record_tool_call(&tool_call.name);
-                let (slot, tool_kind) =
-                    super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
-                        tool_name: tool_call.name.clone(),
-                        tool_id: tool_call.id.clone(),
-                        conversation: (!pending.conversation.is_main())
-                            .then(|| pending.conversation.clone()),
-                        args: hook_result.args,
-                        summary: display_summary.clone(),
-                        workspace: pending.workspace.clone(),
-                        kuku_home: pending.kuku_home.clone(),
-                        prior_events: prior_events.clone(),
-                        event_tx: self.slot_event_tx.clone(),
-                        config: pending.config.clone(),
-                        catalog: pending.catalog.clone(),
-                        events_path: pending.events_path.clone(),
-                    });
-                self.slots.insert(slot.tool_call_id.clone(), slot);
-                Ok(Some(UiEvent::ToolStart {
-                    id: tool_call.id,
-                    tool: tool_call.name,
-                    summary: display_summary,
-                    kind: tool_kind,
-                }))
-            }
-            crate::permission::GateDecisionKind::Deny => {
-                let risk = definition.risk.clone();
-                let QueuedToolCall { tool_call, .. } =
-                    pending.queued_tool_calls.pop_front().unwrap();
-                append_permission_request(
-                    &pending.events_path,
-                    &pending.conversation,
-                    pending.turn,
-                    &PermissionRequest {
-                        id: tool_call.id.clone(),
-                        conversation: pending.conversation.clone(),
-                        turn: pending.turn,
-                        tool_call_id: tool_call.id.clone(),
-                        tool: tool_call.name.clone(),
-                        risk,
-                        summary: display_summary(&tool_call.name, &tool_call.args, None),
-                        candidate,
-                        source: super::helpers::gate_source_name(decision.source).to_string(),
-                    },
-                )?;
-                append_permission_decision(
-                    &pending.events_path,
-                    pending.turn,
-                    &tool_call.id,
-                    PermissionChoice::Deny,
-                    super::helpers::gate_source_name(decision.source),
-                    &permission_rule(
-                        &pending.kuku_home,
-                        &pending.workspace,
-                        &tool_call.name,
-                        &tool_call.args,
-                    ),
-                )?;
-                pending.record_tool_denied(&tool_call.name);
-                let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-                persist_blocked_tool_result(
-                    &pending.events_path,
-                    pending.turn,
-                    &tool_call.id,
-                    "permission denied",
-                )?;
-                Ok(Some(UiEvent::ToolEnd {
-                    id: tool_call.id,
-                    status: "blocked".to_string(),
-                    summary: "permission denied".to_string(),
-                    model_content: None,
-                    result: Some(blocked),
-                }))
             }
         }
     }
@@ -871,8 +675,7 @@ impl Run {
                 result: result.structured,
             }));
         }
-        if requires_ordered_simple_execution(&tool_call.name)
-            && self.has_active_ordered_simple_slot()
+        if requires_workspace_ordering(&tool_call.name) && self.has_active_workspace_ordered_slot()
         {
             pending.queued_tool_calls.push_front(QueuedToolCall {
                 tool_call,

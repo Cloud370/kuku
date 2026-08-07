@@ -36,11 +36,20 @@ pub(crate) async fn fetch_web(
     }
 
     if let Some(cached) = cache_get(url) {
-        return ToolResultEnvelope::ok(
-            format!("fetched (cached): {url}"),
-            cached,
-            serde_json::json!({"kind": "fetch_web", "url": url, "cached": true}),
-        );
+        let structured = serde_json::json!({"kind": "fetch_web", "url": url, "cached": true});
+        return if cached.truncated {
+            ToolResultEnvelope::ok_truncated(
+                format!("fetched (cached): {url}"),
+                cached.content,
+                structured,
+            )
+        } else {
+            ToolResultEnvelope::ok(
+                format!("fetched (cached): {url}"),
+                cached.content,
+                structured,
+            )
+        };
     }
 
     let html = match fetch_html(url).await {
@@ -54,35 +63,44 @@ pub(crate) async fn fetch_web(
     };
 
     let result = if markdown.len() < SMALL_CONTENT_THRESHOLD {
-        markdown.clone()
+        FetchedContent {
+            content: markdown.clone(),
+            truncated: false,
+        }
     } else {
         match call_secondary_llm(&markdown, prompt, model_tier, config, catalog).await {
-            Ok(summary) => summary,
-            Err(_) => {
-                let (truncated, _) = super::common::join_bounded_strings(
-                    &markdown.lines().map(String::from).collect::<Vec<_>>(),
-                    SMALL_CONTENT_THRESHOLD,
-                    "[Content truncated — LLM summarization failed]",
-                );
-                truncated
-            }
+            Ok(summary) => FetchedContent {
+                content: summary,
+                truncated: false,
+            },
+            Err(_) => bounded_fallback_content(&markdown),
         }
     };
 
-    cache_put(url, &result);
+    cache_put(url, &result.content, result.truncated);
 
-    ToolResultEnvelope::ok(
-        format!("fetched {url}"),
-        result.clone(),
-        serde_json::json!({
-            "kind": "fetch_web",
-            "url": url,
-            "prompt": prompt,
-            "model_tier": model_tier,
-            "content_length": result.len(),
-            "cached": false,
-        }),
-    )
+    let structured = serde_json::json!({
+        "kind": "fetch_web",
+        "url": url,
+        "prompt": prompt,
+        "model_tier": model_tier,
+        "content_length": result.content.len(),
+        "cached": false,
+    });
+    if result.truncated {
+        ToolResultEnvelope::ok_truncated(format!("fetched {url}"), result.content, structured)
+    } else {
+        ToolResultEnvelope::ok(format!("fetched {url}"), result.content, structured)
+    }
+}
+
+fn bounded_fallback_content(markdown: &str) -> FetchedContent {
+    let (content, truncated) = super::common::join_bounded_strings(
+        &markdown.lines().map(String::from).collect::<Vec<_>>(),
+        SMALL_CONTENT_THRESHOLD,
+        "[Content truncated — LLM summarization failed]",
+    );
+    FetchedContent { content, truncated }
 }
 
 async fn fetch_html(url: &str) -> Result<String, ToolResultEnvelope> {
@@ -244,8 +262,14 @@ async fn call_secondary_llm(
     Ok(response_text)
 }
 
-struct CacheEntry {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FetchedContent {
     content: String,
+    truncated: bool,
+}
+
+struct CacheEntry {
+    result: FetchedContent,
     inserted_at: Instant,
 }
 
@@ -255,23 +279,26 @@ static URL_CACHE: LazyLock<Mutex<lru::LruCache<String, CacheEntry>>> = LazyLock:
     ))
 });
 
-fn cache_get(url: &str) -> Option<String> {
+fn cache_get(url: &str) -> Option<FetchedContent> {
     let mut cache = URL_CACHE.lock().ok()?;
     if let Some(entry) = cache.get(url) {
         if entry.inserted_at.elapsed() < CACHE_TTL {
-            return Some(entry.content.clone());
+            return Some(entry.result.clone());
         }
         cache.pop(url);
     }
     None
 }
 
-fn cache_put(url: &str, content: &str) {
+fn cache_put(url: &str, content: &str, truncated: bool) {
     if let Ok(mut cache) = URL_CACHE.lock() {
         cache.put(
             url.to_string(),
             CacheEntry {
-                content: content.to_string(),
+                result: FetchedContent {
+                    content: content.to_string(),
+                    truncated,
+                },
                 inserted_at: Instant::now(),
             },
         );
@@ -320,12 +347,39 @@ mod tests {
 
     #[test]
     fn cache_round_trip() {
-        cache_put("https://test.com", "cached content");
-        assert_eq!(
-            cache_get("https://test.com"),
-            Some("cached content".to_string())
-        );
+        cache_put("https://test.com", "cached content", true);
+        let cached = cache_get("https://test.com").unwrap();
+        assert_eq!(cached.content, "cached content");
+        assert!(cached.truncated);
         assert_eq!(cache_get("https://other.com"), None);
+    }
+
+    #[test]
+    fn cached_fetch_preserves_truncation() {
+        let (config, catalog) = test_context();
+        let url = "https://cached-truncated.example.com";
+        cache_put(url, "cached truncated content", true);
+        let args = serde_json::json!({
+            "url": url,
+            "prompt": "summarize",
+            "model_tier": "light",
+        });
+
+        let result = tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
+
+        assert_eq!(result.status, "ok");
+        assert!(result.truncated);
+        assert_eq!(result.model_content, "cached truncated content");
+    }
+
+    #[test]
+    fn fallback_content_reports_bounded_truncation() {
+        let markdown = "x".repeat(SMALL_CONTENT_THRESHOLD + 100);
+
+        let fallback = bounded_fallback_content(&markdown);
+
+        assert!(fallback.truncated);
+        assert!(fallback.content.len() <= SMALL_CONTENT_THRESHOLD);
     }
 
     #[test]
