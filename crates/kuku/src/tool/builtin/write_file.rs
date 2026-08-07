@@ -195,7 +195,15 @@ mod tests {
         let dir = workspace();
         let original = b"alpha\nbeta\n";
         std::fs::write(dir.path().join("README.md"), original).unwrap();
-        let partial = read_snapshot_event(17, dir.path(), "README.md", original, false, "1\talpha");
+        let partial = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            original,
+            false,
+            "alpha\n",
+            "1\talpha",
+        );
 
         let partial_result = write_file(
             &serde_json::json!({"path": "README.md", "content": "replacement\n", "brief": "overwrite readme"}),
@@ -213,6 +221,7 @@ mod tests {
             "README.md",
             original,
             true,
+            "alpha\nbeta\n",
             "1\talpha\n2\tbeta",
         );
         std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();

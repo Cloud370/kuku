@@ -403,7 +403,6 @@ pub(super) fn find_write_snapshot(
     events.iter().rev().find_map(|event| {
         let EventPayload::ToolResult {
             status,
-            model_content,
             structured: Some(structured),
             ..
         } = &event.payload
@@ -422,7 +421,12 @@ pub(super) fn find_write_snapshot(
         if require_full_file && !is_full_file_snapshot {
             return None;
         }
-        if !is_full_file_snapshot && required_text.is_some_and(|text| !model_content.contains(text))
+        if !is_full_file_snapshot
+            && required_text.is_some_and(|text| {
+                !structured["raw_text"]
+                    .as_str()
+                    .is_some_and(|raw_text| raw_text.contains(text))
+            })
         {
             return None;
         }
@@ -435,8 +439,8 @@ pub(super) fn find_write_snapshot(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use super::*;
+    use crate::tool::builtin::test_helpers::stored_read_event;
 
     #[cfg(unix)]
     #[test]
@@ -457,5 +461,57 @@ mod tests {
             "outside\n",
             std::fs::read_to_string(outside.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_authorize_line_number_prefixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nbeta\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("1\talpha")).is_none());
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_authorize_text_past_visible_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nbeta\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha\nbeta")).is_none());
     }
 }

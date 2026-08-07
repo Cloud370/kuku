@@ -189,6 +189,7 @@ mod tests {
             "README.md",
             b"alpha\nbeta\n",
             true,
+            "alpha\nbeta\n",
             "1\talpha\n2\tbeta",
         );
         std::fs::write(dir.path().join("README.md"), "changed\nbeta\n").unwrap();
@@ -212,6 +213,7 @@ mod tests {
             "README.md",
             content,
             true,
+            "alpha\nbeta\nalpha\n",
             "1\talpha\n2\tbeta\n3\talpha",
         );
 
@@ -257,6 +259,7 @@ mod tests {
             "README.md",
             changed,
             true,
+            "alpha\ngamma\nalpha\n",
             "1\talpha\n2\tgamma\n3\talpha",
         );
         let all = edit_file(
@@ -283,5 +286,73 @@ mod tests {
             &[],
         );
         assert_eq!(edit.status, "blocked");
+    }
+
+    #[test]
+    fn partial_snapshot_authorizes_multiline_visible_raw_text() {
+        let dir = workspace();
+        let content = b"alpha\nbeta\ngamma\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            false,
+            "alpha\nbeta\n",
+            "1\talpha\n2\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega",
+                "brief": "replace two visible lines"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "omega\ngamma\n"
+        );
+    }
+
+    #[test]
+    fn stale_partial_snapshot_is_rejected_even_when_visible_text_still_matches() {
+        let dir = workspace();
+        let original = b"alpha\nbeta\ngamma\n";
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            original,
+            false,
+            "alpha\nbeta\n",
+            "1\talpha\n2\tbeta",
+        );
+        std::fs::write(dir.path().join("README.md"), "alpha\nbeta\nchanged\n").unwrap();
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega",
+                "brief": "replace two visible lines"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "error");
+        assert!(result.model_content.contains("read README.md again"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "alpha\nbeta\nchanged\n"
+        );
     }
 }
