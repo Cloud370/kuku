@@ -77,7 +77,7 @@
 
 与 snapshot 有关的 `edit_file` 和 `write_file` 错误会保留 `structured.kind: "error"`，并增加一个用于恢复的 `reason_code`：`snapshot_required`、`full_snapshot_required`、`snapshot_stale` 或 `old_text_not_visible`。
 
-在同一次 run 内，Kuku 会让 `read_file`、`edit_file`、`write_file`、`run_command` 和 `agent` 槽位彼此串行。命令和 agent 的写入路径无法静态判定，因此相互独立的命令或 agent 也可能等待；其他只读工具仍可并发。该顺序只覆盖 Kuku 管理的槽位，不覆盖外部进程，因此 snapshot hash 检查仍然适用。
+在同一次 run 内，Kuku 会让 `read_file`、`edit_file`、`write_file`、`remember_memory`、`forget_memory`、`run_command` 和 `agent` 槽位彼此串行。命令和 agent 的写入路径无法静态判定，因此相互独立的命令或 agent 也可能等待；其他只读工具仍可并发。该顺序只覆盖 Kuku 管理的槽位，不覆盖外部进程，因此 snapshot hash 检查仍然适用。
 
 ## Notes By Tool
 
@@ -87,7 +87,7 @@
 - `fetch_url` 下载到临时目录，拒绝非 HTTP(S) URL 和内嵌凭证，并限制 50 MB。
 - `fetch_web` 用于 HTML 类内容，限制 10 MB 响应体，小页面直接返回，大页面按请求的 `model_tier` 生成摘要。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
-- `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，写入时文件 hash 仍须一致。
+- `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
 - `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
 - `run_command` 要求 `timeout` 以秒为单位。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。

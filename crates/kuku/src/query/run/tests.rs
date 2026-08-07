@@ -1,7 +1,9 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
-use crate::query::types::{CumulativeUsage, ExecSlot, ResolvedRuntime, ToolKind};
+use crate::query::types::{
+    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
+};
 
 #[cfg(unix)]
 const TRUNCATION_TEST_OUTPUT_CHARS: usize = 100_000;

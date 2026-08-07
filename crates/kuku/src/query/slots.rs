@@ -12,7 +12,13 @@ use super::UiEvent;
 pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "read_file" | "edit_file" | "write_file" | "run_command" | "agent"
+        "read_file"
+            | "edit_file"
+            | "write_file"
+            | "remember_memory"
+            | "forget_memory"
+            | "run_command"
+            | "agent"
     )
 }
 
@@ -436,6 +442,8 @@ mod tests {
             "read_file",
             "edit_file",
             "write_file",
+            "remember_memory",
+            "forget_memory",
             "run_command",
             "agent",
         ] {

@@ -444,8 +444,7 @@ pub(super) fn find_write_snapshot(
         }
         if !is_full_file_snapshot
             && required_text.is_some_and(|text| {
-                !structured["raw_text"]
-                    .as_str()
+                !visible_snapshot_raw_text(structured)
                     .is_some_and(|raw_text| raw_text.contains(text))
             })
         {
@@ -463,6 +462,17 @@ pub(super) fn find_write_snapshot(
     } else {
         WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired)
     }
+}
+
+fn visible_snapshot_raw_text(structured: &Value) -> Option<&str> {
+    let raw_text = structured["raw_text"].as_str()?;
+    let line_count = structured["line_count"].as_u64()? as usize;
+    let visible_len = raw_text
+        .split_inclusive('\n')
+        .take(line_count)
+        .map(str::len)
+        .sum();
+    raw_text.get(..visible_len)
 }
 
 #[cfg(test)]
@@ -590,6 +600,33 @@ mod tests {
         );
 
         assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha\nbeta")).is_none());
+    }
+
+    #[test]
+    fn legacy_truncated_snapshot_does_not_authorize_raw_text_past_visible_line_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nhidden tail\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha\n(Results are truncated. Use offset and limit to read a smaller range.)",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nhidden tail\n"),
+                "raw_text": "alpha\nhidden tail\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot.clone()], &path, false, Some("alpha")).is_some());
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("hidden tail")).is_none());
     }
 
     #[test]
