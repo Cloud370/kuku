@@ -16,8 +16,12 @@ pub(crate) enum ProviderChunk {
     },
     /// Incremental JSON argument fragment for a tool call at `index`.
     ToolCallArgDelta { index: u64, fragment: String },
-    /// A content block (text or tool_use) at `index` is finished.
+    /// A tool call at `index` is finished.
+    ToolCallStop { index: u64 },
+    /// A non-tool content block at `index` is finished.
     ContentBlockStop { index: u64 },
+    /// The provider emitted a malformed tool lifecycle event.
+    InvalidToolStream,
     /// Usage statistics.
     StreamUsage {
         input_tokens: Option<u64>,

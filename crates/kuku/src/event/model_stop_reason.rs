@@ -27,9 +27,7 @@ impl ModelStopReason {
             "stop" | "end_turn" => Some(Self::EndTurn),
             "tool_calls" | "tool_use" | "function_call" => Some(Self::ToolUse),
             "length" | "max_tokens" | "max_output_tokens" => Some(Self::Length),
-            "content_filter" | "content-filter" | "refusal" | "safety" => {
-                Some(Self::ContentFilter)
-            }
+            "content_filter" | "content-filter" | "refusal" | "safety" => Some(Self::ContentFilter),
             "incomplete" => Some(Self::Incomplete),
             "invalid_response" => Some(Self::InvalidResponse),
             "" => None,

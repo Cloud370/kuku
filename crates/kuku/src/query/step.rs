@@ -14,6 +14,7 @@ use super::helpers::{
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
+use super::tool_response::validate_tool_calls;
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -199,6 +200,10 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         accumulated_thinking,
         stop_reason,
         tool_calls,
+        tool_arg_buffers,
+        tool_call_completions,
+        tool_stream_invalid,
+        terminal_stream_invalid,
         usage,
         handoff_detector,
         thinking_duration_ms,
@@ -222,28 +227,39 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     pending.thinking_duration_ms += thinking_duration_ms;
     pending.model_request_count += 1;
 
-    let has_tool_calls = !tool_calls.is_empty();
-    let final_stop_reason = stop_reason.unwrap_or({
-        if has_tool_calls {
-            ModelStopReason::ToolUse
-        } else {
-            ModelStopReason::EndTurn
-        }
+    let has_streamed_tool_calls = !tool_calls.is_empty();
+    let has_streamed_tool_artifacts = has_streamed_tool_calls
+        || !tool_arg_buffers.is_empty()
+        || !tool_call_completions.is_empty()
+        || tool_stream_invalid;
+    let validated_tool_calls = has_streamed_tool_artifacts.then(|| {
+        validate_tool_calls(
+            tool_calls,
+            tool_arg_buffers,
+            tool_call_completions,
+            tool_stream_invalid,
+        )
     });
-    let final_stop_reason = match (final_stop_reason, has_tool_calls) {
-        (ModelStopReason::EndTurn, true) | (ModelStopReason::ToolUse, false) => {
+    let final_stop_reason = if terminal_stream_invalid {
+        ModelStopReason::InvalidResponse
+    } else {
+        match (stop_reason, has_streamed_tool_artifacts) {
+        (None, true) if validated_tool_calls.as_ref().is_some_and(|result| result.is_ok()) => {
+            ModelStopReason::ToolUse
+        }
+        (None, true) => ModelStopReason::InvalidResponse,
+        (None, false) => ModelStopReason::EndTurn,
+        (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
+        (Some(ModelStopReason::ToolUse), false) => {
             ModelStopReason::InvalidResponse
         }
-        (reason, _) => reason,
+        (Some(reason), _) => reason,
+        }
     };
     let is_success = matches!(
         final_stop_reason,
         ModelStopReason::EndTurn | ModelStopReason::ToolUse
     );
-    if has_tool_calls && is_success {
-        pending.tool_rounds += 1;
-    }
-
     {
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ModelResponse {
@@ -280,6 +296,33 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             provider: None,
             model: None,
         }));
+    }
+
+    let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
+        match validated_tool_calls {
+            Some(Ok(tool_calls)) => tool_calls,
+            Some(Err(_)) | None => {
+                append_turn_interrupted(
+                    &pending.events_path,
+                    &conversation,
+                    pending.turn,
+                    ModelStopReason::InvalidResponse.wire_value(),
+                )?;
+                pending.flush_runtime_logs();
+                return Ok(PendingStep::Failed(crate::error::Error::Provider {
+                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+                    message: "model response ended with terminal state invalid_response".to_string(),
+                    provider: None,
+                    model: None,
+                }));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let has_tool_calls = !tool_calls.is_empty();
+    if has_tool_calls {
+        pending.tool_rounds += 1;
     }
 
     {

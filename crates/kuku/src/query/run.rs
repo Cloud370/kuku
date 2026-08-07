@@ -363,11 +363,22 @@ impl Run {
                 }
             };
 
+            if streaming.stream_ended {
+                streaming.terminal_stream_invalid = true;
+                continue;
+            }
+
             match chunk {
                 ProviderChunk::StreamStart { request_id: rid } => {
+                    if streaming.stop_reason.is_some() || streaming.provider_request_id.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     streaming.provider_request_id = Some(rid);
                 }
                 ProviderChunk::TextDelta { text } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                     }
@@ -378,12 +389,15 @@ impl Run {
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
                         }
-                        return Ok(None);
+                        continue;
                     }
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if streaming.thinking_start.is_none() {
                         streaming.thinking_start = Some(std::time::Instant::now());
                     }
@@ -391,8 +405,18 @@ impl Run {
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
                 }
                 ProviderChunk::ToolCallStart { index, id, name } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
+                    if streaming
+                        .tool_calls
+                        .iter()
+                        .any(|tool_call| tool_call.index == index)
+                    {
+                        streaming.tool_stream_invalid = true;
                     }
                     streaming.tool_calls.push(ProviderToolCall {
                         id,
@@ -403,50 +427,65 @@ impl Run {
                     streaming.tool_arg_buffers.push((index, String::new()));
                 }
                 ProviderChunk::ToolCallArgDelta { index, fragment } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let has_single_start = streaming
+                        .tool_calls
+                        .iter()
+                        .filter(|tool_call| tool_call.index == index)
+                        .count()
+                        == 1;
+                    if !has_single_start || streaming.tool_call_completions.contains(&index) {
+                        streaming.tool_stream_invalid = true;
+                    }
                     if let Some((_, buf)) = streaming
                         .tool_arg_buffers
                         .iter_mut()
                         .find(|(i, _)| *i == index)
                     {
                         buf.push_str(&fragment);
+                    } else {
+                        streaming.tool_arg_buffers.push((index, fragment));
+                    }
+                }
+                ProviderChunk::ToolCallStop { index } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let has_single_start = streaming
+                        .tool_calls
+                        .iter()
+                        .filter(|tool_call| tool_call.index == index)
+                        .count()
+                        == 1;
+                    if has_single_start && !streaming.tool_call_completions.contains(&index) {
+                        streaming.tool_call_completions.push(index);
+                    } else {
+                        streaming.tool_stream_invalid = true;
                     }
                 }
                 ProviderChunk::ContentBlockStop { index } => {
-                    if let Some((_, buf)) =
-                        streaming.tool_arg_buffers.iter().find(|(i, _)| *i == index)
-                    {
-                        match serde_json::from_str::<serde_json::Value>(buf) {
-                            Ok(args) => {
-                                if let Some(tc) =
-                                    streaming.tool_calls.iter_mut().find(|t| t.index == index)
-                                {
-                                    tc.args = args;
-                                }
-                            }
-                            Err(error) => {
-                                let tool_call_id = streaming
-                                    .tool_calls
-                                    .iter()
-                                    .find(|t| t.index == index)
-                                    .map(|tool_call| tool_call.id.clone())
-                                    .unwrap_or_else(|| format!("index {index}"));
-                                return Err(crate::error::Error::Provider {
-                                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-                                    message: format!(
-                                        "tool call {tool_call_id} has invalid JSON arguments: {error}"
-                                    ),
-                                    provider: None,
-                                    model: None,
-                                });
-                            }
-                        }
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let _ = index;
+                }
+                ProviderChunk::InvalidToolStream => {
+                    streaming.tool_stream_invalid = true;
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
                     }
                 }
                 ProviderChunk::StopReason { reason } => {
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                     }
-                    streaming.stop_reason = Some(reason);
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    } else {
+                        streaming.stop_reason = Some(reason);
+                    }
                 }
                 ProviderChunk::StreamUsage {
                     input_tokens,
@@ -484,7 +523,9 @@ impl Run {
                         model: None,
                     });
                 }
-                ProviderChunk::StreamEnd => {}
+                ProviderChunk::StreamEnd => {
+                    streaming.stream_ended = true;
+                }
             }
         }
     }

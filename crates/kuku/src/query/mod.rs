@@ -6,6 +6,7 @@ mod run;
 pub(crate) mod slots;
 mod start;
 mod step;
+mod tool_response;
 mod tool_exec;
 mod types;
 

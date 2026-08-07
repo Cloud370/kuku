@@ -704,7 +704,7 @@ event: response.output_item.done
 data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_test\",\"type\":\"function_call\",\"call_id\":\"call_test123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Boston\\\"}\",\"status\":\"completed\"}}
 
 event: response.completed
-data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":30,\"output_tokens\":15,\"total_tokens\":45}}}
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status\":\"completed\",\"output\":[{\"id\":\"fc_test\",\"type\":\"function_call\",\"call_id\":\"call_test123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Boston\\\"}\"}],\"usage\":{\"input_tokens\":30,\"output_tokens\":15,\"total_tokens\":45}}}
 ";
 
     let chunks = parse_responses_sse(sse);
@@ -732,7 +732,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status
 
     assert!(chunks
         .iter()
-        .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 })));
+        .any(|c| matches!(c, ProviderChunk::ToolCallStop { index: 0 })));
+    assert!(chunks.iter().any(|c| matches!(
+        c,
+        ProviderChunk::StopReason { reason }
+            if reason == &kuku::event::ModelStopReason::ToolUse
+    )));
     assert!(chunks
         .last()
         .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));

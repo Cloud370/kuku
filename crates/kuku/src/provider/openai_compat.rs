@@ -293,6 +293,7 @@ struct OpenAiCompatSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
     tool_call_indices: Vec<u64>,
+    invalid_tool_stream: bool,
     saw_done: bool,
 }
 
@@ -302,6 +303,7 @@ impl OpenAiCompatSseParser {
             chunks: Vec::new(),
             started: false,
             tool_call_indices: Vec::new(),
+            invalid_tool_stream: false,
             saw_done: false,
         }
     }
@@ -405,7 +407,11 @@ impl OpenAiCompatSseParser {
             .and_then(Value::as_array)
         {
             for tc in tool_calls {
-                let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let Some(index) = tc.get("index").and_then(Value::as_u64) else {
+                    self.invalid_tool_stream = true;
+                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                    continue;
+                };
                 let function = tc.get("function");
 
                 if let Some(id) = tc.get("id").and_then(Value::as_str) {
@@ -440,13 +446,18 @@ impl OpenAiCompatSseParser {
 
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             for &idx in &self.tool_call_indices {
-                self.chunks
-                    .push(ProviderChunk::ContentBlockStop { index: idx });
+                self.chunks.push(ProviderChunk::ToolCallStop { index: idx });
             }
             self.tool_call_indices.clear();
 
             if let Some(reason) = ModelStopReason::from_wire(reason) {
-                self.chunks.push(ProviderChunk::StopReason { reason });
+                self.chunks.push(ProviderChunk::StopReason {
+                    reason: if self.invalid_tool_stream {
+                        ModelStopReason::InvalidResponse
+                    } else {
+                        reason
+                    },
+                });
             }
         }
 
@@ -526,6 +537,48 @@ mod tests {
                 cache_creation_input_tokens: None
             }
         )));
+    }
+
+    #[test]
+    fn tool_finish_reason_emits_typed_tool_completion() {
+        let mut parser = OpenAiCompatSseParser::new();
+        parser
+            .feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            )
+            .unwrap();
+
+        let chunks = parser
+            .feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            )
+            .unwrap();
+
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStop { index: 0 })));
+    }
+
+    #[test]
+    fn missing_or_malformed_tool_index_is_invalid() {
+        for index in ["null", "\"zero\""] {
+            let mut parser = OpenAiCompatSseParser::new();
+            parser.feed(&format!(
+                r#"data: {{"id":"chatcmpl_tool","choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{index},"id":"call_1","function":{{"name":"read_file","arguments":"{{}}"}}}}]}},"finish_reason":null}}]}}"#,
+            )).unwrap();
+            let chunks = parser.feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            ).unwrap();
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
+
+        let mut parser = OpenAiCompatSseParser::new();
+        let chunks = parser.feed(
+            r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
+        ).unwrap();
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. })));
     }
 
     #[test]

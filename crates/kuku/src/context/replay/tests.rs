@@ -75,6 +75,39 @@ fn explicit_non_success_model_response_is_excluded_from_history() {
 }
 
 #[test]
+fn rejected_tool_use_response_is_excluded_from_history() {
+    let events = vec![
+        user_input(1, 1, "inspect"),
+        event(
+            2,
+            EventPayload::ModelResponse {
+                conversation: Some("main".to_string()),
+                turn: 1,
+                ts: "2026-05-13T00:00:01Z".to_string(),
+                request_id: "req_invalid_tool".to_string(),
+                text: "discarded partial output".to_string(),
+                thinking: Some("discarded reasoning".to_string()),
+                stop_reason: Some(crate::event::ModelStopReason::ToolUse),
+                input_tokens_total: Some(10),
+                output_tokens_total: Some(5),
+            },
+        ),
+        event(
+            3,
+            EventPayload::TurnInterrupted {
+                turn: 1,
+                ts: "2026-05-13T00:00:02Z".to_string(),
+                conversation: "main".to_string(),
+                reason: "invalid_response".to_string(),
+            },
+        ),
+    ];
+
+    let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
+    assert!(history.is_empty());
+}
+
+#[test]
 fn scoped_model_responses_keep_delegated_request_identity_separate() {
     let events = vec![
         event(
@@ -142,9 +175,7 @@ fn scoped_model_responses_keep_delegated_request_identity_separate() {
     assert_eq!(
         vec![
             CanonicalMessage::user_text("delegate request"),
-            CanonicalMessage::assistant(vec![MessageBlock::Text(
-                "delegate response".to_string(),
-            )]),
+            CanonicalMessage::assistant(vec![MessageBlock::Text("delegate response".to_string(),)]),
         ],
         delegate
     );
