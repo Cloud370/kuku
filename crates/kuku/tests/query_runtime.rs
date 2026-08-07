@@ -1,4 +1,6 @@
 mod common;
+#[path = "query_runtime/handoff.rs"]
+mod query_runtime_handoff;
 #[cfg(unix)]
 #[path = "query_runtime/mutator_ordering.rs"]
 mod query_runtime_mutator_ordering;
