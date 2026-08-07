@@ -200,6 +200,8 @@ fn conversation_event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. } => {
             Some(conversation.as_str())
         }
+        EventPayload::ToolCall { conversation, .. }
+        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
         _ => None,
     }
 }

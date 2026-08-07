@@ -83,8 +83,8 @@
 - `fetch_url` 下载到临时目录，拒绝非 HTTP(S) URL 和内嵌凭证，并限制 50 MB。
 - `fetch_web` 用于 HTML 类内容，限制 10 MB 响应体，小页面直接返回，大页面按请求的 `model_tier` 生成摘要。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
-- `edit_file` 需要唯一 `old_text` 匹配和先前的 read snapshot。
-- `write_file` 只有在先前完整读取文件后才允许覆盖。
+- `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，写入时文件 hash 仍须一致。
+- `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
 - `run_command` 要求 `timeout` 以秒为单位。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 

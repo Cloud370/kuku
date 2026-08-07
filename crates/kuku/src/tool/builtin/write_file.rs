@@ -19,6 +19,7 @@ struct WriteRequest {
 pub(crate) fn write_file(
     args: &Value,
     workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
 ) -> ToolResultEnvelope {
     let request = match write_request(args) {
@@ -48,7 +49,9 @@ pub(crate) fn write_file(
             }
         };
         let current_hash = content_hash(&bytes);
-        let Some(snapshot) = find_write_snapshot(prior_events, &resolved.path, true, None) else {
+        let Some(snapshot) =
+            find_write_snapshot(prior_events, conversation, &resolved.path, true, None)
+        else {
             return ToolResultEnvelope::error(
                 format!(
                     "failed: fully read {} before overwriting",
@@ -137,6 +140,19 @@ fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
 mod tests {
     use super::super::test_helpers::{read_snapshot_event, workspace};
     use super::*;
+
+    fn write_file(
+        args: &Value,
+        workspace: &Path,
+        prior_events: &[StoredEvent],
+    ) -> ToolResultEnvelope {
+        super::write_file(
+            args,
+            workspace,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+        )
+    }
 
     #[test]
     fn write_file_creates_new_file_without_prior_read() {

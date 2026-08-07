@@ -21,6 +21,7 @@ struct ReadRequest {
 pub(crate) fn read_file(
     args: &Value,
     workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
 ) -> ToolResultEnvelope {
@@ -60,6 +61,7 @@ pub(crate) fn read_file(
     if requested_line_count > 0 {
         if let Some(prior) = find_covering_read(
             prior_events,
+            conversation,
             &resolved.path,
             &hash,
             request.offset,
@@ -193,6 +195,21 @@ mod tests {
     use super::super::common::content_hash;
     use super::super::test_helpers::{read_snapshot_event, stored_read_event, workspace};
     use super::*;
+
+    fn read_file(
+        args: &Value,
+        workspace: &Path,
+        prior_events: &[StoredEvent],
+        read_event_id: u64,
+    ) -> ToolResultEnvelope {
+        super::read_file(
+            args,
+            workspace,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+            read_event_id,
+        )
+    }
 
     #[test]
     fn read_file_returns_line_numbered_content_and_snapshot_metadata() {
@@ -419,5 +436,44 @@ mod tests {
         assert_eq!(structured["line_count"], 1);
         assert_eq!(structured["total_lines"], 2);
         assert_eq!(structured["is_full_file_snapshot"], false);
+    }
+
+    #[test]
+    fn read_cache_is_scoped_to_active_conversation() {
+        let dir = workspace();
+        let content = "first\nsecond\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let mut review_read = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content.as_bytes(),
+            true,
+            content,
+            "1\tfirst\n2\tsecond",
+        );
+        if let crate::event::EventPayload::ToolResult { conversation, .. } =
+            &mut review_read.payload
+        {
+            *conversation = Some("review".to_string());
+        }
+
+        let main_result = super::read_file(
+            &serde_json::json!({"path": "README.md"}),
+            dir.path(),
+            &crate::conversation::address::ConversationAddress::MAIN,
+            std::slice::from_ref(&review_read),
+            18,
+        );
+        let review_result = super::read_file(
+            &serde_json::json!({"path": "README.md"}),
+            dir.path(),
+            &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
+            &[review_read],
+            19,
+        );
+
+        assert_eq!(main_result.structured.unwrap()["cached"], false);
+        assert_eq!(review_result.structured.unwrap()["cached"], true);
     }
 }

@@ -18,6 +18,7 @@ pub(crate) async fn dispatch(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
@@ -31,7 +32,9 @@ pub(crate) async fn dispatch(
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
         "find_files" => builtin::find_files(args, workspace),
-        "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
+        "read_file" => {
+            builtin::read_file(args, workspace, conversation, prior_events, result_event_id)
+        }
         "search_text" => builtin::search_text(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
         "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
@@ -45,8 +48,8 @@ pub(crate) async fn dispatch(
                 ),
             )
         }
-        "edit_file" => builtin::edit_file(args, workspace, prior_events),
-        "write_file" => builtin::write_file(args, workspace, prior_events),
+        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events),
+        "write_file" => builtin::write_file(args, workspace, conversation, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
@@ -74,6 +77,35 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch(
+        name: &str,
+        args: &Value,
+        workspace: &Path,
+        kuku_home: &Path,
+        prior_events: &[StoredEvent],
+        result_event_id: u64,
+        tool_call_id: Option<&str>,
+        config: &crate::config::Config,
+        catalog: &crate::prompt::PromptCatalog,
+        events_path: &Path,
+    ) -> ToolResultEnvelope {
+        super::dispatch(
+            name,
+            args,
+            workspace,
+            kuku_home,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+            result_event_id,
+            tool_call_id,
+            config,
+            catalog,
+            events_path,
+        )
+        .await
+    }
 
     fn test_config_and_catalog() -> (crate::config::Config, crate::prompt::PromptCatalog) {
         let catalog = crate::prompt::catalog::builtin_prompt_catalog();

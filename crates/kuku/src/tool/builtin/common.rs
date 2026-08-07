@@ -347,43 +347,50 @@ pub(super) fn requested_line_count(
 
 pub(super) fn find_covering_read(
     events: &[StoredEvent],
+    conversation: &crate::conversation::address::ConversationAddress,
     canonical_path: &Path,
     content_hash: &str,
     start_line: usize,
     line_count: usize,
 ) -> Option<ReadSnapshot> {
     let canonical_path = canonical_path.to_string_lossy();
-    events.iter().rev().find_map(|event| {
-        let EventPayload::ToolResult {
-            status,
-            structured: Some(structured),
-            ..
-        } = &event.payload
-        else {
-            return None;
-        };
-        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
-            return None;
-        }
-        if structured["canonical_path"].as_str()? != canonical_path
-            || structured["content_hash"].as_str()? != content_hash
-        {
-            return None;
-        }
-        let snapshot = ReadSnapshot {
-            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-            start_line: structured["start_line"].as_u64()? as usize,
-            line_count: structured["line_count"].as_u64()? as usize,
-            is_full_file_snapshot: structured["is_full_file_snapshot"]
-                .as_bool()
-                .unwrap_or(false),
-        };
-        if snapshot.covers(start_line, line_count) {
-            Some(snapshot)
-        } else {
-            None
-        }
-    })
+    crate::context::replay::effective_snapshot_events(events, conversation)
+        .into_iter()
+        .rev()
+        .find_map(|event| {
+            let EventPayload::ToolResult {
+                status,
+                structured: Some(structured),
+                ..
+            } = &event.payload
+            else {
+                return None;
+            };
+            if status != "ok"
+                || structured["kind"] != "file_content"
+                || structured["cached"] == true
+            {
+                return None;
+            }
+            if structured["canonical_path"].as_str()? != canonical_path
+                || structured["content_hash"].as_str()? != content_hash
+            {
+                return None;
+            }
+            let snapshot = ReadSnapshot {
+                event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
+                start_line: structured["start_line"].as_u64()? as usize,
+                line_count: structured["line_count"].as_u64()? as usize,
+                is_full_file_snapshot: structured["is_full_file_snapshot"]
+                    .as_bool()
+                    .unwrap_or(false),
+            };
+            if snapshot.covers(start_line, line_count) {
+                Some(snapshot)
+            } else {
+                None
+            }
+        })
 }
 
 impl ReadSnapshot {
@@ -395,52 +402,105 @@ impl ReadSnapshot {
 
 pub(super) fn find_write_snapshot(
     events: &[StoredEvent],
+    conversation: &crate::conversation::address::ConversationAddress,
     canonical_path: &Path,
     require_full_file: bool,
     required_text: Option<&str>,
 ) -> Option<WriteSnapshot> {
     let canonical_path = canonical_path.to_string_lossy();
-    events.iter().rev().find_map(|event| {
-        let EventPayload::ToolResult {
-            status,
-            structured: Some(structured),
-            ..
-        } = &event.payload
-        else {
-            return None;
-        };
-        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
-            return None;
-        }
-        if structured["canonical_path"].as_str()? != canonical_path {
-            return None;
-        }
-        let is_full_file_snapshot = structured["is_full_file_snapshot"]
-            .as_bool()
-            .unwrap_or(false);
-        if require_full_file && !is_full_file_snapshot {
-            return None;
-        }
-        if !is_full_file_snapshot
-            && required_text.is_some_and(|text| {
-                !structured["raw_text"]
-                    .as_str()
-                    .is_some_and(|raw_text| raw_text.contains(text))
+    crate::context::replay::effective_snapshot_events(events, conversation)
+        .into_iter()
+        .rev()
+        .find_map(|event| {
+            let EventPayload::ToolResult {
+                status,
+                structured: Some(structured),
+                ..
+            } = &event.payload
+            else {
+                return None;
+            };
+            if status != "ok"
+                || structured["kind"] != "file_content"
+                || structured["cached"] == true
+            {
+                return None;
+            }
+            if structured["canonical_path"].as_str()? != canonical_path {
+                return None;
+            }
+            let is_full_file_snapshot = structured["is_full_file_snapshot"]
+                .as_bool()
+                .unwrap_or(false);
+            if require_full_file && !is_full_file_snapshot {
+                return None;
+            }
+            if !is_full_file_snapshot
+                && required_text.is_some_and(|text| {
+                    !structured["raw_text"]
+                        .as_str()
+                        .is_some_and(|raw_text| raw_text.contains(text))
+                })
+            {
+                return None;
+            }
+            Some(WriteSnapshot {
+                event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
+                content_hash: structured["content_hash"].as_str()?.to_string(),
             })
-        {
-            return None;
-        }
-        Some(WriteSnapshot {
-            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-            content_hash: structured["content_hash"].as_str()?.to_string(),
         })
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::address::ConversationAddress;
+    use crate::event::RollbackScope;
     use crate::tool::builtin::test_helpers::stored_read_event;
+
+    fn find_write_snapshot(
+        events: &[StoredEvent],
+        canonical_path: &Path,
+        require_full_file: bool,
+        required_text: Option<&str>,
+    ) -> Option<WriteSnapshot> {
+        super::find_write_snapshot(
+            events,
+            &ConversationAddress::MAIN,
+            canonical_path,
+            require_full_file,
+            required_text,
+        )
+    }
+
+    fn snapshot_event(id: u64, turn: u64, conversation: Option<&str>, path: &Path) -> StoredEvent {
+        let mut event = stored_read_event(
+            id,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": id,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 1,
+                "is_full_file_snapshot": true,
+                "cached": false,
+            }),
+        );
+        if let EventPayload::ToolResult {
+            turn: event_turn,
+            conversation: event_conversation,
+            ..
+        } = &mut event.payload
+        {
+            *event_turn = turn;
+            *event_conversation = conversation.map(str::to_string);
+        }
+        event
+    }
 
     #[cfg(unix)]
     #[test]
@@ -513,5 +573,74 @@ mod tests {
         );
 
         assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha\nbeta")).is_none());
+    }
+
+    #[test]
+    fn snapshot_from_another_conversation_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 1, Some("review"), &path);
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn rolled_back_snapshot_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 2, None, &path);
+        let rollback = StoredEvent {
+            id: 2,
+            payload: EventPayload::ConversationRollback {
+                ts: "ts".to_string(),
+                conversation: "main".to_string(),
+                to_turn: 2,
+                to_event_id: 1,
+                scope: RollbackScope::ConversationOnly,
+            },
+        };
+
+        assert!(find_write_snapshot(&[snapshot, rollback], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn compacted_snapshot_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 1, None, &path);
+        let handoff = StoredEvent {
+            id: 2,
+            payload: EventPayload::Handoff {
+                turn: 1,
+                ts: "ts".to_string(),
+                request_id: "request_2".to_string(),
+                summary: "continue".to_string(),
+                keep_turns: 0,
+            },
+        };
+
+        assert!(find_write_snapshot(&[snapshot, handoff], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn current_main_snapshot_still_authorizes_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let implicit_main = snapshot_event(1, 1, None, &path);
+        let explicit_main = snapshot_event(2, 1, Some("main"), &path);
+
+        let snapshot =
+            find_write_snapshot(&[implicit_main, explicit_main], &path, false, Some("alpha"))
+                .unwrap();
+
+        assert_eq!(snapshot.event_id, 2);
     }
 }

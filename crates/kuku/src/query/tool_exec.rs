@@ -279,6 +279,7 @@ pub(super) async fn execute_tool_call(
         &tool_call.args,
         &pending.workspace,
         &pending.kuku_home,
+        &pending.conversation,
         &prior_events,
         result_event_id,
         Some(&tool_call.id),

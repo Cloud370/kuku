@@ -32,6 +32,9 @@ pub(crate) fn spawn_simple_slot(
     let cancel_clone = cancel.clone();
     let tc_id = tool_call_id.clone();
     let dispatch_tool_call_id = tool_call_id.clone();
+    let dispatch_conversation = conversation
+        .clone()
+        .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
     let ordered_with_simple_tools = requires_ordered_simple_execution(&tool_name);
 
     tokio::spawn(async move {
@@ -49,6 +52,7 @@ pub(crate) fn spawn_simple_slot(
                 &args,
                 &workspace,
                 &kuku_home,
+                &dispatch_conversation,
                 &prior_events,
                 0,
                 Some(&dispatch_tool_call_id),
@@ -377,6 +381,52 @@ fn agent_error_event(summary: String) -> SlotEvent {
 mod tests {
     use super::*;
 
+    fn read_event(
+        id: u64,
+        dir: &std::path::Path,
+        conversation: Option<&str>,
+        content: &[u8],
+    ) -> StoredEvent {
+        use sha2::{Digest, Sha256};
+
+        let canonical = dir.join("visible.txt").canonicalize().unwrap();
+        StoredEvent {
+            id,
+            payload: crate::event::EventPayload::ToolResult {
+                turn: 1,
+                ts: "ts".to_string(),
+                conversation: conversation.map(str::to_string),
+                tool_call_id: format!("read_{id}"),
+                status: "ok".to_string(),
+                summary: "read".to_string(),
+                model_content: "1\talpha".to_string(),
+                truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: Some(serde_json::json!({
+                    "kind": "file_content",
+                    "canonical_path": canonical.to_string_lossy(),
+                    "content_hash": format!("sha256:{:x}", Sha256::digest(content)),
+                    "raw_text": String::from_utf8_lossy(content),
+                    "read_event_id": id,
+                    "start_line": 1,
+                    "line_count": 1,
+                    "total_lines": 1,
+                    "is_full_file_snapshot": true,
+                    "cached": false,
+                })),
+            },
+        }
+    }
+
+    fn test_config() -> std::sync::Arc<crate::config::Config> {
+        let file: crate::config::ConfigFile =
+            toml::from_str(crate::config::generate_default()).unwrap();
+        std::sync::Arc::new(file.resolve().unwrap())
+    }
+
     #[test]
     fn agent_error_event_has_stable_structured_marker() {
         let SlotEvent::Done {
@@ -392,5 +442,67 @@ mod tests {
         assert_eq!("error", status);
         assert!(!truncated);
         assert_eq!(Some(serde_json::json!({"kind": "error"})), result);
+    }
+
+    #[tokio::test]
+    async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = b"alpha\n";
+        std::fs::write(dir.path().join("visible.txt"), content).unwrap();
+        let main_read = read_event(1, dir.path(), None, content);
+        let review_read = read_event(2, dir.path(), Some("review"), content);
+        let review = crate::conversation::address::ConversationAddress::parse("review").unwrap();
+        let args = serde_json::json!({
+            "path": "visible.txt",
+            "old_text": "alpha",
+            "new_text": "omega",
+            "brief": "rename visible text"
+        });
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(2);
+
+        spawn_simple_slot(
+            "edit_main_snapshot".to_string(),
+            Some(review.clone()),
+            "edit_file".to_string(),
+            args.clone(),
+            "edit".to_string(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            vec![main_read],
+            event_tx.clone(),
+            test_config(),
+            crate::prompt::builtin_prompt_catalog(),
+            dir.path().join("events.jsonl"),
+        );
+        let (_, denied) = event_rx.recv().await.unwrap();
+        let SlotEvent::Done { status, .. } = denied else {
+            panic!("expected completed slot");
+        };
+        assert_eq!(status, "error");
+
+        spawn_simple_slot(
+            "edit_review_snapshot".to_string(),
+            Some(review),
+            "edit_file".to_string(),
+            args,
+            "edit".to_string(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            vec![review_read],
+            event_tx,
+            test_config(),
+            crate::prompt::builtin_prompt_catalog(),
+            dir.path().join("events.jsonl"),
+        );
+        let (_, allowed) = event_rx.recv().await.unwrap();
+        let SlotEvent::Done { status, .. } = allowed else {
+            panic!("expected completed slot");
+        };
+
+        assert_eq!(status, "ok");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("visible.txt")).unwrap(),
+            "omega\n"
+        );
     }
 }

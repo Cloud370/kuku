@@ -22,6 +22,7 @@ struct EditRequest {
 pub(crate) fn edit_file(
     args: &Value,
     workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
 ) -> ToolResultEnvelope {
     let request = match edit_file_request(args) {
@@ -44,9 +45,13 @@ pub(crate) fn edit_file(
         Err(err) => return err,
     };
     let current_hash = content_hash(&bytes);
-    let Some(snapshot) =
-        find_write_snapshot(prior_events, &resolved.path, false, Some(&request.old_text))
-    else {
+    let Some(snapshot) = find_write_snapshot(
+        prior_events,
+        conversation,
+        &resolved.path,
+        false,
+        Some(&request.old_text),
+    ) else {
         return ToolResultEnvelope::error(
             format!("failed: read {} before editing", resolved.relative),
             format!(
@@ -167,6 +172,19 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
 mod tests {
     use super::super::test_helpers::{read_snapshot_event, workspace};
     use super::*;
+
+    fn edit_file(
+        args: &Value,
+        workspace: &Path,
+        prior_events: &[StoredEvent],
+    ) -> ToolResultEnvelope {
+        super::edit_file(
+            args,
+            workspace,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+        )
+    }
 
     #[test]
     fn edit_file_requires_prior_read_and_rejects_stale_snapshot() {
