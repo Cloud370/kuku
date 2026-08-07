@@ -50,8 +50,14 @@ pub(crate) fn write_file(
             }
         };
         let current_hash = content_hash(&bytes);
-        let snapshot_lookup =
-            find_write_snapshot(prior_events, conversation, &resolved.path, true, None);
+        let snapshot_lookup = find_write_snapshot(
+            prior_events,
+            conversation,
+            &resolved.path,
+            true,
+            None,
+            Some(&current_hash),
+        );
         let snapshot = match snapshot_lookup {
             WriteSnapshotLookup::Found(snapshot) => snapshot,
             WriteSnapshotLookup::Rejected(reason) => {

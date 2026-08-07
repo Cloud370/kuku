@@ -8,7 +8,7 @@ use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
     content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief, resolve_path,
-    write_atomically,
+    text_match_offsets, write_atomically, WriteSnapshot,
 };
 
 struct EditRequest {
@@ -17,6 +17,16 @@ struct EditRequest {
     new_text: String,
     replace_all: bool,
     _brief: String,
+}
+
+struct EditTextCandidate {
+    old_text: String,
+    new_text: String,
+}
+
+struct AuthorizedEditCandidate {
+    candidate_index: usize,
+    offsets: Vec<usize>,
 }
 
 pub(crate) fn edit_file(
@@ -44,63 +54,59 @@ pub(crate) fn edit_file(
         Ok(result) => result,
         Err(err) => return err,
     };
-    let (old_text, new_text) = resolve_line_endings(
+    let text_candidates = edit_text_candidates(
         &content,
         request.old_text.as_str(),
         request.new_text.as_str(),
     );
     let current_hash = content_hash(&bytes);
-    let snapshot = match find_write_snapshot(
-        prior_events,
-        conversation,
-        &resolved.path,
-        request.replace_all,
-        Some(&old_text),
-    ) {
-        super::common::WriteSnapshotLookup::Found(snapshot) => snapshot,
-        super::common::WriteSnapshotLookup::Rejected(reason) => {
-            let model_content = match reason {
-                ToolErrorReason::OldTextNotVisible => format!(
-                    "old_text is outside the visible read_file snapshot; read the matching lines from {} before editing",
-                    resolved.relative
-                ),
-                ToolErrorReason::FullSnapshotRequired => format!(
-                    "replace_all requires a full read_file snapshot; read all of {} before editing",
-                    resolved.relative
-                ),
-                ToolErrorReason::SnapshotRequired | ToolErrorReason::SnapshotStale => format!(
-                    "edit_file requires a prior successful read_file snapshot for {}",
-                    resolved.relative
-                ),
-            };
-            return ToolResultEnvelope::error_with_reason(
-                format!("failed: read {} before editing", resolved.relative),
-                model_content,
-                reason,
+    let mut authorized_candidates = Vec::new();
+    let mut stale_snapshot = None;
+    let mut saw_fresh_authorization = false;
+    let mut rejection = ToolErrorReason::SnapshotRequired;
+    for (index, candidate) in text_candidates.iter().enumerate() {
+        match find_write_snapshot(
+            prior_events,
+            conversation,
+            &resolved.path,
+            request.replace_all,
+            Some(&candidate.old_text),
+            Some(&current_hash),
+        ) {
+            super::common::WriteSnapshotLookup::Found(snapshot) => {
+                if snapshot.content_hash == current_hash {
+                    saw_fresh_authorization = true;
+                    let offsets = text_match_offsets(&content, &candidate.old_text);
+                    if !offsets.is_empty() {
+                        authorized_candidates.push(AuthorizedEditCandidate {
+                            candidate_index: index,
+                            offsets,
+                        });
+                    }
+                } else if stale_snapshot.is_none() {
+                    stale_snapshot = Some(snapshot);
+                }
+            }
+            super::common::WriteSnapshotLookup::Rejected(reason) => rejection = reason,
+        }
+    }
+    if authorized_candidates.is_empty() {
+        if saw_fresh_authorization {
+            return ToolResultEnvelope::error(
+                format!("failed: old_text not found in {}", resolved.relative),
+                "old_text was not found".to_string(),
             );
         }
-    };
-    if snapshot.content_hash != current_hash {
-        return ToolResultEnvelope::error_with_reason(
-            format!(
-                "failed: {} changed since event {}",
-                resolved.relative, snapshot.event_id
-            ),
-            format!(
-                "file changed since it was read; read {} again before editing",
-                resolved.relative
-            ),
-            ToolErrorReason::SnapshotStale,
-        );
+        if let Some(snapshot) = stale_snapshot {
+            return snapshot_stale_error(&resolved.relative, &snapshot);
+        }
+        return snapshot_lookup_error(&resolved.relative, rejection);
     }
 
-    let replacement_count = content.matches(&old_text).count();
-    if replacement_count == 0 {
-        return ToolResultEnvelope::error(
-            format!("failed: old_text not found in {}", resolved.relative),
-            "old_text was not found".to_string(),
-        );
-    }
+    let replacement_count = authorized_candidates
+        .iter()
+        .map(|candidate| candidate.offsets.len())
+        .sum::<usize>();
     if replacement_count > 1 && !request.replace_all {
         return ToolResultEnvelope::error(
             format!(
@@ -111,11 +117,7 @@ pub(crate) fn edit_file(
         );
     }
 
-    let edited = if request.replace_all {
-        content.replace(&old_text, &new_text)
-    } else {
-        content.replacen(&old_text, &new_text, 1)
-    };
+    let edited = replace_authorized_candidates(&content, &text_candidates, &authorized_candidates);
     if let Err(error) = write_atomically(&resolved.path, edited.as_bytes()) {
         return ToolResultEnvelope::error(
             format!("failed: {error}"),
@@ -151,27 +153,93 @@ pub(crate) fn edit_file(
     )
 }
 
-fn resolve_line_endings(content: &str, old_text: &str, new_text: &str) -> (String, String) {
-    let crlf_old_text = old_text.replace('\n', "\r\n");
-    let mapped_old_text = !old_text.contains("\r\n")
-        && old_text.contains('\n')
-        && !content.contains(old_text)
-        && content.contains(&crlf_old_text);
-    let resolved_old_text = if mapped_old_text {
-        crlf_old_text
-    } else {
-        old_text.to_string()
+fn snapshot_lookup_error(relative: &str, reason: ToolErrorReason) -> ToolResultEnvelope {
+    let model_content = match reason {
+        ToolErrorReason::OldTextNotVisible => format!(
+            "old_text is outside the visible read_file snapshot; read the matching lines from {relative} before editing"
+        ),
+        ToolErrorReason::FullSnapshotRequired => format!(
+            "replace_all requires a full read_file snapshot; read all of {relative} before editing"
+        ),
+        ToolErrorReason::SnapshotRequired | ToolErrorReason::SnapshotStale => format!(
+            "edit_file requires a prior successful read_file snapshot for {relative}"
+        ),
     };
+    ToolResultEnvelope::error_with_reason(
+        format!("failed: read {relative} before editing"),
+        model_content,
+        reason,
+    )
+}
+
+fn snapshot_stale_error(relative: &str, snapshot: &WriteSnapshot) -> ToolResultEnvelope {
+    ToolResultEnvelope::error_with_reason(
+        format!(
+            "failed: {relative} changed since event {}",
+            snapshot.event_id
+        ),
+        format!("file changed since it was read; read {relative} again before editing"),
+        ToolErrorReason::SnapshotStale,
+    )
+}
+
+fn replace_authorized_candidates(
+    content: &str,
+    candidates: &[EditTextCandidate],
+    authorized: &[AuthorizedEditCandidate],
+) -> String {
+    let mut replacements = authorized
+        .iter()
+        .flat_map(|authorized_candidate| {
+            let candidate = &candidates[authorized_candidate.candidate_index];
+            authorized_candidate.offsets.iter().map(move |offset| {
+                (
+                    *offset,
+                    *offset + candidate.old_text.len(),
+                    candidate.new_text.as_str(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    replacements.sort_by_key(|(start, _, _)| *start);
+
+    let mut edited = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for (start, end, replacement) in replacements {
+        edited.push_str(&content[cursor..start]);
+        edited.push_str(replacement);
+        cursor = end;
+    }
+    edited.push_str(&content[cursor..]);
+    edited
+}
+
+fn edit_text_candidates(content: &str, old_text: &str, new_text: &str) -> Vec<EditTextCandidate> {
     let file_uses_crlf =
         content.contains("\r\n") && content.split("\r\n").all(|segment| !segment.contains('\n'));
-    let resolved_new_text =
-        if mapped_old_text || resolved_old_text.contains("\r\n") || file_uses_crlf {
-            new_text.replace("\r\n", "\n").replace('\n', "\r\n")
+    let crlf_new_text = new_text.replace("\r\n", "\n").replace('\n', "\r\n");
+    if old_text.contains('\n') && !old_text.contains("\r\n") {
+        let crlf_old_text = old_text.replace('\n', "\r\n");
+        return vec![
+            EditTextCandidate {
+                old_text: crlf_old_text,
+                new_text: crlf_new_text.clone(),
+            },
+            EditTextCandidate {
+                old_text: old_text.to_string(),
+                new_text: new_text.to_string(),
+            },
+        ];
+    }
+
+    vec![EditTextCandidate {
+        old_text: old_text.to_string(),
+        new_text: if old_text.contains("\r\n") || file_uses_crlf {
+            crlf_new_text
         } else {
             new_text.to_string()
-        };
-
-    (resolved_old_text, resolved_new_text)
+        },
+    }]
 }
 
 fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
@@ -455,6 +523,220 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join("README.md")).unwrap(),
             b"omega\r\ndelta\r\nbeta\r\n"
+        );
+    }
+
+    #[test]
+    fn leading_model_lf_does_not_match_inside_crlf() {
+        let dir = workspace();
+        let content = b"alpha\r\nbeta\r\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            false,
+            "alpha\r\nbeta\r\n",
+            "1\talpha\n2\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "\nbeta",
+                "new_text": "\nomega",
+                "brief": "rename the second CRLF line"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            b"alpha\r\nomega\r\n"
+        );
+    }
+
+    #[test]
+    fn visible_crlf_candidate_wins_over_hidden_lf_candidate() {
+        let dir = workspace();
+        let content = b"alpha\r\nbeta\r\nalpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            false,
+            "alpha\r\nbeta\r\n",
+            "1\talpha\n2\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega\ndelta",
+                "brief": "replace the visible CRLF lines"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            b"omega\r\ndelta\r\nalpha\nbeta\n"
+        );
+    }
+
+    #[test]
+    fn full_snapshot_replace_all_replaces_lf_and_crlf_candidates() {
+        let dir = workspace();
+        let content = b"alpha\r\nbeta\r\nalpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            true,
+            "alpha\r\nbeta\r\nalpha\nbeta\n",
+            "1\talpha\n2\tbeta\n3\talpha\n4\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega\ndelta",
+                "replace_all": true,
+                "brief": "replace both line-ending forms"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.structured.as_ref().unwrap()["replacement_count"], 2);
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            b"omega\r\ndelta\r\nomega\ndelta\n"
+        );
+    }
+
+    #[test]
+    fn full_snapshot_single_edit_rejects_lf_and_crlf_ambiguity() {
+        let dir = workspace();
+        let content = b"alpha\r\nbeta\r\nalpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            true,
+            "alpha\r\nbeta\r\nalpha\nbeta\n",
+            "1\talpha\n2\tbeta\n3\talpha\n4\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega\ndelta",
+                "brief": "replace one line-ending form"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "error");
+        assert!(result.model_content.contains("not unique"));
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn line_ending_change_after_partial_read_is_stale() {
+        let dir = workspace();
+        let original = b"alpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            original,
+            false,
+            "alpha\nbeta\n",
+            "1\talpha\n2\tbeta",
+        );
+        std::fs::write(dir.path().join("README.md"), b"alpha\r\nbeta\r\n").unwrap();
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega\ndelta",
+                "brief": "replace stale lines"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "error");
+        assert_eq!(
+            result.structured.as_ref().unwrap()["reason_code"],
+            "snapshot_stale"
+        );
+    }
+
+    #[test]
+    fn fresh_lf_snapshot_wins_over_stale_crlf_candidate() {
+        let dir = workspace();
+        let stale_content = b"alpha\r\nbeta\r\nold\n";
+        std::fs::write(dir.path().join("README.md"), stale_content).unwrap();
+        let stale_snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            stale_content,
+            false,
+            "alpha\r\nbeta\r\n",
+            "1\talpha\n2\tbeta",
+        );
+
+        let current = b"alpha\r\nbeta\r\nalpha\nbeta\n";
+        std::fs::write(dir.path().join("README.md"), current).unwrap();
+        let fresh_snapshot = read_snapshot_event(
+            18,
+            dir.path(),
+            "README.md",
+            current,
+            false,
+            "alpha\nbeta\n",
+            "3\talpha\n4\tbeta",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha\nbeta",
+                "new_text": "omega\ndelta",
+                "brief": "replace fresh LF lines"
+            }),
+            dir.path(),
+            &[stale_snapshot, fresh_snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            b"alpha\r\nbeta\r\nomega\ndelta\n"
         );
     }
 

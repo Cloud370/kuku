@@ -411,9 +411,11 @@ pub(super) fn find_write_snapshot(
     canonical_path: &Path,
     require_full_file: bool,
     required_text: Option<&str>,
+    current_content_hash: Option<&str>,
 ) -> WriteSnapshotLookup {
     let canonical_path = canonical_path.to_string_lossy();
     let mut saw_path_snapshot = false;
+    let mut stale_snapshot = None;
     for event in crate::context::replay::effective_snapshot_events(events, conversation)
         .into_iter()
         .rev()
@@ -445,15 +447,24 @@ pub(super) fn find_write_snapshot(
         if !is_full_file_snapshot
             && required_text.is_some_and(|text| {
                 !visible_snapshot_raw_text(structured)
-                    .is_some_and(|raw_text| raw_text.contains(text))
+                    .is_some_and(|raw_text| !text_match_offsets(raw_text, text).is_empty())
             })
         {
             continue;
         }
-        return WriteSnapshotLookup::Found(WriteSnapshot {
+        let snapshot = WriteSnapshot {
             event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
             content_hash: content_hash.to_string(),
-        });
+        };
+        if current_content_hash.is_none_or(|current_hash| current_hash == content_hash) {
+            return WriteSnapshotLookup::Found(snapshot);
+        }
+        if stale_snapshot.is_none() {
+            stale_snapshot = Some(snapshot);
+        }
+    }
+    if let Some(snapshot) = stale_snapshot {
+        return WriteSnapshotLookup::Found(snapshot);
     }
     if require_full_file {
         WriteSnapshotLookup::Rejected(ToolErrorReason::FullSnapshotRequired)
@@ -462,6 +473,24 @@ pub(super) fn find_write_snapshot(
     } else {
         WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired)
     }
+}
+
+pub(super) fn text_match_offsets(content: &str, text: &str) -> Vec<usize> {
+    let content_bytes = content.as_bytes();
+    let text_bytes = text.as_bytes();
+    content
+        .match_indices(text)
+        .map(|(offset, _)| offset)
+        .filter(|offset| {
+            text_bytes.iter().enumerate().all(|(text_offset, byte)| {
+                if *byte != b'\n' || (text_offset > 0 && text_bytes[text_offset - 1] == b'\r') {
+                    return true;
+                }
+                let content_offset = offset + text_offset;
+                content_offset == 0 || content_bytes[content_offset - 1] != b'\r'
+            })
+        })
+        .collect()
 }
 
 fn visible_snapshot_raw_text(structured: &Value) -> Option<&str> {
@@ -494,6 +523,7 @@ mod tests {
             canonical_path,
             require_full_file,
             required_text,
+            None,
         ) {
             WriteSnapshotLookup::Found(snapshot) => Some(snapshot),
             WriteSnapshotLookup::Rejected(_) => None,
@@ -600,6 +630,65 @@ mod tests {
         );
 
         assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha\nbeta")).is_none());
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_treat_lf_as_crlf_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\r\nbeta\r\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha\n2\tbeta",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\r\nbeta\r\n"),
+                "raw_text": "alpha\r\nbeta\r\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 2,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("\nbeta")).is_none());
+    }
+
+    #[test]
+    fn write_snapshot_prefers_matching_hash_over_newer_stale_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let fresh = snapshot_event(17, 1, None, &path);
+        let mut stale = snapshot_event(18, 2, None, &path);
+        if let EventPayload::ToolResult {
+            structured: Some(structured),
+            ..
+        } = &mut stale.payload
+        {
+            structured["content_hash"] = content_hash(b"stale\n").into();
+        }
+        let current_hash = content_hash(b"alpha\n");
+
+        let result = super::find_write_snapshot(
+            &[fresh, stale],
+            &ConversationAddress::MAIN,
+            &path,
+            false,
+            Some("alpha"),
+            Some(&current_hash),
+        );
+
+        let WriteSnapshotLookup::Found(snapshot) = result else {
+            panic!("expected a matching snapshot");
+        };
+        assert_eq!(snapshot.event_id, 17);
+        assert_eq!(snapshot.content_hash, current_hash);
     }
 
     #[test]
