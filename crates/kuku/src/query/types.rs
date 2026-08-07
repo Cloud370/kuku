@@ -269,6 +269,22 @@ pub(super) enum RunState {
     ),
 }
 
+impl RunState {
+    pub(super) fn record_tool_completion(&mut self, status: &str) {
+        if status != "error" {
+            return;
+        }
+        match self {
+            Self::Pending(pending) => pending.record_tool_completion_error(),
+            Self::Streaming(streaming) => streaming.pending.record_tool_completion_error(),
+            Self::WaitingForPermission(waiting) => {
+                waiting.pending.record_tool_completion_error();
+            }
+            Self::Cancelled { .. } | Self::Done(_) => {}
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CumulativeUsage {
     pub(super) input_tokens: u64,
@@ -384,6 +400,10 @@ impl PendingRun {
             .iter()
             .position(|request| request.tool_call_id == tool_call_id)
             .and_then(|index| self.resumed_permission_requests.remove(index))
+    }
+
+    fn record_tool_completion_error(&mut self) {
+        self.tool_errors += 1;
     }
 }
 

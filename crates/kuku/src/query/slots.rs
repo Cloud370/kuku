@@ -117,13 +117,7 @@ pub(crate) fn spawn_agent_slot(
                 let _ = event_tx
                     .send((
                         tc_id.clone(),
-                        SlotEvent::Done {
-                            status: "error".into(),
-                            summary: "agent: failed to start conversation".into(),
-                            model_content: String::new(),
-                            truncated: false,
-                            result: None,
-                        },
+                        agent_error_event("agent: failed to start conversation".to_string()),
                     ))
                     .await;
                 return;
@@ -201,16 +195,10 @@ pub(crate) fn spawn_agent_slot(
                     let _ = event_tx
                         .send((
                             tc_id.clone(),
-                            SlotEvent::Done {
-                                status: "error".into(),
-                                summary: format!(
-                                    "{}: stream ended unexpectedly",
-                                    dispatch.conversation.as_str()
-                                ),
-                                model_content: String::new(),
-                                truncated: false,
-                                result: None,
-                            },
+                            agent_error_event(format!(
+                                "{}: stream ended unexpectedly",
+                                dispatch.conversation.as_str()
+                            )),
                         ))
                         .await;
                     return;
@@ -372,5 +360,37 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
         | UiEvent::ModelRequest { .. }
         | UiEvent::Log { .. }
         | UiEvent::Cancelled { .. } => None,
+    }
+}
+
+fn agent_error_event(summary: String) -> SlotEvent {
+    SlotEvent::Done {
+        status: "error".to_string(),
+        summary,
+        model_content: String::new(),
+        truncated: false,
+        result: Some(serde_json::json!({"kind": "error"})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_error_event_has_stable_structured_marker() {
+        let SlotEvent::Done {
+            status,
+            truncated,
+            result,
+            ..
+        } = agent_error_event("agent failed".to_string())
+        else {
+            panic!("expected terminal agent event");
+        };
+
+        assert_eq!("error", status);
+        assert!(!truncated);
+        assert_eq!(Some(serde_json::json!({"kind": "error"})), result);
     }
 }

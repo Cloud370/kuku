@@ -50,7 +50,7 @@ fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
     }
 }
 
-fn make_test_pending(
+pub(super) fn make_test_pending(
     events_path: std::path::PathBuf,
     dir: &std::path::Path,
     cancel_token: std::sync::Arc<tokio::sync::Notify>,

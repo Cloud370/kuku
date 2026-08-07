@@ -1,4 +1,6 @@
 use std::sync::Arc;
+#[cfg(test)]
+mod completion_tests;
 mod helpers;
 #[cfg(test)]
 mod tests;
@@ -101,14 +103,11 @@ impl Run {
         loop {
             self.persist_deferred_runtime_logs();
 
-            // 1. Permission queue priority — don't wait for slots
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     return Ok(Some(self.defer_runtime_log_if_needed(event)));
                 }
             }
-
-            // 2. Poll running slots via shared channel
             if !self.slots.is_empty() {
                 let slot_event = tokio::select! {
                     event = self.slot_event_rx.recv() => event,
@@ -130,6 +129,7 @@ impl Run {
                             result,
                         } => {
                             let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
+                            self.state.record_tool_completion(&status);
                             let (events_path, turn) = match &self.state {
                                 RunState::Pending(p) => (&p.events_path, p.turn),
                                 RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
