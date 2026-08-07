@@ -220,7 +220,7 @@ pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
     pub(crate) conversation: Option<ConversationAddress>,
     pub(crate) kind: ToolKind,
-    pub(crate) ordered_with_simple_tools: bool,
+    pub(crate) workspace_ordered: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
     pub(crate) nested_permissions:
@@ -232,7 +232,7 @@ impl std::fmt::Debug for ExecSlot {
         f.debug_struct("ExecSlot")
             .field("tool_call_id", &self.tool_call_id)
             .field("kind", &self.kind)
-            .field("ordered_with_simple_tools", &self.ordered_with_simple_tools)
+            .field("workspace_ordered", &self.workspace_ordered)
             .field("label", &self.label)
             .finish_non_exhaustive()
     }

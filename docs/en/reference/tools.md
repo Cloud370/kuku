@@ -77,6 +77,8 @@ Every tool returns the same top-level shape:
 
 Snapshot-related `edit_file` and `write_file` errors retain `structured.kind: "error"` and add one recovery-oriented `reason_code`: `snapshot_required`, `full_snapshot_required`, `snapshot_stale`, or `old_text_not_visible`.
 
+Within one run, Kuku serializes `read_file`, `edit_file`, `write_file`, `run_command`, and `agent` slots against each other. Command and agent write paths cannot be determined statically, so independent commands or agents may also wait; other read-only tools remain concurrent. This ordering covers only Kuku-managed slots, not external processes, so snapshot hash checks still apply.
+
 ## Notes By Tool
 
 - `find_files` returns relative paths and skips common build directories.

@@ -9,8 +9,11 @@ use crate::event::StoredEvent;
 use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
 
-pub(crate) fn requires_ordered_simple_execution(tool_name: &str) -> bool {
-    matches!(tool_name, "read_file" | "edit_file" | "write_file")
+pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "read_file" | "edit_file" | "write_file" | "run_command" | "agent"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -35,7 +38,7 @@ pub(crate) fn spawn_simple_slot(
     let dispatch_conversation = conversation
         .clone()
         .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
-    let ordered_with_simple_tools = requires_ordered_simple_execution(&tool_name);
+    let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
         let result = tokio::select! {
@@ -74,7 +77,7 @@ pub(crate) fn spawn_simple_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Simple,
-        ordered_with_simple_tools,
+        workspace_ordered,
         label: summary,
         cancel,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -215,7 +218,7 @@ pub(crate) fn spawn_agent_slot(
         tool_call_id,
         conversation,
         kind: tool_kind,
-        ordered_with_simple_tools: false,
+        workspace_ordered: true,
         label: summary,
         cancel,
         nested_permissions,
@@ -273,7 +276,7 @@ pub(crate) fn spawn_command_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Command { pid: None },
-        ordered_with_simple_tools: false,
+        workspace_ordered: true,
         label: summary,
         cancel,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
@@ -425,6 +428,22 @@ mod tests {
         let file: crate::config::ConfigFile =
             toml::from_str(crate::config::generate_default()).unwrap();
         std::sync::Arc::new(file.resolve().unwrap())
+    }
+
+    #[test]
+    fn workspace_ordering_is_limited_to_snapshot_and_mutator_slots() {
+        for tool_name in [
+            "read_file",
+            "edit_file",
+            "write_file",
+            "run_command",
+            "agent",
+        ] {
+            assert!(requires_workspace_ordering(tool_name), "{tool_name}");
+        }
+        for tool_name in ["find_files", "search_text", "fetch_url", "query_session"] {
+            assert!(!requires_workspace_ordering(tool_name), "{tool_name}");
+        }
     }
 
     #[test]

@@ -16,7 +16,7 @@ use super::helpers::{
     append_turn_cancelled, append_turn_interrupted, display_summary, is_inline_skill_tool,
     now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
 };
-use super::slots::requires_ordered_simple_execution;
+use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
@@ -30,10 +30,8 @@ impl Drop for Run {
 }
 
 impl Run {
-    fn has_active_ordered_simple_slot(&self) -> bool {
-        self.slots
-            .values()
-            .any(|slot| slot.ordered_with_simple_tools)
+    fn has_active_workspace_ordered_slot(&self) -> bool {
+        self.slots.values().any(|slot| slot.workspace_ordered)
     }
 
     /// The session ID for this run.
@@ -329,7 +327,7 @@ impl Run {
     }
 
     async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
-        let has_active_ordered_simple_slot = self.has_active_ordered_simple_slot();
+        let has_active_workspace_ordered_slot = self.has_active_workspace_ordered_slot();
         let (front_tool_call_id, front_tool_name) = match &self.state {
             RunState::Pending(pending) => match pending.queued_tool_calls.front() {
                 Some(queued) => (queued.tool_call.id.clone(), queued.tool_call.name.clone()),
@@ -358,13 +356,13 @@ impl Run {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
         };
+        if requires_workspace_ordering(&front_tool_name) && has_active_workspace_ordered_slot {
+            return Ok(None);
+        }
         if front_tool_name == "agent"
             || (is_inline_skill_tool(&front_tool_name)
                 && resolved_tool_available(pending, &front_tool_name))
         {
-            return Ok(None);
-        }
-        if requires_ordered_simple_execution(&front_tool_name) && has_active_ordered_simple_slot {
             return Ok(None);
         }
         super::provider::ensure_resolved(pending)?;
@@ -868,8 +866,7 @@ impl Run {
                 result: result.structured,
             }));
         }
-        if requires_ordered_simple_execution(&tool_call.name)
-            && self.has_active_ordered_simple_slot()
+        if requires_workspace_ordering(&tool_call.name) && self.has_active_workspace_ordered_slot()
         {
             pending.queued_tool_calls.push_front(QueuedToolCall {
                 tool_call,

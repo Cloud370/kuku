@@ -594,7 +594,7 @@ mod tests {
                     .unwrap(),
                 binding_id: "binding:review".to_string(),
             },
-            ordered_with_simple_tools: false,
+            workspace_ordered: false,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),

@@ -1034,7 +1034,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             tool_call_id: "tool_cancelled".to_string(),
             conversation: None,
             kind: ToolKind::Command { pid: None },
-            ordered_with_simple_tools: false,
+            workspace_ordered: false,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

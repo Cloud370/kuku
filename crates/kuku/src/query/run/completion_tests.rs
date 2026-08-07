@@ -20,7 +20,7 @@ async fn async_error_completion_is_counted_exactly_once() {
             tool_call_id: "tool_error".to_string(),
             conversation: None,
             kind: ToolKind::Command { pid: None },
-            ordered_with_simple_tools: false,
+            workspace_ordered: false,
             label: "failing command".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

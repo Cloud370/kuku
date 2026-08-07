@@ -77,6 +77,8 @@
 
 与 snapshot 有关的 `edit_file` 和 `write_file` 错误会保留 `structured.kind: "error"`，并增加一个用于恢复的 `reason_code`：`snapshot_required`、`full_snapshot_required`、`snapshot_stale` 或 `old_text_not_visible`。
 
+在同一次 run 内，Kuku 会让 `read_file`、`edit_file`、`write_file`、`run_command` 和 `agent` 槽位彼此串行。命令和 agent 的写入路径无法静态判定，因此相互独立的命令或 agent 也可能等待；其他只读工具仍可并发。该顺序只覆盖 Kuku 管理的槽位，不覆盖外部进程，因此 snapshot hash 检查仍然适用。
+
 ## Notes By Tool
 
 - `find_files` 返回相对路径，并跳过常见构建目录。

@@ -1,4 +1,7 @@
 mod common;
+#[cfg(unix)]
+#[path = "query_runtime/mutator_ordering.rs"]
+mod query_runtime_mutator_ordering;
 
 use common::{anthropic_sse_response, test_config, TestEnv};
 
