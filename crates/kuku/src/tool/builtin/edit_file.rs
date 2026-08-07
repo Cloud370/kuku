@@ -152,17 +152,26 @@ pub(crate) fn edit_file(
 }
 
 fn resolve_line_endings(content: &str, old_text: &str, new_text: &str) -> (String, String) {
-    if content.contains(old_text) || !old_text.contains('\n') || old_text.contains("\r\n") {
-        return (old_text.to_string(), new_text.to_string());
-    }
-
     let crlf_old_text = old_text.replace('\n', "\r\n");
-    if !content.contains(&crlf_old_text) {
-        return (old_text.to_string(), new_text.to_string());
-    }
+    let mapped_old_text = !old_text.contains("\r\n")
+        && old_text.contains('\n')
+        && !content.contains(old_text)
+        && content.contains(&crlf_old_text);
+    let resolved_old_text = if mapped_old_text {
+        crlf_old_text
+    } else {
+        old_text.to_string()
+    };
+    let file_uses_crlf =
+        content.contains("\r\n") && content.split("\r\n").all(|segment| !segment.contains('\n'));
+    let resolved_new_text =
+        if mapped_old_text || resolved_old_text.contains("\r\n") || file_uses_crlf {
+            new_text.replace("\r\n", "\n").replace('\n', "\r\n")
+        } else {
+            new_text.to_string()
+        };
 
-    let crlf_new_text = new_text.replace("\r\n", "\n").replace('\n', "\r\n");
-    (crlf_old_text, crlf_new_text)
+    (resolved_old_text, resolved_new_text)
 }
 
 fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
@@ -413,6 +422,39 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join("README.md")).unwrap(),
             b"omega\r\ndelta\r\ngamma\r\n"
+        );
+    }
+
+    #[test]
+    fn crlf_file_normalizes_multiline_replacement_for_single_line_match() {
+        let dir = workspace();
+        let content = b"alpha\r\nbeta\r\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let snapshot = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content,
+            false,
+            "alpha\r\n",
+            "1\talpha",
+        );
+
+        let result = edit_file(
+            &serde_json::json!({
+                "path": "README.md",
+                "old_text": "alpha",
+                "new_text": "omega\ndelta",
+                "brief": "expand one CRLF line"
+            }),
+            dir.path(),
+            &[snapshot],
+        );
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            std::fs::read(dir.path().join("README.md")).unwrap(),
+            b"omega\r\ndelta\r\nbeta\r\n"
         );
     }
 
