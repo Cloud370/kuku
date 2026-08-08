@@ -45,12 +45,15 @@ fn query_session_filters_by_kind() {
         &[
             message_user(1, "hello"),
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: ts("t"),
                 request_id: "r1".into(),
                 text: "hi".into(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -536,12 +539,15 @@ fn query_session_main_conversation_includes_main_model_response() {
         &[
             message_user(1, "hello"),
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: ts("t"),
                 request_id: "r1".into(),
                 text: "main answer".into(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
             },
             EventPayload::TurnCompleted {
                 turn: 1,

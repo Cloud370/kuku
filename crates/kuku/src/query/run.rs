@@ -326,8 +326,13 @@ impl Run {
                             turn,
                         }))
                     }
-                    _ => {
+                    PendingStep::Failed(error) => {
                         self.state = RunState::Done(None);
+                        Err(error)
+                    }
+                    PendingStep::NeedPermission(_) => unreachable!(),
+                    PendingStep::Streaming(streaming) => {
+                        self.state = RunState::Streaming(streaming);
                         Ok(None)
                     }
                 }
@@ -355,16 +360,29 @@ impl Run {
                     None => return Ok(None),
                 },
                 _ = cancel_token.notified() => {
-                    streaming.stop_reason = Some("cancelled".to_string());
+                    streaming.stop_reason = Some(crate::event::ModelStopReason::Unknown(
+                        "cancelled".to_string(),
+                    ));
                     return Ok(None);
                 }
             };
 
+            if streaming.stream_ended {
+                streaming.terminal_stream_invalid = true;
+                continue;
+            }
+
             match chunk {
                 ProviderChunk::StreamStart { request_id: rid } => {
+                    if streaming.stop_reason.is_some() || streaming.provider_request_id.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     streaming.provider_request_id = Some(rid);
                 }
                 ProviderChunk::TextDelta { text } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                     }
@@ -375,12 +393,15 @@ impl Run {
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
                         }
-                        return Ok(None);
+                        continue;
                     }
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
                 }
                 ProviderChunk::ThinkingDelta { text } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if streaming.thinking_start.is_none() {
                         streaming.thinking_start = Some(std::time::Instant::now());
                     }
@@ -388,8 +409,18 @@ impl Run {
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
                 }
                 ProviderChunk::ToolCallStart { index, id, name } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                    }
+                    if streaming
+                        .tool_calls
+                        .iter()
+                        .any(|tool_call| tool_call.index == index)
+                    {
+                        streaming.tool_stream_invalid = true;
                     }
                     streaming.tool_calls.push(ProviderToolCall {
                         id,
@@ -400,50 +431,65 @@ impl Run {
                     streaming.tool_arg_buffers.push((index, String::new()));
                 }
                 ProviderChunk::ToolCallArgDelta { index, fragment } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let has_single_start = streaming
+                        .tool_calls
+                        .iter()
+                        .filter(|tool_call| tool_call.index == index)
+                        .count()
+                        == 1;
+                    if !has_single_start || streaming.tool_call_completions.contains(&index) {
+                        streaming.tool_stream_invalid = true;
+                    }
                     if let Some((_, buf)) = streaming
                         .tool_arg_buffers
                         .iter_mut()
                         .find(|(i, _)| *i == index)
                     {
                         buf.push_str(&fragment);
+                    } else {
+                        streaming.tool_arg_buffers.push((index, fragment));
+                    }
+                }
+                ProviderChunk::ToolCallStop { index } => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let has_single_start = streaming
+                        .tool_calls
+                        .iter()
+                        .filter(|tool_call| tool_call.index == index)
+                        .count()
+                        == 1;
+                    if has_single_start && !streaming.tool_call_completions.contains(&index) {
+                        streaming.tool_call_completions.push(index);
+                    } else {
+                        streaming.tool_stream_invalid = true;
                     }
                 }
                 ProviderChunk::ContentBlockStop { index } => {
-                    if let Some((_, buf)) =
-                        streaming.tool_arg_buffers.iter().find(|(i, _)| *i == index)
-                    {
-                        match serde_json::from_str::<serde_json::Value>(buf) {
-                            Ok(args) => {
-                                if let Some(tc) =
-                                    streaming.tool_calls.iter_mut().find(|t| t.index == index)
-                                {
-                                    tc.args = args;
-                                }
-                            }
-                            Err(error) => {
-                                let tool_call_id = streaming
-                                    .tool_calls
-                                    .iter()
-                                    .find(|t| t.index == index)
-                                    .map(|tool_call| tool_call.id.clone())
-                                    .unwrap_or_else(|| format!("index {index}"));
-                                return Err(crate::error::Error::Provider {
-                                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-                                    message: format!(
-                                        "tool call {tool_call_id} has invalid JSON arguments: {error}"
-                                    ),
-                                    provider: None,
-                                    model: None,
-                                });
-                            }
-                        }
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    let _ = index;
+                }
+                ProviderChunk::InvalidToolStream => {
+                    streaming.tool_stream_invalid = true;
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
                     }
                 }
                 ProviderChunk::StopReason { reason } => {
                     if let Some(start) = streaming.thinking_start.take() {
                         streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                     }
-                    streaming.stop_reason = Some(reason);
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    } else {
+                        streaming.stop_reason = Some(reason);
+                    }
                 }
                 ProviderChunk::StreamUsage {
                     input_tokens,
@@ -455,19 +501,23 @@ impl Run {
                         streaming
                             .usage
                             .get_or_insert(crate::provider::types::ProviderUsage {
-                                input_tokens: Some(0),
-                                output_tokens: Some(0),
-                                cache_read_input_tokens: Some(0),
-                                cache_creation_input_tokens: Some(0),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cache_read_input_tokens: None,
+                                cache_creation_input_tokens: None,
                             });
-                    entry.input_tokens = Some(entry.input_tokens.unwrap_or(0) + input_tokens);
-                    entry.output_tokens = Some(entry.output_tokens.unwrap_or(0) + output_tokens);
-                    entry.cache_read_input_tokens =
-                        Some(entry.cache_read_input_tokens.unwrap_or(0) + cache_read_input_tokens);
-                    entry.cache_creation_input_tokens = Some(
-                        entry.cache_creation_input_tokens.unwrap_or(0)
-                            + cache_creation_input_tokens,
-                    );
+                    if input_tokens.is_some() {
+                        entry.input_tokens = input_tokens;
+                    }
+                    if output_tokens.is_some() {
+                        entry.output_tokens = output_tokens;
+                    }
+                    if cache_read_input_tokens.is_some() {
+                        entry.cache_read_input_tokens = cache_read_input_tokens;
+                    }
+                    if cache_creation_input_tokens.is_some() {
+                        entry.cache_creation_input_tokens = cache_creation_input_tokens;
+                    }
                 }
                 ProviderChunk::ServerError { code, message } => {
                     return Err(crate::error::Error::Provider {
@@ -477,7 +527,9 @@ impl Run {
                         model: None,
                     });
                 }
-                ProviderChunk::StreamEnd => {}
+                ProviderChunk::StreamEnd => {
+                    streaming.stream_ended = true;
+                }
             }
         }
     }
@@ -742,6 +794,7 @@ fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error:
     };
     let _ = append_model_error(
         &streaming.pending.events_path,
+        &streaming.conversation,
         streaming.pending.turn,
         streaming.request_id.clone(),
         provider_failure_event_kind(*kind),

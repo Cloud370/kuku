@@ -1,58 +1,18 @@
-use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use super::json::{
+    bool_field, optional_json_field, optional_stop_reason_field, optional_string_field,
+    optional_u64_field, string_field, u32_field, u64_field, u8_field, usize_field,
+    vec_string_field,
+};
 use crate::context::provenance::{
     AgentRegistryProvenance, FileSource, PluginRegistryProvenance, PromptCapabilityMetadata,
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
 };
-/// A single event persisted in a session's events.jsonl.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEvent {
-    pub id: u64,
-    pub payload: EventPayload,
-}
 
-impl Serialize for StoredEvent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match &self.payload {
-            EventPayload::Unknown(value) => value.serialize(serializer),
-            payload => {
-                let value = payload
-                    .to_new_json(self.id)
-                    .map_err(serde::ser::Error::custom)?;
-                value.serialize(serializer)
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for StoredEvent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| de::Error::custom("stored event must be a JSON object"))?;
-        let id = object
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| de::Error::custom("stored event is missing numeric id"))?;
-
-        match EventPayload::from_json_object(object) {
-            Some(payload) => Ok(Self { id, payload }),
-            None => Ok(Self {
-                id,
-                payload: EventPayload::Unknown(value),
-            }),
-        }
-    }
-}
+pub use super::model_stop_reason::ModelStopReason;
+pub use super::stored_event::StoredEvent;
 
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +45,7 @@ impl RollbackScope {
 }
 
 /// All fact events that can be written to and read from a session's events.jsonl.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPayload {
     ContextSources {
@@ -102,19 +63,40 @@ pub enum EventPayload {
         bootstrap_loaded: Vec<String>,
     },
     ModelResponse {
+        conversation: Option<String>,
         turn: u64,
         ts: String,
         request_id: String,
         text: String,
         thinking: Option<String>,
-        input_tokens_total: Option<u32>,
+        stop_reason: Option<ModelStopReason>,
+        input_tokens_total: Option<u64>,
+        output_tokens_total: Option<u64>,
     },
     ModelError {
+        conversation: Option<String>,
         turn: u64,
         ts: String,
         request_id: String,
         kind: String,
         message: String,
+    },
+    ModelRecovery {
+        conversation: String,
+        turn: u64,
+        ts: String,
+        from_request_id: String,
+        to_request_id: String,
+        reason: ModelStopReason,
+        attempt: u8,
+        max_attempts: u8,
+        failed_max_output_tokens: u32,
+        retry_max_output_tokens: u32,
+        output_tokens_total: Option<u64>,
+        discarded_tool_calls: u64,
+        notice: String,
+        prompt_path: String,
+        prompt_hash: String,
     },
     ToolCall {
         turn: u64,
@@ -289,6 +271,7 @@ impl EventPayload {
             Self::ContextSkills { .. } => "context.skills",
             Self::ModelResponse { .. } => "model.response",
             Self::ModelError { .. } => "model.error",
+            Self::ModelRecovery { .. } => "model.recovery",
             Self::ToolCall { .. } => "tool.call",
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionAllow { .. } => "permission.allow",
@@ -318,7 +301,7 @@ impl EventPayload {
         self.kind_name()
     }
 
-    fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
+    pub(super) fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
         let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
@@ -342,19 +325,40 @@ impl EventPayload {
                     .ok()?,
             }),
             "model.response" => Some(Self::ModelResponse {
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
                 text: string_field(object, "text")?,
                 thinking: optional_string_field(object, "thinking"),
-                input_tokens_total: optional_u32_field(object, "input_tokens_total"),
+                stop_reason: optional_stop_reason_field(object, "stop_reason"),
+                input_tokens_total: optional_u64_field(object, "input_tokens_total"),
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
             }),
             "model.error" => Some(Self::ModelError {
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
                 kind: string_field(object, "error_kind")?,
                 message: string_field(object, "message")?,
+            }),
+            "model.recovery" => Some(Self::ModelRecovery {
+                conversation: string_field(object, "conversation")?,
+                turn: u64_field(object, "turn")?,
+                ts: string_field(object, "ts")?,
+                from_request_id: string_field(object, "from_request_id")?,
+                to_request_id: string_field(object, "to_request_id")?,
+                reason: optional_stop_reason_field(object, "reason")?,
+                attempt: u8_field(object, "attempt")?,
+                max_attempts: u8_field(object, "max_attempts")?,
+                failed_max_output_tokens: u32_field(object, "failed_max_output_tokens")?,
+                retry_max_output_tokens: u32_field(object, "retry_max_output_tokens")?,
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
+                discarded_tool_calls: u64_field(object, "discarded_tool_calls")?,
+                notice: string_field(object, "notice")?,
+                prompt_path: string_field(object, "prompt_path")?,
+                prompt_hash: string_field(object, "prompt_hash")?,
             }),
             "tool.call" => Some(Self::ToolCall {
                 turn: u64_field(object, "turn")?,
@@ -522,7 +526,7 @@ impl EventPayload {
         }
     }
 
-    fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
+    pub(super) fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
         match self {
             Self::Unknown(value) => Ok(value.clone()),
             Self::SessionCreated {
@@ -610,12 +614,15 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::ModelResponse {
+                conversation,
                 turn,
                 ts,
                 request_id,
                 text,
                 thinking,
+                stop_reason,
                 input_tokens_total,
+                output_tokens_total,
             } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
@@ -624,8 +631,14 @@ impl EventPayload {
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("request_id".into(), Value::from(request_id.clone()));
                 map.insert("text".into(), Value::from(text.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
                 if let Some(thinking) = thinking {
                     map.insert("thinking".into(), Value::from(thinking.clone()));
+                }
+                if let Some(stop_reason) = stop_reason {
+                    map.insert("stop_reason".into(), Value::from(stop_reason.wire_value()));
                 }
                 if let Some(input_tokens_total) = input_tokens_total {
                     map.insert(
@@ -633,22 +646,69 @@ impl EventPayload {
                         Value::from(*input_tokens_total),
                     );
                 }
+                if let Some(output_tokens_total) = output_tokens_total {
+                    map.insert(
+                        "output_tokens_total".into(),
+                        Value::from(*output_tokens_total),
+                    );
+                }
                 Ok(Value::Object(map))
             }
             Self::ModelError {
+                conversation,
                 turn,
                 ts,
                 request_id,
                 kind,
                 message,
+            } => {
+                let mut map = Map::new();
+                map.insert("id".into(), Value::from(id));
+                map.insert("ts".into(), Value::from(ts.clone()));
+                map.insert("kind".into(), Value::from("model.error"));
+                map.insert("turn".into(), Value::from(*turn));
+                map.insert("request_id".into(), Value::from(request_id.clone()));
+                map.insert("error_kind".into(), Value::from(kind.clone()));
+                map.insert("message".into(), Value::from(message.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
+                Ok(Value::Object(map))
+            }
+            Self::ModelRecovery {
+                conversation,
+                turn,
+                ts,
+                from_request_id,
+                to_request_id,
+                reason,
+                attempt,
+                max_attempts,
+                failed_max_output_tokens,
+                retry_max_output_tokens,
+                output_tokens_total,
+                discarded_tool_calls,
+                notice,
+                prompt_path,
+                prompt_hash,
             } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
-                "kind": "model.error",
+                "kind": "model.recovery",
+                "conversation": conversation,
                 "turn": turn,
-                "request_id": request_id,
-                "error_kind": kind,
-                "message": message,
+                "from_request_id": from_request_id,
+                "to_request_id": to_request_id,
+                "reason": reason,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "failed_max_output_tokens": failed_max_output_tokens,
+                "retry_max_output_tokens": retry_max_output_tokens,
+                "output_tokens_total": output_tokens_total,
+                "discarded_tool_calls": discarded_tool_calls,
+                "notice": notice,
+                "prompt_path": prompt_path,
+                "prompt_hash": prompt_hash,
             })),
             Self::ToolCall {
                 turn,
@@ -935,59 +995,3 @@ impl EventPayload {
         }
     }
 }
-
-fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object.get(key)?.as_str().map(ToOwned::to_owned)
-}
-
-fn optional_string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn optional_json_field(object: &Map<String, Value>, key: &str) -> Option<Value> {
-    object.get(key).cloned().filter(|value| !value.is_null())
-}
-
-fn u64_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
-    object.get(key)?.as_u64()
-}
-
-fn usize_field(object: &Map<String, Value>, key: &str) -> Option<usize> {
-    usize::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    u32::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn optional_u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    object
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
-fn bool_field(object: &Map<String, Value>, key: &str) -> Option<bool> {
-    object.get(key)?.as_bool()
-}
-
-fn vec_string_field(object: &Map<String, Value>, key: &str) -> Vec<String> {
-    object
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-#[path = "types/tests.rs"]
-mod tests;

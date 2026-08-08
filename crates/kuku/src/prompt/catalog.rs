@@ -137,6 +137,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
                 "notice-context-drift".into(),
                 p!("runtime", "notice-context-drift"),
             );
+            m.insert("recovery".into(), p!("runtime", "recovery"));
             m
         },
         tools: {
@@ -243,6 +244,9 @@ mod tests {
         assert!(catalog.runtime["handoff-context"]
             .text
             .contains("{{handoff_summary}}"));
+        assert!(catalog.runtime["recovery"]
+            .text
+            .contains("<kuku_recovery_notice>"));
         assert!(catalog.system.hash.starts_with("sha256:"));
         assert!(catalog.memory["global"].hash.starts_with("sha256:"));
         assert!(catalog.memory["project"].hash.starts_with("sha256:"));

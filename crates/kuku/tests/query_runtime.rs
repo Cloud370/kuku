@@ -2153,12 +2153,15 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-06-06T00:00:03Z".to_string(),
             request_id: "req_1".to_string(),
             text: String::new(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: None,
+            output_tokens_total: None,
         })
         .unwrap();
     store

@@ -87,6 +87,7 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
                 | EventPayload::ToolCall { .. }
                 | EventPayload::ToolResult { .. }
                 | EventPayload::ModelError { .. }
+                | EventPayload::ModelRecovery { .. }
                 | EventPayload::PermissionRequested { .. }
                 | EventPayload::PermissionAllow { .. }
                 | EventPayload::PermissionDeny { .. }
@@ -167,6 +168,7 @@ fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::TurnInterrupted { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::ToolCall { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
@@ -200,6 +202,7 @@ fn conversation_event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. } => {
             Some(conversation.as_str())
         }
+        EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
         EventPayload::ToolCall { conversation, .. }
         | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
         _ => None,
@@ -212,6 +215,7 @@ fn event_conversation_key(payload: &EventPayload) -> Option<&str> {
             payload,
             EventPayload::ModelResponse { .. }
                 | EventPayload::ModelError { .. }
+                | EventPayload::ModelRecovery { .. }
                 | EventPayload::ToolCall {
                     conversation: None,
                     ..

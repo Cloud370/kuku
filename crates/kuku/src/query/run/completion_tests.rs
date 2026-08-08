@@ -69,9 +69,13 @@ async fn async_error_completion_is_counted_exactly_once() {
         stream: Box::pin(tokio_stream::empty()),
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
-        stop_reason: Some("end_turn".to_string()),
+        stop_reason: Some(crate::event::ModelStopReason::EndTurn),
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
+        tool_call_completions: Vec::new(),
+        tool_stream_invalid: false,
+        terminal_stream_invalid: false,
+        stream_ended: false,
         provider_request_id: None,
         usage: None,
         lead_events: Vec::new(),
@@ -95,4 +99,47 @@ async fn async_error_completion_is_counted_exactly_once() {
                 && status == "error"
                 && structured == &Some(serde_json::json!({"kind": "error"}))
     )));
+}
+
+#[tokio::test]
+async fn length_stop_interrupts_without_completing_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let events_path = dir.path().join("events.jsonl");
+    let pending = tests::make_test_pending(
+        events_path.clone(),
+        dir.path(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    let step = crate::query::step::finish_streaming(StreamingChunkState {
+        pending,
+        conversation: crate::conversation::address::ConversationAddress::MAIN,
+        request_id: "req_length".to_string(),
+        stream: Box::pin(tokio_stream::empty()),
+        accumulated_text: "partial output".to_string(),
+        accumulated_thinking: String::new(),
+        stop_reason: Some(crate::event::ModelStopReason::Length),
+        tool_calls: Vec::new(),
+        tool_arg_buffers: Vec::new(),
+        tool_call_completions: Vec::new(),
+        tool_stream_invalid: false,
+        terminal_stream_invalid: false,
+        stream_ended: false,
+        provider_request_id: None,
+        usage: None,
+        lead_events: Vec::new(),
+        handoff_detector: None,
+        thinking_start: None,
+        thinking_duration_ms: 0,
+    })
+    .await;
+
+    assert!(matches!(step, Ok(PendingStep::Failed(_))));
+    let events = EventStore::replay(&events_path).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::TurnInterrupted { ref reason, .. } if reason == "length"
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. })));
 }

@@ -143,6 +143,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             | EventPayload::MessageAssistant { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::Handoff { .. }
             | EventPayload::TurnCompleted { .. }
             | EventPayload::TurnCancelled { .. }

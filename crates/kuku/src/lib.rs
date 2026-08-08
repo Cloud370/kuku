@@ -27,8 +27,8 @@ pub use error::{Error, Result};
 pub use provider::types::ProviderFailureKind;
 pub use provider::{Provider, ProviderUsage};
 pub use query::{
-    query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent, ToolKind,
-    ToolSummary, UiEvent,
+    query, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,
+    ToolEvent, ToolKind, ToolSummary, UiEvent,
 };
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 

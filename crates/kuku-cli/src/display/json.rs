@@ -11,6 +11,16 @@ pub enum OutputLine {
     },
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
+    #[serde(rename = "model_recovery")]
+    ModelRecovery {
+        conversation: String,
+        turn: u64,
+        from_request_id: String,
+        to_request_id: String,
+        reason: String,
+        attempt: u8,
+        max_attempts: u8,
+    },
     #[serde(rename = "code_block")]
     CodeBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,6 +138,22 @@ impl OutputLine {
 
     pub fn text_delta(text: String) -> Self {
         OutputLine::TextDelta { text }
+    }
+
+    pub fn model_recovery(info: kuku::query::ModelRecoveryInfo) -> Self {
+        let reason = serde_json::to_value(&info.reason)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        OutputLine::ModelRecovery {
+            conversation: info.conversation.as_str().to_string(),
+            turn: info.turn,
+            from_request_id: info.from_request_id,
+            to_request_id: info.to_request_id,
+            reason,
+            attempt: info.attempt,
+            max_attempts: info.max_attempts,
+        }
     }
 
     pub fn code_block(language: Option<String>, content: String) -> Self {

@@ -35,6 +35,7 @@
 | `context.skills` | 某个 conversation turn 的 skill registry 快照和 bootstrap skill 列表。 |
 | `model.response` | 一次模型请求完成后的 Provider 响应。 |
 | `model.error` | 一次模型请求产生的 Provider 失败。 |
+| `model.recovery` | 模型响应达到输出上限后的有界重试；不完整响应和工具调用会被丢弃。 |
 | `tool.call` | 一次请求的 Tool 调用。 |
 | `permission.requested` | 某次 Tool 调用的持久待决权限状态。 |
 | `permission.allow` | Tool 授权允许决策。 |
@@ -74,6 +75,7 @@ conversation 作用域事件还会带上 `conversation`。turn 作用域事件�
 | `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
 | `model.response` | `turn`, `ts`, `request_id`, `text` |
 | `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
+| `model.recovery` | `conversation`, `turn`, `ts`, `from_request_id`, `to_request_id`, `reason`, `attempt`, `max_attempts`, `failed_max_output_tokens`, `retry_max_output_tokens`, `output_tokens_total`, `discarded_tool_calls`, `notice`, `prompt_path`, `prompt_hash` |
 | `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
 | `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
 | `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
@@ -84,6 +86,8 @@ conversation 作用域事件还会带上 `conversation`。turn 作用域事件�
 | `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
 
 `model.response`、`model.error`、`context.sources`、`handoff` 和 permission 事件通过全局 `turn` 归属到 `main` conversation。`tool.call` 和 `tool.result` 可以选择性包含 `conversation`；省略时表示属于 `main`。
+
+当 `model.response.stop_reason` 为 `length` 时，kuku 最多追加一个 `model.recovery` 事件，并在保持请求设置不变的情况下重试一次，同时附加不可变的 `runtime/recovery.md` 通知。不完整响应不会参与 replay，其中产生的工具调用也不会执行。如果重试不可用或再次达到上限，该 turn 会被中断。
 
 ## Rollback Scope Values
 

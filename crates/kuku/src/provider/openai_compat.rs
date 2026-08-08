@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -181,14 +182,6 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
     msg
 }
 
-fn normalize_stop_reason(reason: &str) -> String {
-    match reason {
-        "tool_calls" => "tool_use".to_string(),
-        "stop" => "end_turn".to_string(),
-        other => other.to_string(),
-    }
-}
-
 pub(crate) async fn stream(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
@@ -300,6 +293,7 @@ struct OpenAiCompatSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
     tool_call_indices: Vec<u64>,
+    invalid_tool_stream: bool,
     saw_done: bool,
 }
 
@@ -309,6 +303,7 @@ impl OpenAiCompatSseParser {
             chunks: Vec::new(),
             started: false,
             tool_call_indices: Vec::new(),
+            invalid_tool_stream: false,
             saw_done: false,
         }
     }
@@ -362,24 +357,21 @@ impl OpenAiCompatSseParser {
         }
 
         if let Some(usage) = data.get("usage").and_then(Value::as_object) {
-            let input_tokens_total = usage
-                .get("prompt_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let input_tokens_total = usage.get("prompt_tokens").and_then(Value::as_u64);
             let cache_read_input_tokens = usage
                 .get("prompt_tokens_details")
                 .and_then(|details| details.get("cached_tokens"))
                 .and_then(Value::as_u64)
-                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
-                .unwrap_or(0);
+                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
             self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: input_tokens_total.saturating_sub(cache_read_input_tokens),
-                output_tokens: usage
-                    .get("completion_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
+                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
+                    (Some(total), None) => Some(total),
+                    (None, _) => None,
+                },
+                output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
                 cache_read_input_tokens,
-                cache_creation_input_tokens: 0,
+                cache_creation_input_tokens: None,
             });
         }
 
@@ -415,7 +407,11 @@ impl OpenAiCompatSseParser {
             .and_then(Value::as_array)
         {
             for tc in tool_calls {
-                let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let Some(index) = tc.get("index").and_then(Value::as_u64) else {
+                    self.invalid_tool_stream = true;
+                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                    continue;
+                };
                 let function = tc.get("function");
 
                 if let Some(id) = tc.get("id").and_then(Value::as_str) {
@@ -450,14 +446,19 @@ impl OpenAiCompatSseParser {
 
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             for &idx in &self.tool_call_indices {
-                self.chunks
-                    .push(ProviderChunk::ContentBlockStop { index: idx });
+                self.chunks.push(ProviderChunk::ToolCallStop { index: idx });
             }
             self.tool_call_indices.clear();
 
-            self.chunks.push(ProviderChunk::StopReason {
-                reason: normalize_stop_reason(reason),
-            });
+            if let Some(reason) = ModelStopReason::from_wire(reason) {
+                self.chunks.push(ProviderChunk::StopReason {
+                    reason: if self.invalid_tool_stream {
+                        ModelStopReason::InvalidResponse
+                    } else {
+                        reason
+                    },
+                });
+            }
         }
 
         Ok(self.take_chunks())
@@ -512,10 +513,10 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 54,
-                output_tokens: 18,
-                cache_read_input_tokens: 34,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(54),
+                output_tokens: Some(18),
+                cache_read_input_tokens: Some(34),
+                cache_creation_input_tokens: None
             }
         )));
     }
@@ -530,12 +531,54 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 54,
-                output_tokens: 18,
-                cache_read_input_tokens: 34,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(54),
+                output_tokens: Some(18),
+                cache_read_input_tokens: Some(34),
+                cache_creation_input_tokens: None
             }
         )));
+    }
+
+    #[test]
+    fn tool_finish_reason_emits_typed_tool_completion() {
+        let mut parser = OpenAiCompatSseParser::new();
+        parser
+            .feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            )
+            .unwrap();
+
+        let chunks = parser
+            .feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            )
+            .unwrap();
+
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStop { index: 0 })));
+    }
+
+    #[test]
+    fn missing_or_malformed_tool_index_is_invalid() {
+        for index in ["null", "\"zero\""] {
+            let mut parser = OpenAiCompatSseParser::new();
+            parser.feed(&format!(
+                r#"data: {{"id":"chatcmpl_tool","choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{index},"id":"call_1","function":{{"name":"read_file","arguments":"{{}}"}}}}]}},"finish_reason":null}}]}}"#,
+            )).unwrap();
+            let chunks = parser.feed(
+                r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            ).unwrap();
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
+
+        let mut parser = OpenAiCompatSseParser::new();
+        let chunks = parser.feed(
+            r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
+        ).unwrap();
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. })));
     }
 
     #[test]

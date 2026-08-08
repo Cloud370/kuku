@@ -17,6 +17,10 @@ fn load_from_dir_uses_external_system_prompt() {
         catalog.blocks["tool-guidance"].text,
         builtin_prompt_catalog().blocks["tool-guidance"].text
     );
+    assert_eq!(
+        catalog.runtime["recovery"].text,
+        builtin_prompt_catalog().runtime["recovery"].text
+    );
 }
 
 #[test]
@@ -32,6 +36,10 @@ fn load_from_dir_all_embedded_when_dir_is_empty() {
     assert_eq!(
         catalog.blocks["tool-guidance"].text,
         builtin.blocks["tool-guidance"].text
+    );
+    assert_eq!(
+        catalog.runtime["recovery"].text,
+        builtin.runtime["recovery"].text
     );
 }
 

@@ -35,6 +35,7 @@ Lowercase and dot-separated.
 | `context.skills` | Skill registry snapshot and bootstrap-loaded skills for one conversation turn. |
 | `model.response` | Completed provider response for one model request. |
 | `model.error` | Provider failure for one model request. |
+| `model.recovery` | A bounded retry after a model response reached its output limit. The incomplete response and tool calls are discarded. |
 | `tool.call` | One requested tool call. |
 | `permission.requested` | Durable pending permission state for one tool call. |
 | `permission.allow` | Tool authorization allow decision. |
@@ -74,6 +75,7 @@ Conversation-scoped events also carry `conversation`. Turn-scoped events also ca
 | `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
 | `model.response` | `turn`, `ts`, `request_id`, `text` |
 | `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
+| `model.recovery` | `conversation`, `turn`, `ts`, `from_request_id`, `to_request_id`, `reason`, `attempt`, `max_attempts`, `failed_max_output_tokens`, `retry_max_output_tokens`, `output_tokens_total`, `discarded_tool_calls`, `notice`, `prompt_path`, `prompt_hash` |
 | `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
 | `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
 | `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
@@ -84,6 +86,8 @@ Conversation-scoped events also carry `conversation`. Turn-scoped events also ca
 | `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
 
 `model.response`, `model.error`, `context.sources`, `handoff`, and permission events belong to the `main` conversation through their global `turn`. `tool.call` and `tool.result` optionally include `conversation`; when absent, they belong to `main`.
+
+When `model.response.stop_reason` is `length`, kuku may append one `model.recovery` event and issue one retry with the same request settings plus the immutable `runtime/recovery.md` notice. The incomplete response is excluded from replay and no tool call emitted by it is executed. If the retry is unavailable or also reaches the limit, the turn is interrupted.
 
 ## Rollback Scope Values
 

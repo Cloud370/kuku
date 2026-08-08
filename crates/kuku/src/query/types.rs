@@ -145,6 +145,27 @@ pub enum ToolEvent {
         code: String,
         message: String,
     },
+    ModelRequest {
+        conversation: ConversationAddress,
+        turn: u64,
+        request_id: String,
+        request_ordinal: u64,
+    },
+    ModelRecovery {
+        info: ModelRecoveryInfo,
+    },
+}
+
+/// Identifies an automatic bounded retry for a model request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelRecoveryInfo {
+    pub conversation: ConversationAddress,
+    pub turn: u64,
+    pub from_request_id: String,
+    pub to_request_id: String,
+    pub reason: crate::event::ModelStopReason,
+    pub attempt: u8,
+    pub max_attempts: u8,
 }
 
 /// Host-facing runtime event stream.
@@ -186,6 +207,13 @@ pub enum UiEvent {
     ModelRequest {
         model: String,
         provider: String,
+        conversation: ConversationAddress,
+        turn: u64,
+        request_id: String,
+        request_ordinal: u64,
+    },
+    ModelRecovery {
+        info: ModelRecoveryInfo,
     },
     Log {
         record: LogRecord,
@@ -287,10 +315,10 @@ impl RunState {
 
 #[derive(Debug, Default)]
 pub(super) struct CumulativeUsage {
-    pub(super) input_tokens: u64,
-    pub(super) output_tokens: u64,
-    pub(super) cache_read_input_tokens: u64,
-    pub(super) cache_creation_input_tokens: u64,
+    pub(super) input_tokens: Option<u64>,
+    pub(super) output_tokens: Option<u64>,
+    pub(super) cache_read_input_tokens: Option<u64>,
+    pub(super) cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -344,6 +372,8 @@ pub(super) struct PendingRun {
     pub(super) tool_errors: u64,
     pub(super) thinking_duration_ms: u64,
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
+    pub(super) request_base: Option<super::request::OwnedRequestBase>,
+    pub(super) recovery_count: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -452,9 +482,13 @@ pub(super) struct StreamingChunkState {
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
-    pub(super) stop_reason: Option<String>,
+    pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
+    pub(super) tool_call_completions: Vec<u64>,
+    pub(super) tool_stream_invalid: bool,
+    pub(super) terminal_stream_invalid: bool,
+    pub(super) stream_ended: bool,
     pub(super) provider_request_id: Option<String>,
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
     pub(super) lead_events: Vec<UiEvent>,
@@ -691,6 +725,11 @@ impl Query {
                 ".tier() and .model() are mutually exclusive".to_string(),
             ));
         }
+        if self.max_output_tokens == Some(0) {
+            return Err(Error::InvalidArgument(
+                ".max_output_tokens() must be a positive integer".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -727,6 +766,18 @@ mod tests {
         let agent_json = serde_json::to_string(&agent).unwrap();
         let back: ToolKind = serde_json::from_str(&agent_json).unwrap();
         assert_eq!(back, agent);
+    }
+
+    #[test]
+    fn query_rejects_zero_max_output_tokens() {
+        let error = Query::new("test")
+            .max_output_tokens(0)
+            .validate()
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidArgument(message) if message.contains("max_output_tokens"))
+        );
     }
 
     #[test]

@@ -94,10 +94,31 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "code": code,
             "message": message,
         })),
-        UiEvent::ModelRequest { model, provider } => Some(json!({
+        UiEvent::ModelRequest {
+            model,
+            provider,
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+        } => Some(json!({
             "type": "model_request",
             "model": model,
             "provider": provider,
+            "conversation": conversation,
+            "turn": turn,
+            "request_id": request_id,
+            "request_ordinal": request_ordinal,
+        })),
+        UiEvent::ModelRecovery { info } => Some(json!({
+            "type": "model_recovery",
+            "conversation": info.conversation,
+            "turn": info.turn,
+            "from_request_id": info.from_request_id,
+            "to_request_id": info.to_request_id,
+            "reason": info.reason,
+            "attempt": info.attempt,
+            "max_attempts": info.max_attempts,
         })),
         UiEvent::Log { record } => Some(json!({
             "type": "log",
@@ -149,6 +170,20 @@ fn tool_event_to_wire(event: &crate::query::ToolEvent) -> serde_json::Value {
             json!({"permission": {"id": request.id, "tool_call_id": request.tool_call_id, "tool": request.tool, "risk": request.risk, "summary": request.summary, "candidate": request.candidate, "source": request.source}})
         }
         ToolEvent::Error { code, message } => json!({"error": {"code": code, "message": message}}),
+        ToolEvent::ModelRequest {
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+        } => json!({
+            "model_request": {
+                "conversation": conversation,
+                "turn": turn,
+                "request_id": request_id,
+                "request_ordinal": request_ordinal,
+            }
+        }),
+        ToolEvent::ModelRecovery { info } => json!({"model_recovery": info}),
     }
 }
 
@@ -328,6 +363,10 @@ mod tests {
         let event = UiEvent::ModelRequest {
             model: "claude-sonnet-4-6".to_string(),
             provider: "anthropic".to_string(),
+            conversation: crate::conversation::address::ConversationAddress::MAIN,
+            turn: 1,
+            request_id: "req_1".to_string(),
+            request_ordinal: 1,
         };
         let wire = to_wire(&event).unwrap();
         assert_eq!(wire["type"], "model_request");

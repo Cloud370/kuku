@@ -129,6 +129,18 @@ fn rebuild_history_internal(
         {
             continue;
         }
+        if matches!(
+            &event.payload,
+            EventPayload::ModelResponse {
+                stop_reason: Some(reason),
+                ..
+            } if !matches!(
+                reason,
+                crate::event::ModelStopReason::EndTurn | crate::event::ModelStopReason::ToolUse
+            )
+        ) {
+            continue;
+        }
         match &event.payload {
             EventPayload::MessageUser {
                 conversation: event_conversation,
@@ -147,17 +159,16 @@ fn rebuild_history_internal(
                 messages.push(CanonicalMessage::user_text(provider_text));
             }
             EventPayload::ModelResponse {
+                conversation: event_conversation,
                 turn,
                 request_id,
                 text,
                 thinking,
                 ..
-            } if conversation.is_main()
-                && unscoped_turn_belongs_to_conversation(
-                    *turn,
-                    conversation,
-                    &turn_conversations,
-                ) =>
+            } if event_conversation.as_ref().map_or_else(
+                || unscoped_turn_belongs_to_conversation(*turn, conversation, &turn_conversations),
+                |event_conversation| event_conversation == conversation.as_str(),
+            ) =>
             {
                 if current_group
                     .request_id
@@ -308,6 +319,7 @@ fn rebuild_history_internal(
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
@@ -377,6 +389,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ContextSources { turn, .. }
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
         | EventPayload::PermissionDeny { turn, .. }
@@ -475,10 +488,24 @@ fn event_belongs_to_history_conversation(
     conversation: &ConversationAddress,
 ) -> bool {
     match payload {
-        EventPayload::ModelResponse { .. }
-        | EventPayload::ModelError { .. }
-        | EventPayload::ContextSources { .. }
-        | EventPayload::Handoff { .. } => conversation.is_main(),
+        EventPayload::ModelResponse {
+            conversation: event_conversation,
+            ..
+        }
+        | EventPayload::ModelError {
+            conversation: event_conversation,
+            ..
+        } => event_conversation.as_ref().map_or_else(
+            || conversation.is_main(),
+            |value| value == conversation.as_str(),
+        ),
+        EventPayload::ContextSources { .. } | EventPayload::Handoff { .. } => {
+            conversation.is_main()
+        }
+        EventPayload::ModelRecovery {
+            conversation: event_conversation,
+            ..
+        } => event_conversation == conversation.as_str(),
         EventPayload::ToolCall {
             conversation: None, ..
         }
