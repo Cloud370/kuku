@@ -43,6 +43,7 @@ pub(super) fn optional_stop_reason_field(
 ) -> Option<ModelStopReason> {
     match object.get(key) {
         None => None,
+        Some(Value::String(reason)) if reason.is_empty() => None,
         Some(Value::String(reason)) => {
             ModelStopReason::from_wire(reason).or(Some(ModelStopReason::InvalidResponse))
         }

@@ -81,6 +81,28 @@ fn legacy_model_response_defaults_to_main_and_preserves_unknown_stop_reason() {
 }
 
 #[test]
+fn empty_stop_reason_is_treated_as_missing() {
+    let event: StoredEvent = serde_json::from_value(serde_json::json!({
+        "id": 1,
+        "kind": "model.response",
+        "turn": 7,
+        "ts": "t",
+        "request_id": "req_1",
+        "text": "partial",
+        "stop_reason": "",
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        event.payload,
+        EventPayload::ModelResponse {
+            stop_reason: None,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn handoff_round_trip() {
     let event = StoredEvent {
         id: 43,
