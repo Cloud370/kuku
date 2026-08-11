@@ -28,6 +28,16 @@ make release-linux
 
 日常开发使用默认的 glibc target。仅在发布打包时使用 musl 发布路径。
 
+## Linux 构建依赖
+
+在 Linux 上，构建通过 clang 使用 mold 链接器以加快链接速度（见 `.cargo/config.toml`）。构建前需要安装：
+
+```bash
+sudo apt install mold clang
+```
+
+该配置仅作用于 `x86_64-unknown-linux-gnu` target，macOS 和 Windows 贡献者不受影响。CI 通过 `rui314/setup-mold` 在 Linux runner 上安装 mold。
+
 ## Documentation workflow
 
 - 面向公开运行时行为的内容放在 `how-it-works/`。

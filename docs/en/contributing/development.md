@@ -28,6 +28,16 @@ make release-linux
 
 Use the default glibc target for normal development. Use the musl release path only for release packaging.
 
+## Linux build dependencies
+
+On Linux, builds link with mold through clang for faster linking (see `.cargo/config.toml`). Install both before building:
+
+```bash
+sudo apt install mold clang
+```
+
+The config only applies to the `x86_64-unknown-linux-gnu` target, so macOS and Windows contributors are unaffected. CI installs mold on Linux runners via `rui314/setup-mold`.
+
 ## Documentation workflow
 
 - Put public runtime behavior in `how-it-works/`.

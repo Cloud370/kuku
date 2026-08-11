@@ -41,6 +41,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
       - run: mkdir -p apps/web/dist && cp apps/web/index.html apps/web/dist/
@@ -55,5 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+        if: runner.os == 'Linux'
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p kuku -p kuku-cli -p kuku-server
