@@ -8,7 +8,8 @@ use kuku::context::observations::{ObservationBuilder, ToolObservation, ToolObser
 use kuku::event::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, CheckFact, ExecutionScope,
     FiniteMetricValue, InteractionChoiceFact, InteractionFact, InteractionId, MetricFact,
-    ObservationFact, RunId, SkillContextFact, TaskEvent, TaskId, WorkspaceChangesFact, WorkspaceId,
+    ObservationFact, RequestScope, RunId, SkillContextFact, TaskEvent, TaskId,
+    WorkspaceChangesFact, WorkspaceId,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -515,22 +516,29 @@ fn read_file_observation(
     for stored in store.read_all().map_err(|_| DomainError::LedgerCorrupt)? {
         match stored.payload {
             kuku::event::EventPayload::ToolCall {
-                request,
+                request_id,
                 tool_call_id: stored_id,
                 tool,
+                turn,
                 ..
-            } if request.execution == *execution && stored_id == tool_call_id => {
-                call = Some((request, tool));
+            } if stored_id == tool_call_id => {
+                let request_id =
+                    kuku::event::RequestId::derive_for_turn(execution, turn, &request_id)
+                        .map_err(|_| DomainError::LedgerCorrupt)?;
+                let scope = RequestScope {
+                    execution: execution.clone(),
+                    request_id,
+                };
+                call = Some((scope, tool));
             }
             kuku::event::EventPayload::ToolResult {
-                execution: stored_execution,
                 tool_call_id: stored_id,
                 status,
                 summary,
                 truncated,
                 structured,
                 ..
-            } if stored_execution == *execution && stored_id == tool_call_id => {
+            } if stored_id == tool_call_id => {
                 result = Some((status, summary, truncated, structured));
             }
             _ => {}
@@ -708,15 +716,14 @@ fn started_activity(
 ) -> ActivityFact {
     let (kind, detail, conversation_id, agent, tier, result_in_main) = match kind {
         kuku::ToolKind::Agent {
-            conversation_id,
-            agent,
-            tier,
+            conversation,
+            binding_id,
         } => (
             ActivityKindFact::DelegatedAgent,
             None,
-            Some(conversation_id),
-            Some(agent),
-            Some(tier),
+            None,
+            Some(conversation.as_str().to_string()),
+            Some(binding_id),
             Some(false),
         ),
         _ => (

@@ -131,6 +131,19 @@ impl Display {
         }
     }
 
+    pub fn model_recovery(&self, info: &kuku::query::ModelRecoveryInfo) -> String {
+        match self.mode {
+            RenderMode::Pretty => format!(
+                "recovery: output limit reached; discarded incomplete response; retrying {} as {} ({}/{})",
+                info.from_request_id, info.to_request_id, info.attempt, info.max_attempts
+            ),
+            RenderMode::Raw => format!(
+                "recovery output_limit discarded {} -> {} {}/{}",
+                info.from_request_id, info.to_request_id, info.attempt, info.max_attempts
+            ),
+        }
+    }
+
     pub fn tool_result(&self, status: &str, summary: &str, _tool_call_id: &str) -> String {
         match self.mode {
             RenderMode::Pretty => format!("{} {} \u{b7} {}", RESULT_PREFIX, status, summary),

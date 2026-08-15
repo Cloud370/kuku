@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -100,7 +99,7 @@ impl Query {
                     ));
                 }
                 context.workspace.verify_identity()?;
-                PathBuf::from(context.execution_scope.workspace_id.as_str())
+                std::path::PathBuf::from(context.execution_scope.workspace_id.as_str())
             }
             None => match self.workspace_path.take() {
                 Some(path) => path,
@@ -176,37 +175,6 @@ impl Query {
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| next_turn(&existing_events));
-        let execution_scope = match task_context.as_ref() {
-            Some(context) => context.execution_scope.clone(),
-            None => match self.execution_scope.clone() {
-                Some(scope) => scope,
-                None => crate::event::ExecutionScope {
-                    workspace_id: crate::event::WorkspaceId::try_new()?,
-                    task_id: crate::event::TaskId::try_new()?,
-                    run_id: crate::event::RunId::try_new()?,
-                    turn_id: crate::event::TurnId::try_new()?,
-                    conversation_id: crate::event::ConversationId::try_new()?,
-                    turn_index: turn,
-                },
-            },
-        };
-        self.execution_scope = Some(execution_scope.clone());
-        let restored_skill_snapshot =
-            restore_turn_snapshot(&existing_events, conversation.as_str(), turn);
-        let capability_skill_registry = if self.disable_skills || restored_skill_snapshot.is_some()
-        {
-            None
-        } else {
-            task_context
-                .as_ref()
-                .map(|context| {
-                    build_registry_snapshot_with_capability(
-                        context.workspace.as_ref(),
-                        &context.selected_skills,
-                    )
-                })
-                .transpose()?
-        };
         let mut store = match task_context.as_ref() {
             Some(context) => context.event_store.clone(),
             None => EventStore::open(&events_path)?,
@@ -260,15 +228,14 @@ impl Query {
 
         if resumed_permission.is_none() {
             append_interrupted_active_turn(
-                &store,
+                &events_path,
                 &existing_events,
                 &conversation,
                 "resume_before_new_turn",
             )?;
-            append_turn_started(&store, &execution_scope, &conversation, turn)?;
+            append_turn_started(&events_path, &conversation, turn)?;
             append_message_user_with_sender(
-                &store,
-                &execution_scope,
+                &events_path,
                 &conversation,
                 turn,
                 &self.prompt,
@@ -283,7 +250,7 @@ impl Query {
                 record.kind = "session.turn_start".to_string();
                 record.message = format!("starting turn {turn}");
                 record.session_id = Some(session_id.clone());
-                record.run_id = Some(execution_scope.run_id.to_string());
+                record.run_id = Some(session_id.clone());
                 record.workspace = Some(workspace.display().to_string());
                 record.turn = Some(turn);
                 let mut session_log_writer =
@@ -296,7 +263,9 @@ impl Query {
             previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
         let (skill_registry, previous_skill_registry) = if self.disable_skills {
             (None, None)
-        } else if let Some(snapshot) = restored_skill_snapshot {
+        } else if let Some(snapshot) =
+            restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
+        {
             bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
             (
                 Some(snapshot.registry),
@@ -305,9 +274,14 @@ impl Query {
                     .map(|snapshot| snapshot.registry.clone()),
             )
         } else {
-            let discovered = match capability_skill_registry {
-                Some(registry) => Ok(registry),
-                None => build_registry_snapshot(
+            let discovered = match task_context.as_ref() {
+                Some(context) if !context.selected_skills.is_empty() => {
+                    Ok(build_registry_snapshot_with_capability(
+                        context.workspace.as_ref(),
+                        &context.selected_skills,
+                    )?)
+                }
+                _ => build_registry_snapshot(
                     &workspace,
                     &config.discovery,
                     plugin_registry_opt.as_ref(),
@@ -315,25 +289,20 @@ impl Query {
             };
             match discovered {
                 Ok(registry) => {
-                    let bootstrap_loaded = if task_context.is_some() {
-                        let selected = task_context
-                            .as_ref()
-                            .map(|context| {
-                                context
-                                    .selected_skills
-                                    .iter()
-                                    .filter_map(|skill| skill.skill_id.rsplit(':').next())
-                                    .map(String::from)
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        bootstrap_skill = bootstrap_skill_from_registry(&registry, &selected);
-                        selected
+                    let (registry, bootstrap_loaded) = if let Some(context) = task_context.as_ref()
+                    {
+                        let selected = context
+                            .selected_skills
+                            .iter()
+                            .filter_map(|skill| skill.skill_id.rsplit(':').next())
+                            .map(String::from)
+                            .collect::<Vec<_>>();
+                        (registry, selected)
                     } else if let Some(snapshot) = previous_skill_snapshot.as_ref() {
                         bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
-                        snapshot.bootstrap_loaded.clone()
+                        (snapshot.registry.clone(), snapshot.bootstrap_loaded.clone())
                     } else {
-                        bootstrap_loaded_names(bootstrap_skill.as_ref())
+                        (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
                     };
                     store.append(EventPayload::ContextSkills {
                         conversation: conversation.as_str().to_string(),
@@ -424,23 +393,18 @@ impl Query {
             session_id: session_id.clone(),
             conversation: conversation.clone(),
             query: self,
-            event_store: store.clone(),
-            events_path: events_path.clone(),
+            events_path,
             kuku_home,
             workspace,
+            execution_scope: task_context
+                .as_ref()
+                .map(|context| context.execution_scope.clone()),
             workspace_capability: task_context
                 .as_ref()
                 .map(|context| context.workspace.clone()),
             policy_path,
             turn,
-            request_num: resumed_request_num(&existing_events, turn),
-            previous_request_id: resumed_previous_request_id(&existing_events, turn),
-            request_evidence_recorder: std::sync::Arc::new(match task_context.as_ref() {
-                Some(context) => {
-                    super::provider::LifecycleOnlyRecorder::from_store(context.event_store.clone())
-                }
-                None => super::provider::LifecycleOnlyRecorder::new(events_path.clone()),
-            }),
+            request_num: resumed_request_num(&existing_events, turn, &conversation),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
             queued_tool_calls: resumed_state.queued_tool_calls,
@@ -464,15 +428,23 @@ impl Query {
             plugin_registry,
             hook_context: Vec::new(),
             force_continue_count: 0,
-            model_request_count: resumed_model_request_count(&existing_events, turn),
-            tool_rounds: resumed_tool_rounds(&existing_events, turn),
+            model_request_count: resumed_model_request_count(&existing_events, turn, &conversation),
+            tool_rounds: resumed_tool_rounds(&existing_events, turn, &conversation),
             tool_calls: 0,
             tool_names: Vec::new(),
             tool_denied: 0,
             tool_errors: 0,
             thinking_duration_ms: 0,
             runtime_log_writer,
+            request_base: None,
+            recovery_count: 0,
+            task_request: None,
+            previous_task_request_id: None,
         };
+
+        if let Some(context) = task_context.as_ref() {
+            context.workspace.verify_identity()?;
+        }
 
         let state = if let Some(request) = resumed_state.first_request {
             RunState::WaitingForPermission(Box::new(PendingPermission { pending, request }))
@@ -481,7 +453,6 @@ impl Query {
         };
 
         Ok(Run {
-            execution_scope,
             session_id: session_id.clone(),
             state,
             slots: std::collections::HashMap::new(),
@@ -613,16 +584,9 @@ fn bootstrap_loaded_names(
 fn restore_bootstrap_skill(
     snapshot: &TurnSkillSnapshot,
 ) -> Option<crate::query::types::BootstrapSkill> {
-    bootstrap_skill_from_registry(&snapshot.registry, &snapshot.bootstrap_loaded)
-}
-
-fn bootstrap_skill_from_registry(
-    registry: &crate::skill::registry::SkillRegistry,
-    loaded: &[String],
-) -> Option<crate::query::types::BootstrapSkill> {
     let mut restored = Vec::new();
-    for skill_name in loaded {
-        let definition = registry.get(skill_name)?;
+    for skill_name in &snapshot.bootstrap_loaded {
+        let definition = snapshot.registry.get(skill_name)?;
         let skill_dir = definition.source_path.as_deref().unwrap_or("");
         restored.push(format!(
             "<!-- loaded: {skill_dir} -->\n\n{}",
@@ -634,8 +598,8 @@ fn bootstrap_skill_from_registry(
         return None;
     }
 
-    let name = if loaded.len() == 1 {
-        loaded.first().cloned()
+    let name = if snapshot.bootstrap_loaded.len() == 1 {
+        snapshot.bootstrap_loaded.first().cloned()
     } else {
         None
     };
@@ -675,7 +639,6 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
             resumed_permission_requests.push_back(pending.request.clone());
         }
         queued_tool_calls.push_back(QueuedToolCall {
-            request: pending.request_scope.clone(),
             tool_call: pending.tool_call.clone(),
             display_summary: pending.request.summary.clone(),
         });
@@ -710,69 +673,126 @@ fn reject_interrupted_open_tools(
     )))
 }
 
-fn resumed_model_request_count(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
-    events
-        .iter()
-        .filter(|event| {
-            matches!(
-                &event.payload,
-                EventPayload::ModelResponse { turn: event_turn, .. }
-                    | EventPayload::ModelError { turn: event_turn, .. }
-                    if *event_turn == turn
-            )
-        })
-        .count() as u64
+fn resumed_model_request_count(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
+    let mut request_ids = std::collections::BTreeSet::new();
+    for event in events {
+        match &event.payload {
+            EventPayload::ModelResponse {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            }
+            | EventPayload::ModelError {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation) =>
+            {
+                request_ids.insert(request_id.as_str());
+            }
+            EventPayload::ModelRecovery {
+                conversation: event_conversation,
+                turn: event_turn,
+                to_request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(Some(event_conversation), conversation) =>
+            {
+                request_ids.insert(to_request_id.as_str());
+            }
+            _ => {}
+        }
+    }
+    request_ids.len() as u64
 }
 
-fn resumed_tool_rounds(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
-    let mut request_ids = Vec::<&crate::event::RequestId>::new();
+fn resumed_tool_rounds(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
+    let mut request_ids = Vec::<&str>::new();
     for event in events {
         if let EventPayload::ToolCall {
             turn: event_turn,
-            request,
+            conversation: event_conversation,
+            request_id,
             ..
         } = &event.payload
         {
-            if *event_turn == turn && !request_ids.contains(&&request.request_id) {
-                request_ids.push(&request.request_id);
+            if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation)
+                && !request_ids.iter().any(|id| *id == request_id)
+            {
+                request_ids.push(request_id);
             }
         }
     }
     request_ids.len() as u64
 }
 
-fn resumed_request_num(events: &[crate::event::StoredEvent], turn: u64) -> u64 {
-    events
-        .iter()
-        .filter(|event| match &event.payload {
-            EventPayload::ModelResponse {
-                turn: event_turn, ..
-            }
-            | EventPayload::ModelError {
-                turn: event_turn, ..
-            } => *event_turn == turn,
-            _ => false,
-        })
-        .count() as u64
-}
-
-fn resumed_previous_request_id(
+fn resumed_request_num(
     events: &[crate::event::StoredEvent],
     turn: u64,
-) -> Option<crate::event::RequestId> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::TaskLedger(crate::event::TaskLedgerRecord::Activity(batch)) => {
-            batch.events().iter().rev().find_map(|event| match event {
-                crate::event::TaskEvent::RequestStarted(started)
-                    if started.scope.execution.turn_index == turn =>
-                {
-                    Some(started.scope.request_id.clone())
-                }
-                _ => None,
-            })
-        }
-        _ => None,
-    })
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelResponse {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            }
+            | EventPayload::ModelError {
+                conversation: event_conversation,
+                turn: event_turn,
+                request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(event_conversation.as_deref(), conversation) =>
+            {
+                Some(request_num_from_id(request_id))
+            }
+            EventPayload::ModelRecovery {
+                conversation: event_conversation,
+                turn: event_turn,
+                to_request_id: request_id,
+                ..
+            } if *event_turn == turn
+                && event_matches_conversation(Some(event_conversation), conversation) =>
+            {
+                Some(request_num_from_id(request_id))
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn event_matches_conversation(
+    event_conversation: Option<&str>,
+    conversation: &crate::conversation::address::ConversationAddress,
+) -> bool {
+    event_conversation.map_or_else(
+        || conversation.is_main(),
+        |value| value == conversation.as_str(),
+    )
+}
+
+fn request_num_from_id(request_id: &str) -> u64 {
+    request_id
+        .strip_prefix("req_")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 fn maybe_prune_logs_on_startup(
@@ -808,5 +828,7 @@ fn startup_prune_options(active_path: &std::path::Path) -> crate::log::PruneOpti
     crate::log::PruneOptions::default().with_active_path(active_path.to_path_buf())
 }
 
+#[cfg(test)]
+mod recovery_resume_tests;
 #[cfg(test)]
 mod startup_prune_tests;

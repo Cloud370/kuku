@@ -1,9 +1,11 @@
 use super::http_client;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -255,6 +257,8 @@ fn anthropic_headers(config: &ResolvedProvider) -> HeaderMap {
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
+    tool_blocks: BTreeSet<u64>,
+    invalid_tool_stream: bool,
     saw_terminal: bool,
 }
 
@@ -262,6 +266,8 @@ impl AnthropicSseParser {
     fn new() -> Self {
         Self {
             chunks: Vec::new(),
+            tool_blocks: BTreeSet::new(),
+            invalid_tool_stream: false,
             saw_terminal: false,
         }
     }
@@ -303,24 +309,26 @@ impl AnthropicSseParser {
                         .push(ProviderChunk::StreamStart { request_id: rid });
                     if let Some(usage) = msg.get("usage") {
                         self.chunks.push(ProviderChunk::StreamUsage {
-                            input_tokens: usage
-                                .get("input_tokens")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
-                            output_tokens: 0,
-                            cache_read_input_tokens: 0,
-                            cache_creation_input_tokens: 0,
+                            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+                            output_tokens: None,
+                            cache_read_input_tokens: None,
+                            cache_creation_input_tokens: None,
                         });
                     }
                 }
             }
             "content_block_start" => {
-                let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(block) = data.get("content_block") {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {}
                         Some("thinking") => {}
                         Some("tool_use") => {
+                            let Some(index) = data.get("index").and_then(Value::as_u64) else {
+                                self.invalid_tool_stream = true;
+                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                                return Ok(self.take_chunks());
+                            };
+                            self.tool_blocks.insert(index);
                             let id = block
                                 .get("id")
                                 .and_then(Value::as_str)
@@ -342,7 +350,6 @@ impl AnthropicSseParser {
                 }
             }
             "content_block_delta" => {
-                let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(delta) = data.get("delta") {
                     match delta.get("type").and_then(Value::as_str) {
                         Some("text_delta") => {
@@ -362,6 +369,11 @@ impl AnthropicSseParser {
                             self.chunks.push(ProviderChunk::ThinkingDelta { text });
                         }
                         Some("input_json_delta") => {
+                            let Some(index) = data.get("index").and_then(Value::as_u64) else {
+                                self.invalid_tool_stream = true;
+                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                                return Ok(self.take_chunks());
+                            };
                             let fragment = delta
                                 .get("partial_json")
                                 .and_then(Value::as_str)
@@ -375,35 +387,41 @@ impl AnthropicSseParser {
                 }
             }
             "content_block_stop" => {
-                let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
-                self.chunks.push(ProviderChunk::ContentBlockStop { index });
+                let Some(index) = data.get("index").and_then(Value::as_u64) else {
+                    self.invalid_tool_stream = true;
+                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                    return Ok(self.take_chunks());
+                };
+                if self.tool_blocks.contains(&index) {
+                    self.chunks.push(ProviderChunk::ToolCallStop { index });
+                } else {
+                    self.chunks.push(ProviderChunk::ContentBlockStop { index });
+                }
             }
             "message_delta" => {
                 if let Some(delta) = data.get("delta") {
                     if let Some(reason) = delta.get("stop_reason").and_then(Value::as_str) {
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
+                        if let Some(reason) = ModelStopReason::from_wire(reason) {
+                            self.chunks.push(ProviderChunk::StopReason {
+                                reason: if self.invalid_tool_stream {
+                                    ModelStopReason::InvalidResponse
+                                } else {
+                                    reason
+                                },
+                            });
+                        }
                     }
                 }
                 if let Some(usage) = data.get("usage") {
                     self.chunks.push(ProviderChunk::StreamUsage {
-                        input_tokens: usage
-                            .get("input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                        output_tokens: usage
-                            .get("output_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+                        output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
                         cache_read_input_tokens: usage
                             .get("cache_read_input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                         cache_creation_input_tokens: usage
                             .get("cache_creation_input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                            .and_then(Value::as_u64),
                     });
                 }
             }
@@ -557,5 +575,65 @@ mod tests {
         assert!(!chunks
             .iter()
             .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    }
+
+    #[test]
+    fn text_content_block_stop_remains_generic_content() {
+        let mut parser = AnthropicSseParser::new();
+        parser
+            .feed(
+                "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+            )
+            .unwrap();
+
+        let chunks = parser
+            .feed("event: content_block_stop\ndata: {\"index\":0}")
+            .unwrap();
+
+        assert!(matches!(
+            chunks.as_slice(),
+            [ProviderChunk::ContentBlockStop { index: 0 }]
+        ));
+    }
+
+    #[test]
+    fn tool_content_block_stop_is_typed_as_tool_completion() {
+        let mut parser = AnthropicSseParser::new();
+        parser
+            .feed(
+                "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
+            )
+            .unwrap();
+
+        let chunks = parser
+            .feed("event: content_block_stop\ndata: {\"index\":1}")
+            .unwrap();
+
+        assert!(matches!(
+            chunks.as_slice(),
+            [ProviderChunk::ToolCallStop { index: 1 }]
+        ));
+    }
+
+    #[test]
+    fn missing_or_malformed_tool_index_is_invalid() {
+        for index in ["null", "\"zero\""] {
+            let mut parser = AnthropicSseParser::new();
+            parser.feed(&format!(
+                "event: content_block_start\ndata: {{\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{{}}}}}}"
+            )).unwrap();
+            let chunks = parser
+                .feed("event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\"}}")
+                .unwrap();
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
+
+        let mut parser = AnthropicSseParser::new();
+        let chunks = parser.feed(
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
+        ).unwrap();
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. })));
     }
 }

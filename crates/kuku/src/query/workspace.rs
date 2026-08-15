@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,6 +134,10 @@ impl TaskQueryContext {
     pub fn with_selected_skills(mut self, selected_skills: Vec<SkillContextFact>) -> Self {
         self.selected_skills = selected_skills;
         self
+    }
+
+    pub(crate) fn execution_scope(&self) -> &ExecutionScope {
+        &self.execution_scope
     }
 
     pub(crate) fn for_nested(&self, execution_scope: ExecutionScope) -> Self {

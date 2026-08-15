@@ -1,9 +1,10 @@
 use std::sync::{Mutex, OnceLock};
 
 use super::{
-    build_query, conversation_for_tool_kind, nested_permission_parent_tool_id,
-    noninteractive_permission_choice, parse_slash_command, permission_ask_line,
-    permission_decision_line, slash_command_candidate, tool_call_line, tool_result_line,
+    build_query, conversation_for_tool_kind, nested_model_recovery_info,
+    nested_permission_parent_tool_id, noninteractive_permission_choice, parse_slash_command,
+    permission_ask_line, permission_decision_line, slash_command_candidate, tool_call_line,
+    tool_result_line,
 };
 use crate::cli_args::RunArgs;
 use kuku::{PermissionChoice, UiEvent};
@@ -81,6 +82,28 @@ fn nested_permission_event_exposes_parent_tool_id() {
 }
 
 #[test]
+fn nested_model_recovery_exposes_child_invalidation_boundary() {
+    let info = kuku::query::ModelRecoveryInfo {
+        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
+        turn: 2,
+        from_request_id: "req_1".to_string(),
+        to_request_id: "req_2".to_string(),
+        reason: kuku::event::ModelStopReason::Length,
+        attempt: 1,
+        max_attempts: 1,
+    };
+    let event = UiEvent::ToolOutput {
+        id: "toolu_agent_parent".to_string(),
+        event: kuku::query::ToolEvent::ModelRecovery { info },
+    };
+
+    let recovered = nested_model_recovery_info(&event).expect("nested recovery must be exposed");
+    assert_eq!(recovered.conversation.as_str(), "review");
+    assert_eq!(recovered.from_request_id, "req_1");
+    assert_eq!(recovered.to_request_id, "req_2");
+}
+
+#[test]
 fn stream_json_permission_lines_include_request_conversation() {
     let request = kuku::query::PermissionRequest {
         id: "perm_review".to_string(),
@@ -109,9 +132,8 @@ fn stream_json_permission_lines_include_request_conversation() {
 #[test]
 fn stream_json_agent_tool_call_includes_conversation() {
     let kind = kuku::query::ToolKind::Agent {
-        conversation_id: kuku::ConversationId::parse("con_aaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
-        agent: "binding_1".to_string(),
-        tier: "strong".to_string(),
+        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
+        binding_id: "binding_1".to_string(),
     };
 
     let line = tool_call_line(
@@ -124,9 +146,9 @@ fn stream_json_agent_tool_call_includes_conversation() {
 
     assert_eq!(
         conversation_for_tool_kind(&kind),
-        Some("con_aaaaaaaaaaaaaaaaaaaaaaaa".to_string())
+        Some("review".to_string())
     );
-    assert_eq!(value["conversation"], "con_aaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(value["conversation"], "review");
 }
 
 #[test]

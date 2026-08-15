@@ -3,12 +3,11 @@
 mod codec;
 mod context;
 mod identity;
-mod payload;
 mod request;
 mod review;
-mod stored;
 mod task;
 
+pub use codec::{ContextMessage, EventPayload, ModelStopReason, RollbackScope, StoredEvent};
 pub use context::{
     CapabilityFact, CapabilityKind, CapabilityState, ContextBreakdown, ConversationContextFact,
     DelegatedResultFact, ExactContentBlock, ExactMessage, ExactRequest, ExactRequestParameters,
@@ -22,13 +21,13 @@ pub use identity::{
     ConversationId, ExecutionIdError, ExecutionScope, InteractionId, RequestId, RequestScope,
     ReviewSubmissionId, RunId, TaskId, TurnId, WorkspaceId,
 };
-pub use payload::{ContextMessage, EventPayload, RollbackScope};
+
 pub use request::{
     CurrencyCode, DecimalCost, ProviderFact, ProviderFailureFact, ProviderFailureKind,
     ProviderUsage, RequestCause, RequestCompleted, RequestFailed, RequestStarted,
 };
 pub use review::{AnnotationSide, ReviewAnnotationFact, ReviewSubmissionRecorded};
-pub use stored::StoredEvent;
+
 pub use task::{
     ActivityFact, ActivityKindFact, ActivityStatusFact, ChangeEntryFact, ChangeKindFact,
     ChangesAvailabilityFact, CheckFact, CommandIntent, CommandReceipt, CommandResult, Cursor,

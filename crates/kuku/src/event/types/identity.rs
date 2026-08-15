@@ -164,3 +164,25 @@ pub struct RequestScope {
     pub execution: ExecutionScope,
     pub request_id: RequestId,
 }
+
+impl RequestId {
+    /// Derives a stable, run-scoped request identity for one provider request.
+    ///
+    /// Legacy event payloads identify requests with turn-local ordinals such as
+    /// `req_1`. Task ledger facts need an ID that remains unique across runs,
+    /// so the ordinal is bound to the durable execution identity and turn.
+    pub fn derive_for_turn(
+        execution: &ExecutionScope,
+        turn: u64,
+        request_ordinal: &str,
+    ) -> Result<Self, ExecutionIdError> {
+        let mut digest = Sha256::new();
+        digest.update(execution.run_id.as_str().as_bytes());
+        digest.update([0]);
+        digest.update(turn.to_string().as_bytes());
+        digest.update([0]);
+        digest.update(request_ordinal.as_bytes());
+        let suffix = format!("{:x}", digest.finalize());
+        Self::parse(format!("req_{}", &suffix[..24]))
+    }
+}

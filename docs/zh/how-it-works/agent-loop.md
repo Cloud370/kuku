@@ -10,6 +10,7 @@ turn.started
   -> model.response
       stop_reason = tool_use ?
         yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
+        length -> model.recovery -> model.response（最多一次）
         no  -> turn.completed
 ```
 
@@ -18,8 +19,13 @@ turn.started
 1. kuku 追加写入 `turn.started` 和 `message.user`。
 2. 它基于文件和已持久化事件重建模型上下文。
 3. 它将模型响应流式传给 Host，并在完成后追加写入 `model.response`。
-4. 如果响应结束这一轮，kuku 会为当前 conversation 追加写入 `turn.completed`。
-5. 如果响应请求 Tool，kuku 会追加写入 `tool.call`，用 `permission.requested` 记录待处理权限，记录权限决策，执行已允许的 Tool，追加写入 `tool.result`，然后为下一次模型调用重建上下文。
+4. 如果响应达到输出上限，kuku 会持久化 `model.recovery`，丢弃不完整响应及其工具调用，并在当前用户消息后附加短运行时通知后重试一次。
+5. 如果响应结束这一轮，kuku 会为当前 conversation 追加写入 `turn.completed`。
+6. 如果响应请求 Tool，kuku 会追加写入 `tool.call`，用 `permission.requested` 记录待处理权限，记录权限决策，执行已允许的 Tool，追加写入 `tool.result`，然后为下一次模型调用重建上下文。
+
+稳定的系统协议会告诉模型：不包含工具调用的响应就是当前 turn 的最终答案。
+如果仍需检查或执行操作，模型必须在当前响应中调用相应工具，而不能只承诺稍后处理。
+Host 仍根据 provider 的终止状态判定是否完成；`length`、无效响应和中断的流都不算成功完成。
 
 ## Tool execution
 

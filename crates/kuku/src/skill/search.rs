@@ -279,7 +279,7 @@ mod tests {
                     ts: "t2".to_string(),
                     conversation: Some("main".to_string()),
                     tool_call_id: "tool_beta".to_string(),
-                    request: crate::event::test_request_scope("req_1"),
+                    request_id: "req_1".to_string(),
                     index: 0,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "beta-review" }),
@@ -288,7 +288,6 @@ mod tests {
             StoredEvent {
                 id: 3,
                 payload: EventPayload::ToolResult {
-                    execution: crate::event::test_execution_scope(),
                     turn: 1,
                     ts: "t3".to_string(),
                     conversation: Some("main".to_string()),

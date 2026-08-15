@@ -193,6 +193,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
     tools
 }
 
+#[allow(dead_code)]
 pub fn builtin_catalog_entries(
     agent_enabled: bool,
     skills_enabled: bool,

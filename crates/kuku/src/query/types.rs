@@ -5,24 +5,21 @@ use std::sync::{Arc, Mutex};
 
 use futures_core::Stream;
 
-use crate::config::{Config, SecretString};
+use crate::config::Config;
 use crate::context::HostResponseContract;
 use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
-use crate::event::{ExecutionScope, RequestCause, RequestId, RequestScope, RunId, TaskId, TurnId};
 use crate::log::LogRecord;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::{ProviderFailure, ProviderToolCall, ResolvedProvider};
 use crate::tool::ToolDefinition;
 
-use super::workspace::{TaskQueryContext, WorkspaceQueryCapability};
+use super::workspace::TaskQueryContext;
 
 /// Builder for configuring and executing a model query.
 #[derive(Debug, Clone)]
 pub struct Query {
     pub(super) prompt: String,
-    pub(super) execution_scope: Option<ExecutionScope>,
-    pub(super) initial_request_cause: Option<RequestCause>,
     pub(super) session_id: Option<String>,
     pub(super) conversation: ConversationAddress,
     pub(super) provider: Option<crate::provider::Provider>,
@@ -31,10 +28,11 @@ pub struct Query {
     pub(super) config_path: Option<PathBuf>,
     pub(super) config_obj: Option<Config>,
     pub(super) base_url: Option<String>,
-    pub(super) api_key: Option<SecretString>,
+    pub(super) api_key: Option<String>,
     pub(super) max_output_tokens: Option<u32>,
     pub(super) temperature: Option<f32>,
     pub(super) workspace_path: Option<PathBuf>,
+    #[allow(dead_code)]
     pub(super) task_context: Option<TaskQueryContext>,
     pub(crate) captured_kuku_home: Option<PathBuf>,
     pub(super) prompts_dir: Option<PathBuf>,
@@ -61,7 +59,6 @@ pub(crate) struct BootstrapSkill {
 /// Final output from a completed query run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
-    pub(super) execution_scope: ExecutionScope,
     pub session_id: String,
     pub conversation: ConversationAddress,
     pub text: String,
@@ -105,9 +102,8 @@ pub enum PermissionChoice {
 pub enum ToolKind {
     Simple,
     Agent {
-        conversation_id: crate::event::ConversationId,
-        agent: String,
-        tier: String,
+        conversation: ConversationAddress,
+        binding_id: String,
     },
     Command {
         pid: Option<u32>,
@@ -153,6 +149,27 @@ pub enum ToolEvent {
         code: String,
         message: String,
     },
+    ModelRequest {
+        conversation: ConversationAddress,
+        turn: u64,
+        request_id: String,
+        request_ordinal: u64,
+    },
+    ModelRecovery {
+        info: ModelRecoveryInfo,
+    },
+}
+
+/// Identifies an automatic bounded retry for a model request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelRecoveryInfo {
+    pub conversation: ConversationAddress,
+    pub turn: u64,
+    pub from_request_id: String,
+    pub to_request_id: String,
+    pub reason: crate::event::ModelStopReason,
+    pub attempt: u8,
+    pub max_attempts: u8,
 }
 
 /// Host-facing runtime event stream.
@@ -160,7 +177,6 @@ pub enum ToolEvent {
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // Host events are consumed serially; boxing would break the public API.
 pub enum UiEvent {
     TextDelta {
         text: String,
@@ -195,6 +211,13 @@ pub enum UiEvent {
     ModelRequest {
         model: String,
         provider: String,
+        conversation: ConversationAddress,
+        turn: u64,
+        request_id: String,
+        request_ordinal: u64,
+    },
+    ModelRecovery {
+        info: ModelRecoveryInfo,
     },
     Log {
         record: LogRecord,
@@ -215,7 +238,6 @@ pub enum UiEvent {
 /// An active query execution that yields UI events via `next()`.
 #[derive(Debug)]
 pub struct Run {
-    pub(super) execution_scope: ExecutionScope,
     pub(super) session_id: String,
     pub(super) state: RunState,
     pub(crate) slots: std::collections::HashMap<String, ExecSlot>,
@@ -230,10 +252,9 @@ pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
     pub(crate) conversation: Option<ConversationAddress>,
     pub(crate) kind: ToolKind,
-    pub(crate) ordered_with_simple_tools: bool,
+    pub(crate) workspace_ordered: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
-    pub(crate) command_cancellation: Option<super::WorkspaceCommandCancellation>,
     pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
@@ -243,7 +264,7 @@ impl std::fmt::Debug for ExecSlot {
         f.debug_struct("ExecSlot")
             .field("tool_call_id", &self.tool_call_id)
             .field("kind", &self.kind)
-            .field("ordered_with_simple_tools", &self.ordered_with_simple_tools)
+            .field("workspace_ordered", &self.workspace_ordered)
             .field("label", &self.label)
             .finish_non_exhaustive()
     }
@@ -256,6 +277,7 @@ pub(crate) enum SlotEvent {
         status: String,
         summary: String,
         model_content: String,
+        truncated: bool,
         result: Option<serde_json::Value>,
     },
 }
@@ -267,7 +289,7 @@ pub(super) enum RunState {
     Streaming(Box<StreamingChunkState>),
     WaitingForPermission(Box<PendingPermission>),
     Cancelled {
-        event_store: crate::event::EventStore,
+        events_path: std::path::PathBuf,
         turn: u64,
     },
     Done(
@@ -279,12 +301,28 @@ pub(super) enum RunState {
     ),
 }
 
+impl RunState {
+    pub(super) fn record_tool_completion(&mut self, status: &str) {
+        if status != "error" {
+            return;
+        }
+        match self {
+            Self::Pending(pending) => pending.record_tool_completion_error(),
+            Self::Streaming(streaming) => streaming.pending.record_tool_completion_error(),
+            Self::WaitingForPermission(waiting) => {
+                waiting.pending.record_tool_completion_error();
+            }
+            Self::Cancelled { .. } | Self::Done(_) => {}
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CumulativeUsage {
-    pub(super) input_tokens: u64,
-    pub(super) output_tokens: u64,
-    pub(super) cache_read_input_tokens: u64,
-    pub(super) cache_creation_input_tokens: u64,
+    pub(super) input_tokens: Option<u64>,
+    pub(super) output_tokens: Option<u64>,
+    pub(super) cache_read_input_tokens: Option<u64>,
+    pub(super) cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -297,20 +335,24 @@ pub struct ToolSummary {
 }
 
 #[derive(Debug)]
+pub(super) struct TaskRequestLifecycle {
+    pub(super) scope: crate::event::RequestScope,
+    pub(super) started_at: std::time::Instant,
+}
+
+#[derive(Debug)]
 pub(super) struct PendingRun {
     pub(super) session_id: String,
     pub(super) conversation: ConversationAddress,
     pub(super) query: Query,
-    pub(super) event_store: crate::event::EventStore,
     pub(super) events_path: PathBuf,
     pub(super) kuku_home: PathBuf,
     pub(super) workspace: PathBuf,
-    pub(super) workspace_capability: Option<Arc<dyn WorkspaceQueryCapability>>,
+    pub(super) execution_scope: Option<crate::event::ExecutionScope>,
+    pub(super) workspace_capability: Option<Arc<dyn super::WorkspaceQueryCapability>>,
     pub(super) policy_path: PathBuf,
     pub(super) turn: u64,
     pub(super) request_num: u64,
-    pub(super) previous_request_id: Option<RequestId>,
-    pub(super) request_evidence_recorder: Arc<dyn super::provider::RequestEvidenceRecorder>,
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
@@ -342,6 +384,10 @@ pub(super) struct PendingRun {
     pub(super) tool_errors: u64,
     pub(super) thinking_duration_ms: u64,
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
+    pub(super) request_base: Option<super::request::OwnedRequestBase>,
+    pub(super) recovery_count: u8,
+    pub(super) task_request: Option<TaskRequestLifecycle>,
+    pub(super) previous_task_request_id: Option<crate::event::RequestId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -369,20 +415,6 @@ impl TurnPrefixFreeze {
 }
 
 impl PendingRun {
-    pub(super) fn execution_scope(&self) -> &ExecutionScope {
-        self.query
-            .execution_scope
-            .as_ref()
-            .expect("execution scope assigned at start")
-    }
-
-    pub(super) fn verify_workspace(&self) -> Result<()> {
-        if let Some(context) = self.query.task_context.as_ref() {
-            context.workspace.verify_identity()?;
-        }
-        Ok(())
-    }
-
     pub(super) fn flush_runtime_logs(&mut self) {
         let _ = self.runtime_log_writer.flush();
     }
@@ -413,6 +445,10 @@ impl PendingRun {
             .position(|request| request.tool_call_id == tool_call_id)
             .and_then(|index| self.resumed_permission_requests.remove(index))
     }
+
+    fn record_tool_completion_error(&mut self) {
+        self.tool_errors += 1;
+    }
 }
 
 #[derive(Debug)]
@@ -423,7 +459,6 @@ pub(super) struct ResolvedRuntime {
 
 #[derive(Debug)]
 pub(super) struct QueuedToolCall {
-    pub(super) request: RequestScope,
     pub(super) tool_call: ProviderToolCall,
     pub(super) display_summary: String,
 }
@@ -456,15 +491,18 @@ pub(super) enum PendingStep {
 pub(super) struct StreamingChunkState {
     pub(super) pending: PendingRun,
     pub(super) conversation: ConversationAddress,
-    pub(super) request: RequestScope,
-    pub(super) request_started: std::time::Instant,
+    pub(super) request_id: String,
     pub(super) stream:
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
-    pub(super) stop_reason: Option<String>,
+    pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
+    pub(super) tool_call_completions: Vec<u64>,
+    pub(super) tool_stream_invalid: bool,
+    pub(super) terminal_stream_invalid: bool,
+    pub(super) stream_ended: bool,
     pub(super) provider_request_id: Option<String>,
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
     pub(super) lead_events: Vec<UiEvent>,
@@ -484,14 +522,6 @@ impl RunOutput {
         turn: u64,
     ) -> Self {
         Self {
-            execution_scope: ExecutionScope {
-                workspace_id: crate::event::WorkspaceId::try_new().unwrap(),
-                task_id: TaskId::try_new().unwrap(),
-                run_id: RunId::try_new().unwrap(),
-                turn_id: TurnId::try_new().unwrap(),
-                conversation_id: crate::event::ConversationId::try_new().unwrap(),
-                turn_index: turn,
-            },
             session_id,
             conversation: ConversationAddress::MAIN,
             text,
@@ -510,28 +540,11 @@ impl RunOutput {
 impl std::fmt::Debug for StreamingChunkState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingChunkState")
-            .field("request", &self.request)
+            .field("request_id", &self.request_id)
             .field("accumulated_text", &self.accumulated_text)
             .field("stop_reason", &self.stop_reason)
             .field("tool_calls", &self.tool_calls)
             .finish_non_exhaustive()
-    }
-}
-
-impl RunOutput {
-    /// The Task identity for this execution.
-    pub fn task_id(&self) -> &TaskId {
-        &self.execution_scope.task_id
-    }
-
-    /// The Run identity for this execution.
-    pub fn run_id(&self) -> &RunId {
-        &self.execution_scope.run_id
-    }
-
-    /// The Turn identity for this execution.
-    pub fn turn_id(&self) -> &TurnId {
-        &self.execution_scope.turn_id
     }
 }
 
@@ -542,8 +555,6 @@ impl Query {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            execution_scope: None,
-            initial_request_cause: None,
             session_id: None,
             conversation: ConversationAddress::MAIN,
             provider: None,
@@ -623,24 +634,6 @@ impl Query {
         self
     }
 
-    /// Attach the stable product execution identity for this query.
-    pub fn execution_scope(mut self, execution_scope: ExecutionScope) -> Self {
-        self.execution_scope = Some(execution_scope);
-        self
-    }
-
-    /// Bind a Web Task query to its durable ledger, execution identity, and workspace capability.
-    pub fn task_context(mut self, context: TaskQueryContext) -> Self {
-        self.execution_scope = Some(context.execution_scope.clone());
-        self.task_context = Some(context);
-        self
-    }
-
-    pub(crate) fn request_cause(mut self, cause: RequestCause) -> Self {
-        self.initial_request_cause = Some(cause);
-        self
-    }
-
     /// Select the target conversation within the session.
     pub fn conversation(mut self, conversation: impl AsRef<str>) -> Self {
         self.conversation = ConversationAddress::parse(conversation.as_ref())
@@ -660,6 +653,12 @@ impl Query {
     ) -> Self {
         self.message_from = Some(from);
         self.via_tool_call_id = Some(via_tool_call_id.into());
+        self
+    }
+
+    /// Attach a task-scoped workspace execution context for nested capability queries.
+    pub fn task_context(mut self, context: TaskQueryContext) -> Self {
+        self.task_context = Some(context);
         self
     }
 
@@ -689,7 +688,7 @@ impl Query {
 
     /// Set the API key directly, bypassing config resolution.
     pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(SecretString::new(api_key));
+        self.api_key = Some(api_key.into());
         self
     }
 
@@ -747,11 +746,9 @@ impl Query {
                 ".tier() and .model() are mutually exclusive".to_string(),
             ));
         }
-        if self.task_context.is_some()
-            && (self.session_id.is_some() || self.workspace_path.is_some())
-        {
+        if self.max_output_tokens == Some(0) {
             return Err(Error::InvalidArgument(
-                "task context cannot be combined with session or workspace paths".to_string(),
+                ".max_output_tokens() must be a positive integer".to_string(),
             ));
         }
         Ok(())
@@ -765,11 +762,6 @@ impl Query {
     /// The session ID, if set.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
-    }
-
-    /// The product execution identity supplied by the caller, if any.
-    pub fn supplied_execution_scope(&self) -> Option<&ExecutionScope> {
-        self.execution_scope.as_ref()
     }
 }
 
@@ -789,17 +781,24 @@ mod tests {
             r#"{"command":{"pid":null}}"#
         );
         let agent = ToolKind::Agent {
-            conversation_id: crate::event::ConversationId::parse("con_aaaaaaaaaaaaaaaaaaaaaaaa")
-                .unwrap(),
-            agent: "sha256:abc".into(),
-            tier: "strong".into(),
+            conversation: ConversationAddress::parse("review/api").unwrap(),
+            binding_id: "sha256:abc".into(),
         };
         let agent_json = serde_json::to_string(&agent).unwrap();
-        assert!(agent_json.contains("\"conversation_id\":\"con_aaaaaaaaaaaaaaaaaaaaaaaa\""));
-        assert!(agent_json.contains("\"agent\":\"sha256:abc\""));
-        assert!(agent_json.contains("\"tier\":\"strong\""));
         let back: ToolKind = serde_json::from_str(&agent_json).unwrap();
         assert_eq!(back, agent);
+    }
+
+    #[test]
+    fn query_rejects_zero_max_output_tokens() {
+        let error = Query::new("test")
+            .max_output_tokens(0)
+            .validate()
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidArgument(message) if message.contains("max_output_tokens"))
+        );
     }
 
     #[test]
@@ -844,9 +843,6 @@ mod tests {
     #[test]
     fn run_output_new_has_zero_counters() {
         let output = RunOutput::new("sid".into(), "text".into(), None, 1);
-        assert!(output.task_id().as_str().starts_with("tsk_"));
-        assert!(output.run_id().as_str().starts_with("run_"));
-        assert!(output.turn_id().as_str().starts_with("trn_"));
         assert_eq!(output.model_request_count, 0);
         assert_eq!(output.thinking_duration_ms, 0);
         assert_eq!(output.tool_summary, ToolSummary::default());

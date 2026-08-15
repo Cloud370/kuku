@@ -220,6 +220,8 @@ Response shapes:
 
 Persisted `/events` data is the session ledger from `events.jsonl`.
 
+The ledger includes `model.recovery` when kuku retries a response that reached its output limit. The event identifies the failed and retry request ids, records the frozen recovery prompt provenance, and is also included by conversation filtering.
+
 - omit `conversation` for full ledger inspection
 - pass `conversation=review` to filter one thread
 - pass `after=<id>` for incremental reads

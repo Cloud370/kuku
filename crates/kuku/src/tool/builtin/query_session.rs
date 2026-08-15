@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::{json, Value};
 
 use crate::conversation::address::ConversationAddress;
@@ -31,11 +33,8 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     }
 }
 
-pub(crate) fn query_session_with_store(
-    args: &Value,
-    event_store: &EventStore,
-) -> ToolResultEnvelope {
-    let (content, count) = match run_query(args, event_store) {
+pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
+    let (content, count, truncated) = match run_query(args, events_path) {
         Ok(pair) => pair,
         Err(e) => {
             return ToolResultEnvelope::error(
@@ -48,29 +47,18 @@ pub(crate) fn query_session_with_store(
         status: "ok".to_string(),
         summary: format!("{count} events returned"),
         model_content: content,
-        truncated: false,
+        truncated,
         structured: None,
-    }
-}
-
-#[cfg(test)]
-fn query_session(args: &Value, events_path: &std::path::Path) -> ToolResultEnvelope {
-    match EventStore::open(events_path) {
-        Ok(store) => query_session_with_store(args, &store),
-        Err(error) => ToolResultEnvelope::error(
-            format!("query failed: {error}"),
-            format!("failed to read event store: {error}"),
-        ),
     }
 }
 
 fn run_query(
     args: &Value,
-    event_store: &EventStore,
-) -> Result<(String, usize), crate::error::Error> {
-    let all_events = event_store.read_all()?;
+    events_path: &Path,
+) -> Result<(String, usize, bool), crate::error::Error> {
+    let all_events = EventStore::replay(events_path)?;
     if all_events.is_empty() {
-        return Ok(("[]".to_string(), 0));
+        return Ok(("[]".to_string(), 0, false));
     }
 
     let skip_rolled_back = args
@@ -165,11 +153,13 @@ fn run_query(
 
     let mut output = String::from("[\n");
     let mut total_chars = 2;
+    let mut truncated = false;
     for (i, event) in matched.iter().enumerate() {
         let entry = format_event(event);
         let entry_chars = entry.chars().count();
         if total_chars + entry_chars + 4 > MAX_RESULT_CHARS && i > 0 {
             output.push_str("\n... (truncated, total output cap reached)");
+            truncated = true;
             break;
         }
         if i > 0 {
@@ -179,7 +169,7 @@ fn run_query(
         total_chars += entry_chars + 2;
     }
     output.push_str("\n]");
-    Ok((output, matched.len()))
+    Ok((output, matched.len(), truncated))
 }
 
 fn queryable_filtered_events(
@@ -343,6 +333,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelResponse { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::ToolCall { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
@@ -361,8 +352,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ConversationBound { .. }
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::Unknown(_)
-        | EventPayload::TaskLedger(_) => None,
+        | EventPayload::TaskLedger(_)
+        | EventPayload::Unknown(_) => None,
     }
 }
 
@@ -372,6 +363,7 @@ fn unscoped_main_event(payload: &EventPayload) -> bool {
         EventPayload::SessionCreated { .. }
             | EventPayload::ModelResponse { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::ToolCall {
                 conversation: None,
                 ..
@@ -424,6 +416,7 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollback { conversation, .. }
         | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
+        EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
         _ => None,
     }
 }

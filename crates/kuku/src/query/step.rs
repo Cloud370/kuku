@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::event::EventPayload;
+use crate::event::{EventPayload, EventStore, ModelStopReason};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::permission::{
     decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
@@ -7,12 +7,14 @@ use crate::permission::{
 
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
-    append_turn_completed, display_summary, gate_choice, gate_source_name, is_inline_skill_tool,
-    now_timestamp, permission_candidate, permission_rule, resolved_tool_available,
+    append_turn_completed, append_turn_interrupted, display_summary, gate_choice, gate_source_name,
+    is_inline_skill_tool, now_timestamp, permission_candidate, permission_rule,
+    resolved_tool_available,
 };
 use super::run::find_tool_definition;
 use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
+use super::tool_response::validate_tool_calls;
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -31,8 +33,8 @@ fn return_blocked_tool(
     reason: &str,
 ) -> Result<PendingStep> {
     let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-    pending.event_store.append(EventPayload::ToolResult {
-        execution: pending.execution_scope().clone(),
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
         conversation: None,
@@ -76,8 +78,8 @@ fn return_tool_result(
     status: &str,
     summary: &str,
 ) -> Result<PendingStep> {
-    pending.event_store.append(EventPayload::ToolResult {
-        execution: pending.execution_scope().clone(),
+    let mut store = EventStore::open(&pending.events_path)?;
+    store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
         conversation: None,
@@ -121,7 +123,7 @@ async fn execute_inline_tool(
     queued: &QueuedToolCall,
     kind: super::types::ToolKind,
 ) -> Result<PendingStep> {
-    let result = execute_tool_call(&mut pending, &queued.request, &queued.tool_call).await?;
+    let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
 
     if let Some(ref plugin_reg) = pending.plugin_registry {
         let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ToolPostExecute);
@@ -193,75 +195,198 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     let StreamingChunkState {
         mut pending,
         conversation,
-        request,
-        request_started,
+        request_id,
         accumulated_text,
         accumulated_thinking,
         stop_reason,
         tool_calls,
+        tool_arg_buffers,
+        tool_call_completions,
+        tool_stream_invalid,
+        terminal_stream_invalid,
         provider_request_id,
         usage,
         handoff_detector,
         thinking_duration_ms,
         ..
     } = state;
-    let request_id = request.request_id.as_str().to_string();
-
-    pending
-        .request_evidence_recorder
-        .record_completed(super::provider::request::completed(
-            request.clone(),
-            request_started,
-            provider_request_id,
-            usage.as_ref(),
-        ))?;
-
-    if let Some(ref u) = usage {
-        pending.cumulative.input_tokens += u.input_tokens.unwrap_or(0);
-        pending.cumulative.output_tokens += u.output_tokens.unwrap_or(0);
-        pending.cumulative.cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
-        pending.cumulative.cache_creation_input_tokens +=
-            u.cache_creation_input_tokens.unwrap_or(0);
-        persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
-    }
 
     pending.thinking_duration_ms += thinking_duration_ms;
     pending.model_request_count += 1;
 
-    let has_tool_calls = !tool_calls.is_empty();
-    if has_tool_calls {
-        pending.tool_rounds += 1;
-    }
-    let final_stop_reason = stop_reason.unwrap_or_else(|| {
-        if has_tool_calls {
-            "tool_use".to_string()
-        } else {
-            "end_turn".to_string()
-        }
+    let has_streamed_tool_calls = !tool_calls.is_empty();
+    let discarded_tool_calls = tool_calls.len() as u64;
+    let has_streamed_tool_artifacts = has_streamed_tool_calls
+        || !tool_arg_buffers.is_empty()
+        || !tool_call_completions.is_empty()
+        || tool_stream_invalid;
+    let validated_tool_calls = has_streamed_tool_artifacts.then(|| {
+        validate_tool_calls(
+            tool_calls,
+            tool_arg_buffers,
+            tool_call_completions,
+            tool_stream_invalid,
+        )
     });
-
+    let final_stop_reason = if terminal_stream_invalid {
+        ModelStopReason::InvalidResponse
+    } else {
+        match (stop_reason, has_streamed_tool_artifacts) {
+            (None, true)
+                if validated_tool_calls
+                    .as_ref()
+                    .is_some_and(|result| result.is_ok()) =>
+            {
+                ModelStopReason::ToolUse
+            }
+            (None, true) => ModelStopReason::InvalidResponse,
+            (None, false) => ModelStopReason::EndTurn,
+            (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
+            (Some(ModelStopReason::ToolUse), false) => ModelStopReason::InvalidResponse,
+            (Some(reason), _) => reason,
+        }
+    };
+    let is_success = matches!(
+        final_stop_reason,
+        ModelStopReason::EndTurn | ModelStopReason::ToolUse
+    );
     {
-        pending.event_store.append(EventPayload::ModelResponse {
-            request: request.clone(),
+        let mut store = EventStore::open(&pending.events_path)?;
+        store.append(EventPayload::ModelResponse {
+            conversation: Some(pending.conversation.as_str().to_string()),
             turn: pending.turn,
             ts: now_timestamp()?,
+            request_id: request_id.clone(),
             text: accumulated_text.clone(),
             thinking: if accumulated_thinking.is_empty() {
                 None
             } else {
                 Some(accumulated_thinking.clone())
             },
-            input_tokens_total: usage.as_ref().and_then(|u| {
-                let input = u.input_tokens.unwrap_or(0);
-                let cache_read = u.cache_read_input_tokens.unwrap_or(0);
-                let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
-                let total = input + cache_read + cache_creation;
-                u32::try_from(total).ok().filter(|value| *value > 0)
-            }),
+            stop_reason: Some(final_stop_reason.clone()),
+            input_tokens_total: usage.as_ref().and_then(input_tokens_total),
+            output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
         })?;
+    }
+
+    if let Some(ref u) = usage {
+        let accumulation = (|| -> Result<()> {
+            add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
+            add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
+            add_usage_total(
+                &mut pending.cumulative.cache_read_input_tokens,
+                u.cache_read_input_tokens,
+            )?;
+            add_usage_total(
+                &mut pending.cumulative.cache_creation_input_tokens,
+                u.cache_creation_input_tokens,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = accumulation {
+            let _ = super::provider::record_task_request_failed(
+                &mut pending,
+                provider_request_id.clone(),
+                None,
+                crate::provider::types::ProviderFailureKind::Internal,
+                "model usage overflow",
+            );
+            append_turn_interrupted(
+                &pending.events_path,
+                &conversation,
+                pending.turn,
+                "usage_overflow",
+            )?;
+            pending.flush_runtime_logs();
+            return Ok(PendingStep::Failed(error));
+        }
+        persist_runtime_model_usage_log(&mut pending, &request_id, u)?;
+    }
+
+    if matches!(final_stop_reason, ModelStopReason::Length) {
+        super::provider::record_task_request_failed(
+            &mut pending,
+            provider_request_id.clone(),
+            usage.as_ref(),
+            crate::provider::types::ProviderFailureKind::Unknown,
+            "model output limit reached",
+        )?;
+        return super::recovery::schedule(
+            pending,
+            request_id,
+            discarded_tool_calls,
+            usage.as_ref(),
+        )
+        .await;
+    }
+
+    if !is_success {
+        super::provider::record_task_request_failed(
+            &mut pending,
+            provider_request_id.clone(),
+            usage.as_ref(),
+            crate::provider::types::ProviderFailureKind::InvalidRequest,
+            &format!(
+                "model response ended with terminal state {}",
+                final_stop_reason.wire_value()
+            ),
+        )?;
+        append_turn_interrupted(
+            &pending.events_path,
+            &conversation,
+            pending.turn,
+            final_stop_reason.wire_value(),
+        )?;
+        pending.flush_runtime_logs();
+        return Ok(PendingStep::Failed(crate::error::Error::Provider {
+            kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+            message: format!(
+                "model response ended with terminal state {}",
+                final_stop_reason.wire_value()
+            ),
+            provider: None,
+            model: None,
+        }));
+    }
+
+    super::provider::record_task_request_completed(
+        &mut pending,
+        provider_request_id.clone(),
+        usage.as_ref(),
+    )?;
+
+    let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
+        match validated_tool_calls {
+            Some(Ok(tool_calls)) => tool_calls,
+            Some(Err(_)) | None => {
+                append_turn_interrupted(
+                    &pending.events_path,
+                    &conversation,
+                    pending.turn,
+                    ModelStopReason::InvalidResponse.wire_value(),
+                )?;
+                pending.flush_runtime_logs();
+                return Ok(PendingStep::Failed(crate::error::Error::Provider {
+                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+                    message: "model response ended with terminal state invalid_response"
+                        .to_string(),
+                    provider: None,
+                    model: None,
+                }));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let has_tool_calls = !tool_calls.is_empty();
+    if has_tool_calls {
+        pending.tool_rounds += 1;
+    }
+
+    {
+        let mut store = EventStore::open(&pending.events_path)?;
         if !pending.conversation.is_main() && !accumulated_text.is_empty() {
-            pending.event_store.append(EventPayload::MessageAssistant {
-                execution: pending.execution_scope().clone(),
+            store.append(EventPayload::MessageAssistant {
                 ts: now_timestamp()?,
                 conversation: pending.conversation.as_str().to_string(),
                 turn: pending.turn,
@@ -274,9 +399,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
             if let Some(summary) = detector.finish() {
                 let trimmed = summary.trim().to_string();
                 let final_summary = if trimmed.is_empty() {
-                    pending
-                        .event_store
-                        .read_all()?
+                    EventStore::replay(&pending.events_path)?
                         .iter()
                         .rev()
                         .find_map(|e| match &e.payload {
@@ -291,8 +414,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                 } else {
                     trimmed
                 };
-                pending.event_store.append(EventPayload::Handoff {
-                    execution: pending.execution_scope().clone(),
+                store.append(EventPayload::Handoff {
                     turn: pending.turn,
                     ts: now_timestamp()?,
                     request_id: request_id.clone(),
@@ -344,6 +466,7 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
                         pending.pending_events.push_back(UiEvent::TextDelta {
                             text: String::new(),
                         });
+                        drop(store);
                         return super::provider::call_provider_step(pending).await;
                     }
                 }
@@ -351,26 +474,17 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         }
 
         if !has_tool_calls {
-            append_turn_completed(
-                &pending.event_store,
-                pending.execution_scope(),
-                &conversation,
-                pending.turn,
-            )?;
+            drop(store);
+            append_turn_completed(&pending.events_path, &conversation, pending.turn)?;
             pending.flush_runtime_logs();
             let total_usage = Some(crate::provider::types::ProviderUsage {
-                input_tokens: Some(pending.cumulative.input_tokens),
-                output_tokens: Some(pending.cumulative.output_tokens),
-                cache_read_input_tokens: Some(pending.cumulative.cache_read_input_tokens),
-                cache_creation_input_tokens: Some(pending.cumulative.cache_creation_input_tokens),
+                input_tokens: pending.cumulative.input_tokens,
+                output_tokens: pending.cumulative.output_tokens,
+                cache_read_input_tokens: pending.cumulative.cache_read_input_tokens,
+                cache_creation_input_tokens: pending.cumulative.cache_creation_input_tokens,
             });
             return Ok(PendingStep::Done(
                 super::types::RunOutput {
-                    execution_scope: pending
-                        .query
-                        .execution_scope
-                        .clone()
-                        .expect("execution scope assigned at start"),
                     session_id: pending.session_id.clone(),
                     conversation: conversation.clone(),
                     text: accumulated_text,
@@ -395,12 +509,12 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
         }
 
         for tool_call in &tool_calls {
-            pending.event_store.append(EventPayload::ToolCall {
-                request: request.clone(),
+            store.append(EventPayload::ToolCall {
                 turn: pending.turn,
                 ts: now_timestamp()?,
                 conversation: Some(pending.conversation.as_str().to_string()),
                 tool_call_id: tool_call.id.clone(),
+                request_id: request_id.clone(),
                 index: tool_call.index,
                 tool: tool_call.name.clone(),
                 args: tool_call.args.clone(),
@@ -411,7 +525,6 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     for tool_call in tool_calls {
         let display = display_summary(&tool_call.name, &tool_call.args, None);
         pending.queued_tool_calls.push_back(QueuedToolCall {
-            request: request.clone(),
             tool_call,
             display_summary: display,
         });
@@ -429,31 +542,57 @@ fn persist_runtime_model_usage_log(
     request_id: &str,
     usage: &crate::provider::types::ProviderUsage,
 ) -> Result<()> {
-    let input_tokens = usage.input_tokens.unwrap_or(0);
-    let output_tokens = usage.output_tokens.unwrap_or(0);
-    let cache_read_input_tokens = usage.cache_read_input_tokens.unwrap_or(0);
-    let cache_creation_input_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
-    let input_tokens_total = input_tokens + cache_read_input_tokens + cache_creation_input_tokens;
-    let cache_hit_rate = (input_tokens_total > 0)
-        .then(|| cache_read_input_tokens as f64 / input_tokens_total as f64);
+    let input_tokens_total = input_tokens_total(usage);
+    let cache_hit_rate = match (input_tokens_total, usage.cache_read_input_tokens) {
+        (Some(total), Some(cache_read)) if total > 0 => Some(cache_read as f64 / total as f64),
+        _ => None,
+    };
 
     let mut record = LogRecord::new(now_timestamp()?, LogLevel::Info, LogScope::Runtime);
     record.kind = "runtime.model_usage".to_string();
     record.message = format!("model request {request_id} usage");
     record.session_id = Some(pending.session_id.clone());
     record.workspace = Some(pending.workspace.display().to_string());
-    record.run_id = Some(pending.execution_scope().run_id.to_string());
+    record.run_id = Some(pending.session_id.clone());
     record.request_id = Some(request_id.to_string());
     record.turn = Some(pending.turn);
     record.data = Some(serde_json::json!({
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_input_tokens": cache_read_input_tokens,
-        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
         "input_tokens_total": input_tokens_total,
         "cache_hit_rate": cache_hit_rate,
     }));
     let _ = pending.runtime_log_writer.push(record);
+    Ok(())
+}
+
+fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
+    let mut total: u64 = 0;
+    let mut seen = false;
+    for value in [
+        usage.input_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        total = total.checked_add(value)?;
+        seen = true;
+    }
+    seen.then_some(total)
+}
+
+fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    *total =
+        Some(total.unwrap_or(0).checked_add(value).ok_or_else(|| {
+            crate::error::Error::InvalidEventStream("model usage overflow".into())
+        })?);
     Ok(())
 }
 
@@ -462,7 +601,6 @@ pub(super) async fn advance_pending(
     slot_event_tx: tokio::sync::mpsc::Sender<(String, super::types::SlotEvent)>,
     active_slot_count: usize,
 ) -> Result<PendingStep> {
-    pending.verify_workspace()?;
     let is_cancelled = {
         let notified = pending.cancel_token.notified();
         tokio::pin!(notified);
@@ -470,8 +608,7 @@ pub(super) async fn advance_pending(
     };
     if is_cancelled {
         append_turn_cancelled(
-            &pending.event_store,
-            pending.execution_scope(),
+            &pending.events_path,
             &pending.conversation,
             pending.turn,
             "user_cancelled",
@@ -479,11 +616,6 @@ pub(super) async fn advance_pending(
         pending.flush_runtime_logs();
         return Ok(PendingStep::Done(
             super::types::RunOutput {
-                execution_scope: pending
-                    .query
-                    .execution_scope
-                    .clone()
-                    .expect("execution scope assigned at start"),
                 session_id: pending.session_id.clone(),
                 conversation: pending.conversation.clone(),
                 text: String::new(),
@@ -548,14 +680,12 @@ pub(super) async fn advance_pending(
 
             let dispatch = match crate::agent::runtime::prepare_dispatch(
                 pending.agent_registry.as_ref(),
-                &pending.event_store.read_all()?,
+                &EventStore::replay(&pending.events_path)?,
                 &pending.conversation,
                 target,
                 prompt,
                 tier,
                 &id,
-                &queued.request.execution,
-                &queued.request.request_id,
             ) {
                 Ok(dispatch) => dispatch,
                 Err(error) => {
@@ -686,7 +816,7 @@ pub(super) async fn advance_pending(
                 &queued.tool_call.args,
             );
             let policy = load_project_policy(&pending.policy_path)?;
-            let prior_events = pending.event_store.read_all()?;
+            let prior_events = EventStore::replay(&pending.events_path)?;
             let session_grants = recover_session_grants(&prior_events);
             let decision = decide_tool_call(
                 &queued.tool_call.name,
@@ -711,8 +841,7 @@ pub(super) async fn advance_pending(
                         source: gate_source_name(decision.source).to_string(),
                     };
                     append_permission_request(
-                        &pending.event_store,
-                        pending.execution_scope(),
+                        &pending.events_path,
                         &pending.conversation,
                         pending.turn,
                         &request,
@@ -727,8 +856,7 @@ pub(super) async fn advance_pending(
                     if !matches!(decision.source, GateSource::TrustPosture) {
                         let choice = gate_choice(&decision.source);
                         append_permission_decision(
-                            &pending.event_store,
-                            pending.execution_scope(),
+                            &pending.events_path,
                             pending.turn,
                             &id,
                             choice,
@@ -780,15 +908,13 @@ pub(super) async fn advance_pending(
                         args: queued.tool_call.args.clone(),
                         summary: summary.clone(),
                         workspace: pending.workspace.clone(),
-                        workspace_capability: pending.workspace_capability.clone(),
                         kuku_home: pending.kuku_home.clone(),
                         prior_events: prior_events.clone(),
                         event_tx: slot_event_tx,
                         config: pending.config.clone(),
                         catalog: pending.catalog.clone(),
-                        event_store: pending.event_store.clone(),
-                        parent_request: queued.request.clone(),
-                        request_evidence_recorder: pending.request_evidence_recorder.clone(),
+                        events_path: pending.events_path.clone(),
+                        workspace_capability: pending.workspace_capability.clone(),
                     });
                     pending.record_tool_call(&queued.tool_call.name);
                     return Ok(PendingStep::Pending {
@@ -804,8 +930,7 @@ pub(super) async fn advance_pending(
                 }
                 GateDecisionKind::Deny => {
                     append_permission_request(
-                        &pending.event_store,
-                        pending.execution_scope(),
+                        &pending.events_path,
                         &pending.conversation,
                         pending.turn,
                         &PermissionRequest {
@@ -821,8 +946,7 @@ pub(super) async fn advance_pending(
                         },
                     )?;
                     append_permission_decision(
-                        &pending.event_store,
-                        pending.execution_scope(),
+                        &pending.events_path,
                         pending.turn,
                         &id,
                         PermissionChoice::Deny,

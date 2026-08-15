@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Agent loop: recover once from model output-limit responses with an auditable `model.recovery` event and frozen prompt notice
 - Release pipeline: CI builds for Linux x86_64, macOS aarch64, Windows x86_64
 - Install scripts for Linux/macOS (`install.sh`) and Windows (`install.ps1`)
 - Config: `[update]` section with source, channel, and multi-source support

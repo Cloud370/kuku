@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
         load_and_patch_config, load_config, Config, ProviderConfig, ProviderFormat,
-        ResolvedThinking, SecretString, StoredCredential, ThinkLevel, TierConfig,
+        ResolvedThinking, StoredCredential, ThinkLevel, TierConfig,
     };
 }
 

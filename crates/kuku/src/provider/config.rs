@@ -1,7 +1,7 @@
-use crate::config::{Config, ProviderConfig as CfgProvider, SecretString, ThinkLevel, TierConfig};
+use crate::config::{Config, ProviderConfig as CfgProvider, ThinkLevel, TierConfig};
 use crate::error::{Error, Result};
 
-use super::types::{Provider, ProviderKind, ResolvedProvider};
+use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ResolveConfigInput {
@@ -9,7 +9,7 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) model: Option<String>,
     pub(crate) tier: Option<String>,
     pub(crate) base_url: Option<String>,
-    pub(crate) api_key: Option<SecretString>,
+    pub(crate) api_key: Option<String>,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) config: Option<Config>,
 }
@@ -68,10 +68,10 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
 
     let think_level = tier_config.map(|tc| tc.think).unwrap_or(ThinkLevel::Medium);
 
-    let api_key = if let Some(ref key) = input.api_key {
+    let api_key: String = if let Some(ref key) = input.api_key {
         key.clone()
     } else if let Some(pc) = provider_cfg {
-        pc.credential.resolve()?
+        pc.credential.resolve()?.expose().to_string()
     } else {
         return Err(Error::MissingProviderConfig(format!(
             "no api_key for provider '{provider_name}'; set builder .api_key() or configure [provider.{provider_name}]"
@@ -119,7 +119,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         kind,
         model,
         base_url,
-        api_key,
+        api_key: SecretString::new(api_key),
         max_context_tokens: context_window,
         max_output_tokens,
         think_level,

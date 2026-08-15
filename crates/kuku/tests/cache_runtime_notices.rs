@@ -10,7 +10,9 @@ use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Provider};
 
 fn request_body(req: &HttpMockRequest) -> Option<serde_json::Value> {
-    let body = req.body.as_ref()?;
+    let Some(body) = req.body.as_ref() else {
+        return None;
+    };
     serde_json::from_slice::<serde_json::Value>(body).ok()
 }
 
@@ -30,7 +32,7 @@ fn content_blocks(message: &serde_json::Value) -> Vec<&serde_json::Value> {
     }
 }
 
-fn message_texts(body: &serde_json::Value) -> impl Iterator<Item = &str> {
+fn message_texts<'a>(body: &'a serde_json::Value) -> impl Iterator<Item = &'a str> {
     messages(body)
         .into_iter()
         .flat_map(content_blocks)
@@ -196,7 +198,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
-            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -204,7 +205,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::MessageUser {
-            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -215,7 +215,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
-            execution: common::execution_scope(),
             ts: "t0".into(),
             conversation: "main".into(),
             turn: 1,
@@ -229,7 +228,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::TurnStarted {
-            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "explore".into(),
             turn: 3,
@@ -237,7 +235,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::MessageUser {
-            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "explore".into(),
             turn: 3,
@@ -248,7 +245,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::MessageAssistant {
-            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "explore".into(),
             turn: 3,
@@ -258,7 +254,6 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
         .unwrap();
     store
         .append(EventPayload::TurnCompleted {
-            execution: common::execution_scope(),
             ts: "t1".into(),
             conversation: "explore".into(),
             turn: 3,

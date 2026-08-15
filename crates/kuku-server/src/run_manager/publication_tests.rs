@@ -337,20 +337,8 @@ async fn external_appends_advance_cache_without_leaking_wait_results_or_empty_ui
 
     let raw = store
         .append_synced(EventPayload::ModelError {
-            request: kuku::event::RequestScope {
-                execution: kuku::event::ExecutionScope {
-                    workspace_id: WorkspaceId::parse("wsp_0123456789abcdef01234567").unwrap(),
-                    task_id: task_id.clone(),
-                    run_id: kuku::event::RunId::parse("run_0123456789abcdef01234567").unwrap(),
-                    turn_id: kuku::event::TurnId::parse("trn_0123456789abcdef01234567").unwrap(),
-                    conversation_id: kuku::event::ConversationId::parse(
-                        "con_0123456789abcdef01234567",
-                    )
-                    .unwrap(),
-                    turn_index: 1,
-                },
-                request_id: kuku::event::RequestId::parse("req_0123456789abcdef01234567").unwrap(),
-            },
+            conversation: None,
+            request_id: "req_0123456789abcdef01234567".to_owned(),
             turn: 1,
             ts: "1".to_owned(),
             kind: "test".to_owned(),

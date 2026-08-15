@@ -56,7 +56,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
 
     store
         .append(EventPayload::MessageUser {
-            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
             conversation: "main".to_string(),
@@ -67,12 +66,15 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request: common::request_scope("req_1"),
+            request_id: "req_1".to_string(),
             text: "Done.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(3),
+            output_tokens_total: None,
         })
         .unwrap();
 
@@ -325,7 +327,6 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
 
     store
         .append(EventPayload::MessageUser {
-            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:00Z".to_string(),
             conversation: "main".to_string(),
@@ -336,12 +337,15 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:01Z".to_string(),
-            request: common::request_scope("req_1"),
+            request_id: "req_1".to_string(),
             text: "I will inspect.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(10),
+            output_tokens_total: None,
         })
         .unwrap();
     store
@@ -349,7 +353,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             turn: 1,
             ts: "2026-05-13T00:00:02Z".to_string(),
             conversation: None,
-            request: common::request_scope("req_1"),
+            request_id: "req_1".to_string(),
             tool_call_id: "tool_b".to_string(),
             index: 1,
             tool: "grep".to_string(),
@@ -361,7 +365,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             turn: 1,
             ts: "2026-05-13T00:00:03Z".to_string(),
             conversation: None,
-            request: common::request_scope("req_1"),
+            request_id: "req_1".to_string(),
             tool_call_id: "tool_a".to_string(),
             index: 0,
             tool: "read".to_string(),
@@ -370,7 +374,6 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .unwrap();
     store
         .append(EventPayload::ToolResult {
-            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-13T00:00:04Z".to_string(),
             conversation: None,
@@ -388,12 +391,15 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
+            conversation: None,
             turn: 1,
             ts: "2026-05-13T00:00:05Z".to_string(),
-            request: common::request_scope("req_2"),
+            request_id: "req_2".to_string(),
             text: "Done.".to_string(),
             thinking: None,
+            stop_reason: None,
             input_tokens_total: Some(12),
+            output_tokens_total: None,
         })
         .unwrap();
 
@@ -468,7 +474,6 @@ fn restores_frozen_prelude_from_fact_event() {
         kuku::event::StoredEvent {
             id: 2,
             payload: EventPayload::MessageUser {
-                execution: common::execution_scope(),
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
                 conversation: "main".to_string(),
@@ -548,7 +553,6 @@ fn rebuild_history_does_not_replay_snapshot_for_target_conversation() {
         kuku::event::StoredEvent {
             id: 3,
             payload: EventPayload::MessageAssistant {
-            execution: common::execution_scope(),
                 ts: "2026-06-09T00:00:02Z".to_string(),
                 conversation: "main".to_string(),
                 turn: 1,
@@ -559,7 +563,6 @@ fn rebuild_history_does_not_replay_snapshot_for_target_conversation() {
         kuku::event::StoredEvent {
             id: 4,
             payload: EventPayload::MessageAssistant {
-            execution: common::execution_scope(),
                 ts: "2026-06-09T00:00:03Z".to_string(),
                 conversation: "review".to_string(),
                 turn: 1,
@@ -592,7 +595,6 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
         kuku::event::StoredEvent {
             id: 1,
             payload: EventPayload::MessageUser {
-                execution: common::execution_scope(),
                 ts: "2026-06-09T00:00:01Z".to_string(),
                 conversation: "review".to_string(),
                 turn: 1,
@@ -607,7 +609,7 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
                 turn: 1,
                 ts: "2026-06-09T00:00:02Z".to_string(),
                 conversation: Some("review".to_string()),
-                request: common::request_scope("req_review_1"),
+                request_id: "req_review_1".to_string(),
                 tool_call_id: "toolu_read".to_string(),
                 index: 0,
                 tool: "read_file".to_string(),
@@ -617,7 +619,6 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
         kuku::event::StoredEvent {
             id: 3,
             payload: EventPayload::ToolResult {
-                execution: common::execution_scope(),
                 turn: 1,
                 ts: "2026-06-09T00:00:03Z".to_string(),
                 conversation: Some("review".to_string()),
@@ -667,7 +668,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
             payload: EventPayload::ContextSources {
                 turn: 1,
                 ts: "2026-05-18T00:00:00Z".to_string(),
-                request: common::request_scope("req_1"),
+                request_id: "req_1".to_string(),
                 project_instruction_sources: vec![FileSource {
                     path: "/workspace/AGENTS.md".to_string(),
                     hash: "sha256:before".to_string(),
@@ -678,7 +679,6 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 2,
             payload: EventPayload::MessageUser {
-                execution: common::execution_scope(),
                 turn: 1,
                 ts: "2026-05-18T00:00:01Z".to_string(),
                 conversation: "main".to_string(),
@@ -690,18 +690,20 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 3,
             payload: EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: "2026-05-18T00:00:02Z".to_string(),
-                request: common::request_scope("req_1"),
+                request_id: "req_1".to_string(),
                 text: "old answer".to_string(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: Some(10),
+                output_tokens_total: None,
             },
         },
         kuku::event::StoredEvent {
             id: 4,
             payload: EventPayload::Handoff {
-                execution: common::execution_scope(),
                 turn: 1,
                 ts: "2026-05-18T00:00:03Z".to_string(),
                 request_id: "req_1".to_string(),
@@ -712,7 +714,6 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 5,
             payload: EventPayload::MessageUser {
-                execution: common::execution_scope(),
                 turn: 2,
                 ts: "2026-05-18T00:00:04Z".to_string(),
                 conversation: "main".to_string(),
@@ -724,12 +725,15 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
         kuku::event::StoredEvent {
             id: 6,
             payload: EventPayload::ModelResponse {
+                conversation: None,
                 turn: 2,
                 ts: "2026-05-18T00:00:05Z".to_string(),
-                request: common::request_scope("req_2"),
+                request_id: "req_2".to_string(),
                 text: "new answer".to_string(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: Some(12),
+                output_tokens_total: None,
             },
         },
     ];
@@ -778,7 +782,7 @@ fn prompt_snapshot_preserves_old_agents_content_after_file_changes() {
             payload: EventPayload::ContextSources {
                 turn: 2,
                 ts: "2026-06-09T00:00:01Z".to_string(),
-                request: common::request_scope("req_2"),
+                request_id: "req_2".to_string(),
                 project_instruction_sources: vec![FileSource {
                     path: "/workspace/AGENTS.md".to_string(),
                     hash: "sha256:two".to_string(),
@@ -789,7 +793,6 @@ fn prompt_snapshot_preserves_old_agents_content_after_file_changes() {
         kuku::event::StoredEvent {
             id: 3,
             payload: EventPayload::MessageAssistant {
-            execution: common::execution_scope(),
                 ts: "2026-06-09T00:00:02Z".to_string(),
                 conversation: "main".to_string(),
                 turn: 1,
@@ -919,4 +922,3 @@ fn conversation_skill_binding_is_stable() {
     let (_, history) = rebuild_history(&events, &ConversationAddress::MAIN);
     assert!(history.is_empty());
 }
-mod common;

@@ -97,7 +97,6 @@ fn session_allow_is_recovered_from_prior_permission_allow_events() {
     let events = vec![kuku::event::StoredEvent {
         id: 7,
         payload: kuku::event::EventPayload::PermissionAllow {
-            execution: common::execution_scope(),
             turn: 1,
             ts: "2026-05-14T00:00:00Z".to_string(),
             tool_call_id: "toolu_1".to_string(),
@@ -193,4 +192,3 @@ fn hard_guard_blocks_wrapped_destructive_commands() {
     assert_eq!(decision.kind, kuku::permission::GateDecisionKind::Deny);
     assert_eq!(decision.source, kuku::permission::GateSource::HardGuard);
 }
-mod common;

@@ -18,14 +18,13 @@ pub(crate) async fn dispatch(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
-    event_store: &crate::event::EventStore,
-    parent_request: &crate::event::RequestScope,
-    request_evidence_recorder: &dyn crate::query::provider::RequestEvidenceRecorder,
+    events_path: &Path,
 ) -> ToolResultEnvelope {
     match name {
         "agent" => ToolResultEnvelope::error(
@@ -33,20 +32,12 @@ pub(crate) async fn dispatch(
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
         "find_files" => builtin::find_files(args, workspace),
-        "read_file" => builtin::read_file(args, workspace, prior_events, result_event_id),
+        "read_file" => {
+            builtin::read_file(args, workspace, conversation, prior_events, result_event_id)
+        }
         "search_text" => builtin::search_text(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
-        "fetch_web" => {
-            builtin::fetch_web(
-                args,
-                workspace,
-                config,
-                catalog,
-                parent_request,
-                request_evidence_recorder,
-            )
-            .await
-        }
+        "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
         "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
@@ -57,12 +48,12 @@ pub(crate) async fn dispatch(
                 ),
             )
         }
-        "edit_file" => builtin::edit_file(args, workspace, prior_events),
-        "write_file" => builtin::write_file(args, workspace, prior_events),
+        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events),
+        "write_file" => builtin::write_file(args, workspace, conversation, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
-        "query_session" => builtin::query_session_with_store(args, event_store),
+        "query_session" => builtin::query_session(args, events_path),
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -74,21 +65,20 @@ pub(crate) async fn dispatch(
 pub(crate) async fn dispatch_with_capability(
     name: &str,
     args: &Value,
-    capability: &dyn crate::query::WorkspaceQueryCapability,
+    capability: std::sync::Arc<dyn crate::query::WorkspaceQueryCapability>,
     workspace_label: &Path,
     kuku_home: &Path,
+    _conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
-    event_store: &crate::event::EventStore,
-    parent_request: &crate::event::RequestScope,
-    request_evidence_recorder: &dyn crate::query::provider::RequestEvidenceRecorder,
+    events_path: &Path,
 ) -> ToolResultEnvelope {
     if matches!(
         name,
-        "edit_file" | "write_file" | "remember_memory" | "forget_memory"
+        "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
     ) && has_denied_permission(prior_events, tool_call_id)
     {
         return ToolResultEnvelope::blocked(
@@ -101,28 +91,36 @@ pub(crate) async fn dispatch_with_capability(
             "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
-        "read_file" => {
-            builtin::read_file_with_capability(args, capability, prior_events, result_event_id)
+        "read_file" => builtin::read_file_with_capability(
+            args,
+            capability.as_ref(),
+            prior_events,
+            result_event_id,
+        ),
+        "write_file" => {
+            builtin::write_file_with_capability(args, capability.as_ref(), prior_events)
         }
-        "write_file" => builtin::write_file_with_capability(args, capability, prior_events),
-        "edit_file" => builtin::edit_file_with_capability(args, capability, prior_events),
-        "find_files" => builtin::find_files_with_capability(args, capability),
-        "search_text" => builtin::search_text_with_capability(args, capability),
-        "remember_memory" => builtin::remember_memory_with_capability(args, capability, kuku_home),
-        "forget_memory" => builtin::forget_memory_with_capability(args, capability, kuku_home),
-        "fetch_url" => builtin::fetch_url(args, workspace_label).await,
-        "fetch_web" => {
-            builtin::fetch_web(
+        "edit_file" => builtin::edit_file_with_capability(args, capability.as_ref(), prior_events),
+        "find_files" => builtin::find_files_with_capability(args, capability.as_ref()),
+        "search_text" => builtin::search_text_with_capability(args, capability.as_ref()),
+        "remember_memory" => {
+            builtin::remember_memory_with_capability(args, capability.as_ref(), kuku_home)
+        }
+        "forget_memory" => {
+            builtin::forget_memory_with_capability(args, capability.as_ref(), kuku_home)
+        }
+        "run_command" => {
+            builtin::run_command_with_capability(
                 args,
-                workspace_label,
-                config,
-                catalog,
-                parent_request,
-                request_evidence_recorder,
+                capability,
+                None,
+                crate::query::WorkspaceCommandCancellation::default(),
             )
             .await
         }
-        "query_session" => builtin::query_session_with_store(args, event_store),
+        "query_session" => builtin::query_session(args, events_path),
+        "fetch_url" => builtin::fetch_url(args, workspace_label).await,
+        "fetch_web" => builtin::fetch_web(args, workspace_label, config, catalog).await,
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -136,17 +134,45 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
     };
     events.iter().any(|event| {
         matches!(
-                    &event.payload,
-                    crate::event::EventPayload::PermissionDeny {
-        tool_call_id: id, .. }
-                        if id == tool_call_id
-                )
+            &event.payload,
+            crate::event::EventPayload::PermissionDeny { tool_call_id: id, .. }
+                if id == tool_call_id
+        )
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch(
+        name: &str,
+        args: &Value,
+        workspace: &Path,
+        kuku_home: &Path,
+        prior_events: &[StoredEvent],
+        result_event_id: u64,
+        tool_call_id: Option<&str>,
+        config: &crate::config::Config,
+        catalog: &crate::prompt::PromptCatalog,
+        events_path: &Path,
+    ) -> ToolResultEnvelope {
+        super::dispatch(
+            name,
+            args,
+            workspace,
+            kuku_home,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+            result_event_id,
+            tool_call_id,
+            config,
+            catalog,
+            events_path,
+        )
+        .await
+    }
 
     fn test_config_and_catalog() -> (crate::config::Config, crate::prompt::PromptCatalog) {
         let catalog = crate::prompt::catalog::builtin_prompt_catalog();
@@ -162,7 +188,6 @@ mod tests {
         StoredEvent {
             id,
             payload: EventPayload::ToolResult {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
                 conversation: None,
@@ -200,7 +225,6 @@ mod tests {
         StoredEvent {
             id: 99,
             payload: EventPayload::PermissionDeny {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: "2026-05-14T00:00:00Z".to_string(),
                 tool_call_id: tool_call_id.to_string(),
@@ -214,15 +238,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn dispatches_read_tools_and_rejects_gated_or_unknown_tools() {
         let dir = tempfile::tempdir().unwrap();
-        let event_dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle\ncontent\n").unwrap();
         let (config, catalog) = test_config_and_catalog();
-        let parent_request = crate::event::test_request_scope("dispatch read tools");
-        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
-            dir.path().join("dispatch-events.jsonl"),
-        );
-        let event_store =
-            crate::event::EventStore::open(event_dir.path().join("events.jsonl")).unwrap();
 
         let found = dispatch(
             "find_files",
@@ -234,9 +251,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(found.status, "ok");
@@ -252,9 +267,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(read.status, "ok");
@@ -271,9 +284,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(searched.status, "ok");
@@ -290,9 +301,7 @@ mod tests {
             Some("tool_command"),
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(gated.status, "blocked");
@@ -308,9 +317,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(unknown.status, "error");
@@ -324,11 +331,6 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), original).unwrap();
         let read = read_event(17, dir.path(), "a.txt", original);
         let (config, catalog) = test_config_and_catalog();
-        let parent_request = crate::event::test_request_scope("dispatch writes");
-        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
-            dir.path().join("dispatch-events.jsonl"),
-        );
-        let event_store = crate::event::EventStore::open(dir.path().join("events.jsonl")).unwrap();
 
         let edited = dispatch(
             "edit_file",
@@ -340,9 +342,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(edited.status, "ok");
@@ -363,9 +363,7 @@ mod tests {
             None,
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(written.status, "ok");
@@ -383,11 +381,6 @@ mod tests {
         let read = read_event(17, dir.path(), "a.txt", original);
         let denied = denied_event("tool_edit");
         let (config, catalog) = test_config_and_catalog();
-        let parent_request = crate::event::test_request_scope("dispatch denied");
-        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
-            dir.path().join("dispatch-events.jsonl"),
-        );
-        let event_store = crate::event::EventStore::open(dir.path().join("events.jsonl")).unwrap();
 
         let result = dispatch(
             "edit_file",
@@ -399,9 +392,7 @@ mod tests {
             Some("tool_edit"),
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(result.status, "blocked");
@@ -422,9 +413,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(remember.status, "blocked");
@@ -442,9 +431,7 @@ mod tests {
             Some("tool_memory"),
             &config,
             &catalog,
-            &event_store,
-            &parent_request,
-            &recorder,
+            dir.path(),
         )
         .await;
         assert_eq!(forget.status, "blocked");
@@ -471,12 +458,6 @@ mod tests {
         .unwrap();
 
         let (config, catalog) = test_config_and_catalog();
-        let parent_request = crate::event::test_request_scope("dispatch memory");
-        let recorder = crate::query::provider::LifecycleOnlyRecorder::new(
-            session_home.path().join("dispatch-events.jsonl"),
-        );
-        let event_store =
-            crate::event::EventStore::open(session_home.path().join("events.jsonl")).unwrap();
         let previous = std::env::var_os("KUKU_HOME");
         std::env::set_var("KUKU_HOME", runtime_home.path());
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -494,9 +475,7 @@ mod tests {
                 None,
                 &config,
                 &catalog,
-                &event_store,
-                &parent_request,
-                &recorder,
+                workspace,
             )
             .await
         });

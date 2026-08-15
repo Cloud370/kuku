@@ -1,7 +1,6 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
 use serde_json::json;
-use std::path::Path;
 use tempfile::tempdir;
 
 fn write_events(dir: &Path, payloads: &[EventPayload]) -> std::path::PathBuf {
@@ -19,7 +18,6 @@ fn ts(s: &str) -> String {
 
 fn message_user(turn: u64, text: &str) -> EventPayload {
     EventPayload::MessageUser {
-        execution: crate::event::test_execution_scope(),
         turn,
         ts: ts("t"),
         conversation: "main".into(),
@@ -47,15 +45,17 @@ fn query_session_filters_by_kind() {
         &[
             message_user(1, "hello"),
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: ts("t"),
-                request: crate::event::test_request_scope("r1"),
+                request_id: "r1".into(),
                 text: "hi".into(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -145,7 +145,6 @@ fn query_session_turn_filtering() {
         dir.path(),
         &[
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -154,13 +153,11 @@ fn query_session_turn_filtering() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -169,7 +166,6 @@ fn query_session_turn_filtering() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -208,7 +204,7 @@ fn query_session_output_cap_drops_earliest_events() {
     let dir = tempdir().unwrap();
     let big_text = "y".repeat(3000);
     let mut payloads = Vec::new();
-    for i in 0..5 {
+    for i in 0..20 {
         payloads.push(message_user(1, &format!("msg_{i}_{big_text}")));
     }
     let path = write_events(dir.path(), &payloads);
@@ -219,6 +215,7 @@ fn query_session_output_cap_drops_earliest_events() {
         "output too large: {} chars",
         result.model_content.len()
     );
+    assert!(result.truncated);
 }
 
 #[test]
@@ -228,13 +225,11 @@ fn query_session_skip_rolled_back_filters_events() {
         dir.path(),
         &[
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -243,19 +238,16 @@ fn query_session_skip_rolled_back_filters_events() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -264,7 +256,6 @@ fn query_session_skip_rolled_back_filters_events() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -285,13 +276,11 @@ fn query_session_skip_rolled_back_false_returns_all() {
         dir.path(),
         &[
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -300,19 +289,16 @@ fn query_session_skip_rolled_back_false_returns_all() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -321,7 +307,6 @@ fn query_session_skip_rolled_back_false_returns_all() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -368,7 +353,6 @@ fn query_session_kind_filter_permission_requested() {
         &[
             message_user(1, "hello"),
             EventPayload::PermissionRequested {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 tool_call_id: "toolu_cmd".into(),
@@ -397,7 +381,6 @@ fn query_session_type_filter_permission_allow_and_deny() {
         &[
             message_user(1, "hello"),
             EventPayload::PermissionAllow {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 tool_call_id: "toolu_allow".into(),
@@ -407,7 +390,6 @@ fn query_session_type_filter_permission_allow_and_deny() {
                 source: "user".into(),
             },
             EventPayload::PermissionDeny {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 tool_call_id: "toolu_deny".into(),
@@ -440,13 +422,11 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
         dir.path(),
         &[
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -455,19 +435,16 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -476,19 +453,16 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 2,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::TurnStarted {
-                execution: crate::event::test_execution_scope(),
                 turn: 3,
                 ts: ts("t"),
                 conversation: "main".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 turn: 3,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -497,7 +471,6 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 via_tool_call_id: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 3,
                 ts: ts("t"),
                 conversation: "main".into(),
@@ -528,7 +501,6 @@ fn query_session_filters_single_conversation() {
                 conversation: "review".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 ts: ts("t"),
                 conversation: "review".into(),
                 turn: 1,
@@ -541,7 +513,6 @@ fn query_session_filters_single_conversation() {
                 conversation: "explore".into(),
             },
             EventPayload::MessageUser {
-                execution: crate::event::test_execution_scope(),
                 ts: ts("t"),
                 conversation: "explore".into(),
                 turn: 1,
@@ -568,15 +539,17 @@ fn query_session_main_conversation_includes_main_model_response() {
         &[
             message_user(1, "hello"),
             EventPayload::ModelResponse {
+                conversation: None,
                 turn: 1,
                 ts: ts("t"),
-                request: crate::event::test_request_scope("r1"),
+                request_id: "r1".into(),
                 text: "main answer".into(),
                 thinking: None,
+                stop_reason: None,
                 input_tokens_total: None,
+                output_tokens_total: None,
             },
             EventPayload::TurnCompleted {
-                execution: crate::event::test_execution_scope(),
                 turn: 1,
                 ts: ts("t"),
                 conversation: "main".into(),

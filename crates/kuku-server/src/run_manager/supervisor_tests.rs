@@ -181,7 +181,6 @@ fn main_execution_scope_is_stable_and_advances_with_sdk_turn_facts() {
         .unwrap();
     store
         .append(kuku::event::EventPayload::TurnStarted {
-            execution: first.clone(),
             ts: "2026-07-20T00:00:01Z".to_owned(),
             conversation: "main".to_owned(),
             turn: 1,
@@ -189,7 +188,6 @@ fn main_execution_scope_is_stable_and_advances_with_sdk_turn_facts() {
         .unwrap();
     store
         .append(kuku::event::EventPayload::TurnCompleted {
-            execution: first.clone(),
             ts: "2026-07-20T00:00:02Z".to_owned(),
             conversation: "main".to_owned(),
             turn: 1,
@@ -209,7 +207,6 @@ fn main_execution_scope_is_stable_and_advances_with_sdk_turn_facts() {
 
     store
         .append(kuku::event::EventPayload::TurnStarted {
-            execution: second.clone(),
             ts: "2026-07-20T00:00:03Z".to_owned(),
             conversation: "main".to_owned(),
             turn: 2,

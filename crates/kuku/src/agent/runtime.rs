@@ -16,11 +16,8 @@ pub(crate) struct PreparedDispatch {
     pub(crate) from: ConversationAddress,
     pub(crate) via_tool_call_id: String,
     pub(crate) agent_instructions: String,
-    pub(crate) execution: crate::event::ExecutionScope,
-    pub(crate) parent_request_id: crate::event::RequestId,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_dispatch(
     registry: Option<&crate::agent::registry::AgentRegistry>,
     existing_events: &[StoredEvent],
@@ -29,8 +26,6 @@ pub(crate) fn prepare_dispatch(
     message: &str,
     tier: Option<String>,
     tool_call_id: &str,
-    execution: &crate::event::ExecutionScope,
-    parent_request_id: &crate::event::RequestId,
 ) -> Result<PreparedDispatch, String> {
     let conversation = ConversationAddress::parse(to)?;
     if conversation.is_main() {
@@ -52,11 +47,10 @@ pub(crate) fn prepare_dispatch(
         .iter()
         .filter(|event| {
             matches!(
-                            &event.payload,
-                            crate::event::EventPayload::TurnCompleted {
-            conversation: event_conversation, .. }
-                                if event_conversation == conversation.as_str()
-                        )
+                &event.payload,
+                crate::event::EventPayload::TurnCompleted { conversation: event_conversation, .. }
+                    if event_conversation == conversation.as_str()
+            )
         })
         .count();
     if completed_turns > 0 && completed_turns >= definition.max_turns as usize {
@@ -114,8 +108,6 @@ pub(crate) fn prepare_dispatch(
     }
 
     let prompt_body = render_delegated_prompt_body(message);
-    let nested_execution =
-        nested_execution_scope(execution, &conversation).map_err(|error| error.to_string())?;
 
     Ok(PreparedDispatch {
         session_id: existing_events
@@ -135,8 +127,6 @@ pub(crate) fn prepare_dispatch(
         from: from.clone(),
         via_tool_call_id: tool_call_id.to_string(),
         agent_instructions: definition.instructions.clone(),
-        execution: nested_execution,
-        parent_request_id: parent_request_id.clone(),
     })
 }
 
@@ -149,7 +139,20 @@ pub(crate) async fn start_run(
     task_context: Option<crate::query::TaskQueryContext>,
 ) -> crate::Result<crate::query::Run> {
     let mut query = crate::query::Query::new(dispatch.prompt.clone())
-        .conversation(dispatch.conversation.as_str())
+        .session(dispatch.session_id)
+        .conversation(dispatch.conversation.as_str());
+    query = if let Some(context) = task_context {
+        let nested = nested_execution_scope(context.execution_scope(), &dispatch.conversation)
+            .map_err(|error| {
+                crate::error::Error::InvalidTaskContext(format!(
+                    "cannot derive nested execution scope: {error}"
+                ))
+            })?;
+        query.task_context(context.for_nested(nested))
+    } else {
+        query.workspace(workspace.to_path_buf())
+    };
+    query = query
         .tier(dispatch.binding.tier.clone())
         .config((*config).clone())
         .no_agents()
@@ -157,16 +160,6 @@ pub(crate) async fn start_run(
         .current_turn_body(dispatch.prompt_body.clone())
         .with_agent_binding_id(dispatch.binding.binding_id.clone())
         .sender(dispatch.from, dispatch.via_tool_call_id);
-    query = match task_context {
-        Some(context) => query.task_context(context.for_nested(dispatch.execution.clone())),
-        None => query
-            .workspace(workspace.to_path_buf())
-            .session(dispatch.session_id)
-            .execution_scope(dispatch.execution.clone()),
-    };
-    query = query.request_cause(crate::event::RequestCause::DelegatedAgent {
-        parent_request_id: dispatch.parent_request_id,
-    });
     query.agent_instructions = Some(dispatch.agent_instructions.clone());
     query.captured_kuku_home = Some(kuku_home.to_path_buf());
     query.tool_registry_override = Some(
@@ -211,26 +204,6 @@ mod tests {
     use crate::event::EventPayload;
 
     #[test]
-    fn delegated_conversation_identity_is_stable_per_task_and_address() {
-        let parent = crate::event::test_execution_scope();
-        let review = ConversationAddress::parse("review/api").unwrap();
-        let explore = ConversationAddress::parse("explore").unwrap();
-
-        let first = nested_execution_scope(&parent, &review).unwrap();
-        let continued = nested_execution_scope(&parent, &review).unwrap();
-        let another_address = nested_execution_scope(&parent, &explore).unwrap();
-        let mut another_task = parent.clone();
-        another_task.task_id = crate::event::TaskId::try_new().unwrap();
-        let another_task = nested_execution_scope(&another_task, &review).unwrap();
-
-        assert_eq!(first.conversation_id, continued.conversation_id);
-        assert_ne!(first.conversation_id, another_address.conversation_id);
-        assert_ne!(first.conversation_id, another_task.conversation_id);
-        assert_eq!(first.task_id, parent.task_id);
-        assert_eq!(first.run_id, parent.run_id);
-    }
-
-    #[test]
     fn prepare_dispatch_rejects_reused_conversation_after_max_completed_turns() {
         let registry = AgentRegistry::builder()
             .builtins(&crate::prompt::builtin_prompt_catalog())
@@ -246,8 +219,6 @@ mod tests {
             "one more review",
             None,
             "toolu_review_again",
-            &crate::event::test_execution_scope(),
-            &crate::event::test_request_scope("parent").request_id,
         )
         .unwrap_err();
 
@@ -263,22 +234,6 @@ mod tests {
         assert_eq!(rendered, input);
     }
 
-    #[test]
-    fn delegated_execution_inherits_task_and_run_but_owns_turn_and_conversation() {
-        let parent = crate::event::test_execution_scope();
-
-        let nested =
-            nested_execution_scope(&parent, &ConversationAddress::parse("review").unwrap())
-                .unwrap();
-
-        assert_eq!(parent.workspace_id, nested.workspace_id);
-        assert_eq!(parent.task_id, nested.task_id);
-        assert_eq!(parent.run_id, nested.run_id);
-        assert_ne!(parent.turn_id, nested.turn_id);
-        assert_ne!(parent.conversation_id, nested.conversation_id);
-        assert_eq!(parent.turn_index, nested.turn_index);
-    }
-
     fn review_conversation_with_completed_turns(count: u64) -> Vec<StoredEvent> {
         let mut events = vec![StoredEvent {
             id: 1,
@@ -291,7 +246,6 @@ mod tests {
             events.push(StoredEvent {
                 id: turn + 1,
                 payload: EventPayload::TurnCompleted {
-                    execution: crate::event::test_execution_scope(),
                     ts: format!("t{turn}"),
                     conversation: "review".into(),
                     turn,

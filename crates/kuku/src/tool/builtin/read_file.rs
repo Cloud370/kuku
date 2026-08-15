@@ -11,7 +11,7 @@ use super::common::{
 };
 
 const READ_FILE_MAX_CHARS: usize = 80_000;
-const READ_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const READ_FILE_MAX_BYTES: usize = 1024 * 1024;
 
 struct ReadRequest {
     path: String,
@@ -22,6 +22,7 @@ struct ReadRequest {
 pub(crate) fn read_file(
     args: &Value,
     workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
 ) -> ToolResultEnvelope {
@@ -61,6 +62,7 @@ pub(crate) fn read_file(
     if requested_line_count > 0 {
         if let Some(prior) = find_covering_read(
             prior_events,
+            conversation,
             &resolved.path,
             &hash,
             request.offset,
@@ -80,13 +82,17 @@ pub(crate) fn read_file(
                 "read_event_id": read_event_id,
                 "prior_read_event_id": prior.event_id,
                 "start_line": request.offset,
-                "line_count": requested_line_count,
+                "line_count": line_count,
                 "total_lines": total_lines,
                 "line_numbered": true,
                 "is_full_file_snapshot": is_full_file_snapshot,
                 "cached": true,
             });
-            return ToolResultEnvelope::ok(summary, model_content, structured);
+            return if truncated {
+                ToolResultEnvelope::ok_truncated(summary, model_content, structured)
+            } else {
+                ToolResultEnvelope::ok(summary, model_content, structured)
+            };
         }
     }
 
@@ -173,6 +179,7 @@ pub(crate) fn read_file_with_capability(
     if requested_line_count > 0 {
         if let Some(prior) = find_covering_read(
             prior_events,
+            &crate::conversation::address::ConversationAddress::MAIN,
             &identity_path,
             &hash,
             request.offset,
@@ -245,7 +252,6 @@ fn render_read_file_view(
     start_index: usize,
     end_index: usize,
 ) -> (String, String, usize, bool) {
-    let raw_text = lines[start_index..end_index].concat();
     let mut rendered = Vec::new();
     for (index, line) in lines[start_index..end_index].iter().enumerate() {
         let line_number = start_index + index + 1;
@@ -267,6 +273,7 @@ fn render_read_file_view(
     } else {
         rendered.len()
     };
+    let raw_text = lines[start_index..start_index + line_count].concat();
     (raw_text, model_content, line_count, truncated)
 }
 
@@ -296,6 +303,21 @@ mod tests {
     use super::super::common::content_hash;
     use super::super::test_helpers::{read_snapshot_event, stored_read_event, workspace};
     use super::*;
+
+    fn read_file(
+        args: &Value,
+        workspace: &Path,
+        prior_events: &[StoredEvent],
+        read_event_id: u64,
+    ) -> ToolResultEnvelope {
+        super::read_file(
+            args,
+            workspace,
+            &crate::conversation::address::ConversationAddress::MAIN,
+            prior_events,
+            read_event_id,
+        )
+    }
 
     #[test]
     fn read_file_returns_line_numbered_content_and_snapshot_metadata() {
@@ -359,6 +381,7 @@ mod tests {
             "README.md",
             content.as_bytes(),
             true,
+            content,
             "1\tfirst\n2\tsecond",
         );
         let cached = read_file(
@@ -388,6 +411,7 @@ mod tests {
         let canonical = dir.path().join("README.md").canonicalize().unwrap();
         let prior = stored_read_event(
             17,
+            "1\tfirst\n2\tsecond\n3\tthird",
             serde_json::json!({
                 "kind": "file_content",
                 "path": "README.md",
@@ -475,6 +499,7 @@ mod tests {
         let canonical = dir.path().join("README.md").canonicalize().unwrap();
         let prior = stored_read_event(
             17,
+            "1\t# Project",
             serde_json::json!({
                 "kind": "file_content",
                 "path": "README.md",
@@ -497,5 +522,66 @@ mod tests {
         assert_eq!(eof.summary, "read README.md, no lines at offset 99 of 1");
         assert_eq!(eof.model_content, "");
         assert_eq!(eof.structured.unwrap()["cached"], false);
+    }
+
+    #[test]
+    fn truncated_read_snapshot_ends_at_last_fully_rendered_line() {
+        let dir = workspace();
+        let visible_line = "a".repeat(READ_FILE_MAX_CHARS - 2);
+        let content = format!("{visible_line}\nhidden tail\n");
+        std::fs::write(dir.path().join("README.md"), &content).unwrap();
+
+        let result = read_file(
+            &serde_json::json!({"path": "README.md"}),
+            dir.path(),
+            &[],
+            17,
+        );
+
+        assert!(result.truncated);
+        let structured = result.structured.unwrap();
+        assert_eq!(structured["raw_text"], format!("{visible_line}\n"));
+        assert_eq!(structured["line_count"], 1);
+        assert_eq!(structured["total_lines"], 2);
+        assert_eq!(structured["is_full_file_snapshot"], false);
+    }
+
+    #[test]
+    fn read_cache_is_scoped_to_active_conversation() {
+        let dir = workspace();
+        let content = "first\nsecond\n";
+        std::fs::write(dir.path().join("README.md"), content).unwrap();
+        let mut review_read = read_snapshot_event(
+            17,
+            dir.path(),
+            "README.md",
+            content.as_bytes(),
+            true,
+            content,
+            "1\tfirst\n2\tsecond",
+        );
+        if let crate::event::EventPayload::ToolResult { conversation, .. } =
+            &mut review_read.payload
+        {
+            *conversation = Some("review".to_string());
+        }
+
+        let main_result = super::read_file(
+            &serde_json::json!({"path": "README.md"}),
+            dir.path(),
+            &crate::conversation::address::ConversationAddress::MAIN,
+            std::slice::from_ref(&review_read),
+            18,
+        );
+        let review_result = super::read_file(
+            &serde_json::json!({"path": "README.md"}),
+            dir.path(),
+            &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
+            &[review_read],
+            19,
+        );
+
+        assert_eq!(main_result.structured.unwrap()["cached"], false);
+        assert_eq!(review_result.structured.unwrap()["cached"], true);
     }
 }

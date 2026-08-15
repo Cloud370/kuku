@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::conversation::address::ConversationAddress;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 use super::revert::filter_rolled_back_events;
-use crate::event::{EventPayload, RequestId, StoredEvent};
+use crate::event::{EventPayload, StoredEvent};
 
 struct PendingToolCall {
     index: u64,
@@ -22,7 +22,7 @@ struct ToolCallKey {
 
 #[derive(Default)]
 struct ResponseGroup {
-    request_id: Option<RequestId>,
+    request_id: Option<String>,
     text: Option<String>,
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
@@ -45,6 +45,48 @@ pub(crate) fn rebuild_history_for_provider(
     conversation: &ConversationAddress,
 ) -> (Option<String>, Vec<CanonicalMessage>) {
     rebuild_history_internal(events, conversation, true)
+}
+
+pub(crate) fn effective_snapshot_events<'a>(
+    events: &'a [StoredEvent],
+    conversation: &ConversationAddress,
+) -> Vec<&'a StoredEvent> {
+    let filtered = filter_rolled_back_events(events);
+    let suppressed_turns = suppressed_turns(&filtered, conversation);
+    let handoff_pos = filtered
+        .iter()
+        .enumerate()
+        .rfind(|(_, event)| matches!(event.payload, EventPayload::Handoff { .. }));
+    let start_idx = handoff_pos.map_or(0, |(index, _)| {
+        let keep_turns = match &filtered[index].payload {
+            EventPayload::Handoff { keep_turns, .. } => *keep_turns,
+            _ => 0,
+        };
+        handoff_start_index(&filtered, index, keep_turns)
+    });
+
+    filtered[start_idx..]
+        .iter()
+        .copied()
+        .filter(|event| {
+            if !event_belongs_to_history_conversation(&event.payload, conversation) {
+                return false;
+            }
+            if event_turn(&event.payload).is_some_and(|turn| suppressed_turns.contains(&turn)) {
+                return false;
+            }
+            matches!(
+                &event.payload,
+                EventPayload::ToolResult {
+                    status,
+                    structured: Some(structured),
+                    ..
+                } if status == "ok"
+                    && structured["kind"] == "file_content"
+                    && structured["cached"] != true
+            )
+        })
+        .collect()
 }
 
 fn rebuild_history_internal(
@@ -79,12 +121,24 @@ fn rebuild_history_internal(
 
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();
-    let mut seen_tool_call_keys = HashMap::<ToolCallKey, RequestId>::new();
+    let mut seen_tool_call_keys = HashSet::new();
 
     for event in effective {
         if event_turn(&event.payload).is_some_and(|turn| suppressed_turns.contains(&turn))
             && event_belongs_to_history_conversation(&event.payload, conversation)
         {
+            continue;
+        }
+        if matches!(
+            &event.payload,
+            EventPayload::ModelResponse {
+                stop_reason: Some(reason),
+                ..
+            } if !matches!(
+                reason,
+                crate::event::ModelStopReason::EndTurn | crate::event::ModelStopReason::ToolUse
+            )
+        ) {
             continue;
         }
         match &event.payload {
@@ -105,33 +159,32 @@ fn rebuild_history_internal(
                 messages.push(CanonicalMessage::user_text(provider_text));
             }
             EventPayload::ModelResponse {
+                conversation: event_conversation,
                 turn,
-                request,
+                request_id,
                 text,
                 thinking,
                 ..
-            } if conversation.is_main()
-                && unscoped_turn_belongs_to_conversation(
-                    *turn,
-                    conversation,
-                    &turn_conversations,
-                ) =>
+            } if event_conversation.as_ref().map_or_else(
+                || unscoped_turn_belongs_to_conversation(*turn, conversation, &turn_conversations),
+                |event_conversation| event_conversation == conversation.as_str(),
+            ) =>
             {
                 if current_group
                     .request_id
                     .as_ref()
-                    .is_some_and(|active| active != &request.request_id)
+                    .is_some_and(|active| active != request_id)
                 {
                     flush_group(&mut messages, &mut current_group);
                 }
-                current_group.request_id = Some(request.request_id.clone());
+                current_group.request_id = Some(request_id.clone());
                 current_group.text = Some(text.clone());
                 current_group.thinking = thinking.clone();
             }
             EventPayload::ToolCall {
                 conversation: None,
                 turn,
-                request,
+                request_id,
                 tool_call_id,
                 index,
                 tool,
@@ -143,15 +196,16 @@ fn rebuild_history_internal(
                     turn: *turn,
                     tool_call_id: tool_call_id.clone(),
                 };
-                if permission_metadata_args(args)
-                    && seen_tool_call_keys.get(&key) == Some(&request.request_id)
+                if request_id == tool_call_id
+                    && permission_metadata_args(args)
+                    && seen_tool_call_keys.contains(&key)
                 {
                     continue;
                 }
-                seen_tool_call_keys.insert(key, request.request_id.clone());
-                if current_group.request_id.as_ref() != Some(&request.request_id) {
+                seen_tool_call_keys.insert(key);
+                if current_group.request_id.as_ref() != Some(request_id) {
                     flush_group(&mut messages, &mut current_group);
-                    current_group.request_id = Some(request.request_id.clone());
+                    current_group.request_id = Some(request_id.clone());
                 }
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),
@@ -165,7 +219,7 @@ fn rebuild_history_internal(
             EventPayload::ToolCall {
                 conversation: Some(event_conversation),
                 turn,
-                request,
+                request_id,
                 tool_call_id,
                 index,
                 tool,
@@ -177,15 +231,16 @@ fn rebuild_history_internal(
                     turn: *turn,
                     tool_call_id: tool_call_id.clone(),
                 };
-                if permission_metadata_args(args)
-                    && seen_tool_call_keys.get(&key) == Some(&request.request_id)
+                if request_id == tool_call_id
+                    && permission_metadata_args(args)
+                    && seen_tool_call_keys.contains(&key)
                 {
                     continue;
                 }
-                seen_tool_call_keys.insert(key, request.request_id.clone());
-                if current_group.request_id.as_ref() != Some(&request.request_id) {
+                seen_tool_call_keys.insert(key);
+                if current_group.request_id.as_ref() != Some(request_id) {
                     flush_group(&mut messages, &mut current_group);
-                    current_group.request_id = Some(request.request_id.clone());
+                    current_group.request_id = Some(request_id.clone());
                 }
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),
@@ -264,6 +319,7 @@ fn rebuild_history_internal(
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
+            | EventPayload::ModelRecovery { .. }
             | EventPayload::PermissionRequested { .. }
             | EventPayload::PermissionAllow { .. }
             | EventPayload::PermissionDeny { .. }
@@ -272,8 +328,8 @@ fn rebuild_history_internal(
             | EventPayload::TurnInterrupted { .. }
             | EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. }
-            | EventPayload::Unknown(_)
-            | EventPayload::TaskLedger(_) => {}
+            | EventPayload::TaskLedger(_)
+            | EventPayload::Unknown(_) => {}
             _ => {}
         }
     }
@@ -334,6 +390,7 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::ContextSources { turn, .. }
         | EventPayload::ContextSkills { turn, .. }
         | EventPayload::ModelError { turn, .. }
+        | EventPayload::ModelRecovery { turn, .. }
         | EventPayload::PermissionRequested { turn, .. }
         | EventPayload::PermissionAllow { turn, .. }
         | EventPayload::PermissionDeny { turn, .. }
@@ -345,8 +402,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::MessageAssistant { .. }
         | EventPayload::ConversationRollback { .. }
         | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::Unknown(_)
-        | EventPayload::TaskLedger(_) => None,
+        | EventPayload::TaskLedger(_)
+        | EventPayload::Unknown(_) => None,
     }
 }
 
@@ -433,10 +490,24 @@ fn event_belongs_to_history_conversation(
     conversation: &ConversationAddress,
 ) -> bool {
     match payload {
-        EventPayload::ModelResponse { .. }
-        | EventPayload::ModelError { .. }
-        | EventPayload::ContextSources { .. }
-        | EventPayload::Handoff { .. } => conversation.is_main(),
+        EventPayload::ModelResponse {
+            conversation: event_conversation,
+            ..
+        }
+        | EventPayload::ModelError {
+            conversation: event_conversation,
+            ..
+        } => event_conversation.as_ref().map_or_else(
+            || conversation.is_main(),
+            |value| value == conversation.as_str(),
+        ),
+        EventPayload::ContextSources { .. } | EventPayload::Handoff { .. } => {
+            conversation.is_main()
+        }
+        EventPayload::ModelRecovery {
+            conversation: event_conversation,
+            ..
+        } => event_conversation == conversation.as_str(),
         EventPayload::ToolCall {
             conversation: None, ..
         }
@@ -539,5 +610,7 @@ fn permission_metadata_args(args: &serde_json::Value) -> bool {
         && object.contains_key("source")
 }
 
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(test)]
 mod tests;

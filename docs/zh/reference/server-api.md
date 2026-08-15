@@ -220,6 +220,8 @@
 
 持久 `/events` 数据就是来自 `events.jsonl` 的 Session 账本。
 
+当 kuku 重试达到输出上限的响应时，账本会包含 `model.recovery`。该事件记录失败请求和重试请求的 id、冻结的恢复提示来源，并支持按 conversation 过滤。
+
 - 省略 `conversation` 可检查完整账本
 - 传 `conversation=review` 可过滤单个线程
 - 传 `after=<id>` 可做增量读取

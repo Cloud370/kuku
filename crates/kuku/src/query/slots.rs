@@ -9,10 +9,20 @@ use crate::event::StoredEvent;
 use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
 
-pub(crate) fn requires_ordered_simple_execution(tool_name: &str) -> bool {
-    matches!(tool_name, "read_file" | "edit_file" | "write_file")
+pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "read_file"
+            | "edit_file"
+            | "write_file"
+            | "remember_memory"
+            | "forget_memory"
+            | "run_command"
+            | "agent"
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_simple_slot(
     tool_call_id: String,
@@ -21,21 +31,22 @@ pub(crate) fn spawn_simple_slot(
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
-    workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     kuku_home: PathBuf,
     prior_events: Vec<StoredEvent>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
-    event_store: crate::event::EventStore,
-    parent_request: crate::event::RequestScope,
-    request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
+    events_path: PathBuf,
+    workspace_capability: Option<Arc<dyn super::WorkspaceQueryCapability>>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
     let tc_id = tool_call_id.clone();
     let dispatch_tool_call_id = tool_call_id.clone();
-    let ordered_with_simple_tools = requires_ordered_simple_execution(&tool_name);
+    let dispatch_conversation = conversation
+        .clone()
+        .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
+    let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
         let result = tokio::select! {
@@ -44,25 +55,47 @@ pub(crate) fn spawn_simple_slot(
                 status: "cancelled".into(),
                 summary: "cancelled".into(),
                 model_content: String::new(),
+                truncated: false,
                 result: None,
             },
             r = async {
-                match workspace_capability.as_deref() {
-                    Some(capability) => crate::tool::dispatch::dispatch_with_capability(
-                        &tool_name, &args, capability, &workspace, &kuku_home, &prior_events, 0,
-                        Some(&dispatch_tool_call_id), &config, &catalog, &event_store,
-                        &parent_request, request_evidence_recorder.as_ref(),
-                    ).await,
-                    None => crate::tool::dispatch::dispatch(
-                        &tool_name, &args, &workspace, &kuku_home, &prior_events, 0,
-                        Some(&dispatch_tool_call_id), &config, &catalog, &event_store,
-                        &parent_request, request_evidence_recorder.as_ref(),
-                    ).await,
+                if let Some(capability) = workspace_capability {
+                    crate::tool::dispatch::dispatch_with_capability(
+                        &tool_name,
+                        &args,
+                        capability,
+                        &workspace,
+                        &kuku_home,
+                        &dispatch_conversation,
+                        &prior_events,
+                        0,
+                        Some(&dispatch_tool_call_id),
+                        &config,
+                        &catalog,
+                        &events_path,
+                    )
+                    .await
+                } else {
+                    crate::tool::dispatch::dispatch(
+                        &tool_name,
+                        &args,
+                        &workspace,
+                        &kuku_home,
+                        &dispatch_conversation,
+                        &prior_events,
+                        0,
+                        Some(&dispatch_tool_call_id),
+                        &config,
+                        &catalog,
+                        &events_path,
+                    )
+                    .await
                 }
             } => SlotEvent::Done {
                 status: r.status,
                 summary: r.summary,
                 model_content: r.model_content,
+                truncated: r.truncated,
                 result: r.structured,
             },
         };
@@ -73,10 +106,9 @@ pub(crate) fn spawn_simple_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Simple,
-        ordered_with_simple_tools,
+        workspace_ordered,
         label: summary,
         cancel,
-        command_cancellation: None,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -102,9 +134,8 @@ pub(crate) fn spawn_agent_slot(
     let cp = nested_permissions.clone();
     let tc_id = tool_call_id.clone();
     let tool_kind = ToolKind::Agent {
-        conversation_id: dispatch.execution.conversation_id.clone(),
-        agent: dispatch.binding.agent.clone(),
-        tier: dispatch.binding.tier.clone(),
+        conversation: dispatch.conversation.clone(),
+        binding_id: dispatch.binding.binding_id.clone(),
     };
     let dispatch_for_slot = dispatch.clone();
 
@@ -124,12 +155,7 @@ pub(crate) fn spawn_agent_slot(
                 let _ = event_tx
                     .send((
                         tc_id.clone(),
-                        SlotEvent::Done {
-                            status: "error".into(),
-                            summary: "agent: failed to start conversation".into(),
-                            model_content: String::new(),
-                            result: None,
-                        },
+                        agent_error_event("agent: failed to start conversation".to_string()),
                     ))
                     .await;
                 return;
@@ -145,6 +171,7 @@ pub(crate) fn spawn_agent_slot(
                         status: "cancelled".into(),
                         summary: format!("{} cancelled", dispatch.conversation.as_str()),
                         model_content: String::new(),
+                        truncated: false,
                         result: None,
                     })).await;
                     return;
@@ -165,6 +192,7 @@ pub(crate) fn spawn_agent_slot(
                                     output.turn
                                 ),
                                 model_content: output.text,
+                                truncated: false,
                                 result: Some(serde_json::json!({
                                     "kind": "agent_result",
                                     "conversation": dispatch.conversation.as_str(),
@@ -205,15 +233,10 @@ pub(crate) fn spawn_agent_slot(
                     let _ = event_tx
                         .send((
                             tc_id.clone(),
-                            SlotEvent::Done {
-                                status: "error".into(),
-                                summary: format!(
-                                    "{}: stream ended unexpectedly",
-                                    dispatch.conversation.as_str()
-                                ),
-                                model_content: String::new(),
-                                result: None,
-                            },
+                            agent_error_event(format!(
+                                "{}: stream ended unexpectedly",
+                                dispatch.conversation.as_str()
+                            )),
                         ))
                         .await;
                     return;
@@ -226,10 +249,9 @@ pub(crate) fn spawn_agent_slot(
         tool_call_id,
         conversation,
         kind: tool_kind,
-        ordered_with_simple_tools: false,
+        workspace_ordered: true,
         label: summary,
         cancel,
-        command_cancellation: None,
         nested_permissions,
     }
 }
@@ -240,15 +262,11 @@ pub(crate) fn spawn_command_slot(
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
-    workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
+    workspace_capability: Option<Arc<dyn super::WorkspaceQueryCapability>>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
-    let command_cancellation = workspace_capability
-        .as_ref()
-        .map(|_| crate::query::WorkspaceCommandCancellation::default());
-    let command_cancellation_for_task = command_cancellation.clone();
     let tc_id = tool_call_id.clone();
 
     tokio::spawn(async move {
@@ -278,8 +296,7 @@ pub(crate) fn spawn_command_slot(
                     &args,
                     capability,
                     Some(tool_tx),
-                    command_cancellation_for_task
-                        .expect("capability command cancellation token must exist"),
+                    crate::query::WorkspaceCommandCancellation::default(),
                 )
                 .await
             }
@@ -298,6 +315,7 @@ pub(crate) fn spawn_command_slot(
             status: r.status,
             summary: r.summary,
             model_content: r.model_content,
+            truncated: r.truncated,
             result: r.structured,
         };
         let _ = event_tx.send((tc_id, result)).await;
@@ -307,10 +325,9 @@ pub(crate) fn spawn_command_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Command { pid: None },
-        ordered_with_simple_tools: false,
+        workspace_ordered: true,
         label: summary,
         cancel,
-        command_cancellation,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -322,15 +339,13 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) args: serde_json::Value,
     pub(crate) summary: String,
     pub(crate) workspace: PathBuf,
-    pub(crate) workspace_capability: Option<Arc<dyn crate::query::WorkspaceQueryCapability>>,
     pub(crate) kuku_home: PathBuf,
     pub(crate) prior_events: Vec<StoredEvent>,
     pub(crate) event_tx: mpsc::Sender<(String, SlotEvent)>,
     pub(crate) config: std::sync::Arc<crate::config::Config>,
     pub(crate) catalog: crate::prompt::PromptCatalog,
-    pub(crate) event_store: crate::event::EventStore,
-    pub(crate) parent_request: crate::event::RequestScope,
-    pub(crate) request_evidence_recorder: Arc<dyn crate::query::provider::RequestEvidenceRecorder>,
+    pub(crate) events_path: PathBuf,
+    pub(crate) workspace_capability: Option<Arc<dyn super::WorkspaceQueryCapability>>,
 }
 
 pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {
@@ -341,8 +356,8 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.args,
             args.summary,
             args.workspace,
-            args.workspace_capability,
             args.event_tx,
+            args.workspace_capability,
         );
         (slot, ToolKind::Command { pid: None })
     } else {
@@ -353,15 +368,13 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.args,
             args.summary,
             args.workspace,
-            args.workspace_capability,
             args.kuku_home,
             args.prior_events,
             args.event_tx,
             args.config,
             args.catalog,
-            args.event_store,
-            args.parent_request,
-            args.request_evidence_recorder,
+            args.events_path,
+            args.workspace_capability,
         );
         (slot, ToolKind::Simple)
     }
@@ -401,10 +414,180 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
             Some(ToolEvent::PermissionRequested { request })
         }
         UiEvent::Error { code, message } => Some(ToolEvent::Error { code, message }),
+        UiEvent::ModelRequest {
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+            ..
+        } => Some(ToolEvent::ModelRequest {
+            conversation,
+            turn,
+            request_id,
+            request_ordinal,
+        }),
+        UiEvent::ModelRecovery { info } => Some(ToolEvent::ModelRecovery { info }),
         UiEvent::Done { .. } => None,
-        UiEvent::TurnStart { .. }
-        | UiEvent::ModelRequest { .. }
-        | UiEvent::Log { .. }
-        | UiEvent::Cancelled { .. } => None,
+        UiEvent::TurnStart { .. } | UiEvent::Log { .. } | UiEvent::Cancelled { .. } => None,
+    }
+}
+
+fn agent_error_event(summary: String) -> SlotEvent {
+    SlotEvent::Done {
+        status: "error".to_string(),
+        summary,
+        model_content: String::new(),
+        truncated: false,
+        result: Some(serde_json::json!({"kind": "error"})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_event(
+        id: u64,
+        dir: &std::path::Path,
+        conversation: Option<&str>,
+        content: &[u8],
+    ) -> StoredEvent {
+        use sha2::{Digest, Sha256};
+
+        let canonical = dir.join("visible.txt").canonicalize().unwrap();
+        StoredEvent {
+            id,
+            payload: crate::event::EventPayload::ToolResult {
+                turn: 1,
+                ts: "ts".to_string(),
+                conversation: conversation.map(str::to_string),
+                tool_call_id: format!("read_{id}"),
+                status: "ok".to_string(),
+                summary: "read".to_string(),
+                model_content: "1\talpha".to_string(),
+                truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: Some(serde_json::json!({
+                    "kind": "file_content",
+                    "canonical_path": canonical.to_string_lossy(),
+                    "content_hash": format!("sha256:{:x}", Sha256::digest(content)),
+                    "raw_text": String::from_utf8_lossy(content),
+                    "read_event_id": id,
+                    "start_line": 1,
+                    "line_count": 1,
+                    "total_lines": 1,
+                    "is_full_file_snapshot": true,
+                    "cached": false,
+                })),
+            },
+        }
+    }
+
+    fn test_config() -> std::sync::Arc<crate::config::Config> {
+        let file: crate::config::ConfigFile =
+            toml::from_str(crate::config::generate_default()).unwrap();
+        std::sync::Arc::new(file.resolve().unwrap())
+    }
+
+    #[test]
+    fn workspace_ordering_is_limited_to_snapshot_and_mutator_slots() {
+        for tool_name in [
+            "read_file",
+            "edit_file",
+            "write_file",
+            "remember_memory",
+            "forget_memory",
+            "run_command",
+            "agent",
+        ] {
+            assert!(requires_workspace_ordering(tool_name), "{tool_name}");
+        }
+        for tool_name in ["find_files", "search_text", "fetch_url", "query_session"] {
+            assert!(!requires_workspace_ordering(tool_name), "{tool_name}");
+        }
+    }
+
+    #[test]
+    fn agent_error_event_has_stable_structured_marker() {
+        let SlotEvent::Done {
+            status,
+            truncated,
+            result,
+            ..
+        } = agent_error_event("agent failed".to_string())
+        else {
+            panic!("expected terminal agent event");
+        };
+
+        assert_eq!("error", status);
+        assert!(!truncated);
+        assert_eq!(Some(serde_json::json!({"kind": "error"})), result);
+    }
+
+    #[tokio::test]
+    async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = b"alpha\n";
+        std::fs::write(dir.path().join("visible.txt"), content).unwrap();
+        let main_read = read_event(1, dir.path(), None, content);
+        let review_read = read_event(2, dir.path(), Some("review"), content);
+        let review = crate::conversation::address::ConversationAddress::parse("review").unwrap();
+        let args = serde_json::json!({
+            "path": "visible.txt",
+            "old_text": "alpha",
+            "new_text": "omega",
+            "brief": "rename visible text"
+        });
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(2);
+
+        spawn_simple_slot(
+            "edit_main_snapshot".to_string(),
+            Some(review.clone()),
+            "edit_file".to_string(),
+            args.clone(),
+            "edit".to_string(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            vec![main_read],
+            event_tx.clone(),
+            test_config(),
+            crate::prompt::builtin_prompt_catalog(),
+            dir.path().join("events.jsonl"),
+            None,
+        );
+        let (_, denied) = event_rx.recv().await.unwrap();
+        let SlotEvent::Done { status, .. } = denied else {
+            panic!("expected completed slot");
+        };
+        assert_eq!(status, "error");
+
+        spawn_simple_slot(
+            "edit_review_snapshot".to_string(),
+            Some(review),
+            "edit_file".to_string(),
+            args,
+            "edit".to_string(),
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            vec![review_read],
+            event_tx,
+            test_config(),
+            crate::prompt::builtin_prompt_catalog(),
+            dir.path().join("events.jsonl"),
+            None,
+        );
+        let (_, allowed) = event_rx.recv().await.unwrap();
+        let SlotEvent::Done { status, .. } = allowed else {
+            panic!("expected completed slot");
+        };
+
+        assert_eq!(status, "ok");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("visible.txt")).unwrap(),
+            "omega\n"
+        );
     }
 }

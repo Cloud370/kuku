@@ -1,9 +1,11 @@
 use super::http_client;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
+use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
 use super::error::{classify_http_error, transport_error};
@@ -266,10 +268,23 @@ fn openai_headers(config: &ResolvedProvider) -> HeaderMap {
     headers
 }
 
+struct ResponseFunctionCall {
+    item_id: Option<String>,
+    call_id: String,
+    name: String,
+    arguments: String,
+    done_arguments: Option<String>,
+    item_done: bool,
+}
+
 struct OpenAiResponsesSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
     completed: bool,
+    output_item_types: BTreeMap<u64, String>,
+    item_id_indices: BTreeMap<String, u64>,
+    function_calls: BTreeMap<u64, ResponseFunctionCall>,
+    invalid_function_calls: bool,
 }
 
 impl OpenAiResponsesSseParser {
@@ -278,6 +293,123 @@ impl OpenAiResponsesSseParser {
             chunks: Vec::new(),
             started: false,
             completed: false,
+            output_item_types: BTreeMap::new(),
+            item_id_indices: BTreeMap::new(),
+            function_calls: BTreeMap::new(),
+            invalid_function_calls: false,
+        }
+    }
+
+    fn invalidate_tool_stream(&mut self) {
+        self.invalid_function_calls = true;
+        self.chunks.push(ProviderChunk::InvalidToolStream);
+    }
+
+    fn item_identity(value: Option<&Value>) -> Result<Option<String>, ()> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let id = match value.get("id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) if !id.trim().is_empty() => Some(id.clone()),
+            Some(_) => return Err(()),
+        };
+        let item_id = match value.get("item_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(item_id)) if !item_id.trim().is_empty() => Some(item_id.clone()),
+            Some(_) => return Err(()),
+        };
+        match (id, item_id) {
+            (Some(id), Some(item_id)) if id != item_id => Err(()),
+            (Some(id), _) | (_, Some(id)) => Ok(Some(id)),
+            (None, None) => Ok(None),
+        }
+    }
+
+    fn event_item_identity(data: &Value, item: Option<&Value>) -> Result<Option<String>, ()> {
+        let event_id = match data.get("item_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(item_id)) if !item_id.trim().is_empty() => Some(item_id.clone()),
+            Some(_) => return Err(()),
+        };
+        let item_id = Self::item_identity(item)?;
+        match (event_id, item_id) {
+            (Some(event_id), Some(item_id)) if event_id != item_id => Err(()),
+            (Some(event_id), _) | (_, Some(event_id)) => Ok(Some(event_id)),
+            (None, None) => Ok(None),
+        }
+    }
+
+    fn validate_function_identity(
+        &mut self,
+        index: u64,
+        data: &Value,
+        item: Option<&Value>,
+        require_if_known: bool,
+    ) -> bool {
+        let identity = match Self::event_item_identity(data, item) {
+            Ok(identity) => identity,
+            Err(()) => {
+                self.invalidate_tool_stream();
+                return false;
+            }
+        };
+        let Some(call) = self.function_calls.get(&index) else {
+            self.invalidate_tool_stream();
+            return false;
+        };
+        let expected = call.item_id.clone();
+        if require_if_known && expected.is_some() && identity.is_none() {
+            self.invalidate_tool_stream();
+            return false;
+        }
+        if expected
+            .as_deref()
+            .zip(identity.as_deref())
+            .is_some_and(|(expected, actual)| expected != actual)
+        {
+            self.invalidate_tool_stream();
+            return false;
+        }
+        if let Some(identity) = identity {
+            if self
+                .item_id_indices
+                .get(&identity)
+                .is_some_and(|owner| *owner != index)
+            {
+                self.invalidate_tool_stream();
+                return false;
+            }
+            if expected.is_none() {
+                self.function_calls
+                    .get_mut(&index)
+                    .expect("validated function call")
+                    .item_id = Some(identity.clone());
+            }
+            self.item_id_indices.insert(identity, index);
+        }
+        true
+    }
+
+    fn terminal_identity_matches(
+        &self,
+        index: u64,
+        call: &ResponseFunctionCall,
+        identity: Option<&str>,
+    ) -> bool {
+        if let Some(identity) = identity {
+            if self
+                .item_id_indices
+                .get(identity)
+                .is_some_and(|owner| *owner != index)
+            {
+                return false;
+            }
+        }
+        match (call.item_id.as_deref(), identity) {
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_), None) => false,
+            (None, _) => true,
         }
     }
 
@@ -319,15 +451,46 @@ impl OpenAiResponsesSseParser {
                 self.started = true;
             }
             "response.output_item.added" => {
-                let item = match data.get("item") {
-                    Some(i) => i,
-                    None => return Ok(self.take_chunks()),
+                let Some(item) = data.get("item") else {
+                    return Ok(self.take_chunks());
                 };
-                if let Some("function_call") = item.get("type").and_then(Value::as_str) {
-                    let index = data
-                        .get("output_index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
+                let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+                    return Ok(self.take_chunks());
+                };
+                let Some(index) = data.get("output_index").and_then(Value::as_u64) else {
+                    if item_type == "function_call" {
+                        self.invalidate_tool_stream();
+                    }
+                    return Ok(self.take_chunks());
+                };
+                if self
+                    .output_item_types
+                    .insert(index, item_type.to_string())
+                    .is_some()
+                {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                }
+                let item_identity = match Self::event_item_identity(&data, Some(item)) {
+                    Ok(identity) => identity,
+                    Err(()) => {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    }
+                };
+                if let Some(item_identity) = item_identity.as_deref() {
+                    if self
+                        .item_id_indices
+                        .get(item_identity)
+                        .is_some_and(|owner| *owner != index)
+                    {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    }
+                    self.item_id_indices
+                        .insert(item_identity.to_string(), index);
+                }
+                if item_type == "function_call" {
                     let call_id = item
                         .get("call_id")
                         .and_then(Value::as_str)
@@ -338,6 +501,17 @@ impl OpenAiResponsesSseParser {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
+                    self.function_calls.insert(
+                        index,
+                        ResponseFunctionCall {
+                            item_id: item_identity,
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            arguments: String::new(),
+                            done_arguments: None,
+                            item_done: false,
+                        },
+                    );
                     self.chunks.push(ProviderChunk::ToolCallStart {
                         index,
                         id: call_id,
@@ -364,38 +538,119 @@ impl OpenAiResponsesSseParser {
                 }
             }
             "response.function_call_arguments.delta" => {
-                let index = data
-                    .get("output_index")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
-                    if !delta.is_empty() {
+                let Some(index) = data.get("output_index").and_then(Value::as_u64) else {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                };
+                let Some(delta) = data.get("delta").and_then(Value::as_str) else {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                };
+                if !self.validate_function_identity(index, &data, None, true) {
+                    return Ok(self.take_chunks());
+                }
+                let valid = self
+                    .function_calls
+                    .get(&index)
+                    .is_some_and(|call| !call.item_done && call.done_arguments.is_none());
+                if !valid {
+                    self.invalidate_tool_stream();
+                } else if !delta.is_empty() {
+                    self.function_calls
+                        .get_mut(&index)
+                        .expect("validated function call")
+                        .arguments
+                        .push_str(delta);
+                    self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                        index,
+                        fragment: delta.to_string(),
+                    });
+                }
+            }
+            "response.function_call_arguments.done" => {
+                let Some(index) = data.get("output_index").and_then(Value::as_u64) else {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                };
+                let item = data.get("item");
+                if !self.validate_function_identity(index, &data, item, true) {
+                    return Ok(self.take_chunks());
+                }
+                let top_level_arguments = match data.get("arguments") {
+                    None => None,
+                    Some(Value::String(arguments)) => Some(arguments),
+                    Some(_) => {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    }
+                };
+                let arguments = if let Some(item) = item {
+                    let matches_call = item.get("type").and_then(Value::as_str)
+                        == Some("function_call")
+                        && item.get("call_id").and_then(Value::as_str)
+                            == self
+                                .function_calls
+                                .get(&index)
+                                .map(|call| call.call_id.as_str())
+                        && item.get("name").and_then(Value::as_str)
+                            == self
+                                .function_calls
+                                .get(&index)
+                                .map(|call| call.name.as_str());
+                    let Some(item_arguments) = item.get("arguments").and_then(Value::as_str) else {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    };
+                    if !matches_call
+                        || top_level_arguments.is_some_and(|arguments| arguments != item_arguments)
+                    {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    }
+                    item_arguments
+                } else if let Some(arguments) = top_level_arguments {
+                    arguments
+                } else {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                };
+                let Some(call) = self.function_calls.get_mut(&index) else {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                };
+                if call.item_done || call.done_arguments.is_some() {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
+                }
+                if call.arguments.is_empty() {
+                    call.arguments.push_str(arguments);
+                    if !arguments.is_empty() {
                         self.chunks.push(ProviderChunk::ToolCallArgDelta {
                             index,
-                            fragment: delta.to_string(),
+                            fragment: arguments.to_string(),
                         });
                     }
+                } else if call.arguments != arguments {
+                    self.invalid_function_calls = true;
+                }
+                call.done_arguments = Some(arguments.to_string());
+                if self.invalid_function_calls {
+                    self.chunks.push(ProviderChunk::InvalidToolStream);
                 }
             }
             "response.output_item.done" => {
-                let index = data
-                    .get("output_index")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                self.chunks.push(ProviderChunk::ContentBlockStop { index });
+                self.finish_output_item(&data);
             }
             "response.completed" => {
                 if let Some(resp) = data.get("response") {
                     self.push_usage(resp);
-                    if let Some(status) = resp.get("status").and_then(Value::as_str) {
-                        let reason = match status {
-                            "completed" => "end_turn",
-                            other => other,
-                        };
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
-                    }
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: self.completed_reason(resp),
+                    });
+                } else {
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: ModelStopReason::InvalidResponse,
+                    });
                 }
                 self.completed = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
@@ -403,15 +658,17 @@ impl OpenAiResponsesSseParser {
             "response.incomplete" => {
                 if let Some(resp) = data.get("response") {
                     self.push_usage(resp);
-                    if let Some(reason) = resp
+                    let reason = resp
                         .get("incomplete_details")
                         .and_then(|details| details.get("reason"))
                         .and_then(Value::as_str)
-                    {
-                        self.chunks.push(ProviderChunk::StopReason {
-                            reason: reason.to_string(),
-                        });
-                    }
+                        .and_then(ModelStopReason::from_wire)
+                        .unwrap_or(ModelStopReason::Incomplete);
+                    self.chunks.push(ProviderChunk::StopReason { reason });
+                } else {
+                    self.chunks.push(ProviderChunk::StopReason {
+                        reason: ModelStopReason::Incomplete,
+                    });
                 }
                 self.completed = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
@@ -448,24 +705,184 @@ impl OpenAiResponsesSseParser {
 
     fn push_usage(&mut self, response: &Value) {
         if let Some(usage) = response.get("usage") {
-            let input_tokens_total = usage
-                .get("input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let input_tokens_total = usage.get("input_tokens").and_then(Value::as_u64);
             let cache_read_input_tokens = usage
                 .get("input_tokens_details")
                 .and_then(|details| details.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+                .and_then(Value::as_u64);
             self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: input_tokens_total.saturating_sub(cache_read_input_tokens),
-                output_tokens: usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
+                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
+                    (Some(total), None) => Some(total),
+                    (None, _) => None,
+                },
+                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
                 cache_read_input_tokens,
-                cache_creation_input_tokens: 0,
+                cache_creation_input_tokens: None,
             });
+        }
+    }
+
+    fn finish_output_item(&mut self, data: &Value) {
+        let Some(item) = data.get("item") else {
+            if data
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .is_some_and(|index| self.function_calls.contains_key(&index))
+            {
+                self.invalidate_tool_stream();
+            }
+            return;
+        };
+        let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+            if data
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .is_some_and(|index| self.function_calls.contains_key(&index))
+            {
+                self.invalidate_tool_stream();
+            }
+            return;
+        };
+        let Some(index) = data.get("output_index").and_then(Value::as_u64) else {
+            if item_type == "function_call" {
+                self.invalidate_tool_stream();
+            }
+            return;
+        };
+        if self.output_item_types.get(&index).map(String::as_str) != Some(item_type) {
+            self.invalidate_tool_stream();
+            return;
+        }
+        if item_type != "function_call" {
+            self.chunks.push(ProviderChunk::ContentBlockStop { index });
+            return;
+        }
+
+        if !self.validate_function_identity(index, data, Some(item), true) {
+            return;
+        }
+
+        let Some(arguments) = item.get("arguments").and_then(Value::as_str) else {
+            self.invalidate_tool_stream();
+            return;
+        };
+        let Some(call) = self.function_calls.get_mut(&index) else {
+            self.invalidate_tool_stream();
+            return;
+        };
+        let matches_call = item.get("call_id").and_then(Value::as_str) == Some(&call.call_id)
+            && item.get("name").and_then(Value::as_str) == Some(&call.name)
+            && !call.item_done
+            && call
+                .done_arguments
+                .as_deref()
+                .is_none_or(|done| done == arguments);
+        if !matches_call {
+            self.invalid_function_calls = true;
+        }
+        if call.arguments.is_empty() {
+            call.arguments.push_str(arguments);
+            if !arguments.is_empty() {
+                self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                    index,
+                    fragment: arguments.to_string(),
+                });
+            }
+        } else if call.arguments != arguments {
+            self.invalid_function_calls = true;
+        }
+        call.item_done = true;
+        if self.invalid_function_calls {
+            self.chunks.push(ProviderChunk::InvalidToolStream);
+        }
+        self.chunks.push(ProviderChunk::ToolCallStop { index });
+    }
+
+    fn completed_reason(&self, response: &Value) -> ModelStopReason {
+        if response.get("status").and_then(Value::as_str) != Some("completed") {
+            return response
+                .get("status")
+                .and_then(Value::as_str)
+                .and_then(ModelStopReason::from_wire)
+                .unwrap_or(ModelStopReason::InvalidResponse);
+        }
+        if self.invalid_function_calls {
+            return ModelStopReason::InvalidResponse;
+        }
+
+        let output = response.get("output").and_then(Value::as_array);
+        let Some(output) = output else {
+            return if self.function_calls.is_empty() {
+                ModelStopReason::EndTurn
+            } else {
+                ModelStopReason::InvalidResponse
+            };
+        };
+        let mut expected_calls = BTreeMap::new();
+        let mut terminal_item_ids: BTreeMap<String, u64> = BTreeMap::new();
+        for (index, item) in output.iter().enumerate() {
+            let index = index as u64;
+            let item_identity = match Self::event_item_identity(&Value::Null, Some(item)) {
+                Ok(identity) => identity,
+                Err(()) => return ModelStopReason::InvalidResponse,
+            };
+            if let Some(item_identity) = item_identity.as_deref() {
+                if terminal_item_ids
+                    .insert(item_identity.to_string(), index)
+                    .is_some_and(|owner| owner != index)
+                    || self
+                        .item_id_indices
+                        .get(item_identity)
+                        .is_some_and(|owner| *owner != index)
+                {
+                    return ModelStopReason::InvalidResponse;
+                }
+            }
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                continue;
+            }
+            let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            let Some(name) = item.get("name").and_then(Value::as_str) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            let Some(arguments) = item.get("arguments").and_then(Value::as_str) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            if expected_calls
+                .insert(index, (call_id, name, arguments, item_identity))
+                .is_some()
+            {
+                return ModelStopReason::InvalidResponse;
+            }
+        }
+        if expected_calls.len() != self.function_calls.len() {
+            return ModelStopReason::InvalidResponse;
+        }
+        for (index, (call_id, name, arguments, item_identity)) in expected_calls {
+            let Some(call) = self.function_calls.get(&index) else {
+                return ModelStopReason::InvalidResponse;
+            };
+            if self.output_item_types.get(&index).map(String::as_str) != Some("function_call")
+                || call.call_id != call_id
+                || call.name != name
+                || call.arguments != arguments
+                || !call.item_done
+                || !self.terminal_identity_matches(index, call, item_identity.as_deref())
+                || call
+                    .done_arguments
+                    .as_deref()
+                    .is_some_and(|done| done != arguments)
+            {
+                return ModelStopReason::InvalidResponse;
+            }
+        }
+        if self.function_calls.is_empty() {
+            ModelStopReason::EndTurn
+        } else {
+            ModelStopReason::ToolUse
         }
     }
 
@@ -517,11 +934,15 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 50,
-                output_tokens: 30,
-                cache_read_input_tokens: 70,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(50),
+                output_tokens: Some(30),
+                cache_read_input_tokens: Some(70),
+                cache_creation_input_tokens: None
             }
+        )));
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::EndTurn
         )));
     }
 
@@ -555,19 +976,466 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: 50,
-                output_tokens: 30,
-                cache_read_input_tokens: 70,
-                cache_creation_input_tokens: 0
+                input_tokens: Some(50),
+                output_tokens: Some(30),
+                cache_read_input_tokens: Some(70),
+                cache_creation_input_tokens: None
             }
         )));
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
-            ProviderChunk::StopReason { reason } if reason == "max_tokens"
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Length
         )));
         assert!(chunks
             .last()
             .is_some_and(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    }
+
+    #[test]
+    fn incomplete_response_without_reason_is_explicitly_incomplete() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        let frame = concat!(
+            "event: response.incomplete\n",
+            r#"data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","usage":{"input_tokens":1,"output_tokens":2}}}"#,
+        );
+
+        let chunks = parser.feed(frame).unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Incomplete
+        )));
+    }
+
+    #[test]
+    fn completed_response_with_matching_function_call_is_tool_use() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::ToolUse
+        )));
+    }
+
+    #[test]
+    fn function_call_done_emits_typed_tool_completion() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            chunks.as_slice(),
+            [
+                ProviderChunk::ToolCallArgDelta { index: 0, fragment },
+                ProviderChunk::ToolCallStop { index: 0 }
+            ] if fragment == "{}"
+        ));
+    }
+
+    #[test]
+    fn completed_response_with_missing_call_marker_item_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn completed_response_with_mismatched_call_marker_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{}"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn authoritative_done_arguments_are_emitted_once_without_deltas() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser.feed(concat!(
+            "event: response.output_item.added\n",
+            r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"write_file"}}"#,
+        )).unwrap();
+
+        let done_chunks = parser
+            .feed(concat!(
+                "event: response.function_call_arguments.done\n",
+                r#"data: {"output_index":0,"arguments":"{\"path\":\"a.txt\"}"}"#,
+            ))
+            .unwrap();
+        let item_chunks = parser.feed(concat!(
+            "event: response.output_item.done\n",
+            r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}}"#,
+        )).unwrap();
+        let terminal_chunks = parser.feed(concat!(
+            "event: response.completed\n",
+            r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}]}}"#,
+        )).unwrap();
+
+        assert!(
+            matches!(done_chunks.as_slice(), [ProviderChunk::ToolCallArgDelta { index: 0, fragment }] if fragment == "{\"path\":\"a.txt\"}")
+        );
+        assert!(matches!(
+            item_chunks.as_slice(),
+            [ProviderChunk::ToolCallStop { index: 0 }]
+        ));
+        assert!(terminal_chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::ToolUse)));
+    }
+
+    #[test]
+    fn done_item_arguments_are_authoritative_without_deltas() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"write_file","arguments":""}}"#,
+            ))
+            .unwrap();
+
+        let done_chunks = parser
+            .feed(concat!(
+                "event: response.function_call_arguments.done\n",
+                r#"data: {"output_index":0,"item_id":"fc_1","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}}"#,
+            ))
+            .unwrap();
+        let item_chunks = parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}}"#,
+            ))
+            .unwrap();
+        let terminal_chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"write_file","arguments":"{\"path\":\"a.txt\"}"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            done_chunks.as_slice(),
+            [ProviderChunk::ToolCallArgDelta { index: 0, fragment }]
+                if fragment == "{\"path\":\"a.txt\"}"
+        ));
+        assert!(matches!(
+            item_chunks.as_slice(),
+            [ProviderChunk::ToolCallStop { index: 0 }]
+        ));
+        assert!(terminal_chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::ToolUse
+        )));
+    }
+
+    #[test]
+    fn done_item_and_top_level_arguments_must_match() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.function_call_arguments.done\n",
+                r#"data: {"output_index":0,"item_id":"fc_1","arguments":"{\"path\":\"top-level\"}","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"item\"}"}}"#,
+            ))
+            .unwrap();
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn done_item_identity_mismatch_is_invalid() {
+        for (field, value) in [
+            ("item_id", "fc_other"),
+            ("call_id", "call_other"),
+            ("name", "other_tool"),
+        ] {
+            let mut parser = OpenAiResponsesSseParser::new();
+            parser
+                .feed(concat!(
+                    "event: response.output_item.added\n",
+                    r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+                ))
+                .unwrap();
+            let item = format!(
+                "{{\"id\":\"{}\",\"type\":\"function_call\",\"call_id\":\"{}\",\"name\":\"{}\",\"arguments\":\"{{}}\"}}",
+                if field == "item_id" { value } else { "fc_1" },
+                if field == "call_id" { value } else { "call_1" },
+                if field == "name" { value } else { "read_file" },
+            );
+            parser
+                .feed(&format!(
+                    "event: response.function_call_arguments.done\ndata: {{\"output_index\":0,\"item_id\":\"fc_1\",\"item\":{item}}}"
+                ))
+                .unwrap();
+            let chunks = parser
+                .feed(concat!(
+                    "event: response.completed\n",
+                    r#"data: {"response":{"status":"completed","output":[]}}"#,
+                ))
+                .unwrap();
+            assert!(chunks.iter().any(|chunk| matches!(
+                chunk,
+                ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+            )));
+        }
+    }
+
+    #[test]
+    fn terminal_item_identity_mismatch_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_other","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+            ))
+            .unwrap();
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[{"id":"fc_other","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn function_item_identity_cannot_be_reused_across_indices() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_2","name":"read_file"}}"#,
+            ))
+            .unwrap();
+        let chunks = parser
+            .feed(concat!(
+                "event: response.completed\n",
+                r#"data: {"response":{"status":"completed","output":[]}}"#,
+            ))
+            .unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse
+        )));
+    }
+
+    #[test]
+    fn mismatched_argument_representations_are_invalid() {
+        let cases = [
+            (
+                Some("event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}"),
+                "event: response.function_call_arguments.done\ndata: {\"output_index\":0,\"arguments\":\"{\\\"path\\\":\\\"b.txt\\\"}\"}",
+                r#"{\"path\":\"b.txt\"}"#,
+                r#"{\"path\":\"b.txt\"}"#,
+            ),
+            (
+                None,
+                "event: response.function_call_arguments.done\ndata: {\"output_index\":0,\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}",
+                r#"{\"path\":\"b.txt\"}"#,
+                r#"{\"path\":\"b.txt\"}"#,
+            ),
+        ];
+
+        for (delta, done, item_arguments, output_arguments) in cases {
+            let mut parser = OpenAiResponsesSseParser::new();
+            parser.feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"write_file"}}"#,
+            )).unwrap();
+            if let Some(delta) = delta {
+                parser.feed(delta).unwrap();
+            }
+            parser.feed(done).unwrap();
+            parser.feed(&format!(
+                "event: response.output_item.done\ndata: {{\"output_index\":0,\"item\":{{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":{}}}}}",
+                serde_json::to_string(item_arguments).unwrap()
+            )).unwrap();
+            let chunks = parser.feed(&format!(
+                "event: response.completed\ndata: {{\"response\":{{\"status\":\"completed\",\"output\":[{{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":{}}}]}}}}",
+                serde_json::to_string(output_arguments).unwrap()
+            )).unwrap();
+
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
+    }
+
+    #[test]
+    fn missing_done_or_terminal_arguments_are_invalid() {
+        let cases = [(None, Some("{}")), (Some("{}"), None)];
+
+        for (done_arguments, terminal_arguments) in cases {
+            let mut parser = OpenAiResponsesSseParser::new();
+            parser.feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+            )).unwrap();
+            let done = done_arguments.map_or_else(
+                || "event: response.function_call_arguments.done\ndata: {\"output_index\":0}".to_string(),
+                |arguments| format!("event: response.function_call_arguments.done\ndata: {{\"output_index\":0,\"arguments\":{}}}", serde_json::to_string(arguments).unwrap()),
+            );
+            parser.feed(&done).unwrap();
+            parser.feed(concat!(
+                "event: response.output_item.done\n",
+                r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+            )).unwrap();
+            let output_item = terminal_arguments.map_or_else(
+                || r#"{"type":"function_call","call_id":"call_1","name":"read_file"}"#.to_string(),
+                |arguments| format!(r#"{{"type":"function_call","call_id":"call_1","name":"read_file","arguments":{}}}"#, serde_json::to_string(arguments).unwrap()),
+            );
+            let chunks = parser.feed(&format!(
+                "event: response.completed\ndata: {{\"response\":{{\"status\":\"completed\",\"output\":[{output_item}]}}}}"
+            )).unwrap();
+
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
+    }
+
+    #[test]
+    fn output_index_reused_across_item_types_is_invalid() {
+        let mut parser = OpenAiResponsesSseParser::new();
+        parser
+            .feed(concat!(
+                "event: response.output_item.added\n",
+                r#"data: {"output_index":0,"item":{"type":"message","id":"msg_1"}}"#,
+            ))
+            .unwrap();
+        parser.feed(concat!(
+            "event: response.output_item.added\n",
+            r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
+        )).unwrap();
+        parser
+            .feed(concat!(
+                "event: response.function_call_arguments.done\n",
+                r#"data: {"output_index":0,"arguments":"{}"}"#,
+            ))
+            .unwrap();
+        parser.feed(concat!(
+            "event: response.output_item.done\n",
+            r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}}"#,
+        )).unwrap();
+        let chunks = parser.feed(concat!(
+            "event: response.completed\n",
+            r#"data: {"response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}"#,
+        )).unwrap();
+
+        assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+    }
+
+    #[test]
+    fn missing_or_malformed_tool_output_index_is_invalid() {
+        for output_index in ["null", "\"zero\""] {
+            let mut parser = OpenAiResponsesSseParser::new();
+            parser.feed(&format!(
+                "event: response.output_item.added\ndata: {{\"output_index\":{output_index},\"item\":{{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}}}"
+            )).unwrap();
+            let chunks = parser
+                .feed(concat!(
+                    "event: response.completed\n",
+                    r#"data: {"response":{"status":"completed","output":[]}}"#,
+                ))
+                .unwrap();
+            assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
+        }
     }
 
     #[test]

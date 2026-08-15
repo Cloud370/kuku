@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -7,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 
 // ---------- Types ----------
@@ -28,6 +29,11 @@ pub(super) struct ReadSnapshot {
 pub(super) struct WriteSnapshot {
     pub(super) event_id: u64,
     pub(super) content_hash: String,
+}
+
+pub(super) enum WriteSnapshotLookup {
+    Found(WriteSnapshot),
+    Rejected(ToolErrorReason),
 }
 
 // ---------- Path resolution ----------
@@ -176,7 +182,10 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
 }
 
 pub(super) fn is_default_excluded_dir(name: &str) -> bool {
-    crate::query::is_default_excluded_workspace_directory(name)
+    matches!(
+        name,
+        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
+    )
 }
 
 // ---------- File I/O helpers ----------
@@ -360,43 +369,50 @@ pub(super) fn requested_line_count(
 
 pub(super) fn find_covering_read(
     events: &[StoredEvent],
+    conversation: &crate::conversation::address::ConversationAddress,
     canonical_path: &Path,
     content_hash: &str,
     start_line: usize,
     line_count: usize,
 ) -> Option<ReadSnapshot> {
     let canonical_path = canonical_path.to_string_lossy();
-    events.iter().rev().find_map(|event| {
-        let EventPayload::ToolResult {
-            status,
-            structured: Some(structured),
-            ..
-        } = &event.payload
-        else {
-            return None;
-        };
-        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
-            return None;
-        }
-        if structured["canonical_path"].as_str()? != canonical_path
-            || structured["content_hash"].as_str()? != content_hash
-        {
-            return None;
-        }
-        let snapshot = ReadSnapshot {
-            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-            start_line: structured["start_line"].as_u64()? as usize,
-            line_count: structured["line_count"].as_u64()? as usize,
-            is_full_file_snapshot: structured["is_full_file_snapshot"]
-                .as_bool()
-                .unwrap_or(false),
-        };
-        if snapshot.covers(start_line, line_count) {
-            Some(snapshot)
-        } else {
-            None
-        }
-    })
+    crate::context::replay::effective_snapshot_events(events, conversation)
+        .into_iter()
+        .rev()
+        .find_map(|event| {
+            let EventPayload::ToolResult {
+                status,
+                structured: Some(structured),
+                ..
+            } = &event.payload
+            else {
+                return None;
+            };
+            if status != "ok"
+                || structured["kind"] != "file_content"
+                || structured["cached"] == true
+            {
+                return None;
+            }
+            if structured["canonical_path"].as_str()? != canonical_path
+                || structured["content_hash"].as_str()? != content_hash
+            {
+                return None;
+            }
+            let snapshot = ReadSnapshot {
+                event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
+                start_line: structured["start_line"].as_u64()? as usize,
+                line_count: structured["line_count"].as_u64()? as usize,
+                is_full_file_snapshot: structured["is_full_file_snapshot"]
+                    .as_bool()
+                    .unwrap_or(false),
+            };
+            if snapshot.covers(start_line, line_count) {
+                Some(snapshot)
+            } else {
+                None
+            }
+        })
 }
 
 impl ReadSnapshot {
@@ -408,48 +424,157 @@ impl ReadSnapshot {
 
 pub(super) fn find_write_snapshot(
     events: &[StoredEvent],
+    conversation: &crate::conversation::address::ConversationAddress,
     canonical_path: &Path,
     require_full_file: bool,
     required_text: Option<&str>,
-) -> Option<WriteSnapshot> {
+    current_content_hash: Option<&str>,
+) -> WriteSnapshotLookup {
     let canonical_path = canonical_path.to_string_lossy();
-    events.iter().rev().find_map(|event| {
+    let mut saw_path_snapshot = false;
+    let mut stale_snapshot = None;
+    for event in crate::context::replay::effective_snapshot_events(events, conversation)
+        .into_iter()
+        .rev()
+    {
         let EventPayload::ToolResult {
             status,
-            model_content,
             structured: Some(structured),
             ..
         } = &event.payload
         else {
-            return None;
+            continue;
         };
         if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
-            return None;
+            continue;
         }
-        if structured["canonical_path"].as_str()? != canonical_path {
-            return None;
+        if structured["canonical_path"].as_str() != Some(canonical_path.as_ref()) {
+            continue;
         }
+        let Some(content_hash) = structured["content_hash"].as_str() else {
+            continue;
+        };
+        saw_path_snapshot = true;
         let is_full_file_snapshot = structured["is_full_file_snapshot"]
             .as_bool()
             .unwrap_or(false);
         if require_full_file && !is_full_file_snapshot {
-            return None;
+            continue;
         }
-        if !is_full_file_snapshot && required_text.is_some_and(|text| !model_content.contains(text))
+        if !is_full_file_snapshot
+            && required_text.is_some_and(|text| {
+                !visible_snapshot_raw_text(structured)
+                    .is_some_and(|raw_text| !text_match_offsets(raw_text, text).is_empty())
+            })
         {
-            return None;
+            continue;
         }
-        Some(WriteSnapshot {
+        let snapshot = WriteSnapshot {
             event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-            content_hash: structured["content_hash"].as_str()?.to_string(),
+            content_hash: content_hash.to_string(),
+        };
+        if current_content_hash.is_none_or(|current_hash| current_hash == content_hash) {
+            return WriteSnapshotLookup::Found(snapshot);
+        }
+        if stale_snapshot.is_none() {
+            stale_snapshot = Some(snapshot);
+        }
+    }
+    if let Some(snapshot) = stale_snapshot {
+        return WriteSnapshotLookup::Found(snapshot);
+    }
+    if require_full_file {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::FullSnapshotRequired)
+    } else if saw_path_snapshot && required_text.is_some() {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::OldTextNotVisible)
+    } else {
+        WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired)
+    }
+}
+
+pub(super) fn text_match_offsets(content: &str, text: &str) -> Vec<usize> {
+    let content_bytes = content.as_bytes();
+    let text_bytes = text.as_bytes();
+    content
+        .match_indices(text)
+        .map(|(offset, _)| offset)
+        .filter(|offset| {
+            text_bytes.iter().enumerate().all(|(text_offset, byte)| {
+                if *byte != b'\n' || (text_offset > 0 && text_bytes[text_offset - 1] == b'\r') {
+                    return true;
+                }
+                let content_offset = offset + text_offset;
+                content_offset == 0 || content_bytes[content_offset - 1] != b'\r'
+            })
         })
-    })
+        .collect()
+}
+
+fn visible_snapshot_raw_text(structured: &Value) -> Option<&str> {
+    let raw_text = structured["raw_text"].as_str()?;
+    let line_count = structured["line_count"].as_u64()? as usize;
+    let visible_len = raw_text
+        .split_inclusive('\n')
+        .take(line_count)
+        .map(str::len)
+        .sum();
+    raw_text.get(..visible_len)
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use super::*;
+    use crate::conversation::address::ConversationAddress;
+    use crate::event::RollbackScope;
+    use crate::tool::builtin::test_helpers::stored_read_event;
+
+    fn find_write_snapshot(
+        events: &[StoredEvent],
+        canonical_path: &Path,
+        require_full_file: bool,
+        required_text: Option<&str>,
+    ) -> Option<WriteSnapshot> {
+        match super::find_write_snapshot(
+            events,
+            &ConversationAddress::MAIN,
+            canonical_path,
+            require_full_file,
+            required_text,
+            None,
+        ) {
+            WriteSnapshotLookup::Found(snapshot) => Some(snapshot),
+            WriteSnapshotLookup::Rejected(_) => None,
+        }
+    }
+
+    fn snapshot_event(id: u64, turn: u64, conversation: Option<&str>, path: &Path) -> StoredEvent {
+        let mut event = stored_read_event(
+            id,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": id,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 1,
+                "is_full_file_snapshot": true,
+                "cached": false,
+            }),
+        );
+        if let EventPayload::ToolResult {
+            turn: event_turn,
+            conversation: event_conversation,
+            ..
+        } = &mut event.payload
+        {
+            *event_turn = turn;
+            *event_conversation = conversation.map(str::to_string);
+        }
+        event
+    }
 
     #[cfg(unix)]
     #[test]
@@ -470,5 +595,212 @@ mod tests {
             "outside\n",
             std::fs::read_to_string(outside.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_authorize_line_number_prefixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nbeta\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("1\talpha")).is_none());
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_authorize_text_past_visible_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nbeta\n"),
+                "raw_text": "alpha\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha\nbeta")).is_none());
+    }
+
+    #[test]
+    fn partial_snapshot_does_not_treat_lf_as_crlf_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\r\nbeta\r\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha\n2\tbeta",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\r\nbeta\r\n"),
+                "raw_text": "alpha\r\nbeta\r\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 2,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("\nbeta")).is_none());
+    }
+
+    #[test]
+    fn write_snapshot_prefers_matching_hash_over_newer_stale_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let fresh = snapshot_event(17, 1, None, &path);
+        let mut stale = snapshot_event(18, 2, None, &path);
+        if let EventPayload::ToolResult {
+            structured: Some(structured),
+            ..
+        } = &mut stale.payload
+        {
+            structured["content_hash"] = content_hash(b"stale\n").into();
+        }
+        let current_hash = content_hash(b"alpha\n");
+
+        let result = super::find_write_snapshot(
+            &[fresh, stale],
+            &ConversationAddress::MAIN,
+            &path,
+            false,
+            Some("alpha"),
+            Some(&current_hash),
+        );
+
+        let WriteSnapshotLookup::Found(snapshot) = result else {
+            panic!("expected a matching snapshot");
+        };
+        assert_eq!(snapshot.event_id, 17);
+        assert_eq!(snapshot.content_hash, current_hash);
+    }
+
+    #[test]
+    fn legacy_truncated_snapshot_does_not_authorize_raw_text_past_visible_line_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\nhidden tail\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = stored_read_event(
+            17,
+            "1\talpha\n(Results are truncated. Use offset and limit to read a smaller range.)",
+            serde_json::json!({
+                "kind": "file_content",
+                "canonical_path": path.to_string_lossy(),
+                "content_hash": content_hash(b"alpha\nhidden tail\n"),
+                "raw_text": "alpha\nhidden tail\n",
+                "read_event_id": 17,
+                "start_line": 1,
+                "line_count": 1,
+                "total_lines": 2,
+                "is_full_file_snapshot": false,
+                "cached": false,
+            }),
+        );
+
+        assert!(find_write_snapshot(&[snapshot.clone()], &path, false, Some("alpha")).is_some());
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("hidden tail")).is_none());
+    }
+
+    #[test]
+    fn snapshot_from_another_conversation_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 1, Some("review"), &path);
+
+        assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn rolled_back_snapshot_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 2, None, &path);
+        let rollback = StoredEvent {
+            id: 2,
+            payload: EventPayload::ConversationRollback {
+                ts: "ts".to_string(),
+                conversation: "main".to_string(),
+                to_turn: 2,
+                to_event_id: 1,
+                scope: RollbackScope::ConversationOnly,
+            },
+        };
+
+        assert!(find_write_snapshot(&[snapshot, rollback], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn compacted_snapshot_cannot_authorize_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let snapshot = snapshot_event(1, 1, None, &path);
+        let handoff = StoredEvent {
+            id: 2,
+            payload: EventPayload::Handoff {
+                turn: 1,
+                ts: "ts".to_string(),
+                request_id: "request_2".to_string(),
+                summary: "continue".to_string(),
+                keep_turns: 0,
+            },
+        };
+
+        assert!(find_write_snapshot(&[snapshot, handoff], &path, false, Some("alpha")).is_none());
+    }
+
+    #[test]
+    fn current_main_snapshot_still_authorizes_main_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("visible.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let implicit_main = snapshot_event(1, 1, None, &path);
+        let explicit_main = snapshot_event(2, 1, Some("main"), &path);
+
+        let snapshot =
+            find_write_snapshot(&[implicit_main, explicit_main], &path, false, Some("alpha"))
+                .unwrap();
+
+        assert_eq!(snapshot.event_id, 2);
     }
 }

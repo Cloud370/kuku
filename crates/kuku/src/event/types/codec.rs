@@ -1,9 +1,333 @@
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-use super::payload::EventPayload;
+use super::super::json::{
+    bool_field, optional_json_field, optional_stop_reason_field, optional_string_field,
+    optional_u64_field, string_field, u32_field, u64_field, u8_field, usize_field,
+    vec_string_field,
+};
+use super::task::TaskLedgerRecord;
+use crate::context::provenance::{
+    AgentRegistryProvenance, FileSource, PluginRegistryProvenance, PromptCapabilityMetadata,
+    PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
+};
+
+pub use super::super::model_stop_reason::ModelStopReason;
+pub use super::super::stored_event::StoredEvent;
+
+/// A single message in a frozen prelude snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Scope of a turn rollback operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RollbackScope {
+    #[serde(rename = "messages")]
+    ConversationOnly,
+    #[serde(rename = "file_changes")]
+    FilesOnly,
+    #[serde(rename = "both")]
+    Both,
+}
+
+impl RollbackScope {
+    /// Whether this scope skips conversation events during rebuild.
+    pub fn affects_conversation(&self) -> bool {
+        matches!(self, Self::ConversationOnly | Self::Both)
+    }
+
+    /// Whether this scope triggers file revert operations.
+    pub fn affects_files(&self) -> bool {
+        matches!(self, Self::FilesOnly | Self::Both)
+    }
+}
+
+/// All fact events that can be written to and read from a session's events.jsonl.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventPayload {
+    TaskLedger(TaskLedgerRecord),
+    ContextSources {
+        turn: u64,
+        ts: String,
+        request_id: String,
+        project_instruction_sources: Vec<FileSource>,
+        memory_sources: Vec<FileSource>,
+    },
+    ContextSkills {
+        conversation: String,
+        turn: u64,
+        ts: String,
+        registry: Value,
+        bootstrap_loaded: Vec<String>,
+    },
+    ModelResponse {
+        conversation: Option<String>,
+        turn: u64,
+        ts: String,
+        request_id: String,
+        text: String,
+        thinking: Option<String>,
+        stop_reason: Option<ModelStopReason>,
+        input_tokens_total: Option<u64>,
+        output_tokens_total: Option<u64>,
+    },
+    ModelError {
+        conversation: Option<String>,
+        turn: u64,
+        ts: String,
+        request_id: String,
+        kind: String,
+        message: String,
+    },
+    ModelRecovery {
+        conversation: String,
+        turn: u64,
+        ts: String,
+        from_request_id: String,
+        to_request_id: String,
+        reason: ModelStopReason,
+        attempt: u8,
+        max_attempts: u8,
+        failed_max_output_tokens: u32,
+        retry_max_output_tokens: u32,
+        output_tokens_total: Option<u64>,
+        discarded_tool_calls: u64,
+        notice: String,
+        prompt_path: String,
+        prompt_hash: String,
+    },
+    ToolCall {
+        turn: u64,
+        ts: String,
+        conversation: Option<String>,
+        tool_call_id: String,
+        request_id: String,
+        index: u64,
+        tool: String,
+        args: Value,
+    },
+    PermissionAllow {
+        turn: u64,
+        ts: String,
+        tool_call_id: String,
+        tool: String,
+        scope: String,
+        matcher: String,
+        source: String,
+    },
+    PermissionRequested {
+        turn: u64,
+        ts: String,
+        tool_call_id: String,
+        tool: String,
+        risk: String,
+        summary: String,
+        candidate: String,
+        source: String,
+    },
+    PermissionDeny {
+        turn: u64,
+        ts: String,
+        tool_call_id: String,
+        tool: String,
+        reason: String,
+        source: String,
+    },
+    ToolResult {
+        turn: u64,
+        ts: String,
+        conversation: Option<String>,
+        tool_call_id: String,
+        status: String,
+        summary: String,
+        model_content: String,
+        truncated: bool,
+        files_read: Vec<String>,
+        files_changed: Vec<String>,
+        commands_run: Vec<String>,
+        memory_changed: Option<Value>,
+        structured: Option<Value>,
+    },
+    Handoff {
+        turn: u64,
+        ts: String,
+        request_id: String,
+        summary: String,
+        keep_turns: usize,
+    },
+    SessionCreated {
+        ts: String,
+        schema_version: u32,
+        session_id: String,
+        created_at: String,
+        kuku_version: String,
+    },
+    ConversationOpened {
+        ts: String,
+        conversation: String,
+    },
+    ConversationBound {
+        ts: String,
+        conversation: String,
+        binding_id: String,
+    },
+    PromptSnapshot {
+        ts: String,
+        conversation: String,
+        binding_id: String,
+        snapshot_id: String,
+        turn: u64,
+        messages: Vec<ContextMessage>,
+        project_instruction_sources: Vec<FileSource>,
+        memory_sources: Vec<FileSource>,
+        prompt_asset_sources: Vec<FileSource>,
+        skills: Value,
+        bootstrap_loaded: Vec<String>,
+        provider: String,
+        model: String,
+        renderer: PromptRendererIdentity,
+        tool_registry: Box<ToolRegistryProvenance>,
+        agent_registry: Option<AgentRegistryProvenance>,
+        skill_registry: Box<Option<SkillRegistryProvenance>>,
+        plugin_registry: Box<Option<PluginRegistryProvenance>>,
+        capabilities: PromptCapabilityMetadata,
+    },
+    MessageUser {
+        ts: String,
+        conversation: String,
+        turn: u64,
+        text: String,
+        from: Option<String>,
+        via_tool_call_id: Option<String>,
+    },
+    MessageAssistant {
+        ts: String,
+        conversation: String,
+        turn: u64,
+        message_id: String,
+        text: String,
+    },
+    TurnStarted {
+        ts: String,
+        conversation: String,
+        turn: u64,
+    },
+    TurnCompleted {
+        ts: String,
+        conversation: String,
+        turn: u64,
+    },
+    TurnCancelled {
+        ts: String,
+        conversation: String,
+        turn: u64,
+        reason: String,
+    },
+    TurnInterrupted {
+        ts: String,
+        conversation: String,
+        turn: u64,
+        reason: String,
+    },
+    ConversationRollback {
+        ts: String,
+        conversation: String,
+        to_turn: u64,
+        to_event_id: u64,
+        scope: RollbackScope,
+    },
+    ConversationRollbackUndone {
+        ts: String,
+        conversation: String,
+        rollback_event_id: u64,
+    },
+    Unknown(Value),
+}
+
+impl Serialize for EventPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Unknown(value) => value.serialize(serializer),
+            payload => {
+                let mut value = payload.to_new_json(0).map_err(serde::ser::Error::custom)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("id");
+                }
+                value.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EventPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        if let Some(object) = value.as_object() {
+            if object.get("kind").and_then(Value::as_str) == Some("task.ledger") {
+                let record = serde_json::from_value(serde_json::json!({
+                    "record_type": object.get("record_type").cloned(),
+                    "record": object.get("record").cloned(),
+                }))
+                .map_err(serde::de::Error::custom)?;
+                return Ok(EventPayload::TaskLedger(record));
+            }
+            if let Some(payload) = EventPayload::from_json_object(object) {
+                return Ok(payload);
+            }
+        }
+        Ok(EventPayload::Unknown(value))
+    }
+}
 
 impl EventPayload {
-    pub(super) fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
+    pub fn kind_name(&self) -> &str {
+        match self {
+            Self::TaskLedger(_) => "task.ledger",
+            Self::ContextSources { .. } => "context.sources",
+            Self::ContextSkills { .. } => "context.skills",
+            Self::ModelResponse { .. } => "model.response",
+            Self::ModelError { .. } => "model.error",
+            Self::ModelRecovery { .. } => "model.recovery",
+            Self::ToolCall { .. } => "tool.call",
+            Self::PermissionRequested { .. } => "permission.requested",
+            Self::PermissionAllow { .. } => "permission.allow",
+            Self::PermissionDeny { .. } => "permission.deny",
+            Self::ToolResult { .. } => "tool.result",
+            Self::Handoff { .. } => "handoff",
+            Self::SessionCreated { .. } => "session.created",
+            Self::ConversationOpened { .. } => "conversation.opened",
+            Self::ConversationBound { .. } => "conversation.bound",
+            Self::PromptSnapshot { .. } => "prompt.snapshot",
+            Self::MessageUser { .. } => "message.user",
+            Self::MessageAssistant { .. } => "message.assistant",
+            Self::TurnStarted { .. } => "turn.started",
+            Self::TurnCompleted { .. } => "turn.completed",
+            Self::TurnCancelled { .. } => "turn.cancelled",
+            Self::TurnInterrupted { .. } => "turn.interrupted",
+            Self::ConversationRollback { .. } => "conversation.rollback",
+            Self::ConversationRollbackUndone { .. } => "conversation.rollback.undone",
+            Self::Unknown(value) => value
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        }
+    }
+
+    pub fn type_name(&self) -> &str {
+        self.kind_name()
+    }
+
+    pub(crate) fn from_json_object(object: &Map<String, Value>) -> Option<Self> {
         let kind = object.get("kind").and_then(Value::as_str)?;
         let value = Value::Object(object.clone());
         match kind {
@@ -15,9 +339,9 @@ impl EventPayload {
                 .ok()?,
             )),
             "context.sources" => Some(Self::ContextSources {
-                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
+                request_id: string_field(object, "request_id")?,
                 project_instruction_sources: serde_json::from_value(
                     object.get("project_instruction_sources")?.clone(),
                 )
@@ -34,32 +358,52 @@ impl EventPayload {
                     .ok()?,
             }),
             "model.response" => Some(Self::ModelResponse {
-                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
+                request_id: string_field(object, "request_id")?,
                 text: string_field(object, "text")?,
                 thinking: optional_string_field(object, "thinking"),
-                input_tokens_total: optional_u32_field(object, "input_tokens_total"),
+                stop_reason: optional_stop_reason_field(object, "stop_reason"),
+                input_tokens_total: optional_u64_field(object, "input_tokens_total"),
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
             }),
             "model.error" => Some(Self::ModelError {
-                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
+                conversation: optional_string_field(object, "conversation"),
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
+                request_id: string_field(object, "request_id")?,
                 kind: string_field(object, "error_kind")?,
                 message: string_field(object, "message")?,
             }),
+            "model.recovery" => Some(Self::ModelRecovery {
+                conversation: string_field(object, "conversation")?,
+                turn: u64_field(object, "turn")?,
+                ts: string_field(object, "ts")?,
+                from_request_id: string_field(object, "from_request_id")?,
+                to_request_id: string_field(object, "to_request_id")?,
+                reason: optional_stop_reason_field(object, "reason")?,
+                attempt: u8_field(object, "attempt")?,
+                max_attempts: u8_field(object, "max_attempts")?,
+                failed_max_output_tokens: u32_field(object, "failed_max_output_tokens")?,
+                retry_max_output_tokens: u32_field(object, "retry_max_output_tokens")?,
+                output_tokens_total: optional_u64_field(object, "output_tokens_total"),
+                discarded_tool_calls: u64_field(object, "discarded_tool_calls")?,
+                notice: string_field(object, "notice")?,
+                prompt_path: string_field(object, "prompt_path")?,
+                prompt_hash: string_field(object, "prompt_hash")?,
+            }),
             "tool.call" => Some(Self::ToolCall {
-                request: serde_json::from_value(object.get("request")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 conversation: optional_string_field(object, "conversation"),
                 tool_call_id: string_field(object, "tool_call_id")?,
+                request_id: string_field(object, "request_id")?,
                 index: u64_field(object, "index")?,
                 tool: string_field(object, "tool")?,
                 args: object.get("args")?.clone(),
             }),
             "permission.allow" => Some(Self::PermissionAllow {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -69,7 +413,6 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "permission.requested" => Some(Self::PermissionRequested {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -80,7 +423,6 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "permission.deny" => Some(Self::PermissionDeny {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 tool_call_id: string_field(object, "tool_call_id")?,
@@ -89,7 +431,6 @@ impl EventPayload {
                 source: string_field(object, "source")?,
             }),
             "tool.result" => Some(Self::ToolResult {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 conversation: optional_string_field(object, "conversation"),
@@ -105,7 +446,6 @@ impl EventPayload {
                 structured: object.get("structured").cloned(),
             }),
             "handoff" => Some(Self::Handoff {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 turn: u64_field(object, "turn")?,
                 ts: string_field(object, "ts")?,
                 request_id: string_field(object, "request_id")?,
@@ -167,7 +507,6 @@ impl EventPayload {
                 capabilities: serde_json::from_value(object.get("capabilities")?.clone()).ok()?,
             }),
             "message.user" => Some(Self::MessageUser {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -176,7 +515,6 @@ impl EventPayload {
                 via_tool_call_id: optional_string_field(object, "via_tool_call_id"),
             }),
             "message.assistant" => Some(Self::MessageAssistant {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -184,26 +522,22 @@ impl EventPayload {
                 text: string_field(object, "text")?,
             }),
             "turn.started" => Some(Self::TurnStarted {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
             }),
             "turn.completed" => Some(Self::TurnCompleted {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
             }),
             "turn.cancelled" => Some(Self::TurnCancelled {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
                 reason: string_field(object, "reason")?,
             }),
             "turn.interrupted" => Some(Self::TurnInterrupted {
-                execution: serde_json::from_value(object.get("execution")?.clone()).ok()?,
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
@@ -225,7 +559,7 @@ impl EventPayload {
         }
     }
 
-    pub(super) fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
+    pub(crate) fn to_new_json(&self, id: u64) -> serde_json::Result<Value> {
         match self {
             Self::TaskLedger(record) => {
                 let encoded = serde_json::to_value(record)?;
@@ -253,9 +587,9 @@ impl EventPayload {
                 "kuku_version": kuku_version,
             })),
             Self::ContextSources {
-                request,
                 turn,
                 ts,
+                request_id,
                 project_instruction_sources,
                 memory_sources,
             } => Ok(serde_json::json!({
@@ -263,7 +597,7 @@ impl EventPayload {
                 "ts": ts,
                 "kind": "context.sources",
                 "turn": turn,
-                "request": request,
+                "request_id": request_id,
                 "project_instruction_sources": project_instruction_sources,
                 "memory_sources": memory_sources,
             })),
@@ -283,7 +617,6 @@ impl EventPayload {
                 "bootstrap_loaded": bootstrap_loaded,
             })),
             Self::TurnStarted {
-                execution,
                 turn,
                 ts,
                 conversation,
@@ -294,11 +627,9 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("turn.started"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
-                map.insert("execution".into(), serde_json::to_value(execution)?);
                 Ok(Value::Object(map))
             }
             Self::MessageUser {
-                execution,
                 turn,
                 ts,
                 text,
@@ -313,7 +644,6 @@ impl EventPayload {
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("text".into(), Value::from(text.clone()));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
-                map.insert("execution".into(), serde_json::to_value(execution)?);
                 if let Some(from) = from {
                     map.insert("from".into(), Value::from(from.clone()));
                 }
@@ -326,22 +656,31 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::ModelResponse {
-                request,
+                conversation,
                 turn,
                 ts,
+                request_id,
                 text,
                 thinking,
+                stop_reason,
                 input_tokens_total,
+                output_tokens_total,
             } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
                 map.insert("ts".into(), Value::from(ts.clone()));
                 map.insert("kind".into(), Value::from("model.response"));
                 map.insert("turn".into(), Value::from(*turn));
-                map.insert("request".into(), serde_json::to_value(request)?);
+                map.insert("request_id".into(), Value::from(request_id.clone()));
                 map.insert("text".into(), Value::from(text.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
                 if let Some(thinking) = thinking {
                     map.insert("thinking".into(), Value::from(thinking.clone()));
+                }
+                if let Some(stop_reason) = stop_reason {
+                    map.insert("stop_reason".into(), Value::from(stop_reason.wire_value()));
                 }
                 if let Some(input_tokens_total) = input_tokens_total {
                     map.insert(
@@ -349,29 +688,76 @@ impl EventPayload {
                         Value::from(*input_tokens_total),
                     );
                 }
+                if let Some(output_tokens_total) = output_tokens_total {
+                    map.insert(
+                        "output_tokens_total".into(),
+                        Value::from(*output_tokens_total),
+                    );
+                }
                 Ok(Value::Object(map))
             }
             Self::ModelError {
-                request,
+                conversation,
                 turn,
                 ts,
+                request_id,
                 kind,
                 message,
+            } => {
+                let mut map = Map::new();
+                map.insert("id".into(), Value::from(id));
+                map.insert("ts".into(), Value::from(ts.clone()));
+                map.insert("kind".into(), Value::from("model.error"));
+                map.insert("turn".into(), Value::from(*turn));
+                map.insert("request_id".into(), Value::from(request_id.clone()));
+                map.insert("error_kind".into(), Value::from(kind.clone()));
+                map.insert("message".into(), Value::from(message.clone()));
+                if let Some(conversation) = conversation {
+                    map.insert("conversation".into(), Value::from(conversation.clone()));
+                }
+                Ok(Value::Object(map))
+            }
+            Self::ModelRecovery {
+                conversation,
+                turn,
+                ts,
+                from_request_id,
+                to_request_id,
+                reason,
+                attempt,
+                max_attempts,
+                failed_max_output_tokens,
+                retry_max_output_tokens,
+                output_tokens_total,
+                discarded_tool_calls,
+                notice,
+                prompt_path,
+                prompt_hash,
             } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
-                "kind": "model.error",
+                "kind": "model.recovery",
+                "conversation": conversation,
                 "turn": turn,
-                "request": request,
-                "error_kind": kind,
-                "message": message,
+                "from_request_id": from_request_id,
+                "to_request_id": to_request_id,
+                "reason": reason,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "failed_max_output_tokens": failed_max_output_tokens,
+                "retry_max_output_tokens": retry_max_output_tokens,
+                "output_tokens_total": output_tokens_total,
+                "discarded_tool_calls": discarded_tool_calls,
+                "notice": notice,
+                "prompt_path": prompt_path,
+                "prompt_hash": prompt_hash,
             })),
             Self::ToolCall {
-                request,
                 turn,
                 ts,
                 conversation,
                 tool_call_id,
+                request_id,
                 index,
                 tool,
                 args,
@@ -382,7 +768,7 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("tool.call"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("tool_call_id".into(), Value::from(tool_call_id.clone()));
-                map.insert("request".into(), serde_json::to_value(request)?);
+                map.insert("request_id".into(), Value::from(request_id.clone()));
                 map.insert("index".into(), Value::from(*index));
                 map.insert("tool".into(), Value::from(tool.clone()));
                 map.insert("args".into(), args.clone());
@@ -392,7 +778,6 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::PermissionAllow {
-                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -410,10 +795,8 @@ impl EventPayload {
                 "scope": scope,
                 "matcher": matcher,
                 "source": source,
-                "execution": execution,
             })),
             Self::PermissionRequested {
-                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -433,10 +816,8 @@ impl EventPayload {
                 "summary": summary,
                 "candidate": candidate,
                 "source": source,
-                "execution": execution,
             })),
             Self::PermissionDeny {
-                execution,
                 turn,
                 ts,
                 tool_call_id,
@@ -452,10 +833,8 @@ impl EventPayload {
                 "tool": tool,
                 "reason": reason,
                 "source": source,
-                "execution": execution,
             })),
             Self::ToolResult {
-                execution,
                 turn,
                 ts,
                 conversation,
@@ -475,7 +854,6 @@ impl EventPayload {
                 map.insert("ts".into(), Value::from(ts.clone()));
                 map.insert("kind".into(), Value::from("tool.result"));
                 map.insert("turn".into(), Value::from(*turn));
-                map.insert("execution".into(), serde_json::to_value(execution)?);
                 map.insert("tool_call_id".into(), Value::from(tool_call_id.clone()));
                 map.insert("status".into(), Value::from(status.clone()));
                 map.insert("summary".into(), Value::from(summary.clone()));
@@ -502,7 +880,6 @@ impl EventPayload {
                 Ok(Value::Object(map))
             }
             Self::Handoff {
-                execution,
                 turn,
                 ts,
                 request_id,
@@ -516,10 +893,8 @@ impl EventPayload {
                 "request_id": request_id,
                 "summary": summary,
                 "keep_turns": keep_turns,
-                "execution": execution,
             })),
             Self::TurnCompleted {
-                execution,
                 turn,
                 ts,
                 conversation,
@@ -530,7 +905,6 @@ impl EventPayload {
                 map.insert("kind".into(), Value::from("turn.completed"));
                 map.insert("turn".into(), Value::from(*turn));
                 map.insert("conversation".into(), Value::from(conversation.clone()));
-                map.insert("execution".into(), serde_json::to_value(execution)?);
                 Ok(Value::Object(map))
             }
             Self::ConversationOpened { ts, conversation } => Ok(serde_json::json!({
@@ -594,7 +968,6 @@ impl EventPayload {
                 "capabilities": capabilities,
             })),
             Self::MessageAssistant {
-                execution,
                 ts,
                 conversation,
                 turn,
@@ -608,10 +981,8 @@ impl EventPayload {
                 "turn": turn,
                 "message_id": message_id,
                 "text": text,
-                "execution": execution,
             })),
             Self::TurnCancelled {
-                execution,
                 ts,
                 conversation,
                 turn,
@@ -623,10 +994,8 @@ impl EventPayload {
                 "conversation": conversation,
                 "turn": turn,
                 "reason": reason,
-                "execution": execution,
             })),
             Self::TurnInterrupted {
-                execution,
                 ts,
                 conversation,
                 turn,
@@ -638,7 +1007,6 @@ impl EventPayload {
                 "conversation": conversation,
                 "turn": turn,
                 "reason": reason,
-                "execution": execution,
             })),
             Self::ConversationRollback {
                 ts,
@@ -668,56 +1036,4 @@ impl EventPayload {
             })),
         }
     }
-}
-
-fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object.get(key)?.as_str().map(ToOwned::to_owned)
-}
-
-fn optional_string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn optional_json_field(object: &Map<String, Value>, key: &str) -> Option<Value> {
-    object.get(key).cloned().filter(|value| !value.is_null())
-}
-
-fn u64_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
-    object.get(key)?.as_u64()
-}
-
-fn usize_field(object: &Map<String, Value>, key: &str) -> Option<usize> {
-    usize::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    u32::try_from(object.get(key)?.as_u64()?).ok()
-}
-
-fn optional_u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
-    object
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
-fn bool_field(object: &Map<String, Value>, key: &str) -> Option<bool> {
-    object.get(key)?.as_bool()
-}
-
-fn vec_string_field(object: &Map<String, Value>, key: &str) -> Vec<String> {
-    object
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }

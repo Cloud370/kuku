@@ -33,9 +33,10 @@ pub use event::{
 pub use provider::types::ProviderFailureKind;
 pub use provider::{Provider, ProviderUsage};
 pub use query::{
-    query, PermissionChoice, PermissionRequest, Query, Run, RunOutput, TaskQueryContext, ToolEvent,
-    ToolKind, ToolSummary, UiEvent, WorkspaceCommandCancellation, WorkspaceCommandEvent,
-    WorkspaceCommandOutput, WorkspaceCommandRequest, WorkspaceEntry, WorkspaceQueryCapability,
+    query, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,
+    TaskQueryContext, ToolEvent, ToolKind, ToolSummary, UiEvent, WorkspaceCommandCancellation,
+    WorkspaceCommandEvent, WorkspaceCommandOutput, WorkspaceCommandRequest, WorkspaceEntry,
+    WorkspaceQueryCapability,
 };
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 

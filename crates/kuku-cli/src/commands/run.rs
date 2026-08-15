@@ -86,11 +86,21 @@ fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
     }
 }
 
+fn nested_model_recovery_info(event: &UiEvent) -> Option<&kuku::query::ModelRecoveryInfo> {
+    match event {
+        UiEvent::ToolOutput {
+            event: ToolEvent::ModelRecovery { info },
+            ..
+        } => Some(info),
+        _ => None,
+    }
+}
+
 fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
     match kind {
-        kuku::query::ToolKind::Agent {
-            conversation_id, ..
-        } => Some(conversation_id.to_string()),
+        kuku::query::ToolKind::Agent { conversation, .. } => {
+            Some(conversation.as_str().to_string())
+        }
         _ => None,
     }
 }
@@ -295,7 +305,7 @@ fn build_query(
                         ..
                     } = &event.payload
                     {
-                        previous_input_tokens = u64::from(*input_tokens_total);
+                        previous_input_tokens = *input_tokens_total;
                         break;
                     }
                 }
@@ -477,6 +487,43 @@ pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(rendered) = display.thinking_line(&text) {
                         print!("{rendered}");
                     }
+                }
+            }
+            Some(UiEvent::ModelRecovery { info }) => {
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                text_buffer.clear();
+                if use_stream_json {
+                    println!("{}", OutputLine::model_recovery(info).to_json_line());
+                } else {
+                    println!("{}", display.model_recovery(&info));
+                }
+            }
+            Some(
+                event @ UiEvent::ToolOutput {
+                    event: ToolEvent::ModelRecovery { .. },
+                    ..
+                },
+            ) => {
+                let info = nested_model_recovery_info(&event)
+                    .expect("nested recovery pattern must contain recovery info");
+                close_thinking(
+                    &mut in_thinking,
+                    &mut thinking_start,
+                    &mut display,
+                    use_stream_json,
+                );
+                if use_stream_json {
+                    println!(
+                        "{}",
+                        OutputLine::model_recovery(info.clone()).to_json_line()
+                    );
+                } else {
+                    println!("{}", display.model_recovery(info));
                 }
             }
             Some(UiEvent::ToolStart {

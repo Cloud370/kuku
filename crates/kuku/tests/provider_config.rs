@@ -89,7 +89,7 @@ fn builder_values_override_config_values() {
         provider: Some(Provider::Anthropic),
         model: Some("claude-opus-4-7".to_string()),
         base_url: Some("https://builder.example".to_string()),
-        api_key: Some(SecretString::new("builder-key")),
+        api_key: Some("builder-key".to_string()),
         config: Some(cfg),
         ..Default::default()
     })
@@ -205,7 +205,7 @@ fn builder_values_override_all_config_tier_settings() {
         provider: Some(Provider::Anthropic),
         model: Some("claude-opus-4-7".to_string()),
         base_url: Some("https://custom-gateway.example".to_string()),
-        api_key: Some(SecretString::new("builder-key")),
+        api_key: Some("builder-key".to_string()),
         config: Some(cfg),
         ..Default::default()
     })

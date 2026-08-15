@@ -489,7 +489,6 @@ mod tests {
 
     fn turn_started(turn: u64) -> EventPayload {
         EventPayload::TurnStarted {
-            execution: crate::event::test_execution_scope(),
             ts: format!("2026-07-20T00:00:{turn:02}Z"),
             conversation: "conversation-1".to_owned(),
             turn,
