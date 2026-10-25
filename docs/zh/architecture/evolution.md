@@ -1,40 +1,71 @@
-# Evolution
+# 核心演进 — 实现说明
 
-本页记录当前架构方向，以及已经完成或仍计划中的主要实现阶段。
+## 用途
 
-## Stable direction
+[核心方向](core-direction.md)是产品决策基线。本页是可选工程参考，不是另一份入场文档或固定施工清单。当前代码行为仍见 [Sessions](../how-it-works/sessions.md)、[Prompt Assembly](prompt-assembly.md) 和 [Module Contracts](module-contracts.md)。
 
-有几项设计选择被认为应保持稳定：
+2026-10-25 检查点：仅文档。实现从公开 SDK 纵向闭环开始，不从 UI 或框架开始。真正开工时再在这里记录本批可用结果与证据。旧版维护、API 兼容和旧 Session 迁移不是交付要求，该决定不删除已有数据。
 
-- 以文件为后盾的运行时事实
-- 只追加的事件持久化
-- host app 与 SDK 内部分离
-- 把 Skill 作为原生指令加载方式
-- 把扩展视为外部边界，而不是核心运行时特性
+## 保留正确边界
 
-## Implemented path so far
+保留外置 Prompt 资源、明确分层和来源信息。Prompt 渲染负责措辞，上下文装配选择/排序材料，provider 转换准备好的请求。不把行为指令移进 Rust 执行分支，也不让 provider 选择历史。现有 [Prompt Assembly](prompt-assembly.md)可作参考，不要求保留旧重放算法。
 
-| Phase | What | Layer | Status |
-|-------|------|-------|--------|
-| 1 | Skills and registry loading | SDK | implemented |
-| 2 | wire-facing `UiEvent` shape | SDK | implemented |
-| 3 | NDJSON wire serialization | SDK | implemented |
-| 4 | HTTP server host | host | implemented |
-| 5 | web host | host | implemented |
-| 6 | package and hook runtime | SDK | implemented |
+按需要重写耦合所有权：Session 事件/writer、Agent 输入/运行时、Step 准备、工具批次/进程、委派/消息和授权位置。复用有效的 provider 协议、工具实现、Skill、配置加载和测试。公开 SDK 不依赖 daemon、私有模块或接管进程全局状态；异步关闭报告清理/刷新失败，不只依靠 `Drop`。
 
-## Planned path
+## 最小持久化与恢复
 
-| Next | Purpose |
-|------|---------|
-| MCP-backed external tool sources | 通过扩展边界增加非核心 Tool provider |
-| Tauri host | 围绕 server 运行时构建的桌面壳层 |
+单 writer 配合跨进程互斥与旧所有者隔离。明确输入持久接纳、派发和结果边界。请求工具不等于工具已开始；已产生副作用而结果未确认时是未知，不自动重试。拒绝已提交历史损坏，仅恢复可识别的不完整尾部，持久化失败停止依赖工作。
 
-## Design pressure to watch
+从流式打开/重放和增量追加开始。实测恢复延迟需要时，加一个绑定持久日志前缀、可验证、安全发布且可丢弃的检查点。浏览需要时，加小型可重建偏移索引。两者均不要求数据库、分段、压缩或多存储后端。恢复重建事实，不恢复挂起的异步调用栈。
 
-- 让 provider 逻辑继续与 Session 和权限逻辑隔离
-- 随着更多运行时通知出现，保持 Prompt 装配稳定
-- 除非属于基础运行时行为，否则让扩展点保持在核心 loop 之外
-- 让公开的心智模型文档继续与维护者内部文档分离
+## 准备好的请求与交接
 
-如果未来某个改动主要影响用户可见行为，请在 `how-it-works/` 中记录。如果它主要影响 crate 边界或内部归属，请在这里的 `architecture/` 中记录。
+把有效模型/设置、工具、渲染内容与适配器表示绑定到 Step。指定一层基于准备结果重试。记录请求/有效选择，不静默改变模型、思考或服务模式。新消息/配置等待新边界。
+
+已接纳内容与引用必须能重建模型当时看到的内容，不是今天的模板或可变文件。交接记录前驱、选中事实/来源和有效配置。提交可用后继再切换，失败保留前一个可解释上下文。不兼容前缀的请求头/工具/路由变化需要边界，不为缓存而延迟安全或用户要求的变更。
+
+## 工具批次与输出
+
+完整接收一次模型响应中的调用。真正独立的工作并行，冲突工作排序，保持确定的调用/结果配对，报告部分失败。派发前校验并授权实际动作，编辑拒绝过期预期内容而不是覆盖并发变更。先用好已有多工具调用，不为每种流程增加包装工具。
+
+前台和后台命令共享一次执行与输出路径。原 ToolCall 只返回一次：完成结果或 Job 句柄；之后 Job 完成是独立事实/通知。取消停止派发，收尾或隔离所属工作。崩溃后进程/输出文件存在不证明成功。
+
+stdout/stderr 流式写入，缓冲、解析器状态、诊断和视图有界。持久化生命周期与模型实际看到的视图，不逐条保存进度 chunk 或重复原始日志。先做通用预览和少量明确构建/测试规则，不隐式改写命令；不确定的复合命令和解析错误可见地回退。退出状态来自执行，摘要标记过滤/采集不完整，并提供读取范围/水位。
+
+承诺完整采集前明确输出配额、磁盘满行为、保留和安全访问。达到限制时显式停止或排空/丢弃，不能死锁或隐藏丢失。被引用输出不按系统临时文件静默过期。删除处理所属活动工作，共享文件保留和压缩不作为初始要求。
+
+## 工作目录与授权
+
+使用普通文件系统目录，打开 Session 或选择数据位置不要求发现 Git。创建 worktree、提交、diff 和合并始终是显式可选操作。核心变更记录来自执行事实，不强制依赖 `git diff`。共享目录保护不等于事务隔离，即使编辑有校验，也可能发生并发语义冲突。
+
+权限建议见核心方向，不扩展为多层中间件。决定绑定真实调用者与最终动作，不信任模型自报身份或变换前的命令。宿主需要交互时可以在授权边界内等待，报错/取消不能落入执行。授权记忆或复杂策略来自具体宿主需求，不预设为内核框架。批准检查不能替代操作系统沙箱。
+
+## 消息与资源所有权
+
+使用 Session 内规范 Agent 路径，不增加第二套身份。消息共用事实日志，保留发件人/回复来源、接纳去重。运行中在 Step 边界接纳，空闲默认唤醒，合并唤醒以免重复驱动。停止/关闭接收者需要授权续派。基本预算显式限制自动唤醒链，不丢弃工作。
+
+兄弟通信不附带取消、配置或人类批准权。父 Turn 结束不等于取消子树；可观察的兄弟交流不必全部进入父上下文。运行时回执/状态无需模型调用。模型请求、进程、Job、订阅各有所有者；区分 provider 失败、无效请求、工具失败、未知副作用、取消与持久化失败，不引入通用状态机框架。
+
+## 每批按需选择的证据
+
+- 公开 SDK 在等价的 Git/非 Git 目录工作，不依赖私有接口、隐式仓库初始化或必需 server。
+- 持久接纳、派发/结果崩溃窗口、竞争 writer、磁盘满、损坏尾部、未知副作用和迟到回调。
+- 重启后的 provider 可见前缀一致；模板/配置不重新渲染历史；失败交接仍可解释。
+- 安全批次并发、取消授权/执行、有界部分输出、一致范围读取，以及原工具结果仅有一份。
+- 人类/模型统一地址、兄弟权限、空闲唤醒、接纳去重、有界延续和慢速/断开的观察者。
+- 物理历史/输出增长后的追加/重放/范围读取/上下文延迟和峰值内存，只按实测预算增加加速机制。
+
+尽早通过公开 SDK，在受控工作目录中接入实际支持的模型和真实文件/命令工具。验证有用任务完成，并检查结果文件、执行记录与模型可见结果；问候回复或预编排工具序列不足以证明可用。CLI 使用同一公开 SDK。不把 mock 框架或架构证明阶段作为实现前置条件；真实模型不可用时明确外部阻塞，端到端验证保留为未完成。
+
+只在具体边界需要可重复证据时使用针对性 mock 或故障注入，例如响应断流、结果写入失败、取消与完成竞态。仅替换相关依赖，其余保留真实执行、授权和存储路径。断言结果与不变量，不固定模型措辞或假定工具顺序，除非顺序本身就是要求。测试保护契约，不定义整个产品；通过 mock 或一次真实成功都不能证明全部故障边界。
+
+每次模型调用的有效工作与本地 I/O/内存分别测量，累计 token 不代表磁盘历史巨大。私有会话身份、任务正文和原始日志不进入共享文档。schema/API 命名、阈值、解析器和批次边界保持可调整，产品决定放在核心方向，不另起计划。
+
+## 可选参考基线
+
+DeepSeek Harness 修订 `22ddee3792402c3e70ec5f86a63c3e3e895a2f60`，安装版本可能不同。不声称完成运行时性能对比，仅为相关边界读取。
+
+- [Loop 词汇](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/docs/glossary.md)与 [Agent loop](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/core/agent-loop/README.md)：请求准备与生命周期。
+- [恢复](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/core/session/src/repair.ts)与 [Jobs](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/jobs/jobs/README.md)：未知结果、所有权与进程内限制。
+- [通信](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/subagent/tool-subagent-control/README.md)：DSH 唤醒空闲接收者，但普通消息仅支持相邻父子 Agent；kuku 还计划支持获准的兄弟通信。
+- [Spill](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/spill/spill-policy/README.md)与[历史剪枝](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/compaction/compaction-tool-result-pruner/README.md)：借鉴首次接纳限额，不借鉴回头修改前缀。

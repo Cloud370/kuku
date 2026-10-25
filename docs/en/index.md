@@ -21,6 +21,7 @@ kuku is a file-native Rust agent SDK. These docs are organized by what the reade
 
 ## Key Pages
 
+- [Core Direction — Read First](architecture/core-direction.md) — concise target baseline for core development; not shipped behavior.
 - [Why kuku](how-it-works/why-kuku.md)
 - [Agent Loop](how-it-works/agent-loop.md)
 - [File Layout](reference/file-layout.md)

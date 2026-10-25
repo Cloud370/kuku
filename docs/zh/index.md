@@ -21,6 +21,7 @@ kuku 是一个 file-native Rust agent SDK。文档按读者要完成的事情组
 
 ## 关键页面
 
+- [核心方向 — 先读这一页](architecture/core-direction.md) — 核心开发的精简目标基线，不代表已交付行为。
 - [Why kuku](how-it-works/why-kuku.md)
 - [Agent Loop](how-it-works/agent-loop.md)
 - [File Layout](reference/file-layout.md)

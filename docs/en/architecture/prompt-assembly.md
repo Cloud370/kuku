@@ -1,6 +1,6 @@
 # Prompt Assembly
 
-This page describes how kuku builds a model request.
+This page describes the current implementation of model-request assembly. The rewrite preserves external Prompt assets and the separation of rendering, context selection, and provider translation; see [Core Direction](core-direction.md) for the target decisions. The replay/snapshot algorithms below are current behavior, not a requirement to retain them or rerender submitted history.
 
 ## Goal
 

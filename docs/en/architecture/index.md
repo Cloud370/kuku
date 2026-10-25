@@ -4,13 +4,14 @@ Use this section for maintainer-facing design: crate boundaries, host structure,
 
 ## Pages
 
+- [Core Direction — Read First](core-direction.md) — concise target decisions, retained strengths, non-goals, and next usable result
+- [Core Evolution](evolution.md) — optional implementation questions and evidence, not another decision baseline
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [Prompt Assembly](prompt-assembly.md)
 - [Module Contracts](module-contracts.md)
 - [Extension Runtime](extension-runtime.md)
-- [Evolution](evolution.md)
 
 ## Start Here
 
-Start with [Overview](overview.md), then read [Host Apps](host-apps.md) or [Module Contracts](module-contracts.md) depending on the area you need.
+For core work, read [Core Direction](core-direction.md), then only the relevant code and [Evolution](evolution.md) section. For current implementation structure, use [Overview](overview.md), [Host Apps](host-apps.md), or [Module Contracts](module-contracts.md). Target planning does not imply that the implementation has changed.
