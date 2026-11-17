@@ -238,6 +238,7 @@ struct OpenAiCompatSseParser {
     tool_call_indices: Vec<u64>,
     invalid_tool_stream: bool,
     saw_done: bool,
+    stop_reason: Option<ModelStopReason>,
     reasoning_details: Vec<Value>,
     replay_budget: ReplayBudget,
     reports: ReportAccumulator,
@@ -251,6 +252,7 @@ impl OpenAiCompatSseParser {
             tool_call_indices: Vec::new(),
             invalid_tool_stream: false,
             saw_done: false,
+            stop_reason: None,
             reasoning_details: Vec::new(),
             replay_budget: ReplayBudget::default(),
             reports: ReportAccumulator::default(),
@@ -389,7 +391,15 @@ impl OpenAiCompatSseParser {
             }
         }
 
-        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        if let Some(reason) = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .and_then(ModelStopReason::from_wire)
+        {
+            if self.stop_reason.as_ref() == Some(&reason) {
+                return Ok(self.take_chunks());
+            }
+            self.stop_reason = Some(reason.clone());
             if !self.reasoning_details.is_empty() {
                 let value = json!({"reasoning_details": self.reasoning_details});
                 validate_replay_size(&value)?;
@@ -403,15 +413,13 @@ impl OpenAiCompatSseParser {
             }
             self.tool_call_indices.clear();
 
-            if let Some(reason) = ModelStopReason::from_wire(reason) {
-                self.chunks.push(ProviderChunk::StopReason {
-                    reason: if self.invalid_tool_stream {
-                        ModelStopReason::InvalidResponse
-                    } else {
-                        reason
-                    },
-                });
-            }
+            self.chunks.push(ProviderChunk::StopReason {
+                reason: if self.invalid_tool_stream {
+                    ModelStopReason::InvalidResponse
+                } else {
+                    reason
+                },
+            });
         }
 
         Ok(self.take_chunks())
@@ -478,6 +486,97 @@ impl OpenAiCompatSseParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_finish_reason_preserves_usage_without_repeating_replay_or_completion() {
+        let mut parser = OpenAiCompatSseParser::new();
+        parser.feed(concat!(
+            "data: ",
+            r#"{"id":"chat_gateway","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{}"}}],"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cipher"}]},"finish_reason":null}]}"#
+        )).unwrap();
+        let terminal = parser
+            .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .unwrap();
+        assert_eq!(
+            1,
+            terminal
+                .iter()
+                .filter(|chunk| matches!(chunk, ProviderChunk::Replay { .. }))
+                .count()
+        );
+        assert_eq!(
+            1,
+            terminal
+                .iter()
+                .filter(|chunk| matches!(chunk, ProviderChunk::ToolCallStop { index: 0 }))
+                .count()
+        );
+        assert_eq!(
+            1,
+            terminal
+                .iter()
+                .filter(|chunk| matches!(
+                    chunk,
+                    ProviderChunk::StopReason {
+                        reason: ModelStopReason::ToolUse
+                    }
+                ))
+                .count()
+        );
+        let duplicate = parser.feed(r#"data: {"choices":[{"delta":{"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cipher"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"cost":0.001}}"#).unwrap();
+        assert!(duplicate.iter().any(|chunk| matches!(chunk, ProviderChunk::Report { report } if report.cost_usd == Some(0.001))));
+        assert!(duplicate.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StreamUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                ..
+            }
+        )));
+        assert!(!duplicate.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::Replay { .. }
+                | ProviderChunk::ToolCallStop { .. }
+                | ProviderChunk::StopReason { .. }
+        )));
+    }
+
+    #[test]
+    fn conflicting_finish_reason_remains_visible_to_the_runtime() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let mut chunks = parser
+            .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .unwrap();
+        chunks.extend(
+            parser
+                .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
+                .unwrap(),
+        );
+        let reasons = chunks
+            .into_iter()
+            .filter_map(|chunk| match chunk {
+                ProviderChunk::StopReason { reason } => Some(reason),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            vec![ModelStopReason::ToolUse, ModelStopReason::EndTurn],
+            reasons
+        );
+    }
+
+    #[test]
+    fn repeated_finish_reason_does_not_hide_late_tool_arguments() {
+        let mut parser = OpenAiCompatSseParser::new();
+        parser
+            .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .unwrap();
+        let chunks = parser.feed(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#).unwrap();
+        assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::ToolCallArgDelta { index: 0, fragment } if fragment == "{}")));
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StopReason { .. })));
+    }
 
     #[test]
     fn feed_error_emits_server_error_chunk() {

@@ -13,6 +13,9 @@ use super::provider::types::{
 };
 use super::{current_input, sample_assembly, test_catalog};
 
+#[path = "gateway.rs"]
+mod gateway;
+
 #[tokio::test]
 async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefixes() {
     for (protocol, kind, profile, model) in [

@@ -222,10 +222,17 @@ struct ResponseFunctionCall {
     item_done: bool,
 }
 
+enum ResponseTerminalEvent {
+    Completed,
+    Incomplete,
+    Failed,
+    Error,
+}
+
 struct OpenAiResponsesSseParser {
     chunks: Vec<ProviderChunk>,
     started: bool,
-    completed: bool,
+    terminal_event: Option<ResponseTerminalEvent>,
     output_item_types: BTreeMap<u64, String>,
     item_id_indices: BTreeMap<String, u64>,
     function_calls: BTreeMap<u64, ResponseFunctionCall>,
@@ -240,7 +247,7 @@ impl OpenAiResponsesSseParser {
         Self {
             chunks: Vec::new(),
             started: false,
-            completed: false,
+            terminal_event: None,
             output_item_types: BTreeMap::new(),
             item_id_indices: BTreeMap::new(),
             function_calls: BTreeMap::new(),
@@ -374,6 +381,22 @@ impl OpenAiResponsesSseParser {
         };
         if frame.data.is_empty() {
             return Ok(self.take_chunks());
+        }
+        if frame.data.trim() == "[DONE]" {
+            return if matches!(
+                self.terminal_event,
+                Some(
+                    ResponseTerminalEvent::Completed
+                        | ResponseTerminalEvent::Incomplete
+                        | ResponseTerminalEvent::Failed
+                )
+            ) {
+                Ok(self.take_chunks())
+            } else {
+                Err(super::prepare::invalid_request(
+                    "provider emitted [DONE] before a terminal response event",
+                ))
+            };
         }
         let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
             super::prepare::invalid_request("provider emitted malformed JSON event")
@@ -630,7 +653,7 @@ impl OpenAiResponsesSseParser {
                         reason: ModelStopReason::InvalidResponse,
                     });
                 }
-                self.completed = true;
+                self.terminal_event = Some(ResponseTerminalEvent::Completed);
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "response.incomplete" => {
@@ -648,7 +671,7 @@ impl OpenAiResponsesSseParser {
                         reason: ModelStopReason::Incomplete,
                     });
                 }
-                self.completed = true;
+                self.terminal_event = Some(ResponseTerminalEvent::Incomplete);
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "response.failed" | "error" => {
@@ -673,7 +696,11 @@ impl OpenAiResponsesSseParser {
                     .to_string();
                 self.chunks
                     .push(ProviderChunk::ServerError { code, message });
-                self.completed = true;
+                self.terminal_event = Some(if event_type == "response.failed" {
+                    ResponseTerminalEvent::Failed
+                } else {
+                    ResponseTerminalEvent::Error
+                });
             }
             _ => {}
         }
@@ -857,7 +884,7 @@ impl OpenAiResponsesSseParser {
     }
 
     fn finish(&mut self) -> Result<Vec<ProviderChunk>, ProviderFailure> {
-        if self.completed {
+        if self.terminal_event.is_some() {
             return Ok(self.take_chunks());
         }
 
@@ -890,6 +917,87 @@ pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_after_response_terminal_preserves_the_original_outcome() {
+        for (event, response, reason) in [
+            (
+                "response.completed",
+                json!({"status":"completed","output":[]}),
+                Some(ModelStopReason::EndTurn),
+            ),
+            (
+                "response.incomplete",
+                json!({"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}),
+                Some(ModelStopReason::Length),
+            ),
+            (
+                "response.failed",
+                json!({"status":"failed","error":{"code":"server_error","message":"failed"}}),
+                None,
+            ),
+        ] {
+            let mut parser = OpenAiResponsesSseParser::new();
+            let chunks = parser
+                .feed(&format!(
+                    "event: {event}\ndata: {}",
+                    json!({"response":response})
+                ))
+                .unwrap();
+            assert!(parser.feed("data: [DONE]").unwrap().is_empty());
+            assert!(parser.finish().unwrap().is_empty());
+            let reasons = chunks
+                .iter()
+                .filter_map(|chunk| match chunk {
+                    ProviderChunk::StopReason { reason } => Some(reason.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(reason.clone().into_iter().collect::<Vec<_>>(), reasons);
+            assert_eq!(
+                usize::from(reason.is_some()),
+                chunks
+                    .iter()
+                    .filter(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+                    .count()
+            );
+            assert_eq!(
+                reason.is_none(),
+                chunks
+                    .iter()
+                    .any(|chunk| matches!(chunk, ProviderChunk::ServerError { .. }))
+            );
+        }
+    }
+
+    #[test]
+    fn done_without_a_response_terminal_event_does_not_complete_the_stream() {
+        for event in [
+            concat!(
+                "event: response.created\n",
+                r#"data: {"response":{"id":"pending","status":"in_progress"}}"#
+            ),
+            concat!(
+                "event: error\n",
+                r#"data: {"code":"server_error","message":"failed"}"#
+            ),
+        ] {
+            let mut parser = OpenAiResponsesSseParser::new();
+            let chunks = parser.feed(event).unwrap();
+            assert!(!chunks.iter().any(|chunk| matches!(
+                chunk,
+                ProviderChunk::StopReason { .. } | ProviderChunk::StreamEnd
+            )));
+            let error = parser.feed("data: [DONE]").unwrap_err();
+            assert_eq!(
+                "provider emitted [DONE] before a terminal response event",
+                error.message
+            );
+        }
+        let mut parser = OpenAiResponsesSseParser::new();
+        assert!(parser.feed("data: [DONE]").is_err());
+        assert!(parser.finish().is_err());
+    }
 
     #[test]
     fn completed_usage_reports_cached_input_tokens() {

@@ -1,0 +1,41 @@
+data: {"type":"response.created","response":{"id":"gateway_1","object":"response","model":"deepseek/deepseek-v4.1-flash-1017","status":"in_progress","output":[],"error":null,"incomplete_details":null,"service_tier":"auto","usage":null},"sequence_number":0}
+
+data: {"type":"response.in_progress","response":{"id":"gateway_1","object":"response","model":"deepseek/deepseek-v4.1-flash-1017","status":"in_progress","output":[],"error":null,"incomplete_details":null,"service_tier":"auto","usage":null},"sequence_number":1}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"gateway_2","type":"reasoning","status":"in_progress","summary":[]},"sequence_number":2}
+
+data: {"type":"response.content_part.added","output_index":0,"item_id":"gateway_2","content_index":0,"part":{"type":"reasoning_text","text":""},"sequence_number":3}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"gateway_2","content_index":0,"delta":"Let","sequence_number":4}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"gateway_2","content_index":0,"delta":" me read seed","sequence_number":5}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"gateway_2","content_index":0,"delta":".txt first.","sequence_number":6}
+
+data: {"type":"response.reasoning_text.done","output_index":0,"item_id":"gateway_2","content_index":0,"text":"Let me read seed.txt first.","sequence_number":7}
+
+data: {"type":"response.content_part.done","output_index":0,"item_id":"gateway_2","content_index":0,"part":{"type":"reasoning_text","text":"Let me read seed.txt first."},"sequence_number":8}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"gateway_2","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"Let me read seed.txt first."}],"summary":[],"format":"unknown"},"sequence_number":9}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"gateway_3","type":"function_call","status":"in_progress","call_id":"gateway_4","name":"find_files","arguments":""},"sequence_number":10}
+
+data: {"type":"response.function_call_arguments.delta","output_index":1,"item_id":"gateway_3","delta":"{\"path\": \".\"","sequence_number":11}
+
+data: {"type":"response.function_call_arguments.delta","output_index":1,"item_id":"gateway_3","delta":"}","sequence_number":12}
+
+data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"gateway_3","name":"find_files","arguments":"{\"path\": \".\"}","sequence_number":13}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"gateway_3","type":"function_call","status":"completed","call_id":"gateway_4","name":"find_files","arguments":"{\"path\": \".\"}"},"sequence_number":14}
+
+data: {"type":"response.output_item.added","output_index":2,"item":{"id":"gateway_5","type":"function_call","status":"in_progress","call_id":"gateway_6","name":"read_file","arguments":""},"sequence_number":15}
+
+data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"gateway_5","delta":"{\"path\": \"seed.txt\"}","sequence_number":16}
+
+data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"gateway_5","name":"read_file","arguments":"{\"path\": \"seed.txt\"}","sequence_number":17}
+
+data: {"type":"response.output_item.done","output_index":2,"item":{"id":"gateway_5","type":"function_call","status":"completed","call_id":"gateway_6","name":"read_file","arguments":"{\"path\": \"seed.txt\"}"},"sequence_number":18}
+
+data: {"type":"response.completed","response":{"id":"gateway_1","object":"response","model":"deepseek/deepseek-v4.1-flash-1017","status":"completed","output":[{"id":"gateway_2","type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"Let me read seed.txt first."}],"summary":[],"format":"unknown"},{"id":"gateway_3","type":"function_call","status":"completed","call_id":"gateway_4","name":"find_files","arguments":"{\"path\": \".\"}"},{"id":"gateway_5","type":"function_call","status":"completed","call_id":"gateway_6","name":"read_file","arguments":"{\"path\": \"seed.txt\"}"}],"error":null,"incomplete_details":null,"service_tier":"auto","usage":{"input_tokens":3351,"input_tokens_details":{"cached_tokens":0},"output_tokens":74,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":3425,"cost":0.000157636,"is_byok":false,"cost_details":{"upstream_inference_cost":0.000157636,"upstream_inference_input_cost":0.000120636,"upstream_inference_output_cost":3.7e-05}}},"sequence_number":19}
+
+data: [DONE]
