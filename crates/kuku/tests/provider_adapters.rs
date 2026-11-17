@@ -1,8 +1,12 @@
 mod config {
     pub use kuku::config::{
-        ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ResolvedThinking,
+        ApiKey, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ResolvedThinking,
         ThinkLevel,
     };
+}
+
+mod error {
+    pub use kuku::Result;
 }
 
 mod context {

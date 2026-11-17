@@ -118,7 +118,7 @@ fn builder_values_override_config_values() {
     assert_eq!(resolved.kind, ProviderKind::Anthropic);
     assert_eq!(resolved.model, "claude-opus-4-7");
     assert_eq!(resolved.base_url, "https://builder.example");
-    assert_eq!(resolved.api_key.expose(), "builder-key");
+    assert_eq!(resolved.api_key.resolve().unwrap(), "builder-key");
 }
 
 #[test]
@@ -134,7 +134,26 @@ fn tier_resolution_uses_config_defaults() {
     assert_eq!(resolved.kind, ProviderKind::Anthropic);
     assert_eq!(resolved.model, "claude-sonnet-4-6");
     assert_eq!(resolved.base_url, "https://api.anthropic.com");
-    assert_eq!(resolved.api_key.expose(), "sk-ant-config");
+    assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-config");
+}
+
+#[test]
+fn selecting_connection_and_settings_does_not_resolve_its_credentials() {
+    let mut cfg = default_config();
+    let missing = format!("KUKU_PROVIDER_UNSET_CREDENTIAL_{}", std::process::id());
+    assert!(std::env::var_os(&missing).is_none());
+    cfg.providers.get_mut("anthropic").unwrap().api_key = ApiKey::Env(missing.clone());
+    let resolved = resolve_config(ResolveConfigInput {
+        config: Some(cfg),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!("anthropic", resolved.connection_name);
+    assert_eq!("claude-sonnet-4-6", resolved.model);
+    assert!(resolved.api_key.resolve().is_err());
+    let debug = format!("{resolved:?}");
+    assert!(!debug.contains(&missing));
+    assert!(debug.contains("<redacted>"));
 }
 
 #[test]
@@ -248,7 +267,7 @@ fn builder_values_override_all_config_tier_settings() {
     assert_eq!(resolved.kind, ProviderKind::Anthropic);
     assert_eq!(resolved.model, "claude-opus-4-7");
     assert_eq!(resolved.base_url, "https://custom-gateway.example");
-    assert_eq!(resolved.api_key.expose(), "builder-key");
+    assert_eq!(resolved.api_key.resolve().unwrap(), "builder-key");
 }
 
 #[test]
@@ -275,7 +294,7 @@ fn config_api_key_and_base_url_are_used() {
     })
     .unwrap();
 
-    assert_eq!(resolved.api_key.expose(), "sk-ant-config");
+    assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-config");
     assert_eq!(resolved.base_url, "https://api.anthropic.com");
 }
 
@@ -297,7 +316,7 @@ fn named_connection_selects_exact_gateway_with_the_same_protocol() {
 
     assert_eq!("second", resolved.connection_name);
     assert_eq!("https://second.example", resolved.base_url);
-    assert_eq!("second-key", resolved.api_key.expose());
+    assert_eq!("second-key", resolved.api_key.resolve().unwrap());
     assert_eq!(original, cfg);
 }
 

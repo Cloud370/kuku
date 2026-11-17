@@ -6,7 +6,9 @@ use crate::config::ProviderAuth;
 use super::error::{classify_http_error, transport_error};
 use super::prepare::{authentication, invalid_request};
 use super::trace::{ProviderTrace, ProviderTraceDirection, ProviderTraceMetadata};
-use super::types::{PreparedProviderRequest, ProviderFailure, ProviderKind, ResolvedProvider};
+use super::types::{
+    PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ProviderKind, ResolvedProvider,
+};
 
 const MAX_ERROR_BODY_BYTES: usize = 4096;
 
@@ -36,7 +38,14 @@ pub(crate) async fn send_prepared(
             "prepared request belongs to a different connection, endpoint, protocol, or model",
         ));
     }
-    let headers = request_headers(config, prepared)?;
+    let api_key = config.api_key.resolve().map_err(|error| ProviderFailure {
+        kind: ProviderFailureKind::Authentication,
+        message: format!("could not resolve connection credentials: {error}"),
+        status: None,
+        provider_request_id: None,
+        retryable: false,
+    })?;
+    let headers = request_headers(config, prepared, &api_key)?;
     let trace = ProviderTrace::from_request(
         trace_metadata.as_ref(),
         config.connection_name.clone(),
@@ -84,10 +93,10 @@ pub(crate) async fn send_prepared(
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let body = read_error_body(response).await;
-        let body = if config.api_key.expose().is_empty() {
+        let body = if api_key.is_empty() {
             body
         } else {
-            body.replace(config.api_key.expose(), "<redacted>")
+            body.replace(&api_key, "<redacted>")
         };
         let mut failure = classify_http_error(status.as_u16(), &body);
         failure.provider_request_id = request_id;
@@ -99,15 +108,13 @@ pub(crate) async fn send_prepared(
 fn request_headers(
     config: &ResolvedProvider,
     prepared: &PreparedProviderRequest,
+    api_key: &str,
 ) -> Result<HeaderMap, ProviderFailure> {
     let mut headers = HeaderMap::new();
     headers.insert("content-type", HeaderValue::from_static("application/json"));
     let (name, value) = match authentication(config) {
-        ProviderAuth::ApiKey => ("x-api-key", config.api_key.expose().to_string()),
-        ProviderAuth::Bearer => (
-            "authorization",
-            format!("Bearer {}", config.api_key.expose()),
-        ),
+        ProviderAuth::ApiKey => ("x-api-key", api_key.to_string()),
+        ProviderAuth::Bearer => ("authorization", format!("Bearer {api_key}")),
     };
     let mut credential = HeaderValue::from_str(&value)
         .map_err(|_| invalid_request("credential is not a valid HTTP header value"))?;
@@ -173,11 +180,21 @@ mod tests {
             ..Default::default()
         };
         config.capabilities.profile = ProviderProfile::OpenRouter;
-        let headers = request_headers(&config, &prepared(&config)).unwrap();
+        let headers = request_headers(
+            &config,
+            &prepared(&config),
+            &config.api_key.resolve().unwrap(),
+        )
+        .unwrap();
         assert_eq!("Bearer test-key", headers["authorization"]);
         assert!(headers.get("x-api-key").is_none());
         config.options.auth = Some(ProviderAuth::ApiKey);
-        let headers = request_headers(&config, &prepared(&config)).unwrap();
+        let headers = request_headers(
+            &config,
+            &prepared(&config),
+            &config.api_key.resolve().unwrap(),
+        )
+        .unwrap();
         assert_eq!("test-key", headers["x-api-key"]);
         assert!(headers.get("authorization").is_none());
     }
@@ -188,8 +205,43 @@ mod tests {
             api_key: SecretString::new("invalid\nkey"),
             ..Default::default()
         };
-        let failure = request_headers(&config, &prepared(&config)).unwrap_err();
+        let failure = request_headers(
+            &config,
+            &prepared(&config),
+            &config.api_key.resolve().unwrap(),
+        )
+        .unwrap_err();
         assert!(!failure.retryable);
         assert!(!failure.message.contains("key"));
+    }
+
+    #[tokio::test]
+    async fn environment_credentials_are_resolved_only_at_default_http_dispatch() {
+        use httpmock::prelude::{MockServer, POST};
+
+        let server = MockServer::start_async().await;
+        let model = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/chat/completions");
+                then.status(200).body("not reached");
+            })
+            .await;
+        let missing = format!("KUKU_PROVIDER_UNSET_CREDENTIAL_{}", std::process::id());
+        assert!(std::env::var_os(&missing).is_none());
+        let config = ResolvedProvider {
+            base_url: server.url(""),
+            api_key: SecretString::from_config(crate::config::ApiKey::Env(missing)),
+            ..Default::default()
+        };
+        let mut request = prepared(&config);
+        request.url = super::super::openai_compat::chat_completions_url(&config.base_url);
+        let failure = send_prepared(&config, &request, None)
+            .await
+            .err()
+            .expect("missing credentials must fail before HTTP");
+        assert_eq!(ProviderFailureKind::Authentication, failure.kind);
+        assert!(!failure.retryable);
+        assert!(failure.status.is_none());
+        model.assert_hits_async(0).await;
     }
 }

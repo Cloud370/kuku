@@ -1,5 +1,11 @@
 mod config {
-    pub use kuku::config::{ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel};
+    pub use kuku::config::{
+        ApiKey, ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel,
+    };
+}
+
+mod error {
+    pub use kuku::Result;
 }
 
 mod context {

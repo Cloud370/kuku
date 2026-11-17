@@ -486,5 +486,5 @@ fn resolution_chain_builder_model_wins() {
     })
     .unwrap();
     assert_eq!(resolved.model, "claude-sonnet-4-6");
-    assert_eq!(resolved.api_key.expose(), "sk-ant-123");
+    assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-123");
 }

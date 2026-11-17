@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::config::{ProviderOptions, ProviderProfile};
+use crate::config::{ApiKey, ProviderOptions, ProviderProfile};
 use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
 use crate::prompt::PromptCatalog;
@@ -41,16 +41,20 @@ impl ProviderKind {
 }
 
 /// Wrapper that redacts the value in Debug/Display.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct SecretString(String);
+#[derive(Clone, PartialEq)]
+pub(crate) struct SecretString(ApiKey);
 
 impl SecretString {
     pub(crate) fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self(ApiKey::Plaintext(value.into()))
     }
 
-    pub(crate) fn expose(&self) -> &str {
-        &self.0
+    pub(crate) fn from_config(value: ApiKey) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn resolve(&self) -> crate::error::Result<String> {
+        self.0.resolve()
     }
 }
 

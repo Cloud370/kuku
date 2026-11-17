@@ -57,13 +57,15 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             Error::MissingProviderConfig(format!("connection '{name}' has no base_url"))
         })?;
     let api_key = match input.api_key.as_ref() {
-        Some(key) => key.clone(),
-        None => connection
-            .ok_or_else(|| {
-                Error::MissingProviderConfig(format!("connection '{name}' has no api_key"))
-            })?
-            .api_key
-            .resolve()?,
+        Some(key) => SecretString::new(key),
+        None => SecretString::from_config(
+            connection
+                .ok_or_else(|| {
+                    Error::MissingProviderConfig(format!("connection '{name}' has no api_key"))
+                })?
+                .api_key
+                .clone(),
+        ),
     };
     let options = connection
         .map(|connection| connection.options.clone())
@@ -106,7 +108,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         kind,
         model,
         base_url,
-        api_key: SecretString::new(api_key),
+        api_key,
         max_context_tokens: tier.map(|tier| tier.context_window).unwrap_or(200_000),
         max_output_tokens: input
             .max_output_tokens
