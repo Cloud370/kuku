@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 #[cfg(test)]
 mod completion_tests;
@@ -10,6 +11,7 @@ use crate::event::{EventPayload, EventStore};
 use crate::permission::append_project_allow_rule;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::ProviderToolCall;
+use crate::tool::{ToolFaults, ToolResultEnvelope};
 use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
@@ -103,13 +105,27 @@ impl Run {
     }
 
     /// Poll for the next UI event from the running query.
-    pub async fn next(&mut self) -> Result<Option<UiEvent>> {
-        loop {
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "The existing async next API returns its polling future directly to avoid an extra frame on the caller's stack"
+    )]
+    pub fn next(&mut self) -> impl Future<Output = Result<Option<UiEvent>>> + '_ {
+        self.next_event(|event, _| event)
+    }
+
+    pub(crate) fn next_with_tool_faults(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<(UiEvent, ToolFaults)>>> + '_ {
+        self.next_event(|event, faults| (event, faults))
+    }
+
+    async fn next_event<T>(&mut self, project: fn(UiEvent, ToolFaults) -> T) -> Result<Option<T>> {
+        let event = loop {
             self.persist_deferred_runtime_logs();
 
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
-                    return Ok(Some(self.defer_runtime_log_if_needed(event)));
+                    break self.defer_runtime_log_if_needed(event);
                 }
             }
             if !self.slots.is_empty() {
@@ -120,71 +136,18 @@ impl Run {
                 if let Some((tool_call_id, event)) = slot_event {
                     match event {
                         SlotEvent::Output(te) => {
-                            return Ok(Some(UiEvent::ToolOutput {
+                            break UiEvent::ToolOutput {
                                 id: tool_call_id,
                                 event: te,
-                            }));
+                            };
                         }
-                        SlotEvent::Done {
-                            status,
-                            summary,
-                            model_content,
-                            truncated,
-                            result,
-                        } => {
-                            let slot = self.slots.remove(&tool_call_id).expect("slot must exist");
-                            self.state.record_tool_completion(&status);
-                            let (events_path, turn) = match &self.state {
-                                RunState::Pending(p) => (&p.events_path, p.turn),
-                                RunState::Streaming(s) => (&s.pending.events_path, s.pending.turn),
-                                RunState::WaitingForPermission(w) => {
-                                    (&w.pending.events_path, w.pending.turn)
-                                }
-                                RunState::Cancelled { events_path, turn } => (events_path, *turn),
-                                _ if self.cleanup_context.is_some() => {
-                                    let (events_path, turn) = self
-                                        .cleanup_context
-                                        .as_ref()
-                                        .expect("cleanup context exists");
-                                    (events_path, *turn)
-                                }
-                                _ => {
-                                    return Ok(Some(UiEvent::ToolEnd {
-                                        id: slot.tool_call_id,
-                                        status,
-                                        summary,
-                                        model_content: None,
-                                        result,
-                                    }));
-                                }
-                            };
-                            let envelope = crate::tool::ToolResultEnvelope {
-                                status,
-                                summary,
-                                model_content,
-                                truncated,
-                                structured: result,
-                            };
-                            let result = super::tool_exec::write_tool_result(
-                                &slot,
-                                &envelope,
-                                events_path,
-                                turn,
-                            )?;
-                            let crate::tool::ToolResultEnvelope {
-                                status,
-                                summary,
-                                model_content,
-                                ..
-                            } = envelope;
-                            let mc = (!model_content.is_empty()).then_some(model_content);
-                            return Ok(Some(UiEvent::ToolEnd {
-                                id: slot.tool_call_id,
-                                status,
-                                summary,
-                                model_content: mc,
-                                result,
-                            }));
+                        SlotEvent::Done(result) => {
+                            let faults = result.faults;
+                            let event = self.finish_slot(&tool_call_id, result)?;
+                            if faults.output_persistence_failed || faults.cleanup_incomplete {
+                                self.cancel();
+                            }
+                            return Ok(Some(project(event, faults)));
                         }
                     }
                 }
@@ -192,35 +155,68 @@ impl Run {
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
                     if let Some(event) = self.advance_from_pending(pending).await? {
-                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
+                        break self.defer_runtime_log_if_needed(event);
                     }
                 }
                 RunState::Streaming(streaming) => {
                     if let Some(event) = self.advance_from_streaming(streaming).await? {
-                        return Ok(Some(self.defer_runtime_log_if_needed(event)));
+                        break self.defer_runtime_log_if_needed(event);
                     }
                 }
                 RunState::WaitingForPermission(waiting) => {
                     let request = waiting.request.clone();
                     self.state = RunState::WaitingForPermission(waiting);
-                    return Ok(Some(UiEvent::PermissionRequested { request }));
+                    break UiEvent::PermissionRequested { request };
                 }
                 RunState::Cancelled { events_path, turn } => {
                     append_turn_cancelled(&events_path, &self.agent, turn, "user_cancelled")?;
                     self.state = RunState::Done(None);
-                    return Ok(Some(UiEvent::Cancelled { turn }));
+                    break UiEvent::Cancelled { turn };
                 }
                 RunState::Done(Some((output, usage, turn))) => {
                     self.state = RunState::Done(None);
-                    return Ok(Some(UiEvent::Done {
+                    break UiEvent::Done {
                         output,
                         usage,
                         turn,
-                    }));
+                    };
                 }
                 RunState::Done(None) => return Ok(None),
             }
-        }
+        };
+        Ok(Some(project(event, ToolFaults::default())))
+    }
+
+    fn finish_slot(&mut self, id: &str, envelope: ToolResultEnvelope) -> Result<UiEvent> {
+        let slot = self.slots.remove(id).expect("slot must exist");
+        self.state.record_tool_completion(&envelope.status);
+        let context = match &self.state {
+            RunState::Pending(p) => Some((&p.events_path, p.turn)),
+            RunState::Streaming(s) => Some((&s.pending.events_path, s.pending.turn)),
+            RunState::WaitingForPermission(w) => Some((&w.pending.events_path, w.pending.turn)),
+            RunState::Cancelled { events_path, turn } => Some((events_path, *turn)),
+            RunState::Done(_) => self
+                .cleanup_context
+                .as_ref()
+                .map(|(path, turn)| (path, *turn)),
+        };
+        let (result, model_content) = match context {
+            Some((path, turn)) => {
+                let result = super::tool_exec::write_tool_result(&slot, &envelope, path, turn)?;
+                (
+                    result,
+                    (!envelope.model_content.is_empty()).then_some(envelope.model_content),
+                )
+            }
+            None => (envelope.structured, None),
+        };
+        Ok(UiEvent::ToolEnd {
+            id: slot.tool_call_id,
+            status: envelope.status,
+            summary: envelope.summary,
+            model_content,
+            result,
+        })
     }
 
     fn defer_runtime_log_if_needed(&mut self, event: UiEvent) -> UiEvent {

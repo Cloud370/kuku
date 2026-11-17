@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::event::StoredEvent;
+use crate::tool::ToolResultEnvelope;
 
 use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
 use super::UiEvent;
@@ -49,13 +50,7 @@ pub(crate) fn spawn_simple_slot(
     tokio::spawn(async move {
         let result = tokio::select! {
             biased;
-            _ = cancel_clone.notified() => SlotEvent::Done {
-                status: "cancelled".into(),
-                summary: "cancelled".into(),
-                model_content: String::new(),
-                truncated: false,
-                result: None,
-            },
+            _ = cancel_clone.notified() => cancelled_slot("cancelled"),
             r = crate::tool::dispatch::dispatch(
                 &tool_name,
                 &args,
@@ -68,13 +63,7 @@ pub(crate) fn spawn_simple_slot(
                 &config,
                 &catalog,
                 &events_path,
-            ) => SlotEvent::Done {
-                status: r.status,
-                summary: r.summary,
-                model_content: r.model_content,
-                truncated: r.truncated,
-                result: r.structured,
-            },
+            ) => SlotEvent::Done(r),
         };
         let _ = event_tx.send((tc_id, result)).await;
     });
@@ -142,13 +131,7 @@ pub(crate) fn spawn_agent_slot(
                 biased;
                 _ = cancel_clone.notified() => {
                     child_run.cancel();
-                    let _ = event_tx.send((tc_id.clone(), SlotEvent::Done {
-                        status: "cancelled".into(),
-                        summary: format!("{} cancelled", dispatch.conversation.as_str()),
-                        model_content: String::new(),
-                        truncated: false,
-                        result: None,
-                    })).await;
+                    let _ = event_tx.send((tc_id.clone(), cancelled_slot(format!("{} cancelled", dispatch.conversation.as_str())))).await;
                     return;
                 }
                 result = child_run.next() => result,
@@ -159,23 +142,21 @@ pub(crate) fn spawn_agent_slot(
                     let _ = event_tx
                         .send((
                             tc_id.clone(),
-                            SlotEvent::Done {
-                                status: "ok".into(),
-                                summary: format!(
+                            SlotEvent::Done(ToolResultEnvelope::ok(
+                                format!(
                                     "{} completed in {} turns",
                                     dispatch.conversation.as_str(),
                                     output.turn
                                 ),
-                                model_content: output.text,
-                                truncated: false,
-                                result: Some(serde_json::json!({
+                                output.text,
+                                serde_json::json!({
                                     "kind": "agent_result",
                                     "conversation": dispatch.conversation.as_str(),
                                     "binding_id": dispatch.binding.binding_id,
                                     "turns_completed": output.turn,
                                     "text": output_text,
-                                })),
-                            },
+                                }),
+                            )),
                         ))
                         .await;
                     return;
@@ -283,14 +264,7 @@ pub(crate) fn spawn_command_slot(
             }
         };
         let _ = forward_handle.await;
-        let result = SlotEvent::Done {
-            status: r.status,
-            summary: r.summary,
-            model_content: r.model_content,
-            truncated: r.truncated,
-            result: r.structured,
-        };
-        let _ = event_tx.send((tc_id, result)).await;
+        let _ = event_tx.send((tc_id, SlotEvent::Done(r))).await;
     });
 
     ExecSlot {
@@ -410,13 +384,14 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
 }
 
 fn agent_error_event(summary: String) -> SlotEvent {
-    SlotEvent::Done {
-        status: "error".to_string(),
-        summary,
-        model_content: String::new(),
-        truncated: false,
-        result: Some(serde_json::json!({"kind": "error"})),
-    }
+    SlotEvent::Done(ToolResultEnvelope::error(summary, ""))
+}
+
+fn cancelled_slot(summary: impl Into<String>) -> SlotEvent {
+    SlotEvent::Done(ToolResultEnvelope {
+        structured: None,
+        ..ToolResultEnvelope::cancelled(summary)
+    })
 }
 
 #[cfg(test)]
@@ -489,19 +464,16 @@ mod tests {
 
     #[test]
     fn agent_error_event_has_stable_structured_marker() {
-        let SlotEvent::Done {
-            status,
-            truncated,
-            result,
-            ..
-        } = agent_error_event("agent failed".to_string())
-        else {
+        let SlotEvent::Done(result) = agent_error_event("agent failed".to_string()) else {
             panic!("expected terminal agent event");
         };
 
-        assert_eq!("error", status);
-        assert!(!truncated);
-        assert_eq!(Some(serde_json::json!({"kind": "error"})), result);
+        assert_eq!("error", result.status);
+        assert!(!result.truncated);
+        assert_eq!(
+            Some(serde_json::json!({"kind": "error"})),
+            result.structured
+        );
     }
 
     #[tokio::test]
@@ -535,10 +507,10 @@ mod tests {
             dir.path().join("events.jsonl"),
         );
         let (_, denied) = event_rx.recv().await.unwrap();
-        let SlotEvent::Done { status, .. } = denied else {
+        let SlotEvent::Done(result) = denied else {
             panic!("expected completed slot");
         };
-        assert_eq!(status, "error");
+        assert_eq!("error", result.status);
 
         spawn_simple_slot(
             "edit_review_snapshot".to_string(),
@@ -555,11 +527,11 @@ mod tests {
             dir.path().join("events.jsonl"),
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
-        let SlotEvent::Done { status, .. } = allowed else {
+        let SlotEvent::Done(result) = allowed else {
             panic!("expected completed slot");
         };
 
-        assert_eq!(status, "ok");
+        assert_eq!("ok", result.status);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("visible.txt")).unwrap(),
             "omega\n"

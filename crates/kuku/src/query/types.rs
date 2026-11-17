@@ -285,13 +285,7 @@ impl std::fmt::Debug for ExecSlot {
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
     Output(ToolEvent),
-    Done {
-        status: String,
-        summary: String,
-        model_content: String,
-        truncated: bool,
-        result: Option<serde_json::Value>,
-    },
+    Done(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]

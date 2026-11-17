@@ -19,6 +19,12 @@ impl ToolErrorReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ToolFaults {
+    pub(crate) output_persistence_failed: bool,
+    pub(crate) cleanup_incomplete: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolResultEnvelope {
     pub status: String,
@@ -26,6 +32,7 @@ pub(crate) struct ToolResultEnvelope {
     pub model_content: String,
     pub truncated: bool,
     pub structured: Option<Value>,
+    pub(crate) faults: ToolFaults,
 }
 
 impl ToolResultEnvelope {
@@ -44,6 +51,7 @@ impl ToolResultEnvelope {
             model_content: model_content.into(),
             truncated: false,
             structured: Some(structured),
+            faults: ToolFaults::default(),
         }
     }
 
@@ -58,6 +66,7 @@ impl ToolResultEnvelope {
             model_content: model_content.into(),
             truncated: true,
             structured: Some(structured),
+            faults: ToolFaults::default(),
         }
     }
 
@@ -68,6 +77,25 @@ impl ToolResultEnvelope {
             model_content: model_content.into(),
             truncated: false,
             structured: Some(serde_json::json!({"kind": "error"})),
+            faults: ToolFaults::default(),
+        }
+    }
+
+    pub(crate) fn output_failure(
+        summary: impl Into<String>,
+        model_content: impl Into<String>,
+        kind: &str,
+        cleanup_incomplete: bool,
+    ) -> Self {
+        Self {
+            structured: Some(serde_json::json!({
+                "kind": kind, "output_persistence_failed": true, "cleanup_incomplete": cleanup_incomplete,
+            })),
+            faults: ToolFaults {
+                output_persistence_failed: true,
+                cleanup_incomplete,
+            },
+            ..Self::error(summary, model_content)
         }
     }
 
@@ -85,6 +113,7 @@ impl ToolResultEnvelope {
                 "kind": "error",
                 "reason_code": reason.as_str(),
             })),
+            faults: ToolFaults::default(),
         }
     }
 
@@ -95,10 +124,10 @@ impl ToolResultEnvelope {
             model_content: model_content.into(),
             truncated: false,
             structured: Some(Self::blocked_marker()),
+            faults: ToolFaults::default(),
         }
     }
 
-    #[allow(dead_code)] // will be used when slot cancellation is fully wired
     pub(crate) fn cancelled(summary: impl Into<String>) -> Self {
         Self {
             status: "cancelled".to_string(),
@@ -106,6 +135,7 @@ impl ToolResultEnvelope {
             model_content: String::new(),
             truncated: false,
             structured: Some(serde_json::json!({"kind": "cancelled"})),
+            faults: ToolFaults::default(),
         }
     }
 }

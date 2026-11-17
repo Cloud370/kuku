@@ -43,13 +43,10 @@ async fn async_error_completion_is_counted_exactly_once() {
     slot_event_tx
         .send((
             "tool_error".to_string(),
-            SlotEvent::Done {
-                status: "error".to_string(),
-                summary: "command timed out".to_string(),
-                model_content: "timeout output".to_string(),
-                truncated: false,
-                result: Some(serde_json::json!({"kind": "error"})),
-            },
+            SlotEvent::Done(crate::tool::ToolResultEnvelope::error(
+                "command timed out",
+                "timeout output",
+            )),
         ))
         .await
         .unwrap();

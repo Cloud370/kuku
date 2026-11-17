@@ -156,12 +156,12 @@ impl Session {
             let mut cleanup_failure = None;
             loop {
                 let event = if cancelling {
-                    run.next().await
+                    run.next_with_tool_faults().await
                 } else {
                     tokio::select! {
                         biased;
                         _ = cancel.changed() => { cancelling = true; run.cancel(); continue }
-                        result = run.next() => result,
+                        result = run.next_with_tool_faults() => result,
                     }
                 };
                 let event = match event {
@@ -171,7 +171,7 @@ impl Session {
                         return Err(error);
                     }
                 };
-                let Some(event) = event else {
+                let Some((event, faults)) = event else {
                     if cancelling {
                         self.settle_cancelled(address, epoch)?;
                         return match cleanup_failure {
@@ -188,6 +188,26 @@ impl Session {
                     UiEvent::Done { .. } | UiEvent::PermissionRequested { .. }
                 ) {
                     let _ = self.inner.live.send((address.into(), event.clone()));
+                }
+                if faults.cleanup_incomplete {
+                    let message = format!(
+                        "agent '{address}' tool cleanup did not finish; owned resources may remain"
+                    );
+                    let mut state = self.inner.state.lock().unwrap();
+                    self.commit(
+                        &mut state,
+                        Record::CleanupFailed {
+                            address: address.into(),
+                            message: message.clone(),
+                        },
+                    )?;
+                    cleanup_failure = Some(Error::InvalidEventStream(message));
+                    cancelling = true;
+                    continue;
+                }
+                if faults.output_persistence_failed {
+                    self.cleanup_failed_run(address, &mut run).await;
+                    return Err(Error::InvalidEventStream("tool output could not be durably captured; execution stopped before the next model request".into()));
                 }
                 match event {
                     UiEvent::Done { output, .. } => {
@@ -242,30 +262,6 @@ impl Session {
                             Some(error) => Err(error),
                             None => Ok(()),
                         };
-                    }
-                    UiEvent::ToolEnd {
-                        result: Some(result),
-                        ..
-                    } if result["cleanup_incomplete"] == true => {
-                        let message = format!("agent '{address}' tool cleanup did not finish; owned resources may remain");
-                        let mut state = self.inner.state.lock().unwrap();
-                        self.commit(
-                            &mut state,
-                            Record::CleanupFailed {
-                                address: address.into(),
-                                message: message.clone(),
-                            },
-                        )?;
-                        cleanup_failure = Some(Error::InvalidEventStream(message));
-                        cancelling = true;
-                        run.cancel();
-                    }
-                    UiEvent::ToolEnd {
-                        result: Some(result),
-                        ..
-                    } if result["output_persistence_failed"] == true => {
-                        self.cleanup_failed_run(address, &mut run).await;
-                        return Err(Error::InvalidEventStream("tool output could not be durably captured; execution stopped before the next model request".into()));
                     }
                     UiEvent::PermissionRequested { mut request } => {
                         let mut state = self.inner.state.lock().unwrap();
@@ -476,10 +472,9 @@ impl Session {
     async fn cleanup_failed_run(&self, address: &str, run: &mut crate::Run) {
         run.cancel();
         while !run.slots.is_empty() {
-            match run.next().await {
-                Ok(Some(event)) => {
-                    if matches!(&event, UiEvent::ToolEnd { result: Some(result), .. } if result["cleanup_incomplete"] == true)
-                    {
+            match run.next_with_tool_faults().await {
+                Ok(Some((event, faults))) => {
+                    if faults.cleanup_incomplete {
                         let mut state = self.inner.state.lock().unwrap();
                         let _ = self.commit(&mut state, Record::CleanupFailed { address: address.into(), message: format!("agent '{address}' cleanup after an execution error was incomplete") });
                     }

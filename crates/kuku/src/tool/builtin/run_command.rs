@@ -111,7 +111,14 @@ pub(crate) async fn run_command_with_output(
     let started = Instant::now();
     let mut output = match OutputWriter::create(output_dir, output_id, limits).await {
         Ok(output) => output,
-        Err(error) => return output_error("create", error),
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: output create: {error}"),
+                format!(
+                    "command output create failed: {error}; no output reference was acknowledged"
+                ),
+            )
+        }
     };
     let already_cancelled = tokio::select! {
         biased;
@@ -124,17 +131,22 @@ pub(crate) async fn run_command_with_output(
             ..CommandOutcome::default()
         }
     } else {
-        match execute_command(&request, &workspace, &mut output, event_tx, cancelled.as_mut()).await {
+        match execute_command(
+            &request,
+            &workspace,
+            &mut output,
+            event_tx,
+            cancelled.as_mut(),
+        )
+        .await
+        {
             Ok(outcome) => outcome,
-            Err(error) => return ToolResultEnvelope::error(
-                format!("failed: command execution: {error}"),
-                format!("command execution or output capture failed: {error}; output was not acknowledged"),
-            ),
+            Err(result) => return result,
         }
     };
     let metadata = match output.finish(outcome.cleanup_incomplete).await {
         Ok(metadata) => metadata,
-        Err(error) => return output_error("sync", error),
+        Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
     };
     render_command_result(
         &request,
@@ -153,14 +165,19 @@ async fn execute_command(
     output: &mut OutputWriter,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-) -> io::Result<CommandOutcome> {
+) -> Result<CommandOutcome, ToolResultEnvelope> {
     let mut command = shell_command(&request.command);
     command
         .current_dir(workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, mut tree) = ProcessTree::spawn(&mut command)?;
+    let (mut child, mut tree) = ProcessTree::spawn(&mut command).map_err(|error| {
+        ToolResultEnvelope::error(
+            format!("failed: command execution: {error}"),
+            format!("command could not start: {error}"),
+        )
+    })?;
     let capture =
         capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
     let cleanup = tree.terminate();
@@ -168,9 +185,14 @@ async fn execute_command(
         let _ = child.start_kill();
         timeout(CLEANUP_TIMEOUT, child.wait())
             .await
-            .map_err(|_| io::Error::other("command process did not exit during cleanup"))??;
+            .unwrap_or_else(|_| {
+                Err(io::Error::other(
+                    "command process did not exit during cleanup",
+                ))
+            })
+            .map_err(cleanup_error)?;
     }
-    cleanup?;
+    cleanup.map_err(cleanup_error)?;
     capture
 }
 
@@ -181,7 +203,7 @@ async fn capture_command(
     output: &mut OutputWriter,
     event_tx: &Option<mpsc::Sender<CommandEvent>>,
     mut cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-) -> io::Result<CommandOutcome> {
+) -> Result<CommandOutcome, ToolResultEnvelope> {
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut stdout_buf = [0; READ_BUFFER_BYTES];
@@ -196,34 +218,34 @@ async fn capture_command(
             _ = cancelled.as_mut(), if !stopping && !exited => {
                 outcome.cancelled = true;
                 stopping = true;
-                tree.terminate()?;
+                tree.terminate().map_err(cleanup_error)?;
                 let _ = child.start_kill();
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             _ = sleep_until(deadline), if !stopping && !exited => {
                 outcome.timed_out = true;
                 stopping = true;
-                tree.terminate()?;
+                tree.terminate().map_err(cleanup_error)?;
                 let _ = child.start_kill();
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             status = child.wait(), if !exited => {
-                outcome.exit_code = status?.code();
+                outcome.exit_code = status.map_err(capture_error)?.code();
                 exited = true;
-                tree.terminate()?;
+                tree.terminate().map_err(cleanup_error)?;
                 cleanup_deadline.get_or_insert(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             read = read_stream(&mut stdout, &mut stdout_buf), if stdout.is_some() => {
-                let bytes = read?;
+                let bytes = read.map_err(capture_error)?;
                 if bytes == 0 { stdout = None; } else {
-                    output.write(OutputStream::Stdout, &stdout_buf[..bytes]).await?;
+                    output.write(OutputStream::Stdout, &stdout_buf[..bytes]).await.map_err(capture_error)?;
                     outcome.dropped_events += emit_event(event_tx, OutputStream::Stdout, &stdout_buf[..bytes]);
                 }
             }
             read = read_stream(&mut stderr, &mut stderr_buf), if stderr.is_some() => {
-                let bytes = read?;
+                let bytes = read.map_err(capture_error)?;
                 if bytes == 0 { stderr = None; } else {
-                    output.write(OutputStream::Stderr, &stderr_buf[..bytes]).await?;
+                    output.write(OutputStream::Stderr, &stderr_buf[..bytes]).await.map_err(capture_error)?;
                     outcome.dropped_events += emit_event(event_tx, OutputStream::Stderr, &stderr_buf[..bytes]);
                 }
             }
@@ -271,10 +293,20 @@ fn emit_event(tx: &Option<mpsc::Sender<CommandEvent>>, stream: OutputStream, byt
     u64::from(tx.try_send(event).is_err() || shortened)
 }
 
-fn output_error(operation: &str, error: io::Error) -> ToolResultEnvelope {
-    ToolResultEnvelope::error(
+fn capture_error(error: io::Error) -> ToolResultEnvelope {
+    output_error("capture", error, false)
+}
+
+fn cleanup_error(error: io::Error) -> ToolResultEnvelope {
+    output_error("cleanup", error, true)
+}
+
+fn output_error(operation: &str, error: io::Error, cleanup_incomplete: bool) -> ToolResultEnvelope {
+    ToolResultEnvelope::output_failure(
         format!("failed: output {operation}: {error}"),
         format!("command output {operation} failed: {error}; no output reference was acknowledged"),
+        "error",
+        cleanup_incomplete,
     )
 }
 

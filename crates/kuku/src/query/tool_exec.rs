@@ -193,6 +193,7 @@ fn handle_use_skill(
         summary: format!("loaded skill: {skill_name}"),
         model_content: result,
         truncated: false,
+        faults: Default::default(),
         structured: Some(json!({
             "kind": "skill_load",
             "conversation": pending.conversation.as_str(),
@@ -638,6 +639,7 @@ mod tests {
             model_content: "README contents".to_string(),
             truncated: false,
             structured: None,
+            faults: Default::default(),
         };
         write_tool_result(&slot, &result, &events_path, 1).unwrap();
 

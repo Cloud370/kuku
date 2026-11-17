@@ -36,12 +36,9 @@ async fn command_slot_preserves_timeout_truncation() {
 
     loop {
         let (_, event) = event_rx.recv().await.unwrap();
-        if let SlotEvent::Done {
-            status, truncated, ..
-        } = event
-        {
-            assert_eq!("error", status);
-            assert!(truncated);
+        if let SlotEvent::Done(result) = event {
+            assert_eq!("error", result.status);
+            assert!(result.truncated);
             break;
         }
     }
@@ -185,13 +182,11 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     slot_event_tx
         .send((
             "tool_cancelled".to_string(),
-            SlotEvent::Done {
-                status: "ok".to_string(),
-                summary: "finished after cancellation".to_string(),
-                model_content: String::new(),
-                truncated: true,
-                result: Some(serde_json::json!({"kind": "command_result"})),
-            },
+            SlotEvent::Done(crate::tool::ToolResultEnvelope::ok_truncated(
+                "finished after cancellation",
+                "",
+                serde_json::json!({"kind": "command_result"}),
+            )),
         ))
         .await
         .unwrap();

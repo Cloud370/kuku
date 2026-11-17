@@ -12,7 +12,7 @@ use crate::provider::types::{
 use crate::tool::builtin::run_command::output::{
     read_output, OutputRead, OutputStream, OutputWriter, MAX_FRAME_BYTES,
 };
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{ModelRequest, Result};
 
 use super::slots::CommandOutputSpec;
@@ -78,18 +78,7 @@ pub(super) fn spawn_tool(
             .unwrap_or_else(|error| {
                 ToolResultEnvelope::error("host tool failed", error.to_string())
             });
-        let _ = event_tx
-            .send((
-                tool_call_id,
-                SlotEvent::Done {
-                    status: result.status,
-                    summary: result.summary,
-                    model_content: result.model_content,
-                    truncated: result.truncated,
-                    result: result.structured,
-                },
-            ))
-            .await;
+        let _ = event_tx.send((tool_call_id, SlotEvent::Done(result))).await;
     });
     ExecSlot {
         tool_call_id: slot_tool_call_id,
@@ -145,11 +134,16 @@ async fn execute_tool(
         result.status = ToolStatus::Cancelled;
     }
     let cleanup_incomplete = result.cleanup_incomplete;
-    Ok(capture_tool_result(registered, result, writer, output).await.unwrap_or_else(|error| {
-        let mut envelope = ToolResultEnvelope::error("host tool output failed", error.to_string());
-        envelope.structured = Some(serde_json::json!({"kind":"host_tool_result","cleanup_incomplete":cleanup_incomplete,"output_persistence_failed":true}));
-        envelope
-    }))
+    Ok(capture_tool_result(registered, result, writer, output)
+        .await
+        .unwrap_or_else(|error| {
+            ToolResultEnvelope::output_failure(
+                "host tool output failed",
+                error.to_string(),
+                "host_tool_result",
+                cleanup_incomplete,
+            )
+        }))
 }
 
 async fn capture_tool_result(
@@ -207,6 +201,10 @@ async fn capture_tool_result(
         summary: result.summary,
         model_content: content,
         truncated,
+        faults: ToolFaults {
+            cleanup_incomplete: metadata.cleanup_incomplete,
+            ..Default::default()
+        },
         structured: Some(
             serde_json::json!({"kind":"host_tool_result","tool":registered.spec.name,"data":data,"output_id":output.id,
             "output_ref":{"id":output.id,"offset":0,"bytes":metadata.stored_bytes},"capture_complete":!metadata.quota_truncated && !metadata.cleanup_incomplete,

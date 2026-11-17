@@ -561,6 +561,72 @@ impl ToolAuthorizer for PolicyFault {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
+    for (operation, rename) in [
+        ("sync", "mv capture/outputs capture/retired"),
+        (
+            "read",
+            "mv capture/outputs/*.output capture/outputs/retired",
+        ),
+    ] {
+        let server = MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let session = Session::open(options(&server, workspace.path(), data.path()))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(
+            session.events_path().parent().unwrap(),
+            workspace.path().join("capture"),
+        )
+        .unwrap();
+        let first = fixture(
+            &server,
+            |r| tool_count(r) == 0,
+            json!({"tool_calls":[tool("command","run_command",json!({
+                "command":format!("printf ran > ran.txt && {rename} && printf captured"),
+                "timeout": 5, "brief": "exercise command output recovery",
+            }))]}),
+            "tool_calls",
+        )
+        .await;
+        let next = fixture(
+            &server,
+            |r| tool_count(r) > 0,
+            json!({"content":"continued"}),
+            "stop",
+        )
+        .await;
+        session
+            .create_agent("create", "main", AgentConfig::default())
+            .unwrap();
+        session
+            .send(Input::new("input", "main", "run command"))
+            .unwrap();
+        let snapshot = settled(&session, "main").await;
+        assert_eq!(
+            "ran",
+            std::fs::read_to_string(workspace.path().join("ran.txt")).unwrap()
+        );
+        assert_eq!(
+            AgentStatus::Interrupted,
+            snapshot.status,
+            "{operation}: {snapshot:?}"
+        );
+        assert!(session.close().await.is_err());
+        first.assert_hits_async(1).await;
+        next.assert_hits_async(0).await;
+        assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolResult { tool_call_id, status, summary, structured: Some(value), .. }
+                if tool_call_id == "command" && status == "error" && summary.starts_with(&format!("failed: output {operation}:"))
+                    && value["output_persistence_failed"] == true && value["cleanup_incomplete"] == false
+                    && value.get("output_id").is_none() && value.get("output_ref").is_none()
+        )), "{operation} failure must leave a durable result without an output reference");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn execution_error_drains_dispatched_command_and_preserves_reported_usage() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();

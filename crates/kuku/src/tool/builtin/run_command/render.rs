@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolFaults, ToolResultEnvelope};
 
 use super::output::CaptureMetadata;
 use super::{
@@ -28,7 +28,7 @@ pub(super) fn render_command_result(
         },
     ) {
         Ok(chunk) => chunk,
-        Err(error) => return output_error("read", error),
+        Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
     };
     let duration_ms = duration.as_millis().min(u64::MAX as u128) as u64;
     let mut summary = outcome_summary(request, &outcome, duration_ms);
@@ -93,6 +93,10 @@ pub(super) fn render_command_result(
         summary,
         model_content,
         truncated,
+        faults: ToolFaults {
+            cleanup_incomplete: metadata.cleanup_incomplete,
+            ..Default::default()
+        },
         structured: Some(serde_json::json!({
             "kind": "command_result",
             "command": request.command,
