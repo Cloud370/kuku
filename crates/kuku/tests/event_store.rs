@@ -655,3 +655,211 @@ fn concurrent_async_appends_keep_contiguous_ids_and_valid_jsonl() {
         }
     });
 }
+
+#[test]
+fn unknown_appends_receive_the_assigned_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    for supplied_id in [None, Some(500)] {
+        let mut value = serde_json::json!({"kind": "runtime.input", "text": "work"});
+        if let Some(id) = supplied_id {
+            value["id"] = id.into();
+        }
+        let stored = store.append(EventPayload::Unknown(value)).unwrap();
+        let EventPayload::Unknown(value) = &stored.payload else {
+            panic!("unknown payload was replaced");
+        };
+        assert_eq!(stored.id, value["id"]);
+    }
+    let replayed = EventStore::replay(&path).unwrap();
+    assert_eq!(
+        vec![1, 2],
+        replayed.iter().map(|e| e.id).collect::<Vec<_>>()
+    );
+    assert_eq!(2, store.last_id());
+}
+
+#[test]
+fn paged_reads_resume_by_id_across_sparse_checkpoints_and_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let contents: String = (1..=600)
+        .map(|index| format!("{{\"id\":{},\"kind\":\"runtime.test\"}}\n", index * 2))
+        .collect();
+    std::fs::write(&path, contents).unwrap();
+    let store = EventStore::open(&path).unwrap();
+    assert_eq!(1200, store.last_id());
+    assert!(store.read_after(0, 0).unwrap().is_empty());
+    assert!(store.read_after(1200, 1).unwrap().is_empty());
+    let first = store.read_after(511, usize::MAX).unwrap();
+    assert_eq!(256, first.len());
+    assert_eq!(512, first[0].id);
+    assert_eq!(1022, first.last().unwrap().id);
+
+    let mut all_ids = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = store.read_after(after, 73).unwrap();
+        let Some(last) = page.last() else {
+            break;
+        };
+        after = last.id;
+        all_ids.extend(page.into_iter().map(|event| event.id));
+    }
+    assert_eq!(
+        (1..=600).map(|index| index * 2).collect::<Vec<_>>(),
+        all_ids
+    );
+    drop(store);
+    let reopened = EventStore::open(&path).unwrap();
+    assert_eq!(
+        vec![1198, 1200],
+        reopened
+            .read_after(1196, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn record_limit_rejects_oversized_writes_without_poisoning_the_writer() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    let maximum = 1024 * 1024;
+    let mut value = serde_json::json!({"id": 1, "kind": "runtime.test", "data": ""});
+    let overhead = serde_json::to_vec(&value).unwrap().len() + 1;
+    value["data"] = "x".repeat(maximum - overhead).into();
+    assert_eq!(
+        1,
+        store
+            .append(EventPayload::Unknown(value.clone()))
+            .unwrap()
+            .id
+    );
+    assert_eq!(maximum as u64, std::fs::metadata(&path).unwrap().len());
+
+    value["data"] = "x".repeat(maximum - overhead + 1).into();
+    assert!(matches!(
+        store.append(EventPayload::Unknown(value)),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert_eq!(1, store.last_id());
+    assert_eq!(maximum as u64, std::fs::metadata(&path).unwrap().len());
+    assert_eq!(2, store.append(session_created()).unwrap().id);
+    assert_eq!(1, store.read_after(0, 256).unwrap().len());
+    assert_eq!(2, store.read_after(1, 256).unwrap()[0].id);
+    drop(store);
+    assert_eq!(2, EventStore::replay(&path).unwrap().len());
+}
+
+#[test]
+fn page_byte_target_keeps_large_record_reads_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    for _ in 0..5 {
+        store
+            .append(EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.test", "data": "x".repeat(600 * 1024),
+            })))
+            .unwrap();
+    }
+    let page = store.read_after(0, 256).unwrap();
+    assert_eq!(vec![1, 2], page.iter().map(|e| e.id).collect::<Vec<_>>());
+    let next = store.read_after(2, 256).unwrap();
+    assert_eq!(vec![3, 4], next.iter().map(|e| e.id).collect::<Vec<_>>());
+    assert_eq!(5, store.read_after(4, 256).unwrap()[0].id);
+}
+
+#[test]
+fn repairs_large_incomplete_tail_but_rejects_complete_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let first = "{\"id\":1,\"kind\":\"runtime.test\"}\n";
+    std::fs::write(&path, format!("{first}{}", "x".repeat(3 * 1024 * 1024))).unwrap();
+    assert_eq!(1, EventStore::replay(&path).unwrap().len());
+    assert!(std::fs::metadata(&path).unwrap().len() > first.len() as u64);
+    let store = EventStore::open(&path).unwrap();
+    assert_eq!(first.as_bytes(), std::fs::read(&path).unwrap());
+    drop(store);
+
+    for tail in [
+        "{\"id\":\n".to_string(),
+        format!("{}\n", "x".repeat(1024 * 1024)),
+    ] {
+        let damaged = format!("{first}{tail}");
+        std::fs::write(&path, &damaged).unwrap();
+        assert!(matches!(
+            EventStore::replay(&path),
+            Err(Error::InvalidEventStream(_))
+        ));
+        assert!(matches!(
+            EventStore::open(&path),
+            Err(Error::InvalidEventStream(_))
+        ));
+        assert_eq!(damaged.as_bytes(), std::fs::read(&path).unwrap());
+    }
+}
+
+#[test]
+fn active_writer_rejects_another_process_until_the_last_clone_is_dropped() {
+    if let Ok(expected) = std::env::var("KUKU_EVENT_STORE_LOCK_CHILD") {
+        let path = std::env::var("KUKU_EVENT_STORE_PATH").unwrap();
+        if expected == "locked" {
+            let error = match EventStore::open(&path) {
+                Ok(_) => panic!("another process acquired the active writer"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, Error::Io(ref error) if error.kind() == ErrorKind::WouldBlock));
+            assert!(error.to_string().contains("already has an active writer"));
+            assert!(
+                matches!(EventStore::replay(&path), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
+            );
+        } else {
+            let mut store = EventStore::open(&path).unwrap();
+            assert_eq!(2, store.append(session_created()).unwrap().id);
+        }
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    store.append(session_created()).unwrap();
+    let clone = store.clone();
+    drop(store);
+    let child = |expected| {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .env("KUKU_EVENT_STORE_LOCK_CHILD", expected)
+            .env("KUKU_EVENT_STORE_PATH", &path)
+            .arg("--exact")
+            .arg("active_writer_rejects_another_process_until_the_last_clone_is_dropped")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    child("locked");
+    assert_eq!(1, EventStore::replay(&path).unwrap().len());
+    drop(clone);
+    child("unlocked");
+    assert_eq!(2, EventStore::replay(&path).unwrap().len());
+}
+
+#[test]
+fn normalized_paths_share_the_writer() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut original = EventStore::open(&path).unwrap();
+    let alias = temp.path().join(".").join("events.jsonl");
+    let mut aliased = EventStore::open(alias).unwrap();
+    assert_eq!(1, original.append(session_created()).unwrap().id);
+    assert_eq!(2, aliased.append(session_created()).unwrap().id);
+    assert_eq!(2, original.last_id());
+}

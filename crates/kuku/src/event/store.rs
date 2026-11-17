@@ -1,235 +1,422 @@
+//! Durable append-only session event storage.
+
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::ErrorKind;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+
+use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
 
 use super::types::{EventPayload, StoredEvent};
 
-struct ReplayScan {
-    events: Vec<StoredEvent>,
-    last_valid_offset: u64,
-    needs_truncation: bool,
+mod reader;
+
+use reader::EventReader;
+
+const MAX_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_PAGE_BYTES: usize = 1024 * 1024;
+const MAX_PAGE_RECORDS: usize = 256;
+const INDEX_STRIDE: usize = 128;
+
+type StoreRegistry = Mutex<HashMap<PathBuf, StoreEntry>>;
+
+#[derive(Clone, Copy)]
+struct EventOffset {
+    id: u64,
+    offset: u64,
 }
 
-/// Append-only store for reading and writing events to a session's events.jsonl.
-pub struct EventStore {
+struct StoreInner {
     path: PathBuf,
-    next_id: Arc<Mutex<u64>>,
+    writer: Mutex<Writer>,
+    changed: Arc<Notify>,
+    release: Arc<WriterRelease>,
+}
+
+impl Drop for StoreInner {
+    fn drop(&mut self) {
+        let writer = self
+            .writer
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(writer.file_lock.take());
+        self.release.finish();
+    }
+}
+
+struct StoreEntry {
+    writer: Weak<StoreInner>,
+    release: Arc<WriterRelease>,
+}
+
+#[derive(Default)]
+struct WriterRelease {
+    finished: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl WriterRelease {
+    fn finish(&self) {
+        *self.finished.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    fn is_finished(&self) -> bool {
+        *self.finished.lock().unwrap()
+    }
+
+    fn wait(&self) {
+        let mut finished = self.finished.lock().unwrap();
+        while !*finished {
+            finished = self.changed.wait(finished).unwrap();
+        }
+    }
+}
+
+struct Writer {
+    file: File,
+    file_lock: Option<fslock::LockFile>,
+    index: Vec<EventOffset>,
+    event_count: usize,
+    committed_len: u64,
+    last_id: u64,
+    poison: Option<String>,
+}
+
+impl Writer {
+    fn open(path: &Path, mut file: File) -> Result<Self> {
+        let file_lock = acquire_file_lock(path)?;
+        let mut reader = EventReader::new(BufReader::new(&mut file), path, 0);
+        let mut index = Vec::new();
+        let mut event_count = 0_usize;
+        let mut last_id = 0;
+        while let Some(record) = reader.next()? {
+            if event_count.is_multiple_of(INDEX_STRIDE) {
+                index.push(EventOffset {
+                    id: record.event.id,
+                    offset: record.offset,
+                });
+            }
+            event_count += 1;
+            last_id = record.event.id;
+        }
+        let committed_len = reader.committed_len();
+        let incomplete_tail = reader.incomplete_tail();
+        drop(reader);
+        if incomplete_tail {
+            file.set_len(committed_len)?;
+            file.sync_data()?;
+        }
+        Ok(Self {
+            file,
+            file_lock: Some(file_lock),
+            index,
+            event_count,
+            committed_len,
+            last_id,
+            poison: None,
+        })
+    }
+
+    fn ensure_healthy(&self, path: &Path) -> Result<()> {
+        if let Some(reason) = &self.poison {
+            return Err(io::Error::other(format!(
+                "event writer {} stopped after a durability failure: {reason}",
+                path.display()
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
+        if let Err(error) = self
+            .file
+            .write_all(record)
+            .and_then(|()| self.file.sync_data())
+        {
+            self.poison = Some(error.to_string());
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot commit event {event_id} to {}: {error}",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+        if self.event_count.is_multiple_of(INDEX_STRIDE) {
+            self.index.push(EventOffset {
+                id: event_id,
+                offset: self.committed_len,
+            });
+        }
+        self.event_count += 1;
+        self.committed_len += record.len() as u64;
+        self.last_id = event_id;
+        Ok(())
+    }
+
+    fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
+        self.ensure_healthy(path)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        read_all((&mut self.file).take(self.committed_len), path)
+    }
+
+    fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
+        self.ensure_healthy(path)?;
+        if limit == 0 || after >= self.last_id {
+            return Ok(Vec::new());
+        }
+        let checkpoint = self
+            .index
+            .partition_point(|entry| entry.id <= after)
+            .saturating_sub(1);
+        let start = self.index[checkpoint].offset;
+        self.file.seek(SeekFrom::Start(start))?;
+        let file = (&mut self.file).take(self.committed_len - start);
+        let mut reader = EventReader::new(BufReader::new(file), path, start);
+        let mut events = Vec::new();
+        let mut page_bytes = 0;
+        while let Some(record) = reader.next()? {
+            if record.event.id <= after {
+                continue;
+            }
+            page_bytes += record.bytes;
+            events.push(record.event);
+            if events.len() == limit.min(MAX_PAGE_RECORDS) || page_bytes >= MAX_PAGE_BYTES {
+                break;
+            }
+        }
+        Ok(events)
+    }
+}
+
+/// Append-only event storage whose clones share one durable writer for a path.
+#[derive(Clone)]
+pub struct EventStore {
+    inner: Arc<StoreInner>,
 }
 
 impl EventStore {
-    /// Open an event store, creating parent directories and repairing truncated lines if needed.
+    /// Open a shared writer, repairing only an incomplete final record.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let path = path.as_ref();
+        let absolute = std::env::current_dir()?.join(path);
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent)?;
         }
-
-        let mut file_lock = event_file_lock(&path)?;
-        file_lock.lock()?;
-        let scan = Self::scan(&path)?;
-        if scan.needs_truncation {
-            OpenOptions::new()
-                .write(true)
-                .open(&path)?
-                .set_len(scan.last_valid_offset)?;
+        let mut stores = registry().lock().unwrap();
+        let key = canonical_store_path(&absolute)?;
+        if let Some(inner) = find_active_store(&stores, &key) {
+            return Ok(Self { inner });
         }
-
-        let next_id = scan.events.last().map_or(1, |event| event.id + 1);
-        Ok(Self {
-            next_id: next_id_counter(&path, next_id),
-            path,
-        })
-    }
-
-    pub(crate) fn next_id(&self) -> u64 {
-        *self.next_id.lock().unwrap()
-    }
-
-    /// Append a new event to the store and return the stored event with its assigned ID.
-    pub fn append(&mut self, payload: EventPayload) -> Result<StoredEvent> {
-        let mut file_lock = event_file_lock(&self.path)?;
-        file_lock.lock()?;
-
-        let mut next_id = self.next_id.lock().unwrap();
-        let scan = Self::scan(&self.path)?;
-        if scan.needs_truncation {
-            OpenOptions::new()
-                .write(true)
-                .open(&self.path)?
-                .set_len(scan.last_valid_offset)?;
-        }
-
-        let event_id = scan.events.last().map_or(1, |event| event.id + 1);
-        let mut payload = payload;
-        patch_tool_result_event_id(&mut payload, event_id);
-        let event = StoredEvent {
-            id: event_id,
-            payload,
-        };
-        let mut file = OpenOptions::new()
-            .create(true)
+        let file = OpenOptions::new()
+            .read(true)
             .append(true)
-            .open(&self.path)?;
-        serde_json::to_writer(&mut file, &event)?;
-        file.write_all(b"\n")?;
-        file.flush()?;
-        *next_id = event.id + 1;
+            .create(true)
+            .open(&key)?;
+        let path = fs::canonicalize(key)?;
+        if let Some(inner) = find_active_store(&stores, &path) {
+            return Ok(Self { inner });
+        }
+        let writer = Writer::open(&path, file)?;
+        let release = Arc::new(WriterRelease::default());
+        let inner = Arc::new(StoreInner {
+            path: path.clone(),
+            writer: Mutex::new(writer),
+            changed: Arc::new(Notify::new()),
+            release: Arc::clone(&release),
+        });
+        stores.retain(|_, store| !store.release.is_finished());
+        stores.insert(
+            path,
+            StoreEntry {
+                writer: Arc::downgrade(&inner),
+                release,
+            },
+        );
+        Ok(Self { inner })
+    }
+
+    /// Append an event and return its assigned ID after its durability barrier succeeds.
+    pub fn append(&mut self, mut payload: EventPayload) -> Result<StoredEvent> {
+        let mut writer = self.inner.writer.lock().unwrap();
+        writer.ensure_healthy(&self.inner.path)?;
+        let id = writer
+            .last_id
+            .checked_add(1)
+            .ok_or_else(|| Error::InvalidEventStream("event IDs exhausted".to_string()))?;
+        patch_event_id(&mut payload, id)?;
+        let event = StoredEvent { id, payload };
+        let record = serialize_record(&event)?;
+        writer.commit(&self.inner.path, id, &record)?;
+        drop(writer);
+        self.changed().notify_waiters();
         Ok(event)
     }
 
-    /// Read all events from an events.jsonl file.
-    pub fn replay(path: impl AsRef<Path>) -> Result<Vec<StoredEvent>> {
-        let path = path.as_ref();
-        let mut file_lock = event_file_lock(path)?;
-        file_lock.lock()?;
-        Ok(Self::scan(path)?.events)
+    /// Read committed events after an ID, capped at 256 records and a 1 MiB page target.
+    pub fn read_after(&self, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
+        self.inner
+            .writer
+            .lock()
+            .unwrap()
+            .read_after(&self.inner.path, after, limit)
     }
 
-    fn scan(path: &Path) -> Result<ReplayScan> {
-        let file = match File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(ReplayScan {
-                    events: Vec::new(),
-                    last_valid_offset: 0,
-                    needs_truncation: false,
-                });
-            }
+    /// Return the last durably committed event ID, or zero for an empty store.
+    pub fn last_id(&self) -> u64 {
+        self.inner.writer.lock().unwrap().last_id
+    }
+
+    /// Read all committed events without opening another writer or repairing the file.
+    pub fn replay(path: impl AsRef<Path>) -> Result<Vec<StoredEvent>> {
+        let path = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let mut reader = BufReader::new(file);
-        let mut events = Vec::new();
-        let mut previous_id = 0;
-        let mut current_offset = 0_u64;
-        let mut last_valid_offset = 0_u64;
-        let mut line_number = 0;
-        let mut buffer = Vec::new();
-
-        loop {
-            buffer.clear();
-            let bytes_read = reader.read_until(b'\n', &mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            line_number += 1;
-            current_offset += bytes_read as u64;
-
-            let has_newline = buffer.ends_with(b"\n");
-            let line = Self::trim_line_ending(&buffer);
-
-            if !has_newline {
-                return Ok(ReplayScan {
-                    events,
-                    last_valid_offset,
-                    needs_truncation: true,
-                });
-            }
-
-            if Self::is_blank_line(line) {
-                last_valid_offset = current_offset;
-                continue;
-            }
-
-            let event = serde_json::from_slice::<StoredEvent>(line).map_err(|error| {
-                Error::InvalidEventStream(format!("invalid event at line {line_number}: {error}"))
-            })?;
-
-            if event.id <= previous_id {
-                return Err(Error::InvalidEventStream(format!(
-                    "event id {} at line {} is not greater than previous id {}",
-                    event.id, line_number, previous_id
-                )));
-            }
-
-            previous_id = event.id;
-            events.push(event);
-            last_valid_offset = current_offset;
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner.writer.lock().unwrap().replay(&path);
         }
-
-        Ok(ReplayScan {
-            events,
-            last_valid_offset,
-            needs_truncation: false,
-        })
+        let _file_lock = acquire_file_lock(&path)?;
+        let file = File::open(&path)?;
+        let result = read_all(file, &path);
+        drop(stores);
+        result
     }
 
-    fn trim_line_ending(line: &[u8]) -> &[u8] {
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        line.strip_suffix(b"\r").unwrap_or(line)
+    pub(crate) fn next_id(&self) -> u64 {
+        self.last_id().saturating_add(1)
     }
 
-    fn is_blank_line(line: &[u8]) -> bool {
-        line.iter().all(|byte| byte.is_ascii_whitespace())
+    pub(crate) fn changed(&self) -> Arc<Notify> {
+        Arc::clone(&self.inner.changed)
     }
 }
 
-fn event_file_lock(path: &Path) -> Result<fslock::LockFile> {
-    let lock_path = path.with_extension(format!(
-        "{}lock",
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| format!("{extension}."))
-            .unwrap_or_default()
-    ));
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(fslock::LockFile::open(&lock_path)?)
+fn registry() -> &'static StoreRegistry {
+    static STORES: OnceLock<StoreRegistry> = OnceLock::new();
+    STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn patch_tool_result_event_id(payload: &mut EventPayload, event_id: u64) {
+fn find_active_store(
+    stores: &HashMap<PathBuf, StoreEntry>,
+    path: &Path,
+) -> Option<Arc<StoreInner>> {
+    let entry = stores.get(path)?;
+    if let Some(inner) = entry.writer.upgrade() {
+        return Some(inner);
+    }
+    // NOTE: An expired Weak may still be releasing the operating-system lock.
+    entry.release.wait();
+    None
+}
+
+fn canonical_store_path(path: &Path) -> Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = path.parent().unwrap();
+            Ok(fs::canonicalize(parent)?.join(path.file_name().unwrap()))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn acquire_file_lock(path: &Path) -> Result<fslock::LockFile> {
+    let mut lock_name = path.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let mut lock = fslock::LockFile::open(&PathBuf::from(lock_name))?;
+    if !lock.try_lock()? {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "event store {} already has an active writer",
+                path.display()
+            ),
+        )
+        .into());
+    }
+    Ok(lock)
+}
+
+fn patch_event_id(payload: &mut EventPayload, event_id: u64) -> Result<()> {
+    if let EventPayload::Unknown(value) = payload {
+        let object = value.as_object_mut().ok_or_else(|| {
+            Error::InvalidArgument("event payload must be a JSON object".to_string())
+        })?;
+        object.insert("id".to_string(), event_id.into());
+        return Ok(());
+    }
     let EventPayload::ToolResult {
         structured: Some(structured),
         ..
     } = payload
     else {
-        return;
+        return Ok(());
     };
-
     if structured["kind"] == "file_content" {
-        structured["read_event_id"] = serde_json::Value::from(event_id);
+        structured["read_event_id"] = event_id.into();
     }
+    Ok(())
 }
 
-fn next_id_counter(path: &Path, initial_next_id: u64) -> Arc<Mutex<u64>> {
-    static NEXT_IDS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<u64>>>>> = OnceLock::new();
-
-    let counters = NEXT_IDS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut counters = counters.lock().unwrap();
-    let counter = counters
-        .entry(path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(initial_next_id)))
-        .clone();
-    let mut next_id = counter.lock().unwrap();
-    if *next_id < initial_next_id {
-        *next_id = initial_next_id;
+fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
+    let mut reader = EventReader::new(BufReader::new(file), path, 0);
+    let mut events = Vec::new();
+    while let Some(record) = reader.next()? {
+        events.push(record.event);
     }
-    drop(next_id);
-    counter
+    Ok(events)
+}
+
+fn serialize_record(event: &StoredEvent) -> Result<Vec<u8>> {
+    let mut buffer = RecordBuffer {
+        bytes: Vec::new(),
+        oversized: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut buffer, event) {
+        return if buffer.oversized {
+            Err(Error::InvalidArgument(format!(
+                "event record exceeds {MAX_RECORD_BYTES} bytes"
+            )))
+        } else {
+            Err(error.into())
+        };
+    }
+    buffer.bytes.push(b'\n');
+    Ok(buffer.bytes)
+}
+
+struct RecordBuffer {
+    bytes: Vec<u8>,
+    oversized: bool,
+}
+
+impl Write for RecordBuffer {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() > MAX_RECORD_BYTES - 1 - self.bytes.len() {
+            self.oversized = true;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "event record size limit exceeded",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::event::EventPayload;
-
-    #[test]
-    fn unknown_event_type_is_preserved_not_failed() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        let content = concat!(
-            "{\"id\":1,\"ts\":\"a\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s\",\"created_at\":\"a\",\"kuku_version\":\"0\"}\n",
-            "{\"id\":2,\"ts\":\"b\",\"kind\":\"future.event\",\"turn\":1,\"custom\":\"x\"}\n",
-        );
-        std::fs::write(&path, content).unwrap();
-        let events = EventStore::replay(&path).unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[1].payload, EventPayload::Unknown(_)));
-    }
-}
+mod tests;
