@@ -149,7 +149,7 @@ fn options(
     workspace: &std::path::Path,
     data: &std::path::Path,
     model: Arc<Model>,
-    tool: Arc<FileTool>,
+    tool: Arc<dyn ToolAdapter>,
     gate: Arc<Gate>,
 ) -> SessionOptions {
     let mut config = common::test_config();
@@ -381,4 +381,95 @@ async fn custom_tool_cancellation_waits_for_cleanup_and_known_failure_is_visible
         assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { status, structured:Some(value), .. } if status == "cancelled" && value["cleanup_incomplete"] == incomplete)));
         assert_eq!(!incomplete, session.close().await.is_ok());
     }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct CaptureFaultTool {
+    file: FileTool,
+    output: std::path::PathBuf,
+    succeeded: AtomicBool,
+}
+
+#[cfg(unix)]
+impl ToolAdapter for CaptureFaultTool {
+    fn definition(&self) -> ToolSpec {
+        self.file.definition()
+    }
+
+    fn execute(
+        &self,
+        action: ToolAuthorization,
+        cancellation: ToolCancellation,
+    ) -> AdapterFuture<'_, ToolOutput> {
+        Box::pin(async move {
+            let result = self.file.execute(action, cancellation).await?;
+            assert_eq!(ToolStatus::Ok, result.status);
+            let output_file = std::fs::read_dir(&self.output)?.next().unwrap()?.path();
+            assert!(std::fs::read(output_file)?.starts_with(b"KUKUOUT1"));
+            std::fs::remove_dir_all(&self.output)?;
+            self.succeeded.store(true, Ordering::SeqCst);
+            Ok(result)
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn successful_host_tool_output_commit_failure_stops_next_model_dispatch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session_id = "output-capture-failure";
+    let journal =
+        kuku::session::session_events_path(data.path(), workspace.path(), session_id).unwrap();
+    let model = Arc::new(Model::default());
+    let tool = Arc::new(CaptureFaultTool {
+        file: FileTool::default(),
+        output: journal.parent().unwrap().join("outputs"),
+        succeeded: AtomicBool::new(false),
+    });
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        tool.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.session_id = Some(session_id.into());
+    let session = Session::open(options).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session.send(input()).unwrap();
+    let snapshot = settled(&session).await;
+    let closed = session.close().await;
+    assert!(
+        tool.succeeded.load(Ordering::SeqCst),
+        "the host tool did not return success after creating its real effect"
+    );
+    assert_eq!(1, tool.file.calls.load(Ordering::SeqCst));
+    assert_eq!(
+        "actual host tool output",
+        std::fs::read_to_string(workspace.path().join("allowed.txt")).unwrap()
+    );
+    assert_eq!(AgentStatus::Interrupted, snapshot.status, "{snapshot:?}");
+    assert!(
+        closed.is_err(),
+        "close hid the SDK output persistence failure"
+    );
+    assert_eq!(
+        1,
+        model.requests.lock().unwrap().len(),
+        "the SDK dispatched another model request after output persistence failed"
+    );
+    assert!(
+        session
+            .events(0, 256)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.payload,
+        EventPayload::ToolResult { tool_call_id, status, structured: Some(value), .. }
+            if tool_call_id == "allowed" && status == "error"
+                && value["output_persistence_failed"] == true
+                && value["cleanup_incomplete"] == false)),
+        "SDK output persistence failure had no durable terminal fact"
+    );
 }
