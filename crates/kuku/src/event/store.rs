@@ -12,8 +12,10 @@ use crate::error::{Error, Result};
 
 use super::types::{EventPayload, StoredEvent};
 
+mod codec;
 mod reader;
 
+use codec::serialize_record;
 use reader::EventReader;
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
@@ -375,47 +377,6 @@ fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
         events.push(record.event);
     }
     Ok(events)
-}
-
-fn serialize_record(event: &StoredEvent) -> Result<Vec<u8>> {
-    let mut buffer = RecordBuffer {
-        bytes: Vec::new(),
-        oversized: false,
-    };
-    if let Err(error) = serde_json::to_writer(&mut buffer, event) {
-        return if buffer.oversized {
-            Err(Error::InvalidArgument(format!(
-                "event record exceeds {MAX_RECORD_BYTES} bytes"
-            )))
-        } else {
-            Err(error.into())
-        };
-    }
-    buffer.bytes.push(b'\n');
-    Ok(buffer.bytes)
-}
-
-struct RecordBuffer {
-    bytes: Vec<u8>,
-    oversized: bool,
-}
-
-impl Write for RecordBuffer {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if buffer.len() > MAX_RECORD_BYTES - 1 - self.bytes.len() {
-            self.oversized = true;
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "event record size limit exceeded",
-            ));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
