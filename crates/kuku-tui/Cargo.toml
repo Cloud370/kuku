@@ -1,0 +1,23 @@
+[package]
+name = "kuku-tui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Interactive terminal client for kuku"
+repository = "https://github.com/Cloud370/kuku"
+readme = "../../README.md"
+publish = false
+
+[dependencies]
+arboard = { version = "3.6", default-features = false }
+base64 = "0.22"
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures-util = "0.3"
+kuku-client = { path = "../kuku-client" }
+open = "5"
+pulldown-cmark = { version = "0.13", default-features = false }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
