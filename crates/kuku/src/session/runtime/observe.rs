@@ -33,6 +33,29 @@ impl SessionObserver {
         self.cursor
     }
 
+    /// Return one already available observation without waiting or advancing execution.
+    pub fn try_next(&mut self) -> Result<Option<Observation>> {
+        if self.page.is_empty() {
+            self.page = self.session.events(self.cursor, 32)?.into();
+        }
+        if let Some(event) = self.page.pop_front() {
+            self.cursor = event.id;
+            return Ok(Some(Observation::Committed(Box::new(event))));
+        }
+        match self.live.try_recv() {
+            Ok((agent, event)) => Ok(Some(Observation::Live {
+                agent,
+                event: Box::new(event),
+            })),
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                Ok(Some(Observation::Lagged { skipped }))
+            }
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                Ok(None)
+            }
+        }
+    }
+
     /// Wait for committed facts or transient progress without driving execution.
     pub async fn next(&mut self) -> Result<Option<Observation>> {
         loop {

@@ -245,6 +245,7 @@ pub enum UiEvent {
 #[derive(Debug)]
 pub struct Run {
     pub(crate) agent: ConversationAddress,
+    pub(crate) cleanup_context: Option<(PathBuf, u64)>,
     pub(super) session_id: String,
     pub(super) state: RunState,
     pub(crate) slots: std::collections::HashMap<String, ExecSlot>,

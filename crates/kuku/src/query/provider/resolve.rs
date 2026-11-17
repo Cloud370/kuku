@@ -52,7 +52,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
         tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
     };
     if pending.query.runtime.is_some() {
-        registry.retain(|tool| tool.name != "agent");
+        registry.retain(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"));
         registry.extend(
             crate::query::runtime_tools::definitions()
                 .into_iter()

@@ -30,6 +30,7 @@ async fn async_error_completion_is_counted_exactly_once() {
     );
     let mut run = Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots,

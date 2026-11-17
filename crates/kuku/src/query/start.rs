@@ -316,7 +316,14 @@ impl Query {
         let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
         let (slot_event_tx, slot_event_rx) =
             tokio::sync::mpsc::channel::<(String, super::types::SlotEvent)>(256);
-        let catalog = if let Some(dir) = &prompts_dir {
+        let frozen_catalog = if self.runtime.is_some() {
+            crate::context::runtime::read_frozen_catalog(&events_path, conversation.as_str())?
+        } else {
+            None
+        };
+        let catalog = if let Some(catalog) = frozen_catalog {
+            catalog
+        } else if let Some(dir) = &prompts_dir {
             crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
                 crate::error::Error::PromptRender(format!(
                     "failed to load prompts from {}: {e}",
@@ -372,6 +379,7 @@ impl Query {
         }
         let agent_binding_id = self.agent_binding_id.clone();
 
+        let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
             session_id: session_id.clone(),
             conversation: conversation.clone(),
@@ -425,6 +433,7 @@ impl Query {
 
         Ok(Run {
             agent: conversation,
+            cleanup_context,
             session_id: session_id.clone(),
             state,
             slots: std::collections::HashMap::new(),

@@ -27,6 +27,8 @@ pub use types::{
 
 use record::{fingerprint, timestamp, validate_address, validate_key, Record, State};
 
+type CleanupOutcome = Option<std::result::Result<(), String>>;
+
 pub(crate) struct SessionInner {
     id: String,
     options: SessionOptions,
@@ -37,6 +39,7 @@ pub(crate) struct SessionInner {
     live: broadcast::Sender<(String, UiEvent)>,
     model_capacity: Arc<Semaphore>,
     lease: Mutex<Option<SessionLease>>,
+    close_result: Mutex<Option<watch::Receiver<CleanupOutcome>>>,
 }
 
 struct SessionLease(PathBuf);
@@ -68,7 +71,7 @@ fn session_leases() -> &'static Mutex<HashSet<PathBuf>> {
 struct Worker {
     address: String,
     cancel: watch::Sender<bool>,
-    done: watch::Receiver<Option<std::result::Result<(), String>>>,
+    done: watch::Receiver<CleanupOutcome>,
     join: JoinHandle<Result<()>>,
 }
 
@@ -146,6 +149,7 @@ impl Session {
                 live,
                 model_capacity,
                 lease: Mutex::new(Some(lease)),
+                close_result: Mutex::new(None),
             }),
         })
     }
@@ -255,6 +259,10 @@ impl Session {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             if let Some(receipt) = state.retry(&input.command_id, &digest)? {
+                drop(state);
+                if wake {
+                    self.schedule(&target)?;
+                }
                 return Ok(receipt);
             }
             if state.agent_mut(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs
@@ -326,12 +334,33 @@ impl Session {
             .collect()
     }
 
+    /// Find a committed command receipt without accepting or activating work.
+    pub fn receipt(&self, command_id: &str) -> Result<Option<Receipt>> {
+        validate_key(command_id)?;
+        Ok(self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .commands
+            .get(command_id)
+            .map(|(_, receipt)| receipt.clone()))
+    }
+
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
         let mut state = State::default();
-        for event in EventStore::replay(events_path)? {
-            if let Some(record) = Record::from_event(&event)? {
-                state.reduce(event.id, record)?;
+        let mut cursor = 0;
+        loop {
+            let page = EventStore::read_page(events_path, cursor, 128)?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                cursor = event.id;
+                if let Some(record) = Record::from_event(&event)? {
+                    state.reduce(event.id, record)?;
+                }
             }
         }
         Ok(state
@@ -365,11 +394,7 @@ impl Session {
         let writer = self.inner.writer.lock().unwrap();
         match writer.as_ref() {
             Some(writer) => writer.read_after(after, limit),
-            None => Ok(EventStore::replay(&self.inner.events_path)?
-                .into_iter()
-                .filter(|event| event.id > after)
-                .take(limit.min(256))
-                .collect()),
+            None => EventStore::read_page(&self.inner.events_path, after, limit),
         }
     }
 
@@ -380,27 +405,42 @@ impl Session {
 
     /// Stop the selected agent, clean up its active work, and retain pending inputs.
     pub async fn cancel(&self, address: &str) -> Result<()> {
-        let done = {
+        let (done, mut failure) = {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
-            state.agent_mut(address)?;
-            self.commit(
+            let agent = state.agent_mut(address)?;
+            let permission = if agent.active_epoch.is_none() {
+                agent.snapshot.permission.clone()
+            } else {
+                None
+            };
+            let mut failure = permission
+                .as_ref()
+                .and_then(|request| self.cancel_waiting_action(request).err());
+            if let Err(error) = self.commit(
                 &mut state,
                 Record::AgentStopped {
                     address: address.into(),
                 },
-            )?;
+            ) {
+                failure.get_or_insert(error);
+                state.agent_mut(address)?.snapshot.status = AgentStatus::Stopped;
+            }
             let epoch = state.agent_mut(address)?.active_epoch;
             let workers = self.inner.workers.lock().unwrap();
-            epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
+            let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
                 let _ = worker.cancel.send(true);
                 worker.done.clone()
-            })
+            });
+            (done, failure)
         };
         if let Some(mut done) = done {
             loop {
                 if let Some(result) = done.borrow().clone() {
-                    return result.map_err(Error::InvalidEventStream);
+                    if let Err(error) = result {
+                        failure.get_or_insert(Error::InvalidEventStream(error));
+                    }
+                    break;
                 }
                 done.changed().await.map_err(|_| {
                     Error::InvalidEventStream(format!(
@@ -408,6 +448,9 @@ impl Session {
                     ))
                 })?;
             }
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         if let Some(message) = self
             .inner
@@ -419,6 +462,29 @@ impl Session {
         {
             return Err(Error::InvalidEventStream(message.clone()));
         }
+        Ok(())
+    }
+
+    fn cancel_waiting_action(&self, request: &crate::query::PermissionRequest) -> Result<()> {
+        let mut writer = self.inner.writer.lock().unwrap();
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
+        writer.append(EventPayload::ToolResult {
+            turn: request.turn,
+            ts: timestamp()?,
+            conversation: Some(request.conversation.as_str().into()),
+            tool_call_id: request.tool_call_id.clone(),
+            status: "cancelled".into(),
+            summary: "pending action cancelled before dispatch".into(),
+            model_content: "pending action cancelled before dispatch".into(),
+            truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
+            structured: Some(serde_json::json!({"kind":"cancelled"})),
+        })?;
         Ok(())
     }
 
@@ -436,6 +502,8 @@ impl Session {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             if let Some(receipt) = state.retry(command_id, &digest)? {
+                drop(state);
+                self.schedule(address)?;
                 return Ok(receipt);
             }
             let agent = state.agent_mut(address)?;
@@ -484,6 +552,8 @@ impl Session {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             if let Some(receipt) = state.retry(command_id, &digest)? {
+                drop(state);
+                self.schedule(address)?;
                 return Ok(receipt);
             }
             let agent = state.agent_mut(address)?;
@@ -556,18 +626,37 @@ impl Session {
 
     /// Await all cleanup and durable writes before releasing the session writer.
     pub async fn close(&self) -> Result<()> {
-        {
-            let mut state = self.inner.state.lock().unwrap();
-            if state.closed {
-                return Ok(());
+        let mut result = {
+            let mut close = self.inner.close_result.lock().unwrap();
+            match &*close {
+                Some(result) => result.clone(),
+                None => {
+                    self.inner.state.lock().unwrap().closing = true;
+                    let (complete, result) = watch::channel(None);
+                    *close = Some(result.clone());
+                    let session = self.clone();
+                    tokio::spawn(async move {
+                        let outcome = session
+                            .finish_close()
+                            .await
+                            .map_err(|error| error.to_string());
+                        let _ = complete.send(Some(outcome));
+                    });
+                    result
+                }
             }
-            if state.closing {
-                return Err(Error::InvalidArgument(
-                    "session close is already in progress".into(),
-                ));
+        };
+        loop {
+            if let Some(outcome) = result.borrow().clone() {
+                return outcome.map_err(Error::InvalidEventStream);
             }
-            state.closing = true;
+            result.changed().await.map_err(|_| {
+                Error::InvalidEventStream("session cleanup task ended without a result".into())
+            })?;
         }
+    }
+
+    async fn finish_close(&self) -> Result<()> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);

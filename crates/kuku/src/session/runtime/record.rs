@@ -215,12 +215,18 @@ impl State {
                 )?;
                 agent.snapshot.usage.model_requests += usage.model_requests;
                 agent.snapshot.usage.unreported_requests += usage.unreported_requests;
-                agent.accepted.clear();
+                if status != AgentStatus::Interrupted {
+                    agent.accepted.clear();
+                }
                 agent.snapshot.permission = None;
                 agent.permission_reply = None;
             }
             Record::AgentStopped { address } => {
-                self.agent_mut(&address)?.snapshot.status = AgentStatus::Stopped
+                let agent = self.agent_mut(&address)?;
+                agent.snapshot.status = AgentStatus::Stopped;
+                agent.snapshot.question = None;
+                agent.snapshot.permission = None;
+                agent.permission_reply = None;
             }
             Record::AgentResumed { address } => {
                 let agent = self.agent_mut(&address)?;
@@ -268,7 +274,11 @@ impl State {
                 );
                 let agent = self.agent_mut(&input.target)?;
                 agent.snapshot.question = None;
-                agent.snapshot.status = AgentStatus::Idle;
+                if agent.snapshot.permission.is_some() {
+                    agent.snapshot.status = AgentStatus::Waiting;
+                } else if agent.snapshot.status != AgentStatus::Running {
+                    agent.snapshot.status = AgentStatus::Idle;
+                }
                 agent.inbox.push_back(input);
                 agent.snapshot.pending_inputs = agent.inbox.len();
             }

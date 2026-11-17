@@ -39,6 +39,7 @@ fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),
@@ -212,6 +213,7 @@ fn make_waiting_run(
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::WaitingForPermission(Box::new(PendingPermission {
             pending,
@@ -279,6 +281,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -340,6 +343,7 @@ fn make_skill_queued_run(
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -573,6 +577,7 @@ async fn cancel_sets_token_and_transitions_state() {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let run = Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),
@@ -645,6 +650,7 @@ async fn runtime_log_persists_only_after_host_consumes_log_event() {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let mut run = Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -972,6 +978,7 @@ async fn cancel_during_streaming_aborts_stream() {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let _run = Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(make_test_pending(
             events_path.clone(),
@@ -2050,6 +2057,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
     );
     let mut run = Run {
         agent: crate::conversation::address::ConversationAddress::MAIN,
+        cleanup_context: None,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),

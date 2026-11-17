@@ -211,7 +211,7 @@ pub struct UsageTotals {
     pub cache_read_input_tokens: Option<u64>,
     /// Input tokens written to provider caches when reported.
     pub cache_creation_input_tokens: Option<u64>,
-    /// Number of model responses observed.
+    /// Prepared model request attempts, including missing responses.
     pub model_requests: u64,
     /// Responses missing either input or output usage, so reported totals may be partial.
     pub unreported_requests: u64,

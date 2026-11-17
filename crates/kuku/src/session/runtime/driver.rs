@@ -130,6 +130,11 @@ impl Session {
                 .unwrap_or_else(|| InputSource::Host("local".into()));
             let query = self.build_query(address, &config, prompt, source)?;
             let mut run = query.start_nested().await?;
+            if *cancel.borrow() || self.inner.state.lock().unwrap().closing {
+                self.cleanup_failed_run(address, &mut run).await;
+                self.settle_cancelled(address, epoch)?;
+                return Ok(());
+            }
             if let Some((request_id, allow)) = reply {
                 let original_id = self
                     .agent(address)?
@@ -158,7 +163,14 @@ impl Session {
                         _ = cancel.changed() => { cancelling = true; run.cancel(); continue }
                         result = run.next() => result,
                     }
-                }?;
+                };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        self.cleanup_failed_run(address, &mut run).await;
+                        return Err(error);
+                    }
+                };
                 let Some(event) = event else {
                     if cancelling {
                         self.settle_cancelled(address, epoch)?;
@@ -344,9 +356,15 @@ impl Session {
         }
         query.agent_instructions = config.instructions.clone();
         if let Some(preset) = &config.preset {
-            let catalog = match &self.inner.options.prompts_dir {
-                Some(dir) => crate::PromptCatalog::load_from_dir(dir)?,
-                None => crate::builtin_prompt_catalog(),
+            let catalog = match crate::context::runtime::read_frozen_catalog(
+                &self.inner.events_path,
+                address,
+            )? {
+                Some(catalog) => catalog,
+                None => match &self.inner.options.prompts_dir {
+                    Some(dir) => crate::PromptCatalog::load_from_dir(dir)?,
+                    None => crate::builtin_prompt_catalog(),
+                },
             };
             let registry = crate::agent::registry::AgentRegistry::builder()
                 .builtins(&catalog)
@@ -391,6 +409,7 @@ impl Session {
             return Ok(());
         }
         let cleanup = state.cleanup_failures.get(address).cloned();
+        let usage = self.pending_usage(&state.agents[address])?;
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -403,7 +422,7 @@ impl Session {
                 output: None,
                 error: cleanup,
                 turn: None,
-                usage: UsageTotals::default(),
+                usage,
             },
         )?;
         state.agent_mut(address)?.active_epoch = None;
@@ -412,19 +431,38 @@ impl Session {
 
     fn turn_usage(&self, address: &str, turn: u64) -> Result<UsageTotals> {
         let mut totals = UsageTotals::default();
-        for event in crate::event::EventStore::replay(&self.inner.events_path)? {
-            let crate::event::EventPayload::Unknown(value) = event.payload else {
+        let mut requests = std::collections::BTreeMap::<String, Option<serde_json::Value>>::new();
+        let mut cursor = turn;
+        loop {
+            let page = crate::event::EventStore::read_page(&self.inner.events_path, cursor, 128)?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                cursor = event.id;
+                let crate::event::EventPayload::Unknown(value) = event.payload else {
+                    continue;
+                };
+                if value["agent"] != address || value["turn"] != turn {
+                    continue;
+                }
+                let Some(request_id) = value["request_id"].as_str() else {
+                    continue;
+                };
+                if value["kind"] == "runtime.step_prepared" {
+                    requests.entry(request_id.into()).or_default();
+                } else if value["kind"] == "runtime.model_usage" {
+                    requests.insert(request_id.into(), Some(value["usage"].clone()));
+                }
+            }
+        }
+        totals.model_requests = requests.len() as u64;
+        for usage in requests.into_values() {
+            let Some(usage) = usage else {
+                totals.unreported_requests += 1;
                 continue;
             };
-            if value["kind"] != "runtime.model_usage"
-                || value["agent"] != address
-                || value["turn"] != turn
-            {
-                continue;
-            }
-            totals.model_requests += 1;
-            if value["usage"]["input_tokens"].is_null() || value["usage"]["output_tokens"].is_null()
-            {
+            if usage["input_tokens"].is_null() || usage["output_tokens"].is_null() {
                 totals.unreported_requests += 1;
             }
             for (total, key) in [
@@ -439,7 +477,7 @@ impl Session {
                     "cache_creation_input_tokens",
                 ),
             ] {
-                if let Some(amount) = value["usage"][key].as_u64() {
+                if let Some(amount) = usage[key].as_u64() {
                     *total = Some(total.unwrap_or(0).checked_add(amount).ok_or_else(|| {
                         Error::InvalidEventStream("usage counter overflow".into())
                     })?);
@@ -454,6 +492,7 @@ impl Session {
         if state.agent_mut(address)?.active_epoch != Some(epoch) {
             return Ok(());
         }
+        let usage = self.pending_usage(&state.agents[address])?;
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -462,10 +501,38 @@ impl Session {
                 output: None,
                 error: Some(error.to_string()),
                 turn: None,
-                usage: UsageTotals::default(),
+                usage,
             },
         )?;
         state.agent_mut(address)?.active_epoch = None;
         Ok(())
+    }
+
+    async fn cleanup_failed_run(&self, address: &str, run: &mut crate::Run) {
+        run.cancel();
+        while !run.slots.is_empty() {
+            match run.next().await {
+                Ok(Some(event)) => {
+                    if matches!(&event, UiEvent::ToolEnd { result: Some(result), .. } if result["cleanup_incomplete"] == true)
+                    {
+                        let mut state = self.inner.state.lock().unwrap();
+                        let _ = self.commit(&mut state, Record::CleanupFailed { address: address.into(), message: format!("agent '{address}' cleanup after an execution error was incomplete") });
+                    }
+                    let _ = self.inner.live.send((address.into(), event));
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+    }
+
+    fn pending_usage(&self, agent: &super::record::AgentState) -> Result<UsageTotals> {
+        if agent.accepted.is_empty() {
+            return Ok(UsageTotals::default());
+        }
+        match agent.snapshot.turn {
+            Some(turn) => self.turn_usage(&agent.snapshot.address, turn),
+            None => Ok(UsageTotals::default()),
+        }
     }
 }

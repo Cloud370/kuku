@@ -141,6 +141,13 @@ impl Run {
                                     (&w.pending.events_path, w.pending.turn)
                                 }
                                 RunState::Cancelled { events_path, turn } => (events_path, *turn),
+                                _ if self.cleanup_context.is_some() => {
+                                    let (events_path, turn) = self
+                                        .cleanup_context
+                                        .as_ref()
+                                        .expect("cleanup context exists");
+                                    (events_path, *turn)
+                                }
                                 _ => {
                                     return Ok(Some(UiEvent::ToolEnd {
                                         id: slot.tool_call_id,
@@ -664,7 +671,7 @@ impl Run {
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
             ts: now_timestamp()?,
-            conversation: None,
+            conversation: Some(waiting.pending.conversation.as_str().into()),
             tool_call_id: tool_call.id.clone(),
             status: result.status.clone(),
             summary: result.summary.clone(),
