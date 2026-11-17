@@ -433,7 +433,8 @@ fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
 #[cfg(windows)]
 fn shell_command(command: &str) -> Command {
     let mut child = Command::new("cmd");
-    child.arg("/C").arg(command);
+    // NOTE: /S strips the enclosing quotes before cmd parses the original command text.
+    child.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
     child
 }
 

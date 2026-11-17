@@ -18,7 +18,9 @@ use windows_sys::Win32::System::Threading::{
 use crate::tool::ToolResultEnvelope;
 
 use super::super::test_helpers::workspace;
-use super::{read_output, run_command_with_output, CommandEvent, OutputLimits, OutputRead};
+use super::{
+    read_output, run_command, run_command_with_output, CommandEvent, OutputLimits, OutputRead,
+};
 
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -132,11 +134,8 @@ struct RunningTree {
 impl RunningTree {
     async fn start(timeout_seconds: u64) -> Self {
         let dir = workspace();
-        let test_exe = std::env::current_exe().unwrap();
         let local_exe = dir.path().join("tree-fixture.exe");
-        if std::fs::hard_link(&test_exe, &local_exe).is_err() {
-            std::fs::copy(test_exe, local_exe).unwrap();
-        }
+        place_test_executable(&local_exe);
         let command = "tree-fixture.exe --ignored --exact tool::builtin::run_command::windows_tests::command_tree_fixture";
         let workspace = dir.path().to_path_buf();
         let cancel = Arc::new(Notify::new());
@@ -195,6 +194,89 @@ async fn wait_for_pid(path: &Path, worker: &JoinHandle<ToolResultEnvelope>) -> u
     })
     .await
     .unwrap_or_else(|_| panic!("command did not write {} in time", path.display()))
+}
+
+fn place_test_executable(path: &Path) {
+    let test_exe = std::env::current_exe().unwrap();
+    if std::fs::hard_link(&test_exe, path).is_err() {
+        std::fs::copy(test_exe, path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn windows_shell_runs_quoted_powershell_in_the_workspace() {
+    let dir = workspace();
+    let path = dir.path().join("workspace with spaces");
+    std::fs::create_dir(&path).unwrap();
+    let command = r#"powershell.exe -NoProfile -NonInteractive -Command "Set-Content -LiteralPath 'gate started.txt' -Value 'ready with spaces'; Write-Output 'quoted | literal & payload'""#;
+    let output_dir = path.join("outputs");
+    let result = run_command_with_output(
+        &serde_json::json!({"command":command,"timeout":10,"brief":"write a marker with PowerShell"}),
+        &path,
+        None,
+        None,
+        &output_dir,
+        "powershell",
+        OutputLimits::default(),
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    assert_eq!(0, result.structured.unwrap()["exit_code"]);
+    assert_eq!(
+        "ready with spaces",
+        std::fs::read_to_string(path.join("gate started.txt"))
+            .unwrap_or_else(|error| panic!(
+                "PowerShell did not write its marker: {error}; {}",
+                result.model_content
+            ))
+            .trim_end()
+    );
+    let saved = read_output(&output_dir, "powershell", OutputRead::default()).unwrap();
+    assert_eq!(
+        "quoted | literal & payload",
+        saved
+            .segments
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect::<String>()
+            .trim_end()
+    );
+}
+
+#[tokio::test]
+async fn windows_shell_runs_a_quoted_executable_and_the_next_command() {
+    let dir = workspace();
+    place_test_executable(&dir.path().join("quoted executable.exe"));
+    std::fs::write(
+        dir.path().join("workspace marker.txt"),
+        "workspace marker\r\n",
+    )
+    .unwrap();
+    let command = r#"".\quoted executable.exe" --list --exact "tool::builtin::run_command::windows_tests::command_tree_fixture" && type "workspace marker.txt""#;
+    let result = run_command(
+        &serde_json::json!({"command":command,"timeout":10,"brief":"list a test and read a marker"}),
+        dir.path(),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    assert_eq!(
+        0,
+        result.structured.unwrap()["exit_code"],
+        "{}",
+        result.model_content
+    );
+    assert!(
+        result.model_content.contains("command_tree_fixture: test"),
+        "{}",
+        result.model_content
+    );
+    assert!(
+        result.model_content.contains("workspace marker"),
+        "{}",
+        result.model_content
+    );
 }
 
 #[tokio::test]
