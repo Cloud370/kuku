@@ -92,7 +92,7 @@ Linux `/proc` sampling separates the SDK caller process from its tool descendant
 
 ## Live protocol acceptance
 
-The user selected direct DeepSeek `deepseek-flash` as the main low-cost benchmark model and OpenRouter's [`deepseek/deepseek-v4.1-flash-1017`](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017) for the second gateway. The services document the three protocol routes below. These are test connection inputs, not newly frozen SDK configuration names.
+The user selected direct DeepSeek `deepseek-flash` for benchmarks and the three wire-protocol checks. The second model family uses OpenRouter's [`openai/gpt-6-luna`](https://openrouter.ai/openai/gpt-6-luna), pinned to the standard OpenAI provider through the OpenAI Responses API. This OpenRouter route is for protocol compatibility with a small fixed task. The services document the general routes below; the table is not a requirement to run every model/service/protocol combination. These are test connection inputs, not newly frozen SDK configuration names.
 
 | Service | Wire protocol | Base URL | Request suffix | Source |
 |---|---|---|---|---|
@@ -103,11 +103,24 @@ The user selected direct DeepSeek `deepseek-flash` as the main low-cost benchmar
 | OpenRouter | Responses | `https://openrouter.ai/api/v1` | `/responses` | [Responses reference](https://openrouter.ai/docs/api/api-reference/responses/create-a-response) |
 | OpenRouter | Messages | `https://openrouter.ai/api/v1` | `/messages` | [Messages reference](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
 
-Start with DeepSeek in stage 1 and exercise the three protocols on both services before declaring stage 2 complete. Each needs streaming output, a real tool-call/result continuation, multi-turn context, and available usage/settings reporting. Keep repeated benchmark runs primarily on DeepSeek; use a small fixed task for OpenRouter compatibility checks rather than rerunning every benchmark on every model/protocol combination. The selected pair covers two access paths within the same model family; it does not establish cross-family model coverage. Additional model families remain optional follow-up validation, not a requirement to buy or select two other models before the initial delivery. Include a delegated task using direct DeepSeek and an OpenRouter-backed Agent with independent contexts.
+Start with DeepSeek in stage 1. Stage 2 requires Chat Completions, Responses and Messages coverage on direct DeepSeek, plus the selected OpenRouter/OpenAI Responses compatibility path. Each selected path needs streaming output, a real tool-call/result continuation, multi-turn context, and available usage/settings reporting. Benchmarks remain on DeepSeek; OpenRouter targets the OpenAI model family without rerunning the benchmark set or requiring the other OpenRouter protocol combinations. Include a delegated task using direct DeepSeek and OpenRouter/OpenAI Agents with independent contexts.
 
 For protocol-only checks, use the lowest supported enabled reasoning effort. DeepSeek currently documents `low` as that effort in its [thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/); validate the chosen OpenRouter upstream's supported settings and encode them for the selected API rather than assuming all endpoints accept the same fields or values. Benchmark effort is chosen for the case and budget, recorded explicitly, and kept fixed within a comparison. Changes require a separately identified run, not silent escalation after failure. These settings apply to models under test, not to the implementing Codex session's or its development agents' model policies.
 
-For repeatable OpenRouter checks, first select an upstream allowed by the account's routing policies, then pin its exact endpoint through `provider.order`, set `provider.allow_fallbacks = false` and `provider.require_parameters = true`, and avoid automatic model selection or model fallback. Its [routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) explains that default routing can otherwise fall back or pass unsupported parameters to a provider that ignores them. Record requested model, gateway, selected route, and reported upstream when available; an unavailable confirmation remains unknown. These are test connection options, not global runtime scheduling rules. Manual provider ordering overrides OpenRouter's automatic sticky routing; a fixed endpoint can still reuse its cache.
+For the selected OpenRouter check, use `POST https://openrouter.ai/api/v1/responses` with standard OpenAI Responses request semantics. The model's [public endpoint metadata](https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints) identifies `openai` as the standard OpenAI endpoint tag; `openai/flex` and `openai/fast` select different service routes. Pin the selected route with this request snippet:
+
+```json
+{
+  "model": "openai/gpt-6-luna",
+  "provider": {
+    "order": ["openai"],
+    "allow_fallbacks": false,
+    "require_parameters": true
+  }
+}
+```
+
+Verify that the account's routing policy allows that endpoint, and avoid automatic model selection or model fallback. OpenRouter's [routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) explains that default routing can otherwise fall back or pass unsupported parameters to a provider that ignores them. Record requested model, gateway, selected route, and reported upstream when available; an unavailable confirmation remains unknown. These are test connection options, not global runtime scheduling rules. Manual provider ordering overrides OpenRouter's automatic sticky routing; a fixed endpoint can still reuse its cache.
 
 For ordinary multi-turn use, the recommended OpenRouter configuration is a stable `session_id` or `x-session-id`, supported-parameter filtering, and cost constraints on the eligible providers, leaving automatic sticky routing active. Derive the transport correlation from existing Session/Agent/connection identity and preserve it across Turns, retries, and reopen; separate Agents keep separate correlations. Do not create a new core identity or generate a fresh correlation on each Step. This is provider-adapter behavior, not a new scheduler or shared Agent transcript. Follow the [prompt-caching contract](https://openrouter.ai/docs/guides/best-practices/prompt-caching): explicit session correlation enables affinity from the first successful request; provider failure can change the route. The documented 60-minute inactivity expiry concerns routing affinity, not a guarantee of the upstream cache's lifetime. Stable routing does not replace immutable provider-visible prefixes.
 
@@ -119,7 +132,7 @@ DeepSeek Responses is stateless and does not support `previous_response_id`; its
 
 ## Credentials and run artifacts
 
-Use the local credential file outside Git at `/code/.secrets/kuku-acceptance.env`, with directory mode `700` and file mode `600`. The user edits secrets locally. `KUKU_TEST_DEEPSEEK_API_KEY` holds the direct DeepSeek key; `KUKU_TEST_OPENROUTER_API_KEY` holds the separate OpenRouter key. Each service's key is reused across its three protocols. These are test-input names, not built-in Codex settings or a new SDK API. The [config reference](../reference/config.md) explains environment-backed credentials.
+Use the local credential file outside Git at `/code/.secrets/kuku-acceptance.env`, with directory mode `700` and file mode `600`. The user edits secrets locally. `KUKU_TEST_DEEPSEEK_API_KEY` holds the direct DeepSeek key; `KUKU_TEST_OPENROUTER_API_KEY` holds the separate OpenRouter key. Reuse each service's key for its selected routes. These are test-input names, not built-in Codex settings or a new SDK API. The [config reference](../reference/config.md) explains environment-backed credentials.
 
 The caller explicitly loads the file without echoing it or enabling shell tracing; another shell's exports need not survive into a new session. This handoff requires the same filesystem and appropriate access. File permissions do not hide credentials from an Agent running as the owning user; another host/cloud environment needs its own secret provisioning.
 

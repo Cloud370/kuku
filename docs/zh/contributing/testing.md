@@ -92,7 +92,7 @@ Linux `/proc` 采样分别记录 SDK 调用进程和工具后代。固定 provid
 
 ## 真实协议验收
 
-用户选定直连 DeepSeek 的 `deepseek-flash` 作为低成本 benchmark 主力，第二个网关使用 OpenRouter 的 [`deepseek/deepseek-v4.1-flash-1017`](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017)。两家服务的文档提供下表中的三条协议路线。这些是测试连接输入，不是新冻结的 SDK 配置名称。
+用户选定直连 DeepSeek 的 `deepseek-flash` 用于 benchmark 和三种线路协议检查。第二模型家族使用 OpenRouter 的 [`openai/gpt-6-luna`](https://openrouter.ai/openai/gpt-6-luna)，固定标准 OpenAI 提供商，通过 OpenAI Responses API 调用。这条 OpenRouter 路线用固定小任务检查协议兼容。下表保留两家服务公开的通用路线，不要求穷举每个模型／服务／协议组合。这些是测试连接输入，不是新冻结的 SDK 配置名称。
 
 | 服务 | 线路协议 | 基础 URL | 请求后缀 | 来源 |
 |---|---|---|---|---|
@@ -103,11 +103,24 @@ Linux `/proc` 采样分别记录 SDK 调用进程和工具后代。固定 provid
 | OpenRouter | Responses | `https://openrouter.ai/api/v1` | `/responses` | [Responses 参考](https://openrouter.ai/docs/api/api-reference/responses/create-a-response) |
 | OpenRouter | Messages | `https://openrouter.ai/api/v1` | `/messages` | [Messages 参考](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
 
-阶段 1 从 DeepSeek 开始，最迟在阶段 2 交付时完成两家服务上的三种协议验证。每种都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。反复运行的 benchmark 主要使用 DeepSeek；OpenRouter 使用一个固定小任务检查兼容性，不把每个 benchmark 在所有模型／协议组合上重跑。选定组合覆盖同一模型家族的两条接入路径，不代表已覆盖不同模型家族。其他模型家族保留为后续可选验证，不要求首批交付前另购或另选两个模型。委派任务包含直连 DeepSeek 和经 OpenRouter 调用的 Agent，保持独立上下文。
+阶段 1 从 DeepSeek 开始。阶段 2 要求直连 DeepSeek 的 Chat Completions、Responses 和 Messages 覆盖，以及选定的 OpenRouter／OpenAI Responses 兼容路线。每条所选路线都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。benchmark 保持使用 DeepSeek；OpenRouter 面向 OpenAI 模型家族，不重跑 benchmark 集，也不要求其余 OpenRouter 协议组合。委派任务包含直连 DeepSeek 和 OpenRouter／OpenAI Agent，保持独立上下文。
 
 仅验证协议时使用实际支持的最低已开启思考档。DeepSeek 当前的[思考指南](https://api-docs.deepseek.com/guides/thinking_mode/)将该档定义为 `low`；OpenRouter 则核对所选上游支持的设置，按所选 API 编码，不假定所有端点接受同一字段和值。benchmark 的思考档按 case 和预算选择，明确记录，同一对比中保持固定；修改档位另记一轮运行，不在失败后静默升档。这些设置只针对被测模型，不改变执行重构的 Codex 会话及其开发 Agent 的模型策略。
 
-为使 OpenRouter 检查可重复，先选择账号路由策略允许的上游，再通过 `provider.order` 选择一个准确的上游端点，设置 `provider.allow_fallbacks = false`、`provider.require_parameters = true`，不使用自动选模或模型回退。其[路由文档](https://openrouter.ai/docs/guides/routing/provider-selection)说明，默认路由可能回退，也可能把不支持的参数传给会忽略它的供应商。记录请求模型、网关、指定路线及可获得的实际上游回报；无法确认时保持未知。这些是测试连接选项，不是全局运行时调度规则。手工指定供应商顺序会覆盖 OpenRouter 的自动粘性路由；固定端点仍可复用自己的缓存。
+所选 OpenRouter 检查使用 `POST https://openrouter.ai/api/v1/responses`，遵循标准 OpenAI Responses 请求语义。模型的[公开端点元数据](https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints)将 `openai` 标识为标准 OpenAI 端点标签；`openai/flex` 和 `openai/fast` 是不同的服务路线。通过以下请求片段固定所选路线：
+
+```json
+{
+  "model": "openai/gpt-6-luna",
+  "provider": {
+    "order": ["openai"],
+    "allow_fallbacks": false,
+    "require_parameters": true
+  }
+}
+```
+
+先核对账号路由策略允许该端点，不使用自动选模或模型回退。OpenRouter 的[路由文档](https://openrouter.ai/docs/guides/routing/provider-selection)说明，默认路由可能回退，也可能把不支持的参数传给会忽略它的供应商。记录请求模型、网关、指定路线及可获得的实际上游回报；无法确认时保持未知。这些是测试连接选项，不是全局运行时调度规则。手工指定供应商顺序会覆盖 OpenRouter 的自动粘性路由；固定端点仍可复用自己的缓存。
 
 日常多轮使用建议采用稳定的 `session_id` 或 `x-session-id`、参数支持过滤，以及候选供应商的成本约束，保留自动粘性路由。传输关联由已有 Session／Agent／连接身份派生，跨 Turn、重试和重开保持稳定；不同 Agent 使用不同关联。不新增核心身份，也不在每个 Step 生成新关联。这属于 provider 适配行为，不另建调度器或共享 Agent 对话历史。遵循[提示缓存契约](https://openrouter.ai/docs/guides/best-practices/prompt-caching)：明确会话关联可从首次成功请求建立亲和，供应商失败可能改变路线。文档所述空闲 60 分钟过期指路由亲和，不保证上游缓存存活同样长。稳定路由不能替代不可变的 provider 可见前缀。
 
@@ -119,7 +132,7 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 
 ## 凭据与运行产物
 
-使用 Git 外的本地凭据文件 `/code/.secrets/kuku-acceptance.env`，目录权限为 `700`，文件权限为 `600`，由用户在本机编辑密钥。`KUKU_TEST_DEEPSEEK_API_KEY` 保存直连 DeepSeek 的 key，`KUKU_TEST_OPENROUTER_API_KEY` 保存单独的 OpenRouter key。每家服务的 key 共用于其三个协议。这些是测试输入名称，不是 Codex 内建设置或新的 SDK API。[配置参考](../reference/config.md)说明如何引用环境变量凭据。
+使用 Git 外的本地凭据文件 `/code/.secrets/kuku-acceptance.env`，目录权限为 `700`，文件权限为 `600`，由用户在本机编辑密钥。`KUKU_TEST_DEEPSEEK_API_KEY` 保存直连 DeepSeek 的 key，`KUKU_TEST_OPENROUTER_API_KEY` 保存单独的 OpenRouter key。每家服务的 key 共用于其所选路线。这些是测试输入名称，不是 Codex 内建设置或新的 SDK API。[配置参考](../reference/config.md)说明如何引用环境变量凭据。
 
 调用程序明确加载该文件，不回显内容或启用 shell 跟踪；另一终端的导出变量不一定延续到新会话。此交接需要同一文件系统与适当访问权。文件权限不能向使用同一用户身份运行的 Agent 隐藏凭据，其他主机／云环境需要另行配置凭据。
 
