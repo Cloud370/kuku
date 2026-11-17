@@ -60,6 +60,8 @@ The local CLI uses the SDK's trusted-local policy. It does not require `--yes` t
 
 Use `--tier` for a tier name. `--model` selects an exact identifier, and `--connection` selects one named connection even when multiple connections use the same protocol. Explicit settings affect only the selected Agent. Reopening without selection flags retains that Agent's configuration and independent context. A changed model route clears previous Agent-local reasoning/service overrides before applying new explicit values.
 
+With `--command-id`, retrying the same input returns its original durable receipt and current Agent state. A retry does not configure the Agent, repeat work, approve a pending request, or authorize recovery of interrupted execution. Conflicting input reuse fails. `--json`/`--stream-json` report `event: "acknowledged"`, `replayed: true`, `receipt`, and `state` on this path; use a new command identity for new work or configuration.
+
 `--json` emits one final `type: "session"` object with `event`, `session_id`, `agent`, `status`, `response`, `config`, `usage`, `permission`, and `question`. `--stream-json` also emits transient progress, committed-receipt information, and a final durable result. Slow observers may lose transient deltas; the final response comes from committed state. Provider usage and unavailable reporting follow the [Session SDK](../how-it-works/sessions.md) contract.
 
 If the prompt starts with `/skill-name` and the first token is a valid skill name, `kuku run` loads that Skill and sends the remaining text as the user prompt. Path-like prompts such as `/tmp/foo` stay plain user input. `--no-skills` disables that shortcut because it disables the default skill tool surface.
@@ -70,7 +72,7 @@ If the prompt starts with `/skill-name` and the first token is a valid skill nam
 kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --answer <text>)
 ```
 
-Replies target the exact retained request, including after reopening. `--allow` authorizes its bound action once; `--deny` rejects it; `--answer` answers a pending question. Ordinary `run` input never acts as approval. `--command-id` enables retrying the same reply; stale or mismatched requests fail visibly. This command also accepts `--config`, `--workspace`, and `--data-dir`, observes the continuation, and awaits cleanup.
+Replies target the exact retained request, including after reopening. `--allow` authorizes its bound action once; `--deny` rejects it; `--answer` answers a pending question. Ordinary `run` input never acts as approval. `--command-id` enables retrying the same reply; an already committed reply returns only its original acknowledgement and current state, without resuming work or issuing another permission decision. Stale or mismatched requests fail visibly. This command also accepts `--config`, `--workspace`, and `--data-dir`, observes the continuation, and awaits cleanup.
 
 ## `kuku show`
 

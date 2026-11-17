@@ -274,11 +274,32 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
         workspace.path(),
         home.path(),
         &config,
-        &["--json", "ask for a color"],
+        &["--command-id", "color-input", "--json", "ask for a color"],
     ));
     assert_eq!("waiting", waiting["event"]);
     let session_id = waiting["session_id"].as_str().unwrap();
     let request_id = waiting["question"]["id"].as_str().unwrap();
+    let duplicate = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--session",
+            session_id,
+            "--command-id",
+            "color-input",
+            "--json",
+            "ask for a color",
+        ],
+    ));
+    assert_eq!("acknowledged", duplicate["event"]);
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(
+        waiting["question"]["id"],
+        duplicate["state"]["question"]["id"]
+    );
+    assert_eq!("waiting", duplicate["state"]["status"]);
+
     let reply = |command_id: &str| {
         Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
             .current_dir(workspace.path())
@@ -293,7 +314,8 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
     assert_eq!("Blue recorded.", first["last_output"]);
     assert_eq!("idle", first["status"]);
     let retry = result(&reply("reply-color"));
-    assert_eq!(first["usage"], retry["usage"]);
+    assert_eq!("acknowledged", retry["event"]);
+    assert_eq!(first["usage"], retry["state"]["usage"]);
     assert!(!reply("stale-new-command").status.success());
     question.assert_hits(1);
     answer.assert_hits(1);
@@ -360,4 +382,106 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         .unwrap();
     assert_eq!(AgentStatus::Idle, worker.status);
     assert_eq!(Some("Worker completed."), worker.last_output.as_deref());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resume() {
+    let mock = MockServer::start_async().await;
+    let model = mock.mock(|when, then| {
+        when.method(Method::POST).path("/v1/messages");
+        then.status(200).delay(std::time::Duration::from_secs(3)).body(kuku::test_support::anthropic_sse_response(json!({
+            "id":"interrupted","type":"message","role":"assistant","content":[{"type":"text","text":"Must not resume on retry."}],
+            "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
+        })));
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let config_path = config_file(home.path(), mock.port(), mock.port());
+    let config = kuku::config::load_config(&config_path)
+        .unwrap()
+        .resolve()
+        .unwrap();
+    let mut options = kuku::SessionOptions::new(workspace.path(), home.path(), config);
+    options.session_id = Some("retry-interrupted".into());
+    let seed = Session::open(options.clone()).await.unwrap();
+    seed.create_agent("create-main", "main", kuku::AgentConfig::default())
+        .unwrap();
+    seed.close().await.unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+        .current_dir(workspace.path())
+        .env("KUKU_HOME", home.path())
+        .args(["run", "--config"])
+        .arg(&config_path)
+        .args([
+            "--session",
+            "retry-interrupted",
+            "--command-id",
+            "interrupted-input",
+            "--json",
+            "original interrupted work",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while model.hits_async().await == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("CLI should durably accept input before beginning its model request");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let acknowledged = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config_path,
+        &[
+            "--session",
+            "retry-interrupted",
+            "--command-id",
+            "interrupted-input",
+            "--json",
+            "original interrupted work",
+        ],
+    ));
+    assert_eq!("acknowledged", acknowledged["event"]);
+    assert_eq!("interrupted", acknowledged["state"]["status"]);
+    let restored = Session::open(options).await.unwrap();
+    assert_eq!(
+        AgentStatus::Interrupted,
+        restored.agent("main").unwrap().status
+    );
+    let mut cursor = 0;
+    loop {
+        let page = restored.events(cursor, 128).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        for event in page {
+            cursor = event.id;
+            if let kuku::event::EventPayload::Unknown(value) = event.payload {
+                assert_ne!("agent_resumed", value["record"]["operation"]);
+            }
+        }
+    }
+    restored.close().await.unwrap();
+    model.assert_hits(1);
+    let continued = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config_path,
+        &[
+            "--session",
+            "retry-interrupted",
+            "--command-id",
+            "authorized-continuation",
+            "--json",
+            "explicitly continue after checking no effects",
+        ],
+    ));
+    assert_eq!("completed", continued["event"]);
+    assert_eq!("idle", continued["status"]);
+    model.assert_hits(2);
 }

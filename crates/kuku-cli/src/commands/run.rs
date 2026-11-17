@@ -57,7 +57,14 @@ pub async fn reply(args: ReplyArgs) -> HostResult<()> {
     let session = Session::open(options).await?;
     let command_id = args.command_id.unwrap_or_else(command_id);
     let result = async {
-        let pending = session.agent(&args.agent)?.permission;
+        let replayed = match args.answer.as_ref() {
+            Some(text) => session.reply_question_receipt(&command_id, &args.agent, &args.request_id, text)?,
+            None => session.reply_permission_receipt(&command_id, &args.agent, &args.request_id, args.allow)?,
+        };
+        if let Some(receipt) = replayed {
+            return render_acknowledgement(&session, &args.agent, receipt, true);
+        }
+        let pending = if args.answer.is_none() { session.agent(&args.agent)?.permission } else { None };
         let receipt = match args.answer.as_ref() {
             Some(text) => session.reply_question(&command_id, &args.agent, &args.request_id, text)?,
             None => session.reply_permission(&command_id, &args.agent, &args.request_id, args.allow)?,
@@ -158,6 +165,17 @@ async fn run_open_session(
     prompt: String,
     update_config: bool,
 ) -> HostResult<()> {
+    let input_id = args.command_id.clone().unwrap_or_else(command_id);
+    let input = Input::new(input_id, &args.agent, prompt);
+    if let Some(receipt) = session.input_receipt(&input)? {
+        return render_acknowledgement(
+            session,
+            &args.agent,
+            receipt,
+            args.json || args.stream_json,
+        );
+    }
+
     let prior = session
         .agents()
         .into_iter()
@@ -185,11 +203,7 @@ async fn run_open_session(
     }
     let mut renderer = RunRenderer::new(args);
     let start = Instant::now();
-    let receipt = session.send(Input::new(
-        args.command_id.clone().unwrap_or_else(command_id),
-        &args.agent,
-        prompt,
-    ))?;
+    let receipt = session.send(input)?;
     let mut observer = session.observe(receipt.event_id.saturating_sub(1));
     if matches!(
         session.agent(&args.agent)?.status,
@@ -377,6 +391,34 @@ fn data_path(path: Option<&str>) -> HostResult<PathBuf> {
         Some(path) => PathBuf::from(path),
         None => kuku::session::kuku_home()?,
     })
+}
+
+fn render_acknowledgement(
+    session: &Session,
+    address: &str,
+    receipt: kuku::Receipt,
+    json_output: bool,
+) -> HostResult<()> {
+    let snapshot = session.agent(address)?;
+    if json_output {
+        println!(
+            "{}",
+            json!({"type":"session","event":"acknowledged","session_id":session.id(),"agent":address,"replayed":true,"receipt":receipt,"state":snapshot})
+        );
+    } else {
+        eprintln!(
+            "command {} already committed at event {}; session {} agent {}: {:?}",
+            receipt.command_id,
+            receipt.event_id,
+            session.id(),
+            address,
+            snapshot.status
+        );
+        if let Some(output) = snapshot.last_output {
+            println!("{output}");
+        }
+    }
+    Ok(())
 }
 
 fn command_id() -> String {

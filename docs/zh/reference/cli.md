@@ -60,6 +60,8 @@ kuku run [options] <prompt...>
 
 Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection` 即使在多个连接共用协议时也只选择指定名称。显式设置只影响所选 Agent。重开时不传选择参数，会保留该 Agent 的配置与独立上下文。切换模型路由会清除该 Agent 先前的 reasoning/service 覆盖值，再应用新的显式设置。
 
+使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。重试不会修改配置、重复工作、批准待决请求或授权恢复中断执行；冲突输入会失败。此路径下 `--json`/`--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置应使用新的命令标识。
+
 `--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`response`、`config`、`usage`、`permission` 和 `question`。`--stream-json` 另含瞬时进度、持久回执信息及最终持久结果。慢观察者可能丢失瞬时增量；最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
 
 Prompt 首项为合法 `/skill-name` 时，CLI 加载对应 Skill，将余下文本作为用户输入。`/tmp/foo` 等路径保持普通输入。`--no-skills` 关闭此快捷方式及默认 Skill 工具。
@@ -70,7 +72,7 @@ Prompt 首项为合法 `/skill-name` 时，CLI 加载对应 Skill，将余下文
 kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --answer <text>)
 ```
 
-回复必须匹配保留的请求，重开后同样如此。`--allow` 只授权绑定动作一次；`--deny` 拒绝；`--answer` 回答待决问题。普通 `run` 输入不会成为授权。`--command-id` 支持安全重试；过期或不匹配的请求明确失败。此命令也接受 `--config`、`--workspace`、`--data-dir`，观察续接并等待清理。
+回复必须匹配保留的请求，重开后同样如此。`--allow` 只授权绑定动作一次；`--deny` 拒绝；`--answer` 回答待决问题。普通 `run` 输入不会成为授权。`--command-id` 支持安全重试；已提交回复仅返回原回执和当前状态，不恢复工作或再次作出授权决定。过期或不匹配的请求明确失败。此命令也接受 `--config`、`--workspace`、`--data-dir`，观察续接并等待清理。
 
 ## `kuku show`
 
