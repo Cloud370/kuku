@@ -1,9 +1,9 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use super::{EventPayload, EventStore};
+use super::{EventPayload, EventStore, LockedJournal};
 
 mod allocation;
 
@@ -13,7 +13,7 @@ fn payload() -> EventPayload {
 
 fn corrupt_committed_prefix(store: &EventStore, path: &Path) {
     let writer = store.inner.writer.lock().unwrap();
-    let file = writer.file.as_ref().unwrap();
+    let file = &writer.journal.as_ref().unwrap().file;
     // NOTE: Windows locks also prevent the deliberate external corruption used by these probes.
     file.unlock().unwrap();
     let corrupted = OpenOptions::new()
@@ -22,6 +22,44 @@ fn corrupt_committed_prefix(store: &EventStore, path: &Path) {
         .and_then(|mut file| file.write_all(b"!"));
     super::fs_sync::lock_writer(file, path).unwrap();
     corrupted.unwrap();
+}
+
+fn replace_writer_file(store: &EventStore, file: File) {
+    let mut writer = store.inner.writer.lock().unwrap();
+    drop(writer.journal.take());
+    writer.journal = Some(LockedJournal::writer(file, &store.inner.path).unwrap());
+}
+
+#[test]
+fn closing_the_writer_releases_the_journal_lock_with_a_duplicate_handle_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    store.append(payload()).unwrap();
+    let duplicate = {
+        let writer = store.inner.writer.lock().unwrap();
+        writer.journal.as_ref().unwrap().file.try_clone().unwrap()
+    };
+
+    drop(store);
+    let mut reopened = EventStore::open(&path).unwrap();
+    assert_eq!(2, reopened.append(payload()).unwrap().id);
+    drop(duplicate);
+}
+
+#[test]
+fn releasing_a_journal_reader_allows_writes_with_a_duplicate_handle_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    drop(EventStore::open(&path).unwrap());
+    let reader = LockedJournal::reader(&path).unwrap();
+    let duplicate = reader.file.try_clone().unwrap();
+    assert!(EventStore::open(&path).is_err());
+
+    drop(reader);
+    let mut writer = EventStore::open(&path).unwrap();
+    assert_eq!(1, writer.append(payload()).unwrap().id);
+    drop(duplicate);
 }
 
 #[test]
@@ -67,7 +105,7 @@ fn write_failure_stops_all_shared_handles() {
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
     let mut shared = store.clone();
-    store.inner.writer.lock().unwrap().file = Some(std::fs::File::open(&path).unwrap());
+    replace_writer_file(&store, File::open(&path).unwrap());
 
     assert!(store.append(payload()).is_err());
     assert_eq!(0, shared.last_id());
@@ -108,7 +146,8 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
     let notification = changed.notified();
     tokio::pin!(notification);
     notification.as_mut().enable();
-    store.inner.writer.lock().unwrap().file = Some(
+    replace_writer_file(
+        &store,
         OpenOptions::new()
             .read(true)
             .write(true)
@@ -125,7 +164,8 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
             .await
             .is_err()
     );
-    store.inner.writer.lock().unwrap().file = Some(
+    replace_writer_file(
+        &store,
         OpenOptions::new()
             .read(true)
             .append(true)

@@ -46,7 +46,7 @@ impl Drop for StoreInner {
             .writer
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        drop(writer.file.take());
+        drop(writer.journal.take());
         drop(writer.file_lock.take());
         self.release.finish();
     }
@@ -82,7 +82,7 @@ impl WriterRelease {
 }
 
 struct Writer {
-    file: Option<File>,
+    journal: Option<LockedJournal>,
     file_lock: Option<fslock::LockFile>,
     index: Vec<EventOffset>,
     event_count: usize,
@@ -91,11 +91,35 @@ struct Writer {
     poison: Option<String>,
 }
 
-impl Writer {
-    fn open(path: &Path, mut file: File) -> Result<Self> {
-        let file_lock = acquire_file_lock(path)?;
+struct LockedJournal {
+    file: File,
+}
+
+impl LockedJournal {
+    fn writer(file: File, path: &Path) -> Result<Self> {
         fs_sync::lock_writer(&file, path)?;
-        let mut reader = EventReader::new(BufReader::new(&mut file), path, 0);
+        Ok(Self { file })
+    }
+
+    fn reader(path: &Path) -> Result<Self> {
+        let file = File::open(path)?;
+        fs_sync::lock_reader(&file, path)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for LockedJournal {
+    fn drop(&mut self) {
+        // NOTE: A duplicated or inherited handle can outlive this owner.
+        let _ = self.file.unlock();
+    }
+}
+
+impl Writer {
+    fn open(path: &Path, file: File) -> Result<Self> {
+        let file_lock = acquire_file_lock(path)?;
+        let journal = LockedJournal::writer(file, path)?;
+        let mut reader = EventReader::new(BufReader::new(&journal.file), path, 0);
         let mut index = Vec::new();
         let mut event_count = 0_usize;
         let mut last_id = 0;
@@ -113,13 +137,13 @@ impl Writer {
         let incomplete_tail = reader.incomplete_tail();
         drop(reader);
         if incomplete_tail {
-            file.set_len(committed_len)?;
-            file.sync_data()?;
+            journal.file.set_len(committed_len)?;
+            journal.file.sync_data()?;
         }
-        file.sync_all()?;
+        journal.file.sync_all()?;
         fs_sync::sync_parent(path)?;
         Ok(Self {
-            file: Some(file),
+            journal: Some(journal),
             file_lock: Some(file_lock),
             index,
             event_count,
@@ -141,7 +165,7 @@ impl Writer {
     }
 
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
-        let file = self.file.as_mut().unwrap();
+        let file = &mut self.journal.as_mut().unwrap().file;
         if let Err(error) = file
             .seek(SeekFrom::Start(self.committed_len))
             .and_then(|_| file.write_all(record))
@@ -171,7 +195,7 @@ impl Writer {
 
     fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
-        let file = self.file.as_mut().unwrap();
+        let file = &mut self.journal.as_mut().unwrap().file;
         file.seek(SeekFrom::Start(0))?;
         read_all(file.take(self.committed_len), path)
     }
@@ -186,7 +210,7 @@ impl Writer {
             .partition_point(|entry| entry.id <= after)
             .saturating_sub(1);
         let start = self.index[checkpoint].offset;
-        let file = self.file.as_mut().unwrap();
+        let file = &mut self.journal.as_mut().unwrap().file;
         file.seek(SeekFrom::Start(start))?;
         let file = file.take(self.committed_len - start);
         read_page_from(file, path, start, after, limit)
@@ -287,11 +311,8 @@ impl EventStore {
             return inner.writer.lock().unwrap().read_after(&path, after, limit);
         }
         let _file_lock = acquire_file_lock(&path)?;
-        let file = File::open(&path)?;
-        fs_sync::lock_reader(&file, &path)?;
-        let result = read_page_from(file, &path, 0, after, limit);
-        drop(stores);
-        result
+        let journal = LockedJournal::reader(&path)?;
+        read_page_from(&journal.file, &path, 0, after, limit)
     }
 
     /// Return the last durably committed event ID, or zero for an empty store.
@@ -312,11 +333,8 @@ impl EventStore {
             return inner.writer.lock().unwrap().replay(&path);
         }
         let _file_lock = acquire_file_lock(&path)?;
-        let file = File::open(&path)?;
-        fs_sync::lock_reader(&file, &path)?;
-        let result = read_all(file, &path);
-        drop(stores);
-        result
+        let journal = LockedJournal::reader(&path)?;
+        read_all(&journal.file, &path)
     }
 
     pub(crate) fn next_id(&self) -> u64 {
