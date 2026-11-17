@@ -328,9 +328,19 @@ def verifier_summary(logs):
         return None
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
-        return report["results"]["summary"]
+        summary = report["results"]["summary"]
+        return summary if isinstance(summary, dict) else None
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def fresh_verifier_directory(logs):
+    path = logs / "verifier"
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+    path.mkdir()
 
 
 def retain_task_artifacts(case, container, attempt):
@@ -370,7 +380,8 @@ def attempt_passed(mode, execution, verification, value, summary):
         return False
     if mode == "negative":
         return value == 0.0 and summary.get("failed", 0) > 0
-    return value == 1.0 and summary.get("failed", 0) == 0 and summary.get("passed", 0) > 0
+    return value == 1.0 and summary.get("tests") == summary.get("passed") and all(
+        summary.get(field) == 0 for field in ("failed", "skipped", "pending", "other"))
 
 
 class ResourceSampler:
@@ -479,6 +490,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
             return record
         if mode == "live":
             record["task_artifacts"] = retain_task_artifacts(case, container, attempt)
+        fresh_verifier_directory(logs)
+        record["verifier_directory_reset_at"] = now()
         require_success(capture(["docker", "cp", str(source / "tests"), f"{container}:/tests"],
                                 attempt, "verifier-copy"))
         record["verification"] = capture(["docker", "exec", container, "bash", "/tests/test.sh"],
@@ -511,7 +524,7 @@ def run_benchmark(args, directory, record, secrets):
     record["benchmark"] = {"source": manifest["source"], "case": case,
                            "task_files_sha256": file_hashes(source)}
     image = f"kuku-acceptance/{case['id']}:{manifest['source']['revision'][:12]}"
-    require_success(capture(["docker", "build", "--tag", image, str(source / "environment")],
+    require_success(capture(["docker", "build", "--force-rm", "--tag", image, str(source / "environment")],
                             directory, "image-build", timeout=600))
     inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}", image],
                                         directory, "image-inspect"))

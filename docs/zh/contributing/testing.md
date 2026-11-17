@@ -63,7 +63,7 @@ python3 scripts/acceptance/run.py list
 python3 scripts/acceptance/run.py --run-id cancel-environment benchmark --case cancel-async-tasks --mode preflight
 ```
 
-Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`，记录任务文件／判定器 SHA-256 hash 和构建镜像 ID，并创建两个全新容器。未修改环境必须实际收集并运行测试且失败；原 oracle 必须使用同一个原始 `tests/test.sh` 并通过。没有已收集测试报告的零 reward 属于基础设施失败。判定器仍安装原有的固定版本依赖；下载失败不算任务失败，重试要使用独立运行标识。入口沿用任务原有的单 CPU／2 GiB 限额和工作目录，移除自己创建的容器并报告清理失败。
+Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`，记录任务文件／判定器 SHA-256 hash 和构建镜像 ID，并创建两个全新容器。未修改环境必须实际收集并运行测试且失败；原 oracle 必须使用同一个原始 `tests/test.sh`，全部已收集测试均通过，不存在 skipped、pending 或其他结果。没有已收集测试报告的零 reward 属于基础设施失败。SDK／oracle 执行后，宿主先将判定器输出目录替换为空目录，再运行判定器，避免把先前残留报告作为本轮证据。判定器仍安装原有的固定版本依赖；下载失败不算任务失败，重试要使用独立运行标识。入口沿用任务原有的单 CPU／2 GiB 限额和工作目录，移除自己创建的容器并报告清理失败。
 
 真实尝试先构建公开 `session_task` 示例，再选择 `benchmark --mode live`，提供 `--sdk-binary`、`--config`、`--connection` 及下方的预算参数。调用程序的其他有界参数放在 `--` 后。二进制及其解析出的 Linux 动态库复制到独立运行时挂载；证据记录这一必要宿主适配的 hash。Agent 执行时只能访问原任务指令和环境，不提供 solution，隐藏测试在执行结束后才复制进容器。Session 数据保留在该次尝试的 `session-data/`；预期任务产物列于清单。
 

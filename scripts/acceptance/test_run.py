@@ -113,7 +113,23 @@ class AcceptanceTests(unittest.TestCase):
         self.assertFalse(ACCEPTANCE.attempt_passed("negative", execution, verification, 0, {"tests": 0}))
         self.assertTrue(ACCEPTANCE.attempt_passed("negative", execution, verification, 0, {"tests": 6, "failed": 6}))
         self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, {"tests": 6, "failed": 1}))
-        self.assertTrue(ACCEPTANCE.attempt_passed("live", execution, verification, 1, {"tests": 6, "failed": 0, "passed": 6}))
+        complete = {"tests": 6, "failed": 0, "passed": 6, "skipped": 0, "pending": 0, "other": 0}
+        self.assertTrue(ACCEPTANCE.attempt_passed("live", execution, verification, 1, complete))
+        for field in ("failed", "skipped", "pending", "other"):
+            incomplete = dict(complete, **{field: 1})
+            self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, incomplete))
+        self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, dict(complete, passed=1)))
+        self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, {"tests": 1, "passed": 1}))
+
+    def test_grader_cannot_reuse_a_report_left_by_the_agent(self):
+        logs = self.directory / "logs"
+        (logs / "verifier").mkdir(parents=True)
+        (logs / "verifier" / "reward.txt").write_text("1")
+        (logs / "verifier" / "ctrf.json").write_text('{"results":{"summary":{"tests":1,"passed":1}}}')
+        ACCEPTANCE.fresh_verifier_directory(logs)
+        self.assertEqual(list((logs / "verifier").iterdir()), [])
+        self.assertIsNone(ACCEPTANCE.verifier_summary(logs))
+        self.assertIsNone(ACCEPTANCE.reward(logs))
 
     def test_contract_selects_feature_gated_tests(self):
         command = ACCEPTANCE.selected_commands("contract")[0]
