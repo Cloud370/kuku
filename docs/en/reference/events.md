@@ -15,10 +15,11 @@ The CLI writes one JSON record per line to stdout and the next cursor to stderr.
 | Kind or group | What it records |
 |---|---|
 | `session.created`, `conversation.opened` | Session metadata and the opening of an Agent's conversation stream. |
-| `runtime.operation` | `record.operation` selects the state change. Examples include `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `turn_settled` and `session_closed`. Pending requests and their replies are also Session operations. |
+| `runtime.operation` | `record.operation` selects the state change. Examples include `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal` and `turn_settled`. `execution_started`, `agent_stopped` and `agent_resumed` track targeted execution control. Pending requests and their replies are also Session operations. |
 | `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
 | `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
 | `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |
+| `runtime.model_retry` | A bounded retry of a prepared request, with the failed attempt's kind. |
 | `tool.call`, `runtime.tool_prepared`, `runtime.tool_dispatched`, `tool.result` | The request, its final arguments and definition, dispatch before the side effect, and the recorded outcome. A denied action can have a result without a dispatch. |
 | `permission.requested`, `permission.allow`, `permission.deny` | A deferred authorization or a decision about a particular tool call. `runtime.operation` carries the resumable Agent wait and correlated reply. |
 | `handoff` | A summary boundary used to prepare a successor context segment. |

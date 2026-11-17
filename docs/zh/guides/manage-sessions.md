@@ -2,6 +2,8 @@
 
 每个 Session 在 kuku home 下拥有一个目录和一份账本。
 
+在终端界面用 `/resume` 查找当前工作区的 Session，用 `/agents` 切换接收者。各窗口保留各自的草稿。一个客户端回复问题或授权后，观察该 Agent 的其他客户端可以看到结果。[终端界面命令](../reference/cli.md#终端界面)
+
 ## 列出 Session
 
 只列当前工作区：
@@ -79,7 +81,7 @@ kuku delete <session-id>
 
 属于另一个工作区时添加 `--workspace`。
 
-关闭 Session 保留已提交上下文和待决请求。已经接纳至 Provider 可见上下文的输入不可变；交互宿主不再提供原地转录回滚。
+关闭 Session 会保留已提交上下文和待决请求。输入在排队期间可从交互客户端撤回，接纳到模型上下文后不可修改。[Session](../how-it-works/sessions.md)
 
 ## 相关页面
 

@@ -1,27 +1,41 @@
 # SDK
 
-`kuku::Session` 是嵌入入口。[`session_task.rs`](../../../crates/kuku/examples/session_task.rs) 是普通 Rust 调用程序，与 CLI 使用相同操作。
+`kuku::Session` 是嵌入入口。[`session_task.rs`](../../../crates/kuku/examples/session_task.rs) 是普通 Rust 调用程序。产品服务使用同一 SDK，并通过 [HTTP 服务接口](server-api.md) 为终端、脚本和浏览器客户端提供服务。
 
 ## 操作
 
 | 操作 | 结果 |
 |---|---|
 | `Session::open(SessionOptions).await` | 获取 writer 并重建事实，不自动激活 |
+| `Session::open_for_creation(options, &input, &config).await` | 为首次发送意图认领显式指定的 Session，或在创建中断后重开同一认领 |
 | `create_agent(command_id, address, AgentConfig)` | 持久幂等创建回执 |
 | `configure_agent(command_id, address, AgentConfig)` | 下一安全边界的 Agent 局部默认值 |
 | `send(Input)` / `advance(address)` | 持久投递与明确激活 |
+| `send_configured(Input, AgentConfig)` | 一并提交投递和配置，用关联标识配置意图 |
 | `agent(address)` / `agents()` | 不消耗输出的派生快照 |
+| `agent_view(address)` | 所选 Agent 快照、排队输入和对应的已提交游标 |
 | `agent_selection(address)` | 不执行的有效模型设置、能力和最终工具集合 |
 | `receipt(command_id)` / `input_receipt(&Input)` | 查询和校验既有回执，不恢复执行 |
+| `input_status(address, input_command_id)` | 查询输入已排队、已接纳或已撤回 |
+| `withdraw_input(command_id, address, input_command_id)` | 撤回仍在排队的输入并返回其状态 |
+| `advance_command(command_id, address)` | 幂等的显式推进 |
 | `reply_permission_receipt(...)` / `reply_question_receipt(...)` | 校验既有回复回执，不恢复执行 |
 | `events(after, limit)` / `observe(after)` | 有界分页与可续接观察 |
 | `read_output(output_id, &OutputRead)` | 有界范围、字面搜索、增量输出 |
 | `reply_permission(command_id, address, request_id, allow)` | 精确待决动作回复 |
 | `reply_question(command_id, address, request_id, text)` | 以关联输入投递精确问题回复 |
 | `cancel(address).await` / `close().await` | 等待所属清理与持久结算 |
+| `cancel_execution(command_id, address, execution_id).await` | 取消所观察到的执行并等待清理 |
 | `Session::read_agents(events_path)` | 不创建运行资源的离线恢复快照 |
+| `Session::read_view(events_path, address)` / `Session::read_receipt(events_path, command_id)` | 从关闭的 Session 读取 Agent 视图或命令回执 |
 
 `SessionOptions::new(workspace, data_dir, config)` 接收具名 provider 配置；可增加 Prompt 资源、限额与宿主 `ToolAuthorizer`。`AgentConfig` 选择 Preset、Tier、具名连接、模型、思考、服务、输出 token、指令、目录和原生 Skill 默认值。连接选择独立于协议。显式 model 覆盖所选 Tier 的模型，保留其余默认值。`AgentConfig.tools` 覆盖 Preset 的最终工具选择；只读 Preset 不会自动增加协作工具。Preset 的指令、Tier 和工具默认值在创建或配置 Agent 时解析并保存；后续修改 Preset 文件不会改变这些已保留默认值。生命周期与回执语义见 [Sessions](../how-it-works/sessions.md)。
+
+`Input.timing` 区分默认的 `InputTiming::NextStep` 和 `InputTiming::NextTurn`。`AgentSnapshot.execution_id` 标识本次执行。`Observation::Live` 包含来源 Agent、执行标识、Turn 和发布该进度时最新的已提交游标。用 `agent_view` 取得与所选 Agent 状态对应的游标，从那里开始观察。
+
+`AgentSnapshot.config` 是请求的配置，`active_config` 记录正在执行或等待中的配置。模型和思考设置可在下一次尚未准备的模型请求生效。工作区、行为和工具设置在下一轮生效。
+
+通过传输接口提供可重试的创建时，`open_for_creation` 会按持久认领核对初始输入、配置和可选 Prompt 目录。宿主仍须使用稳定的命令标识创建 Agent 和提交输入。该 Session 已打开时，使用 `verify_creation(&input, &config, prompts_dir)`。
 
 `Session::read_agents` 从日志重建离线恢复状态，将没有终结事实的 `Running` 映射为 `Interrupted`，即使另一个运行时仍然活跃。查询当前活状态应使用已打开 Session 的 `agent` 或 `agents`。
 
@@ -51,6 +65,8 @@ cargo run -p kuku --example session_task -- \
 ## 限额与用量
 
 默认：64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每请求 512 KiB、四个模型流、每 Turn 20 次请求、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB、128 条临时观察。`RuntimeLimits.max_output_tokens_per_request` 可限制每个 Agent 请求的有效输出 token；显式 Agent 值取 `min`，选择查询和 prepared 事实反映有效值。`session_task --max-output-tokens` 同时设置宿主上限与主 Agent 选择。`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置，超额工作在发送前拒绝；默认 `None`。零值或不支持边界会失败；预览至少 1 KiB，保留完整引用与标志。
+
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。有界 `session_task` 调用程序将此选项设为 false，关闭该重试。
 
 日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含帧／元信息，超过后标记不完整并继续排空。这些是每份输出的边界，宿主选择 Session 保留与总磁盘容量。
 

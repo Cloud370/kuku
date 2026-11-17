@@ -1,6 +1,6 @@
 # File-native execution
 
-Each Session has an `events.jsonl` journal and a directory for retained command output. The workspace itself contains the project files that tools read or change. The CLI uses kuku home for Session storage by default. SDK callers and `kuku run --data-dir` can select another root. [File layout](../reference/file-layout.md)
+Each Session has an `events.jsonl` journal and a directory for retained command output. The workspace contains the project files that tools read or change. The local service stores Sessions under kuku home by default. Local clients can select another service data directory with `--data-dir`. SDK callers set their own storage root. [File layout](../reference/file-layout.md)
 
 ## What an Agent remembers
 

@@ -8,13 +8,13 @@ By default, kuku uses:
 ~/.kuku/config.toml
 ```
 
-If `KUKU_HOME` is set, the CLI reads:
+If `KUKU_HOME` is set, the service looks for:
 
 ```text
 $KUKU_HOME/config.toml
 ```
 
-For `kuku server` or `kuku web`, pass `--config` when using a config outside `~/.kuku`. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
+The local service uses the selected data directory's `config.toml` by default. Choose another file with `--config`. Check the active path with `kuku server status`. To change the configuration path for an already running managed service, use `kuku server restart --config PATH` when the service is idle. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
 
 ## Provider Setup
 
@@ -24,6 +24,8 @@ The default config defines two providers:
 - `provider.openai` with `api_key = "$OPENAI_API_KEY"`
 
 You can keep secrets in environment variables or store a literal `api_key` in `config.toml`.
+
+Set the environment for the server process. If you change a key in your terminal after the managed service starts, run `kuku server restart` from that terminal when the service is idle. For a remote connection, configure the key on the server machine. After validating a change to the active config file, the service uses the new configuration when it opens Sessions.
 
 For other string settings, you can also use `$ENV_VAR_NAME` in `config.toml`. For example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"` resolves during config load.
 

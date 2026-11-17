@@ -2,6 +2,8 @@
 
 Each session is stored as one directory and one ledger under kuku home.
 
+In the terminal interface, use `/resume` to find a Session in the current workspace and `/agents` to switch recipients. Each window keeps its own draft. An accepted question or authorization reply becomes visible to other clients observing that Agent. [Terminal commands](../reference/cli.md#terminal-interface)
+
 ## List Sessions
 
 Current workspace only:
@@ -79,7 +81,7 @@ kuku delete <session-id>
 
 If the session belongs to another workspace, add `--workspace`.
 
-Closing a Session preserves its committed context and pending requests. Inputs already admitted to a provider-visible context are immutable; the interactive host no longer offers in-place transcript rollback.
+Closing a Session preserves its committed context and pending requests. While an input is queued, the interactive client can withdraw it. After model acceptance, the admitted context is immutable. [Sessions](../how-it-works/sessions.md)
 
 ## Related Pages
 

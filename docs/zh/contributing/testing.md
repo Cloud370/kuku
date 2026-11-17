@@ -12,16 +12,16 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。CI 另外检查带内嵌 Web 资源的二进制能否编译。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行相同的契约测试与安装终端场景，保留有界证据。Web CI 另运行安装浏览器场景。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
-选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
+选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
 编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查。等价的直接命令为：
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
-cargo test -p kuku -p kuku-cli -p kuku-server --features kuku/test_support
+cargo test --workspace --features kuku/test_support
 ```
 
 相关写入者停止修改后，先格式化修改的 Rust 范围，再运行只读格式检查。编辑中可用 `cargo check` 快速反馈。不因随后要提交或推送就重复通过的检查；代码、配置或集成变化使证据失效时再补测。纯文档改动使用下方的文档检查。
@@ -43,6 +43,29 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 | CI 平台矩阵 | 实际运行的平台与配置结果 |
 
 独立检查改动文件、命令退出状态、持久事实和资源清理，不依赖 Agent 最终措辞。直接 HTTP 探测验证连通性或供应商行为，不代表 SDK 已集成。真实模型成功不证明罕见失败场景的保证。
+
+## 安装客户端验收
+
+终端输入、服务发现、内嵌浏览器和发行打包变更，使用安装客户端验收入口。
+
+```bash
+python3 scripts/acceptance/run.py interactive
+python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+```
+
+默认使用仓库指定的 Node 版本构建 Web 资源，再安装当前源码中带 `embedded-web-assets` 的 `kuku`。`--archive` 测试对应平台的 `.tar.gz` 或 `.zip` 发行包。`--binary` 复制已经构建或安装的可执行文件。临时安装前缀、空白数据目录和工作区都在源码树外。`--scratch-base` 可另选源码树外的临时目录。选择入口将二进制 hash、原生终端类型、所选场景和结果写入现有的证据目录。
+
+终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。
+
+显式选择 `--live` 后，使用平台安装器、发行包和 Chromium，通过安装后的客户端发起有预算限制的 DeepSeek 调用。此模式要求从显式凭据文件读取 DeepSeek 密钥，并使用已有[预算账本](#凭据与运行产物)。经授权可用 `--ledger` 选择另一份现有账本。使用唯一的运行 ID 和已授权的账本。
+
+```bash
+python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PATH_TO_PLATFORM_ARCHIVE --live --secrets PATH_TO_CREDENTIAL_FILE
+```
+
+`live-result.json` 记录实际模型路线、请求和任务结果。场景核对实际项目修改及测试输出、Agent 切换、工具运行期间更换客户端，以及在终端、浏览器和脚本客户端之间接续工作。[真实调用场景](../../../scripts/acceptance/interactive_live.py)
+
+分别记录确定性检查、平台执行和人工体验。人工验收时，在源码树外安装候选版本，用已配置的模型读取文件、完成修改并运行检查，再核对实际文件、diff 和工具结果。从浏览器和另一个终端恢复同一 Session。分别记录 Linux、Windows Terminal 的输入法、粘贴、复制与缩放检查，以及实际 macOS 覆盖。模型调用证据遵循下方规则，无法执行的场景标为待验证。
 
 ## 测试归属与证据
 

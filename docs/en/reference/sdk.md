@@ -1,27 +1,41 @@
 # SDK
 
-`kuku::Session` is the embedding entry point. [`session_task.rs`](../../../crates/kuku/examples/session_task.rs) is an ordinary Rust caller using the same operations as the CLI.
+`kuku::Session` is the embedding entry point. [`session_task.rs`](../../../crates/kuku/examples/session_task.rs) is an ordinary Rust caller. The product server uses the same SDK and exposes it to terminal, script and browser clients through the [Server API](server-api.md).
 
 ## Operations
 
 | Operation | Result |
 |---|---|
 | `Session::open(SessionOptions).await` | Acquire writer ownership and reconstruct facts without automatic activation |
+| `Session::open_for_creation(options, &input, &config).await` | Claim an explicitly named Session for a first-send intent, or reopen that same claim after interrupted creation |
 | `create_agent(command_id, address, AgentConfig)` | Durable idempotent creation receipt |
 | `configure_agent(command_id, address, AgentConfig)` | Agent-local defaults for the next safe boundary |
 | `send(Input)` / `advance(address)` | Durable delivery and explicit activation |
+| `send_configured(Input, AgentConfig)` | Commit delivery and configuration together with a correlation that identifies the configuration intent |
 | `agent(address)` / `agents()` | Query derived snapshots without consuming output |
+| `agent_view(address)` | Selected Agent snapshot, queued inputs and a matching committed cursor |
 | `agent_selection(address)` | Inspect effective model settings, capabilities and final tool schemas without dispatch |
 | `receipt(command_id)` / `input_receipt(&Input)` | Query and verify an earlier acknowledgement without resuming work |
+| `input_status(address, input_command_id)` | Query whether an input is queued, accepted or withdrawn |
+| `withdraw_input(command_id, address, input_command_id)` | Withdraw an input if it remains queued and return its status |
+| `advance_command(command_id, address)` | Idempotent explicit advancement |
 | `reply_permission_receipt(...)` / `reply_question_receipt(...)` | Verify an earlier reply acknowledgement without resuming work |
 | `events(after, limit)` / `observe(after)` | Bounded pages and reconnectable observation |
 | `read_output(output_id, &OutputRead)` | Bounded range, literal search, or incremental output |
 | `reply_permission(command_id, address, request_id, allow)` | Exact pending-action reply |
 | `reply_question(command_id, address, request_id, text)` | Exact question reply delivered as correlated input |
 | `cancel(address).await` / `close().await` | Await owned cleanup and durable settlement |
+| `cancel_execution(command_id, address, execution_id).await` | Cancel the particular observed execution and await its owned cleanup |
 | `Session::read_agents(events_path)` | Offline recovery snapshots without runtime resources |
+| `Session::read_view(events_path, address)` / `Session::read_receipt(events_path, command_id)` | Read the selected Agent view or command receipt from a closed Session |
 
 `SessionOptions::new(workspace, data_dir, config)` accepts named-provider configuration. Options add prompt assets, resource limits, and a host `ToolAuthorizer`. `AgentConfig` selects preset, tier, named connection, model, reasoning, service tier, output tokens, instructions, directory, and native skill defaults. Connection selection is independent of wire protocol. An explicit model overrides the selected tier’s model while retaining its other defaults. `AgentConfig.tools` overrides the preset’s final tool selection; collaboration tools are not added to a read-only preset. Preset instructions, tier and tool defaults are resolved and stored when creating or configuring the Agent. Later preset-file changes do not change those retained defaults. Lifecycle and receipt semantics live in [Sessions](../how-it-works/sessions.md).
+
+`Input.timing` distinguishes `InputTiming::NextStep`, the default, from `InputTiming::NextTurn`. `AgentSnapshot.execution_id` identifies the current execution. `Observation::Live` carries its source Agent, execution identity, Turn and latest committed cursor when the update was published. Use `agent_view` to start observation at the cursor that matches the selected Agent state.
+
+`AgentSnapshot.config` is the requested configuration, and `active_config` records the configuration used by active or waiting execution. Model and reasoning settings can change at the next unprepared model request. Workspace, behavior and tool settings take effect on the next Turn.
+
+When exposing retryable creation over a transport, `open_for_creation` checks the initial input, configuration and optional Prompt directory against the persistent claim. The host still creates the Agent and submits its input using stable command identities. Use `verify_creation(&input, &config, prompts_dir)` if the claimed Session is already open.
 
 `Session::read_agents` reconstructs offline recovery state from the journal and maps an unterminated `Running` state to `Interrupted`, even while another runtime is active. Use an open Session's `agent` or `agents` methods for its current live state.
 
@@ -51,6 +65,8 @@ Use `--session-id` to reopen and `--command-id` to retry delivery after losing a
 ## Limits and accounting
 
 Defaults: 64 agents, 128 pending inputs per agent, 65,536 input bytes, 512 KiB per prepared request, four simultaneous model streams, 20 requests per turn, eight tools per agent, 8 MiB per retained output, 16 KiB first preview, and 128 transient observations. `RuntimeLimits.max_output_tokens_per_request` optionally caps every Agent’s resolved output tokens; explicit Agent values are reduced with `min` and selection/prepared facts expose that effective value. `session_task --max-output-tokens` sets this host ceiling as well as the primary Agent’s selection. `RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent turns, resets on reopen, and rejects excess work before dispatch; its default is `None`. Zero or unsupported bounds fail validation; output previews require at least 1 KiB for a complete reference and flags.
+
+`RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK can retry once after a retryable transport or provider-unavailable error before the stream opens. It reuses the prepared request and charges the retry to the same request budget. Set the option to false to disable this retry, as the bounded `session_task` caller does.
 
 Journal records are capped at 1 MiB. Pages contain at most 256 records and stop at a 1 MiB target, with one-record overrun below 2 MiB. Output reads return at most 80,000 bytes. The retained-output quota includes framing/metadata and marks incomplete capture while continuing to drain. These are per-output bounds; hosts choose session retention and total disk capacity.
 

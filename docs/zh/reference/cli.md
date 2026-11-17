@@ -2,26 +2,65 @@
 
 ## 入口模式
 
-- `kuku` 在当前工作目录打开前台逐行输入界面，两轮之间可输入 `exit` 或 `quit` 退出。
-- `kuku run ...` 执行非交互任务。
+- `kuku` 在交互终端打开全屏客户端。
+- `kuku run ...` 执行非交互任务，适用于脚本或没有交互终端的环境。
+
+终端、脚本和浏览器客户端都向服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
+
+## 连接与工作区选项
+
+| 选项 | 含义 |
+|---|---|
+| `-w`、`--workspace <path>` | 命令和文件工具使用的工作区。本地默认使用解析后的当前目录，远程 Session 需要指定服务端机器上的绝对路径。 |
+| `--data-dir <path>` | 本地服务的数据目录。默认为 `$KUKU_HOME` 或 `~/.kuku`。使用 `--remote` 时，该选项选择客户端的本地存储目录。 |
+| `--config <path>` | 选择本地配置文件。远程配置在服务端机器上管理。 |
+| `--remote <url>` | 显式连接该服务地址。 |
+| `--token <token>` | 显式连接的服务访问令牌，也可设置 `KUKU_TOKEN`。 |
+
+运行 `kuku run` 时把选项放在提示词之前。命令会将剩余的词作为提示词。
 
 ## 顶层命令
 
 | 命令 | 用途 |
 |---|---|
-| `kuku run <prompt...>` | 通过公开 Session SDK 执行任务 |
+| `kuku run <prompt...>` | 提交任务并观察执行 |
 | `kuku reply <session-id> <request-id>` | 回复持久问题或授权请求 |
 | `kuku show <session-id>` | 查看 Session 的最终输出 |
 | `kuku events <session-id>` | 查看持久 Session 事实 |
 | `kuku list` | 列出 Session |
+| `kuku pending ...` | 核对丢失回执的提交 |
 | `kuku delete <session-id>` | 删除 Session |
 | `kuku config ...` | 查看、验证或修改配置 |
 | `kuku init` | 初始化配置和运行目录 |
 | `kuku prompts ...` | 查看或导出 Prompt 资产 |
 | `kuku agents ...` | 列出或查看 Agent 联系卡 |
 | `kuku skills ...` | 列出或查看 Skill |
-| `kuku server ...` | 启动 HTTP API 服务 |
-| `kuku web ...` | 启动包含内嵌 Web UI 的 HTTP 服务 |
+| `kuku server ...` | 显式启动 HTTP 服务 |
+| `kuku server status` | 检查服务身份和当前活动 |
+| `kuku server restart` | 在手头的工作结束后重启受管本地服务 |
+| `kuku web ...` | 打开所选服务的浏览器界面 |
+
+## 终端界面
+
+| 按键或操作 | 行为 |
+|---|---|
+| Enter | 发送草稿。Agent 忙时在下一个安全的模型请求边界接纳，如果当前轮先结束则在下一轮接纳。 |
+| Alt+Enter | 把草稿排到下一轮。 |
+| Shift+Enter 或 Ctrl+J | 在草稿中换行。 |
+| Esc | 关闭当前获得焦点的菜单，或打断所选执行并保留草稿。 |
+| 草稿为空时按 `/`，或按 F1 | 搜索可用操作和 Skill。选中 Skill 会在草稿中加入可编辑的 `/skill:NAME` 前缀，用于下一次发送。 |
+| `@` 或 Tab | 将工作区相对路径补全到草稿。 |
+| `/new`、`/resume` | 打开空白草稿或查找已有 Session。 |
+| `/agents` | 选择接收者或在 Session 中新建 Agent。 |
+| `/queue`、`/withdraw`、`/continue` | 排到下一轮、撤回排队输入，或显式继续工作。 |
+| F2 或 `/reply` | 回复所选 Agent 的待决问题或授权。 |
+| `/pending` | 检查、重试或丢弃未确认的提交。 |
+| `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
+| Ctrl+O、`/tools`、`/copy` | 展开或收起内联工具详情、读取保留输出，或复制回复正文。 |
+| Page Up、Page Down、Ctrl+End | 滚动对话或回到最新输出。 |
+| Ctrl+P、Ctrl+N | 在编辑区调出上一条或下一条已发送的提示词。 |
+| `/server`、`/reconnect`、`/restart` | 检查所连服务、重新连接，或重启受管本地服务。 |
+| `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。Ctrl+C 也可以退出终端客户端。 |
 
 ## `kuku run`
 
@@ -38,8 +77,6 @@ kuku run [options] <prompt...>
 | `--model <id>` | 精确的模型标识 |
 | `--tier <name>` | 可复用的模型路由和设置 |
 | `--agent <address>` | Session 内稳定地址，默认 `main` |
-| `--workspace <path>` | 工作目录，默认当前目录 |
-| `--data-dir <path>` | 持久数据目录，默认 `$KUKU_HOME` 或 `~/.kuku` |
 | `--command-id <id>` | 调用方指定的输入幂等标识 |
 | `--reasoning-effort <value>` | Provider 支持的思考设置 |
 | `--service-tier <value>` | Provider 支持的服务设置 |
@@ -51,18 +88,17 @@ kuku run [options] <prompt...>
 | `--show-thinking` | 显示思考内容 |
 | `--raw` | 纯文本输出 |
 | `--verbose` | 显示持久 Agent 快照、配置和用量 |
-| `--config <path>` | 指定配置文件 |
-| `--prompts-dir <dir>` | 覆盖内嵌 Prompt 资产 |
+| `--prompts-dir <dir>` | 创建 Session 时覆盖内嵌 Prompt 资产。使用 `--remote` 时，填写服务端已授权的绝对目录。 |
 | `--no-agents` | 禁用 `create_agent`、`send_message` 和 `list_agents`，保留 `ask_user` |
 | `--no-skills` | 禁用默认 Skill 工具 `list_skills`、`search_skills`、`use_skill` 及斜杠 Skill 加载 |
 
-本地 CLI 使用 SDK 的 trusted-local 策略，无需 `--yes` 即可运行文件和命令工具。Session 持有执行；Ctrl-C 会取消 Agent 并等待清理，每次运行都会等待异步 Session close。本地 Harness 正常关闭前会等待已在运行的 Agent 结算。打开 Session 或重放命令不会恢复已停止/中断的工作；新的 `run` 命令会显式推进目标 Agent。等待中的 Agent 需要匹配的回复。Turn 完成代表执行结束，任务是否成功仍需检查文件或命令判定结果。
+服务默认使用 SDK 的 trusted-local 策略。执行开始后，按 Ctrl-C 会请求取消观察到的执行并等待清理。客户端连接丢失时，服务会继续执行。新的 `run` 可以推进已停止的 Agent。等待中的 Agent 需要匹配的回复。请检查实际文件或命令结果，确认任务是否成功。
 
 Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection` 即使在多个连接共用协议时也只选择指定名称。显式 `--model` 覆盖 Tier 的模型，重开 Agent 时同时提供这两个参数也遵循此优先级。显式设置只影响所选 Agent。重开时不传选择参数，会保留该 Agent 的配置与独立上下文。切换模型路由会清除该 Agent 先前的 reasoning/service 覆盖值，再应用新的显式设置。
 
-使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。重试不会修改配置、重复工作、批准待决请求或授权恢复中断执行；冲突输入会失败。此路径下 `--json`/`--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置应使用新的命令标识。
+使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。如果首次发送丢失了响应，客户端会为这条未确认命令保留生成的 Session ID。取得回执后，后续重试使用返回的 ID 作为 `--session`。重放时，`--json` 和 `--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置使用新的命令标识。
 
-`--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`response`、`config`、`usage`、`permission` 和 `question`。`--stream-json` 另含瞬时进度、持久回执信息及最终持久结果。慢观察者可能丢失瞬时增量；最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
+`--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`turns`、`response`、`error`、`config`、`usage`、`permission`、`question` 和 `duration_ms`。`--stream-json` 另含瞬时进度和持久回执信息。慢观察者可能丢失瞬时增量。最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
 
 Prompt 首项为合法 `/skill-name` 时，CLI 加载对应 Skill，将余下文本作为用户输入。`/tmp/foo` 等路径保持普通输入。`--no-skills` 关闭此快捷方式及默认 Skill 工具。
 
@@ -82,7 +118,7 @@ kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --a
 kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
 ```
 
-不启动执行运行时，读取最后的持久响应。`--json` 返回完整 Agent 快照，包括待决问题/授权标识。`show` 和指定 Session 的 `list` 使用[离线账本快照](sdk.md#操作)，不查询活动运行时；仅凭其状态无法判定活动执行是否已经停止。
+读取最后的持久响应。`--json` 返回 Agent 快照，包括待决问题或授权标识。其他客户端在 Session 中执行时，也可使用 `show` 和指定 Session 的 `list` 查询。
 
 ## `kuku events`
 
@@ -96,7 +132,7 @@ kuku events [-v|-vv] [--agent <address>] [--after <id>] [--limit <n>] [--json] <
 - `--workspace`、`--data-dir` 指定 Session 存储位置。
 - 检查命令仍接受 `--conversation` 作为 `--agent` 别名。
 
-命令读取 Session 的 `events.jsonl` 事实日志。可观察性日志位于 `$KUKU_HOME/logs/`，详见 [Session](file-layout.md)。
+服务分页读取 `events.jsonl` 中已提交的事实。可观察性日志单独保存在 `$KUKU_HOME/logs/`。[文件布局](file-layout.md)
 
 ## `kuku list`
 
@@ -111,6 +147,16 @@ kuku list [<session-id>] [--all] [--workspace <path>] [--data-dir <path>] [--ver
 ```text
 kuku delete [--workspace <path>] <session-id>
 ```
+
+## `kuku pending`
+
+```text
+kuku pending list
+kuku pending resend COMMAND_ID [--session SESSION_ID]
+kuku pending discard COMMAND_ID [--session SESSION_ID]
+```
+
+`list` 向所选服务查询回执，并从本地待确认记录中移除已确认的条目。未确认条目可以用原命令标识和内容重发，也可以从客户端丢弃。丢弃会保留服务端已经提交的工作。如果不同 Session 有相同的命令标识，用 `--session` 区分。
 
 ## `kuku config`
 
@@ -159,6 +205,9 @@ kuku skills [list | show <name>]
 
 ```text
 kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server status
+kuku server restart
+kuku web [--session <id> [--agent <address>]] [--print-url]
 ```
 
 默认值：
@@ -166,7 +215,11 @@ kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-conc
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
 
-默认构建即可运行 `kuku server`。要运行 `kuku web`，先构建浏览器资源，再将它们嵌入统一二进制。安装 Node.js 24 和 npm 后，在仓库根目录运行以下命令，再在浏览器打开 `http://127.0.0.1:17777`。
+显式启动服务需要 `--password` 或 `KUKU_SERVER_PASSWORD`。`kuku web` 会在浏览器中打开所选服务，可以把工作区、Session 和 Agent 选择传给页面。使用 `--print-url` 只打印链接。受管服务的登录链接带有短时一次性票据。
+
+`server status` 以 JSON 输出服务信息。本地服务未运行时返回 `{"state":"stopped"}`。服务忙时，`server restart` 以状态码 1 退出，并输出含 `state: "deferred"` 和当前 `service` 状态的 JSON。重启成功时返回 `state: "restarted"` 和替换后的服务状态。
+
+要从源码内嵌 Web 界面，安装 Node.js 24 和 npm 后在仓库根目录运行以下命令。
 
 ```bash
 npm --prefix apps/web ci
@@ -174,4 +227,4 @@ npm --prefix apps/web run build
 cargo run --locked -p kuku-app --features embedded-web-assets -- web
 ```
 
-请求及流格式见 [Server API](server-api.md)。
+服务认证和请求格式见[运行服务](../guides/run-the-server.md)和 [Server API](server-api.md)。

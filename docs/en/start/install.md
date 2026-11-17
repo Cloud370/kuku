@@ -9,7 +9,7 @@ cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-The default build includes the CLI and HTTP server. To build the browser UI from a checkout, use the build instructions in the [CLI reference](../reference/cli.md#kuku-server-and-kuku-web).
+The default source build includes the terminal interface, script commands, and HTTP server. For `kuku web`, use a release bundle with the embedded UI or [build the browser assets from a checkout](../reference/cli.md#kuku-server-and-kuku-web).
 
 ## Install a published release
 
@@ -17,4 +17,4 @@ For a tagged release, choose its `latest.json` asset from the release list. From
 
 ## Run the first task
 
-Use a writable home or set `KUKU_HOME` to a writable directory. The quickstart initializes the config once and selects a provider for the first task. [Quickstart](quickstart.md)
+Use a writable home or set `KUKU_HOME` to a writable directory. The quickstart covers configuration, opening the terminal interface, and continuing a task from another client. [Quickstart](quickstart.md)

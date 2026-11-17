@@ -8,13 +8,13 @@
 ~/.kuku/config.toml
 ```
 
-如果设置了 `KUKU_HOME`，CLI 会读取以下文件。
+如果设置了 `KUKU_HOME`，服务默认读取以下文件。
 
 ```text
 $KUKU_HOME/config.toml
 ```
 
-启动 `kuku server` 或 `kuku web` 时，如果配置在 `~/.kuku` 以外，请通过 `--config` 指定文件。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
+本地服务默认读取所选数据目录下的 `config.toml`。通过 `--config` 可以选择其他文件。运行 `kuku server status` 查看生效路径。已运行的受管服务要切换配置文件时，在服务空闲后运行 `kuku server restart --config PATH`。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
 
 ## 设置模型连接
 
@@ -24,6 +24,8 @@ $KUKU_HOME/config.toml
 - `provider.openai`，其中 `api_key = "$OPENAI_API_KEY"`
 
 可通过环境变量提供密钥，也可以在 `config.toml` 中直接设置 `api_key`。
+
+环境变量由服务进程读取。如果在受管服务启动后修改了终端里的密钥，等服务空闲后从该终端运行 `kuku server restart`。使用远程连接时，在服务端机器上设置密钥。生效配置文件的修改通过校验后，服务会在打开 Session 时使用新配置。
 
 其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。
 

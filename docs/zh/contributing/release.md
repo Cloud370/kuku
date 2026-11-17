@@ -46,6 +46,8 @@ v0.MINOR.PATCH
 
 musl 路径用于发布打包，而不是日常开发。
 
+发行包将 Web 界面内嵌到 `kuku` 可执行文件中。用验收入口的 `interactive --archive` 模式在相应平台验证源码树外的发行包。[安装客户端验收](testing.md#安装客户端验收)
+
 ## Update channels
 
 - `stable` 检查 `releases/latest/download/latest.json`，并跳过预发布

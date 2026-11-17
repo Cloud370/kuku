@@ -1,6 +1,6 @@
 # Why kuku
 
-kuku is a Rust SDK for work that can span several model requests, tools or Agents. Use it directly in an application, through the foreground CLI or over the HTTP server.
+kuku is a Rust SDK for work that can span several model requests, tools or Agents. Embed it in an application or use the terminal, script or browser clients of its HTTP server.
 
 ## Inspect a result
 

@@ -1,67 +1,39 @@
 # Run the Server
 
-Start an HTTP server when you want a task to keep running after you disconnect its client. Keep the server process running. The foreground CLI currently opens a separate SDK Session.
+## Managed local service
 
-## Start the Server
+Launch `kuku` from your project directory or submit a script task with `kuku run`. The client finds or starts a loopback service for your resolved kuku data directory. Clients in different projects share the service and pass their own resolved workspaces. You can close a terminal client while the service finishes work.
 
-Initialize kuku and set the API key for your selected connection. Start the server from the project directory and leave this terminal open. [Quickstart](../start/quickstart.md)
+Run `kuku server status` to check the running build, protocol and effective configuration. Use `kuku server restart` to load a new executable or environment. If the service reports active work or cleanup, let that work settle and retry. To switch configuration paths, pass `--config PATH` to the restart. [Upgrade kuku](upgrade-kuku.md)
+
+## Continue in the browser
+
+With a release bundle or a source build that embeds the Web assets, run `kuku web` from the workspace. Reopen a retained Session in the browser or pass `--session SESSION_ID --agent ADDRESS` when opening it. You can also use `/web` on the selected Agent in the terminal interface. The browser and terminal can observe the same work and answer the same pending requests.
+
+A managed local launch authenticates with a single-use ticket. An explicitly selected server with bundled Web assets opens a sign-in page, where you enter the server access token. [CLI reference](../reference/cli.md#kuku-server-and-kuku-web) · [HTTP authentication](../reference/server-api.md#authentication-and-versions)
+
+In the browser, Enter sends or steers, Shift+Enter inserts a newline, and Alt+Enter queues for the next Turn. Use the Agent selector to set the recipient. Use Stop to interrupt the selected execution, Continue to resume, and Withdraw to remove a queued input. After a lost receipt, the page can check it again or resend the original command. [Sessions](../how-it-works/sessions.md)
+
+## Start an explicit server
+
+Initialize the server's kuku data directory and set the provider credentials on that machine. Run this command in a shell with `KUKU_SERVER_PASSWORD` set to a token you choose. Keep the server process running while clients use it.
 
 ```bash
 kuku server --listen 127.0.0.1:17777
 ```
 
-Optional flags:
-
-- `--config <path>`
-- `--password <token>`
-- `--max-concurrent-runs <n>`
-
-By default the server reads `~/.kuku/config.toml`. If `kuku init` wrote the config under a custom `KUKU_HOME`, pass that file with `--config`. Session storage still follows `KUKU_HOME`. The workspace in an HTTP request is a path on the server machine. [CLI reference](../reference/cli.md)
-
-## Remote Access Rule
-
-For a non-loopback listener, set the shell variable `server_password` to your chosen token. Pass the same value in the remote client's `Authorization: Bearer` header.
+Connect from another terminal with `KUKU_TOKEN` set to the same token. Replace the workspace with an absolute path on the server machine.
 
 ```bash
-kuku server --listen 0.0.0.0:17777 --password "${server_password:?Set server_password first}"
+kuku --remote http://127.0.0.1:17777 --workspace /code/my-project run "Summarize this directory"
 ```
 
-## Check Health
+An explicit address stays selected even if the connection fails. For a server on another machine, use an authenticated HTTPS endpoint or a secure tunnel. The server's configuration determines provider access and tool permissions. [Connection flags](../reference/cli.md#connection-and-workspace-flags)
+
+## Check health and call the API
 
 ```bash
 curl http://127.0.0.1:17777/health
 ```
 
-## Run a Task Over HTTP
-
-From a second terminal, send a prompt to the local server. Here `.` selects the directory where the server was started.
-
-```bash
-curl -N -H 'Content-Type: application/json' \
-  -d '{"prompt":"Summarize this directory","workspace":"."}' \
-  http://127.0.0.1:17777/runs
-```
-
-The first NDJSON line reports the Session ID and input receipt. Add `connection` plus `model`, or `tier`, to select a route. The `agent` field selects a stable address and defaults to `main`. Another address has independent context.
-
-The server uses the public Session SDK and trusted-local tool policy by default. HTTP subscribers only observe progress: disconnecting a client leaves execution running. Use `DELETE /runs/{id}` to cancel and await cleanup.
-
-Use [Server API](../reference/server-api.md) for the exact request and response formats.
-
-## Continue or Inspect Sessions
-
-Read durable event pages with `after` and `limit`; use `next_after` for the next cursor. A deferred question/authorization requires its exact request identity through the response endpoint. Waiting does not consume a model execution slot. After restarting the server, submit the matching reply through `POST /sessions/{id}/responses` with its original workspace, Agent, and request identity.
-
-The server also exposes:
-
-- `GET /sessions`
-- `GET /sessions/{id}/events`
-- `GET /sessions/{id}/conversations`
-- `DELETE /sessions/{id}`
-- `POST /runs/{id}/responses`
-- `POST /sessions/{id}/responses`
-
-## Related Pages
-
-- [Server API](../reference/server-api.md)
-- [Events](../reference/events.md)
+This reports the build and protocol versions. For Session commands and observations, send `Authorization: Bearer TOKEN`. Use the same Session and command IDs to recover from a lost receipt, and keep a committed cursor to resume observations. [Server API](../reference/server-api.md)

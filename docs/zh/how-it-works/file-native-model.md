@@ -1,6 +1,6 @@
 # 文件原生执行
 
-每个 Session 都有自己的 `events.jsonl` 日志和命令输出保留目录。工具读写的项目文件就在工作目录中。CLI 默认使用 kuku 数据目录存放 Session。嵌入方和 `kuku run --data-dir` 可以指定其他位置。[文件布局](../reference/file-layout.md)
+每个 Session 都有自己的 `events.jsonl` 日志和命令输出保留目录。工具读写的项目文件就在工作目录中。本地服务默认使用 kuku 数据目录存放 Session。本地客户端可以用 `--data-dir` 选择其他服务数据目录。嵌入方自行指定存储根目录。[文件布局](../reference/file-layout.md)
 
 ## Agent 记住什么
 

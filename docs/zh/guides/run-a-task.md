@@ -22,13 +22,15 @@ kuku run --tier strong "review this diff"
 
 ## 使用交互模式
 
-需要连续对话时启动交互 CLI：
+从工作区启动全屏终端客户端：
 
 ```bash
 kuku
 ```
 
-逐个 Turn 输入 Prompt。交互宿主在输入之间重开同一 Session。
+输入提示词后按 Enter 发送。Agent 忙时，后续输入会在下一个安全的模型请求边界接纳。如果当前轮先结束，输入会进入下一轮。按 Alt+Enter 排到下一轮。按 Shift+Enter 或 Ctrl+J 在草稿中换行。
+
+用 `/new` 为新 Session 打开空白草稿，或用 `/resume` 打开当前工作区的 Session。用 `/agents` 选择下一条输入的接收者。在对话中按 Esc 会打断所选执行并保留草稿。在菜单中按 Esc 会关闭菜单。终端窗口可以断开，服务会继续执行。[终端界面命令](../reference/cli.md#终端界面)
 
 ## 继续现有工作
 

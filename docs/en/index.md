@@ -1,6 +1,6 @@
 # kuku Docs
 
-kuku is a file-native Rust Agent SDK in testing. To try it, install the CLI and run a task in a workspace you choose. The HTTP server supports clients that disconnect and return. [Install](start/install.md) · [First task](start/quickstart.md) · [Run the server](guides/run-the-server.md)
+kuku is a file-native Rust Agent SDK in testing. Open `kuku` in your workspace to start a task in the terminal. Use the browser to return to the same Session. [Install](start/install.md) · [First task](start/quickstart.md) · [Run the server](guides/run-the-server.md)
 
 ## Sections
 

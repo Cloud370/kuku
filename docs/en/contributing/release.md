@@ -46,6 +46,8 @@ Example progression:
 
 Use the musl path for release packaging, not normal development.
 
+Release archives bundle the Web UI in the `kuku` executable. Use the acceptance selector's `interactive --archive` mode on the corresponding platform to verify an archive outside the source tree. [Installed client acceptance](testing.md#installed-client-acceptance)
+
 ## Update channels
 
 - `stable` checks `releases/latest/download/latest.json` and skips pre-releases

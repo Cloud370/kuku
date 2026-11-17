@@ -14,7 +14,7 @@ If `KUKU_HOME` is set, the CLI uses:
 $KUKU_HOME/config.toml
 ```
 
-The HTTP server defaults to `~/.kuku/config.toml` and accepts an explicit `--config` path. [Run the server](../guides/run-the-server.md)
+The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
 ## Top-Level Keys
 

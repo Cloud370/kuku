@@ -1,37 +1,31 @@
 # Quickstart
 
-## Initialize the CLI
+## Configure a model
 
-From the workspace where the Agent should work, run this once for a new kuku home.
+Open a terminal in the directory where the Agent should work. If you are setting up a new kuku home, run `kuku init` once. Existing installations can reuse their `config.toml`.
+
+The generated `balanced` tier uses the `anthropic` connection. Set `ANTHROPIC_API_KEY` in the shell before starting the local service. To use OpenAI as your default, set `OPENAI_API_KEY`, select the `openai` connection in the default model tier, and enter an exact model ID available to your account. [Configuration](configuration.md)
+
+## Start a task in the terminal
 
 ```bash
-kuku init
+kuku
 ```
 
-An existing installation can use its current `config.toml`. The CLI reads it from `KUKU_HOME` or, by default, `~/.kuku`.
+Enter `Inspect the files in this directory and tell me how to run its tests` and press Enter. The first send creates the Session. The status line identifies the workspace, Agent and model. Read the response and inspect tool results before making a follow-up request.
 
-## Run a first task
+While the Agent works, Enter sends a follow-up at the next safe model-request boundary. Use Alt+Enter to queue it for the next Turn. Closing the terminal client leaves accepted work running. [Run a task](../guides/run-a-task.md)
 
-The generated `balanced` tier uses the `anthropic` connection. Set `ANTHROPIC_API_KEY` in the calling shell and submit a task.
+## Return to the same Session
 
-```bash
-kuku run "Inspect the files in this directory"
-```
+In another terminal, change to the same workspace, launch `kuku`, and use `/resume` to select the Session. The browser interface can also open the Session on the same service when you use a build with embedded Web assets. [Run the server](../guides/run-the-server.md)
 
-For OpenAI, set `OPENAI_API_KEY` in that shell. Replace `YOUR_MODEL_ID` with a model available on your account and select the configured Responses connection explicitly.
+## Run from a script
 
 ```bash
-kuku run --connection openai --model YOUR_MODEL_ID "Inspect the files in this directory"
-```
-
-For repeated use of that route, point the default tier at the same connection and model in your config. [Configuration](configuration.md)
-
-## Continue or inspect the Session
-
-```bash
+kuku run --json "Inspect the files in this directory"
 kuku list
-kuku run --session SESSION_ID "Summarize what you found"
 kuku show SESSION_ID
 ```
 
-Replace `SESSION_ID` with the printed ID and run in the same workspace. Bare `kuku` starts a line-based prompt. It reuses the Session for subsequent inputs and accepts `exit` or `quit` between Turns. To leave work running after a client disconnects, start it through the HTTP server. [Run a task](../guides/run-a-task.md) · [Run the server](../guides/run-the-server.md)
+Replace `SESSION_ID` with the printed ID. For exact endpoint selection, pass `--connection openai --model YOUR_MODEL_ID` before the prompt. [CLI reference](../reference/cli.md)

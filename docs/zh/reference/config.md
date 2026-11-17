@@ -14,7 +14,7 @@
 $KUKU_HOME/config.toml
 ```
 
-HTTP server 默认读取 `~/.kuku/config.toml`，也可通过 `--config` 显式指定路径。[运行服务](../guides/run-the-server.md)
+HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--config` 指定路径。运行 `kuku server status` 可查看正在运行的受管服务的生效配置。[配置指南](../start/configuration.md)
 
 ## 顶层键
 

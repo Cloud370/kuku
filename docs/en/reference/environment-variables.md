@@ -5,11 +5,15 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | Override the default runtime home directory |
+| `KUKU_TOKEN` | Authenticate a client using an explicitly selected server |
+| `KUKU_SERVER_PASSWORD` | Set the bearer token for a server started with `kuku server` |
 | `ANTHROPIC_API_KEY` | Common API key source for `provider.anthropic` |
 | `OPENAI_API_KEY` | Common API key source for `provider.openai` |
 | `KUKU_PROVIDER_TRACE` | Set to `1` to write provider request and response trace logs |
 
 `config.toml` can also reference environment variables with `$NAME` in string fields. `api_key` keeps the env-var reference and resolves it later; other string fields resolve during config load.
+
+Set provider credentials and `KUKU_PROVIDER_TRACE` in the server's environment. A server that is already running keeps its own environment when a new client connects. [Configuration](../start/configuration.md)
 
 ## Provider Trace Logs
 

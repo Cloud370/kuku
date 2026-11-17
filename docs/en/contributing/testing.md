@@ -12,16 +12,16 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` runs SDK, CLI, and server tests with `kuku/test_support` enabled, including the gated runtime suites. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. CI runs the same contract selection on Linux, macOS, and Windows and retains its bounded evidence. CI also checks that the binary compiles with embedded Web assets. Live model calls and Linux benchmark containers require explicit local selection.
+`contract` runs the workspace tests with `kuku/test_support` enabled, including the gated runtime, shared client and TUI suites. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. CI runs the same contract and installed terminal selections on Linux, macOS, and Windows and retains bounded evidence. Web CI also runs the installed browser scenario. Live model calls and Linux benchmark containers require explicit local selection.
 
-The selector fixes `CARGO_TARGET_DIR` to this checkout's `target/` without changing the host environment. Give each worktree its own target directory, even for serial builds: shared workspace artifacts can be incorrectly reused from another source tree. A local target may be seeded with third-party dependency cache, but clear workspace outputs once before its first build using `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app`. Record commit/tree, target directory, features, profile and binary hash; a frozen binary built from a shared target is not by itself proof of its source revision.
+The selector fixes `CARGO_TARGET_DIR` to this checkout's `target/` without changing the host environment. Give each worktree its own target directory, even for serial builds: shared workspace artifacts can be incorrectly reused from another source tree. A local target may be seeded with third-party dependency cache, but clear workspace outputs once before its first build using `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app`. Record commit/tree, target directory, features, profile and binary hash; a frozen binary built from a shared target is not by itself proof of its source revision.
 
 Use focused checks while editing, then run the required Rust integration checks once for a runtime integration batch. Equivalent direct commands are:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
-cargo test -p kuku -p kuku-cli -p kuku-server --features kuku/test_support
+cargo test --workspace --features kuku/test_support
 ```
 
 Format the edited Rust scope after its writers have stopped, before the read-only format check. Use `cargo check` for fast feedback during editing. Do not repeat a passing check solely because commit or push follows; rerun when changed code, configuration, or integration invalidates its evidence. Documentation-only work uses the documentation checks below.
@@ -43,6 +43,29 @@ Select the affected feature-gated suites explicitly and report which ran. Ignore
 | CI platform matrix | Results for the platforms and configurations actually exercised |
 
 Check changed files, command exit status, durable facts, and resource cleanup independently of the Agent's final wording. A direct HTTP probe checks connectivity or provider behavior; it does not establish SDK integration. Real-model success does not establish rare failure guarantees.
+
+## Installed client acceptance
+
+Use the installed-client selection for changes to terminal input, service discovery, the embedded browser or release packaging.
+
+```bash
+python3 scripts/acceptance/run.py interactive
+python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+```
+
+The default selection uses the repository's Node version, builds the Web assets and installs the current workspace's `kuku` with `embedded-web-assets`. `--archive` tests the release `.tar.gz` or `.zip` for the current platform. `--binary` copies a previously built or installed executable. The temporary install prefix, fresh data directory and workspaces are outside the checkout. `--scratch-base` selects another external scratch root. The selector records the binary hash, native terminal type, chosen scenarios and results in its usual evidence directory.
+
+The terminal scenarios drive an installed `kuku` on Linux and macOS through a Unix PTY, and on Windows through ConPTY. Use `--browser` with an asset-enabled binary to add the Chromium scenario. Install the Playwright Python package and its Chromium browser as configured in the [Web CI job](../../../.github/workflows/web-ci.yml). The scenarios use a controlled local model endpoint and exercise real clients and the real service without provider credentials or paid requests. The [interactive client plan](../architecture/interactive-clients.md#testing-during-development) lists the behaviors to verify at each layer.
+
+The explicit `--live` selection uses the platform installer, the release archive, Chromium, and a budgeted DeepSeek call through the installed clients. It requires the DeepSeek key in the explicit credential file and an existing [budget ledger](#credentials-and-run-artifacts). `--ledger` selects a different existing ledger when authorized. Use a unique run ID and the authorized ledger.
+
+```bash
+python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PATH_TO_PLATFORM_ARCHIVE --live --secrets PATH_TO_CREDENTIAL_FILE
+```
+
+`live-result.json` records the actual route and requests alongside the task result. The scenario checks the real project edit and test output, switching Agents, client replacement during a running tool, and handoff among the terminal, browser and script client. [Live scenario](../../../scripts/acceptance/interactive_live.py)
+
+Record deterministic checks, platform execution and hands-on experience separately. For hands-on release evidence, install the candidate outside the checkout, use a configured provider to read a file, make an edit and run a check, then verify the changed files, diff and tool results. Resume the same Session in the browser and another terminal. Record Linux and Windows Terminal IME, paste, copy and resize checks along with any macOS coverage. Follow the live-call requirements below for provider evidence and mark any unavailable coverage as unverified.
 
 ## Test ownership and evidence
 

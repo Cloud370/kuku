@@ -8,11 +8,13 @@ Agents have stable, flat session-local addresses such as `main`, `reviewer`, or 
 
 ## Delivery and advancement
 
-Creation, configuration, delivery, and replies accept caller command identities. The same command and content return the original durable receipt; conflicting reuse fails. Delivery, model acceptance, and execution completion are separate facts.
+Creation, configuration, delivery, replies and targeted execution controls accept caller command identities. The same command and content return the original durable receipt. Conflicting reuse fails. Delivery, model acceptance, and execution completion are separate facts.
 
-`Activation::Wake` requests advancement; `Activation::Enqueue` only stores input until `advance`. A running agent admits a bounded batch at its next turn boundary. One execution chain advances per agent; different agents can run concurrently. Cancellation keeps an agent stopped until an explicit `advance`.
+`Activation::Wake` requests advancement. `Activation::Enqueue` stores input for explicit host scheduling. A running Agent admits eligible inputs in receipt order at a safe boundary. `InputTiming::NextStep` allows the current Turn's next model request, after the in-flight response and dispatched tools settle. If the Turn settles first, the input remains eligible for the next Turn. `InputTiming::NextTurn` waits for the next Turn even when a later `NextStep` input can be admitted sooner. A technical retry reuses the prepared request.
 
-Execution continues independently of observations. `events(after, limit)` returns bounded committed pages. `observe(after)` combines a durable reconnectable cursor with bounded transient updates. Slow consumers receive a lag notice and retain access to durable results.
+One execution chain advances per Agent, and different Agents can run concurrently. A targeted cancellation uses the observed execution identity. Queued inputs remain visible after cancellation. Explicit advancement or a fresh waking host input resumes stopped work. A queued input can be withdrawn by its receipt identity. A withdrawal racing with acceptance returns the actual state.
+
+Execution continues independently of observations. `agent_view` returns an Agent snapshot, queued inputs and the corresponding committed cursor. `events(after, limit)` returns bounded committed pages. `observe(after)` combines a durable reconnectable cursor with bounded transient updates identified by Agent and execution. Slow consumers receive a lag notice and retain access to durable results.
 
 ## Storage and context
 

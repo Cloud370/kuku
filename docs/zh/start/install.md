@@ -9,7 +9,7 @@ cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-默认构建包含 CLI 和 HTTP server。从源码构建浏览器界面的方式见 [CLI 参考](../reference/cli.md#kuku-server-和-kuku-web)。
+默认源码构建包含终端界面、脚本命令和 HTTP 服务。使用 `kuku web` 时，选择内嵌浏览器界面的发行包，或[从源码构建浏览器资源](../reference/cli.md#kuku-server-和-kuku-web)。
 
 ## 安装已发布版本
 
@@ -17,4 +17,4 @@ kuku --help
 
 ## 运行第一个任务
 
-使用可写的用户目录，或将 `KUKU_HOME` 设为可写路径。在快速开始中初始化一次配置，然后选择要使用的模型服务。[快速开始](quickstart.md)
+使用可写的用户目录，或将 `KUKU_HOME` 设为可写路径。快速开始介绍如何配置模型、打开终端界面，以及如何换客户端接着工作。[快速开始](quickstart.md)

@@ -2,26 +2,65 @@
 
 ## Entry Modes
 
-- `kuku` starts a foreground, line-based prompt in the current workspace. Enter `exit` or `quit` between Turns to leave.
-- `kuku run ...` starts a non-interactive run.
+- `kuku` opens the full-screen client in an interactive terminal.
+- `kuku run ...` starts a non-interactive run. Use it in scripts or when no interactive terminal is available.
+
+The terminal, script and browser clients submit work to the server. The local clients reuse the managed service for the selected data directory. [Run the server](../guides/run-the-server.md)
+
+## Connection and workspace flags
+
+| Flag | Meaning |
+|---|---|
+| `-w`, `--workspace <path>` | Workspace for commands and file tools. Local clients default to the resolved current directory. For a remote Session, provide the absolute path on the server machine. |
+| `--data-dir <path>` | Local service data directory. Defaults to `$KUKU_HOME` or `~/.kuku`. With `--remote`, it selects local client storage. |
+| `--config <path>` | Select a specific local configuration file. Manage remote configuration on the server machine. |
+| `--remote <url>` | Connect to this server explicitly. |
+| `--token <token>` | Bearer token for the explicit server, also accepted via `KUKU_TOKEN`. |
+
+Put options before the prompt in `kuku run`, because it consumes the remaining words as prompt text.
 
 ## Top-Level Commands
 
 | Command | Purpose |
 |---|---|
-| `kuku run <prompt...>` | Execute a task through the public Session SDK |
+| `kuku run <prompt...>` | Submit a task and observe its execution |
 | `kuku reply <session-id> <request-id>` | Answer a durable question or authorization |
 | `kuku show <session-id>` | Show final output from a session |
 | `kuku events <session-id>` | Show persisted session facts |
 | `kuku list` | List sessions |
+| `kuku pending ...` | Reconcile submissions whose receipt was lost |
 | `kuku delete <session-id>` | Delete a session |
 | `kuku config ...` | Show, validate, or change config |
 | `kuku init` | Initialize config and runtime directories |
 | `kuku prompts ...` | Show or export prompt assets |
 | `kuku agents ...` | List or inspect agents |
 | `kuku skills ...` | List or inspect skills |
-| `kuku server ...` | Start the HTTP API server |
-| `kuku web ...` | Start the HTTP server with embedded Web UI |
+| `kuku server ...` | Start an explicit HTTP server |
+| `kuku server status` | Inspect service identity and activity |
+| `kuku server restart` | Restart the managed local service after outstanding work settles |
+| `kuku web ...` | Open the browser interface on the selected service |
+
+## Terminal interface
+
+| Key or action | Behavior |
+|---|---|
+| Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
+| Alt+Enter | Queue the draft for the next Turn. |
+| Shift+Enter or Ctrl+J | Insert a newline in the draft. |
+| Esc | Close the focused menu, or interrupt the selected execution and keep the draft. |
+| `/` in an empty composer, or F1 | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
+| `@` or Tab | Complete workspace-relative paths as draft text. |
+| `/new`, `/resume` | Open a blank draft or find a retained Session. |
+| `/agents` | Choose a recipient or create another Agent in the Session. |
+| `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
+| F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
+| `/pending` | Check, retry or discard an unconfirmed submission. |
+| `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
+| Ctrl+O, `/tools`, `/copy` | Toggle inline tool details, read saved tool output, or copy response text. |
+| Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
+| Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |
+| `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
+| `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. Ctrl+C also exits the terminal client. |
 
 ## `kuku run`
 
@@ -38,8 +77,6 @@ Flags:
 | `--model <id>` | Exact model identifier |
 | `--tier <name>` | Reusable model route and settings |
 | `--agent <address>` | Stable Session-local address; default `main` |
-| `--workspace <path>` | Working directory; default current directory |
-| `--data-dir <path>` | Persistent data; default `$KUKU_HOME` or `~/.kuku` |
 | `--command-id <id>` | Caller-selected identity for idempotent input retry |
 | `--reasoning-effort <value>` | Provider-supported reasoning setting |
 | `--service-tier <value>` | Provider-supported service setting |
@@ -51,18 +88,17 @@ Flags:
 | `--show-thinking` | Show thinking content |
 | `--raw` | Plain text output |
 | `--verbose` | Show the durable Agent snapshot, configuration, and usage |
-| `--config <path>` | Use a specific config file |
-| `--prompts-dir <dir>` | Override embedded prompt assets |
+| `--prompts-dir <dir>` | Override embedded prompt assets when creating a Session. With `--remote`, use an authorized absolute directory on the server. |
 | `--no-agents` | Disable `create_agent`, `send_message`, and `list_agents`; retain `ask_user` |
 | `--no-skills` | Disable the default skill tool surface: `list_skills`, `search_skills`, and `use_skill`, plus slash-skill loading |
 
-The local CLI uses the SDK's trusted-local policy. It does not require `--yes` to run file or command tools. The Session owns execution; Ctrl-C cancels the Agent and waits for cleanup, and every run awaits asynchronous Session close. The local Harness lets already-running Agents settle before normal close. Opening a Session or replaying a command does not resume stopped/interrupted work; a fresh `run` command explicitly advances its target. A waiting Agent requires its matching reply. A completed Turn records execution completion, while task success still needs a file or command verifier.
+The server uses the SDK's trusted-local policy by default. After a run starts, Ctrl-C requests cancellation of the observed execution and waits for cleanup. Losing the client connection leaves the server's execution running. A fresh `run` can advance a stopped Agent. A waiting Agent requires its matching reply. Check the actual files or command results to verify task success.
 
 Use `--tier` for a tier name. `--model` selects an exact identifier, and `--connection` selects one named connection even when multiple connections use the same protocol. An explicit `--model` overrides the tier’s model, including when both flags are supplied while reopening an Agent. Explicit settings affect only the selected Agent. Reopening without selection flags retains that Agent's configuration and independent context. A changed model route clears previous Agent-local reasoning/service overrides before applying new explicit values.
 
-With `--command-id`, retrying the same input returns its original durable receipt and current Agent state. A retry does not configure the Agent, repeat work, approve a pending request, or authorize recovery of interrupted execution. Conflicting input reuse fails. `--json`/`--stream-json` report `event: "acknowledged"`, `replayed: true`, `receipt`, and `state` on this path; use a new command identity for new work or configuration.
+With `--command-id`, retrying the same input returns its original durable receipt and current Agent state. If a first send loses its reply, the client retains the generated Session ID with the unconfirmed command. After receiving its receipt, use the returned `--session` for further retries. `--json` and `--stream-json` report `event: "acknowledged"`, `replayed: true`, `receipt`, and `state` for a replay. Use a new command identity for new work or configuration.
 
-`--json` emits one final `type: "session"` object with `event`, `session_id`, `agent`, `status`, `response`, `config`, `usage`, `permission`, and `question`. `--stream-json` also emits transient progress, committed-receipt information, and a final durable result. Slow observers may lose transient deltas; the final response comes from committed state. Provider usage and unavailable reporting follow the [Session SDK](../how-it-works/sessions.md) contract.
+`--json` emits one final `type: "session"` object with `event`, `session_id`, `agent`, `status`, `turns`, `response`, `error`, `config`, `usage`, `permission`, `question` and `duration_ms`. `--stream-json` also emits transient progress and committed-receipt information. Slow observers may lose transient deltas. The final response comes from committed state. Provider usage and unavailable reporting follow the [Session SDK](../how-it-works/sessions.md) contract.
 
 If the prompt starts with `/skill-name` and the first token is a valid skill name, `kuku run` loads that Skill and sends the remaining text as the user prompt. Path-like prompts such as `/tmp/foo` stay plain user input. `--no-skills` disables that shortcut because it disables the default skill tool surface.
 
@@ -82,7 +118,7 @@ Reply output is JSON lines without a `--json` flag: a fresh question answer ends
 kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
 ```
 
-Read the last durable response without opening an execution runtime. `--json` returns the complete Agent snapshot, including pending question/authorization identities. `show` and Session-specific `list` use the [offline journal snapshot](sdk.md#operations), not a live runtime query; their status alone does not establish that an active run has stopped.
+Read the last durable response. `--json` returns the Agent snapshot, including any pending question or authorization identity. `show` and Session-specific `list` can query a Session while another client is working in it.
 
 ## `kuku events`
 
@@ -96,7 +132,7 @@ kuku events [-v|-vv] [--agent <address>] [--after <id>] [--limit <n>] [--json] <
 - `--workspace` and `--data-dir` select the stored Session location.
 - `--conversation` remains an alias for `--agent` on inspection commands.
 
-This command reads the session `events.jsonl` fact log. Observability logs live separately under `$KUKU_HOME/logs/`; see [Sessions](file-layout.md).
+The server pages through committed `events.jsonl` facts. Observability logs live separately under `$KUKU_HOME/logs/`. [File layout](file-layout.md)
 
 ## `kuku list`
 
@@ -111,6 +147,16 @@ With a Session identity, `list` shows stable Agent addresses, statuses, and pend
 ```text
 kuku delete [--workspace <path>] <session-id>
 ```
+
+## `kuku pending`
+
+```text
+kuku pending list
+kuku pending resend COMMAND_ID [--session SESSION_ID]
+kuku pending discard COMMAND_ID [--session SESSION_ID]
+```
+
+`list` queries the selected service for receipts and removes confirmed entries from local pending storage. An unconfirmed entry can be resent with the original command identity and contents, or discarded from the client. Discarding leaves any already committed server work in place. Supply `--session` to distinguish entries with the same command ID in different Sessions.
 
 ## `kuku config`
 
@@ -159,6 +205,9 @@ kuku skills [list | show <name>]
 
 ```text
 kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server status
+kuku server restart
+kuku web [--session <id> [--agent <address>]] [--print-url]
 ```
 
 Defaults:
@@ -166,7 +215,11 @@ Defaults:
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
 
-`kuku server` works with the default build. For `kuku web`, build the browser assets and embed them in the unified binary. From the repository root with Node.js 24 and npm installed, run the following commands and open `http://127.0.0.1:17777` in your browser.
+The explicit server requires `--password` or `KUKU_SERVER_PASSWORD`. `kuku web` opens the browser on the selected service. It can pass the workspace, Session and Agent selection to the page. Use `--print-url` to print the link. A managed sign-in link contains a short-lived, single-use ticket.
+
+`server status` reports service information as JSON. For a stopped local service it returns `{"state":"stopped"}`. On a busy service, `server restart` exits with status 1 and emits JSON with `state: "deferred"` and the current `service` status. On success it reports `state: "restarted"` and the replacement service.
+
+To build the embedded UI in a checkout, run these commands from the repository root with Node.js 24 and npm installed:
 
 ```bash
 npm --prefix apps/web ci
@@ -174,4 +227,4 @@ npm --prefix apps/web run build
 cargo run --locked -p kuku-app --features embedded-web-assets -- web
 ```
 
-For request and stream formats, see [Server API](server-api.md).
+For service authentication and request formats, see [Run the server](../guides/run-the-server.md) and [Server API](server-api.md).

@@ -25,10 +25,11 @@ kuku events SESSION_ID --limit 256 --json |
 
 ## 查看模型服务请求
 
-当已落盘的设置不足以解释协议或路由问题时，可在小任务中启用 trace。
+当已落盘的设置不足以解释协议或路由问题时，可以在服务上启用 trace。等受管本地服务空闲后再执行以下命令。
 
 ```bash
-KUKU_PROVIDER_TRACE=1 kuku run --no-skills "Reply with one sentence"
+KUKU_PROVIDER_TRACE=1 kuku server restart
+kuku run --no-skills "Reply with one sentence"
 ```
 
 trace 写入 `$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl`，包含请求正文和响应流。敏感请求头会脱敏，但正文仍可能含有提示、文件片段和工具输出。对外说明问题时可以提供相关事件 ID 和字段。[环境变量](../reference/environment-variables.md)
