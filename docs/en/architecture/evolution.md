@@ -24,9 +24,9 @@ The first stage includes a minimal local CLI; full interactive polish and other 
 
 ### Implementation ownership and order
 
-1. One initial author establishes the shared SDK boundary and a real vertical path, reusing a provider and a small tool set. Keep Prompt assets and context/provider separation throughout. Do not create empty interfaces for every imagined future capability.
+1. Start with three subagents: core implementation, provider/protocol preparation, and acceptance/development workflow. The core author owns the shared SDK boundary and first real vertical path, reusing a provider and a small tool set. The other two begin with protocol behavior/fixtures and a benchmark case/environment/verification entrypoint, without competing over shared runtime types. Keep Prompt assets and context/provider separation throughout; do not create empty interfaces for every imagined future capability.
 2. Consolidate Session writing and runtime ownership; decouple execution from observation, then integrate bounded output and cleanup. Shared SDK types, command receipts, and the writer/runner interface have one owner.
-3. Parallel implementation, when authorized, follows a stable shared interface: at most one storage/recovery line and one Step/provider/tool/output line, with explicit file ownership. Each uses its own worktree from the same integration commit. If the interface is still tightly coupled, keep one author.
+3. Integrate the parallel work against agreed interfaces, with explicit file ownership and separate worktrees from the same integration commit for concurrent code writers. Shared runtime changes keep one author while their interface is tightly coupled. Expand or reduce the number of subagents only when dependencies and independently verifiable work justify it; use independent review at meaningful delivery boundaries. Model, reasoning, and speed preferences remain user-level settings.
 4. The integration owner reviews actual diffs and verification evidence before integration. Reuse passing evidence unless new changes or specific failures justify more checks. Update the existing owning documents alongside changed behavior.
 
 The first implementation task uses the evidence below to define the interface and file scope, together with its observable acceptance result.
