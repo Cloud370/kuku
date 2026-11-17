@@ -4,7 +4,7 @@ use crate::adapter::{AgentSelection, RegisteredTool};
 use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::provider::types::ResolvedProvider;
 use crate::tool::ToolDefinition;
-use crate::{Error, Result};
+use crate::{Error, PromptCatalog, Result};
 
 use super::{AgentConfig, Session, SessionOptions};
 
@@ -71,6 +71,11 @@ pub(crate) fn resolve_agent_model(
     })
 }
 
+pub(super) fn validate_initial_model(options: &SessionOptions, config: &AgentConfig) -> Result<()> {
+    let config = resolve_defaults(options, config.clone(), || Ok(None))?;
+    resolve_agent_model(&options.config, &config).map(|_| ())
+}
+
 impl Session {
     /// Inspect effective model settings and final tools without dispatching work.
     pub fn agent_selection(&self, address: &str) -> Result<AgentSelection> {
@@ -102,56 +107,11 @@ impl Session {
     pub(super) fn resolve_defaults(
         &self,
         address: &str,
-        mut config: AgentConfig,
+        config: AgentConfig,
     ) -> Result<AgentConfig> {
-        let Some(preset) = &config.preset else {
-            return Ok(config);
-        };
-        if config.instructions.is_some() && config.tier.is_some() && config.tools.is_some() {
-            return Ok(config);
-        }
-        let catalog =
-            match crate::context::runtime::read_frozen_catalog(&self.inner.events_path, address)? {
-                Some(catalog) => catalog,
-                None => match &self.inner.options.prompts_dir {
-                    Some(dir) => crate::PromptCatalog::load_from_dir(dir)?,
-                    None => crate::builtin_prompt_catalog(),
-                },
-            };
-        let registry = crate::agent::registry::AgentRegistry::builder()
-            .builtins(&catalog)
-            .build_with_discovery(
-                config
-                    .workspace
-                    .as_ref()
-                    .unwrap_or(&self.inner.options.workspace),
-                &self.inner.options.config.discovery,
-            )?
-            .build();
-        let definition = registry
-            .get(preset)
-            .ok_or_else(|| Error::InvalidArgument(format!("preset '{preset}' was not found")))?;
-        config
-            .instructions
-            .get_or_insert_with(|| definition.instructions.clone());
-        config.tier.get_or_insert_with(|| definition.tier.clone());
-        config.tools.get_or_insert_with(|| {
-            definition
-                .tools
-                .clone()
-                .unwrap_or_else(|| {
-                    definition
-                        .tool_profile
-                        .allowed_tools()
-                        .iter()
-                        .map(|tool| (*tool).into())
-                        .collect()
-                })
-                .into_iter()
-                .filter(|name| !matches!(name.as_str(), "agent" | "fetch_web"))
-                .collect()
-        });
-        Ok(config)
+        resolve_defaults(&self.inner.options, config, || {
+            crate::context::runtime::read_frozen_catalog(&self.inner.events_path, address)
+        })
     }
 
     pub(super) fn selected_tools(&self, config: &AgentConfig) -> Result<Vec<ToolDefinition>> {
@@ -238,4 +198,55 @@ impl Session {
         self.selected_tools(config)?;
         Ok(())
     }
+}
+
+fn resolve_defaults(
+    options: &SessionOptions,
+    mut config: AgentConfig,
+    frozen_catalog: impl FnOnce() -> Result<Option<PromptCatalog>>,
+) -> Result<AgentConfig> {
+    let Some(preset) = &config.preset else {
+        return Ok(config);
+    };
+    if config.instructions.is_some() && config.tier.is_some() && config.tools.is_some() {
+        return Ok(config);
+    }
+    let catalog = match frozen_catalog()? {
+        Some(catalog) => catalog,
+        None => match &options.prompts_dir {
+            Some(dir) => PromptCatalog::load_from_dir(dir)?,
+            None => crate::builtin_prompt_catalog(),
+        },
+    };
+    let registry = crate::agent::registry::AgentRegistry::builder()
+        .builtins(&catalog)
+        .build_with_discovery(
+            config.workspace.as_ref().unwrap_or(&options.workspace),
+            &options.config.discovery,
+        )?
+        .build();
+    let definition = registry
+        .get(preset)
+        .ok_or_else(|| Error::InvalidArgument(format!("preset '{preset}' was not found")))?;
+    config
+        .instructions
+        .get_or_insert_with(|| definition.instructions.clone());
+    config.tier.get_or_insert_with(|| definition.tier.clone());
+    config.tools.get_or_insert_with(|| {
+        definition
+            .tools
+            .clone()
+            .unwrap_or_else(|| {
+                definition
+                    .tool_profile
+                    .allowed_tools()
+                    .iter()
+                    .map(|tool| (*tool).into())
+                    .collect()
+            })
+            .into_iter()
+            .filter(|name| !matches!(name.as_str(), "agent" | "fetch_web"))
+            .collect()
+    });
+    Ok(config)
 }

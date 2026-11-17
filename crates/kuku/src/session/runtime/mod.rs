@@ -106,7 +106,10 @@ impl Session {
         Self::open_runtime(options, None)
     }
 
-    fn open_runtime(mut options: SessionOptions, creation: Option<Command>) -> Result<Self> {
+    fn open_runtime(
+        mut options: SessionOptions,
+        creation: Option<(Command, &AgentConfig)>,
+    ) -> Result<Self> {
         validate_limits(&options.limits)?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);
         options.workspace = std::fs::canonicalize(&options.workspace)
@@ -119,6 +122,11 @@ impl Session {
             .unwrap_or_else(super::new_session_id);
         super::validate_session_id(&id)?;
         let events_path = super::session_events_path(&options.data_dir, &options.workspace, &id)?;
+        if let Some((_, config)) = &creation {
+            if EventStore::read_head(&events_path)? == 0 {
+                selection::validate_initial_model(&options, config)?;
+            }
+        }
         let lease = SessionLease::acquire(events_path.clone())?;
         let mut writer = EventStore::open(&events_path)?;
         let mut state = State::default();
@@ -127,7 +135,7 @@ impl Session {
             &mut writer,
             &mut state,
             &id,
-            creation,
+            creation.map(|(command, _)| command),
             options.prompts_dir.as_deref(),
         )?;
         if let Some(claim) = &state.creation {

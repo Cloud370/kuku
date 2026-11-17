@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::mock_provider::{self, text_response};
@@ -21,6 +22,7 @@ async fn first_send_returns_one_durable_receipt_after_response_loss_and_restart(
         serde_json::from_str(include_str!("common/fixtures/interactive-protocol.json")).unwrap();
     let mut send = fixture["first_send"].clone();
     send["workspace"] = json!(server.workspace.path());
+    send["create"] = json!({"reasoning_effort":"high"});
     let id = "first-send-lost-response";
     let unconsumed = server.command_response(id, send.clone()).await;
     assert_eq!(200, unconsumed.status());
@@ -43,6 +45,14 @@ async fn first_send_returns_one_durable_receipt_after_response_loss_and_restart(
         })
         .await;
     server.restart().await;
+    let mut changed = (**server.state.config.load()).clone();
+    changed
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .options
+        .reasoning_efforts = Some(vec!["none".into()]);
+    server.state.config.store(Arc::new(changed));
     let replay = server.submit(id, send.clone()).await;
     assert_eq!(true, replay["replayed"]);
     assert_eq!(original, replay["receipt"]);
@@ -51,6 +61,58 @@ async fn first_send_returns_one_durable_receipt_after_response_loss_and_restart(
     let (status, conflict) = server.command(id, send).await;
     assert_eq!(409, status);
     assert_eq!("session_creation_conflict", conflict["code"]);
+    assert_eq!(1, operations(&server, id, "input_delivered"));
+    provider.assert_hits(1);
+}
+
+#[tokio::test]
+async fn invalid_first_model_leaves_no_journal_and_can_be_corrected_on_the_same_session() {
+    let mock = mock_provider::start_mock_provider().await;
+    let provider = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("keep this original prompt");
+        then.status(200).body(text_response("corrected route"));
+    });
+    let mut config = mock_provider::make_test_config(mock.port());
+    config.default_tier = "unconfigured".into();
+    let server = TestServer::start(config).await;
+    let id = "correct-first-model";
+    let mut send = json!({
+        "type":"send","command_id":"invalid-model","text":"keep this original prompt",
+        "create":{"preset":"review","reasoning_effort":"unsupported"}
+    });
+    let (status, rejected) = server.command(id, send.clone()).await;
+    assert_eq!(400, status);
+    assert_eq!("model_configuration", rejected["code"]);
+    assert!(!server.events_path(id).exists());
+    let listed: Value = server
+        .request(wreq::Method::GET, "/sessions")
+        .query(&[("workspace", server.workspace.path())])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(json!([]), listed["sessions"]);
+    let missing = server
+        .session_request(id, "receipts/invalid-model", &[])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(404, missing.status());
+
+    send["command_id"] = json!("fixed-model");
+    send["create"]["reasoning_effort"] = json!("low");
+    let acknowledgement = server.submit(id, send).await;
+    assert_eq!("fixed-model", acknowledgement["receipt"]["command_id"]);
+    server
+        .wait_for_snapshot(id, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "corrected route"
+        })
+        .await;
+    assert_eq!(1, operations(&server, id, "session_claimed"));
     assert_eq!(1, operations(&server, id, "input_delivered"));
     provider.assert_hits(1);
 }
