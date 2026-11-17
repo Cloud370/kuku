@@ -515,9 +515,14 @@ async fn wait_for_pid(path: &Path) -> u32 {
 
 #[cfg(target_os = "linux")]
 fn process_is_running(pid: u32) -> bool {
+    const ESRCH: i32 = 3;
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => !stat.rsplit_once(") ").unwrap().1.starts_with('Z'),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH) =>
+        {
+            false
+        }
         Err(error) => panic!("could not inspect descendant {pid}: {error}"),
     }
 }

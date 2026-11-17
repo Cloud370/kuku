@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn required_sync_failure_keeps_a_recoverable_intent() {
         let root = root();
-        let target = root.path().join("new-directory");
+        let target = fs::canonicalize(root.path()).unwrap().join("new-directory");
         let failed = create_with(&target, &mut |path| {
             if path == target {
                 return Err(io::Error::new(
