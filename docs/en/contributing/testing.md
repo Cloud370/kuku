@@ -51,11 +51,14 @@ Use the installed-client selection for changes to terminal input, service discov
 ```bash
 python3 scripts/acceptance/run.py interactive
 python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_LINUX_ARCHIVE
 ```
 
 The default selection uses the repository's Node version, builds the Web assets and installs the current workspace's `kuku` with `embedded-web-assets`. `--archive` tests the release `.tar.gz` or `.zip` for the current platform. `--binary` copies a previously built or installed executable. The temporary install prefix, fresh data directory and workspaces are outside the checkout. `--scratch-base` selects another external scratch root. The selector records the binary hash, native terminal type, chosen scenarios and results in its usual evidence directory.
 
 The terminal scenarios drive an installed `kuku` on Linux and macOS through a Unix PTY, and on Windows through ConPTY. Use `--browser` with an asset-enabled binary to add the Chromium scenario. Install the Playwright Python package and its Chromium browser as configured in the [Web CI job](../../../.github/workflows/web-ci.yml). The scenarios use a controlled local model endpoint and exercise real clients and the real service without provider credentials or paid requests. The [interactive client plan](../architecture/interactive-clients.md#testing-during-development) lists the behaviors to verify at each layer.
+
+Use `--desktop` on Linux with Docker to add the Xfce Terminal and IBus Pinyin scenario. The selector builds the desktop image from Ubuntu packages and runs it in an isolated Xvfb session with only loopback networking. It drives Chinese composition, editable multiline paste, `/copy`, and terminal font zoom through the GUI. On a cold build, Docker needs access to the Ubuntu image and package repositories. The installed executable and the selector's native test helper must run in the image. `desktop/result.json` records package versions, terminal grid sizes, submitted and copied fixture text, and hashes for the bounded screenshots. Windows Terminal and macOS hands-on checks require their own platform evidence.
 
 The explicit `--live` selection uses the platform installer, the release archive, Chromium, and a budgeted DeepSeek call through the installed clients. It requires the DeepSeek key in the explicit credential file and an existing [budget ledger](#credentials-and-run-artifacts). `--ledger` selects a different existing ledger when authorized. Use a unique run ID and the authorized ledger.
 

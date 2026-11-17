@@ -3,8 +3,10 @@
 
 import argparse
 import contextlib
+import csv
 import datetime
 import hashlib
+import io
 import json
 import math
 import os
@@ -673,9 +675,59 @@ def pty_artifact(log):
     raise ValueError("Cargo did not report the compiled native PTY test helper")
 
 
+def run_linux_desktop(binary, bridge, scratch, directory, record, checked):
+    from interactive_fixture import CONFIG
+
+    image_file = scratch / "desktop-image"
+    desktop = Path(__file__).with_name("desktop")
+    checked(["docker", "build", "--iidfile", str(image_file), str(desktop)], "desktop-image")
+    image = image_file.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
+        raise ValueError("Docker did not report the desktop image ID")
+    record["desktop_image"] = image
+
+    evidence = directory / "desktop"
+    evidence.mkdir()
+    report = evidence / "result.json"
+    cidfile = scratch / "desktop-container"
+    command = ["docker", "create", "--cidfile", str(cidfile), "--init", "--network", "none", "--read-only",
+               "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+               "--pids-limit", "256", "--memory", "1g", "--cpus", "2", "--log-driver", "none",
+               "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777"]
+    for source, target in ((binary, "/test/kuku"), (bridge, "/test/bridge"),
+                           (Path(__file__).with_name("interactive_fixture.py"), "/test/interactive_fixture.py"),
+                           (CONFIG, "/test/fixtures/config.toml"), (evidence, "/evidence")):
+        options = ["type=bind", f"source={source.resolve()}", f"target={target}"]
+        if source != evidence:
+            options.append("readonly")
+        mount = io.StringIO()
+        csv.writer(mount, lineterminator="").writerow(options)
+        command.extend(["--mount", mount.getvalue()])
+    try:
+        checked([*command, image], "desktop-container", timeout=30)
+        container = cidfile.read_text(encoding="utf-8").strip()
+        checked(["docker", "start", "--attach", container], "installed-desktop", timeout=180)
+        if report.stat().st_size > LOG_BYTES:
+            raise ValueError("The desktop result exceeds the evidence limit")
+        desktop_result = json.loads(report.read_text(encoding="utf-8"))
+        if (desktop_result.get("passed") is not True
+                or desktop_result.get("binary_sha256") != record["binary"]["sha256"]):
+            raise RuntimeError("The desktop evidence did not verify the installed binary")
+    finally:
+        if report.is_file():
+            record["desktop_result"] = str(report)
+        if cidfile.is_file():
+            container = cidfile.read_text(encoding="utf-8").strip()
+            if container:
+                checked(["docker", "rm", "--force", container], "desktop-cleanup", timeout=30)
+
+
 def run_interactive(args, directory, record):
     from interactive_fixture import EXE
 
+    record["desktop"] = args.desktop
+    if args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
+        raise ValueError("Desktop interactive acceptance requires Linux and Docker")
     if args.live and (not args.archive or not args.secrets):
         raise ValueError("Live interactive acceptance requires --archive and --secrets")
     scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
@@ -743,6 +795,8 @@ def run_interactive(args, directory, record):
         if args.browser:
             command.append("--browser")
         checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
+        if args.desktop:
+            run_linux_desktop(binary, bridge, scratch_dir, directory, record, checked)
     record["passed"] = True
 
 
@@ -759,7 +813,9 @@ def parser():
     product.add_argument("--archive", type=Path, help="extract the platform release .tar.gz or .zip")
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
-    interactive.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    scenario = interactive.add_mutually_exclusive_group()
+    scenario.add_argument("--desktop", action="store_true", help="also exercise Xfce Terminal and IBus Pinyin in Linux Docker")
+    scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
     interactive.add_argument("--secrets", type=Path, help="explicit credentials file for --live")
     interactive.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json", help="existing live-call budget ledger")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
