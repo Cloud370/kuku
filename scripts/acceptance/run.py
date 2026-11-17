@@ -19,6 +19,8 @@ import threading
 import time
 import uuid
 
+from evidence import inspect_sdk
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = Path(__file__).with_name("cases.json")
@@ -220,7 +222,7 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 if raw_tail.startswith(secret[-length:]):
                     raw_tail = "[REDACTED]" + raw_tail[length:]
                     break
-    output = redact(raw_tail, secrets).encode()[-LOG_BYTES:].decode("utf-8", errors="replace")
+    output = redact(raw_tail, secrets).encode()[-LOG_BYTES:].decode("utf-8", errors="ignore")
     path = directory / f"{label}.log"
     path.write_text(output, encoding="utf-8")
     result = {
@@ -457,9 +459,10 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                     "--mount", f"type=bind,source={source / 'instruction.md'},target=/kuku/instruction.md,readonly"]
         for name in secrets:
             command += ["--env", name]
+        record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
         sdk_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
                         "--config", "/kuku/config.toml", "--data-dir", "/kuku/data",
-                        "--session-id", "benchmark-" + uuid.uuid4().hex[:12], "--agent", "main",
+                        "--session-id", record["session_id"], "--agent", "main",
                         "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
         record["session_data"] = str(data_dir)
     command += [image, "sleep", "infinity"]
@@ -483,6 +486,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
             finally:
                 record["resources"] = sampler.finish()
             record["sdk_result"] = str(logs / "agent" / "result.json")
+            record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
+                                                  "/kuku/data", record["session_id"])
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
@@ -498,14 +503,17 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                                           attempt, "verifier", timeout=case["timeout_sec"])
         record["reward"] = reward(logs)
         record["verifier_summary"] = verifier_summary(logs)
-        record["passed"] = attempt_passed(mode, record["execution"], record["verification"],
-                                          record["reward"], record["verifier_summary"])
-        if mode == "live" and any(item["status"] != "retained" for item in record["task_artifacts"]):
-            record.update(passed=False, failure_kind="artifact_retention")
+        record["task_passed"] = attempt_passed(mode, record["execution"], record["verification"],
+                                               record["reward"], record["verifier_summary"])
+        record["passed"] = record["task_passed"] and (mode != "live" or record["sdk_evidence"]["passed"])
         if record["reward"] is None or not record["verifier_summary"] or record["verification"]["timed_out"]:
             record["failure_kind"] = "infrastructure"
         elif record["execution"]["exit_code"] != 0:
             record["failure_kind"] = "runtime"
+        elif mode == "live" and not record["sdk_evidence"]["passed"]:
+            record["failure_kind"] = "sdk_evidence"
+        elif mode == "live" and any(item["status"] != "retained" for item in record["task_artifacts"]):
+            record.update(passed=False, failure_kind="artifact_retention")
         elif not record["passed"]:
             record["failure_kind"] = "agent_task" if mode == "live" else "verifier_self_check"
         return record
@@ -557,6 +565,11 @@ def parser():
     sub = root.add_subparsers(dest="group", required=True)
     for group in ("contract", "protocol", "integration", "list"):
         sub.add_parser(group)
+    inspect = sub.add_parser("inspect", help="check existing durable SDK evidence without model requests")
+    inspect.add_argument("--sdk-result", type=Path, required=True)
+    inspect.add_argument("--session-data", type=Path, required=True)
+    inspect.add_argument("--container-data", help="data mount prefix in a container-produced SDK report")
+    inspect.add_argument("--connection")
     budget = sub.add_parser("budget")
     budget.add_argument("action", choices=("init", "show", "settle"))
     budget.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json")
@@ -575,6 +588,9 @@ def parser():
         paid.add_argument("--reserve-usd", type=money)
         paid.add_argument("--reservation-reason", help="request/token/retry bounds and conservative rates")
         if group == "live":
+            paid.add_argument("--sdk-result", type=Path, required=True)
+            paid.add_argument("--session-data", type=Path, required=True)
+            paid.add_argument("--connection")
             paid.add_argument("command", nargs=argparse.REMAINDER, help="public SDK/CLI caller after --")
         else:
             paid.add_argument("--case", required=True)
@@ -634,6 +650,10 @@ def main():
                                 "basis": "conservative_upper_bound"}
         if args.group == "benchmark":
             run_benchmark(args, directory, record, secrets)
+        elif args.group == "inspect":
+            record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
+                                                  args.connection, args.container_data)
+            record["passed"] = record["sdk_evidence"]["passed"]
         else:
             commands = selected_commands(args.group) if not paid else [args.command[1:] if args.command[:1] == ["--"] else args.command]
             if not all(commands):
@@ -650,6 +670,9 @@ def main():
             record["passed"] = len(record["checks"]) == len(commands) and all(
                 check["exit_code"] == 0 and not check["timed_out"] and not check.get("capture_incomplete")
                 for check in record["checks"])
+            if paid:
+                record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection)
+                record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         record["error"] = redact(str(error), secrets.values())
         record["failure_kind"] = "infrastructure"

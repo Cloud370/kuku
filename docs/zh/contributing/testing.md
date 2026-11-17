@@ -46,7 +46,7 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
 
-每次选择运行生成一个 `result.json`，包含提交、未提交状态及已跟踪差异的 hash、所选命令／feature、退出状态、耗时和证据位置。每个命令最多保留 64 KiB 脱敏输出，同时记录原始字节数、hash 和明确的截断标记。超时会在 POSIX 清理所属进程组，在 Windows 请求终止进程树；未完整采集视为失败。父进程已经退出后的 Windows 后代清理尚未经本机验证。报告真实任务时补充调用程序的有效模型／设置、用量和持久 Session 引用；仅命令成功不能证明这些事实。
+每次选择运行生成一个 `result.json`，包含提交、未提交状态及已跟踪差异的 hash、所选命令／feature、退出状态、耗时和证据位置。每个命令最多保留 64 KiB 脱敏输出，同时记录原始字节数、hash 和明确的截断标记。超时会在 POSIX 清理所属进程组，在 Windows 请求终止进程树；未完整采集视为失败。父进程已经退出后的 Windows 后代清理尚未经本机验证。真实 SDK 检查独立核对调用程序的持久事实、设置、用量与清理，仅命令成功不能通过。
 
 报告已选择／通过／失败／跳过的覆盖，区分基础设施失败、运行时失败和 Agent 未完成任务。详细输出保存在有界产物中，任务或 PR 只携带简明结论与证据引用。不打印 key 或私有请求正文。无需凭据即可检查选择入口自身：`python3 -m unittest discover -s scripts/acceptance -p 'test_*.py'`。
 
@@ -67,7 +67,11 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 真实尝试先构建公开 `session_task` 示例，再选择 `benchmark --mode live`，提供 `--sdk-binary`、`--config`、`--connection` 及下方的预算参数。调用程序的其他有界参数放在 `--` 后。二进制及其解析出的 Linux 动态库复制到独立运行时挂载；证据记录这一必要宿主适配的 hash。Agent 执行时只能访问原任务指令和环境，不提供 solution，隐藏测试在执行结束后才复制进容器。Session 数据保留在该次尝试的 `session-data/`；预期任务产物列于清单。
 
-原 reward、收集／通过／失败测试数、SDK 退出状态与清理结果分别记录。预期任务产物在判定前保存，每个上限 32 MiB；证据缺失或过大不能通过真实验收记录。接纳真实结果前独立检查 SDK 结果及持久工具／模型事实。SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`。这些样本不能证明空闲 Agent 占用、冷打开／恢复、追加／上下文准备或并发 Agent 测量。后者从相关 SDK 检查记录，不把整容器数据归因于 SDK。
+原 reward、收集／通过／失败测试数、SDK 退出状态与清理结果分别记录。预期任务产物在判定前保存，每个上限 32 MiB；证据缺失或过大不能通过真实验收记录。SDK 检查器流式读取原始 `events.jsonl`，要求已提交游标有序、准备请求与响应对应、工具调用／结果配对、已接纳结果视图不变，以及 `KUKUOUT1` 输出引用的帧和字节数有效并已完成写入。SDK 统计／设置／报告必须匹配这些事实，运行时与持久关闭屏障均须成功。请求与费用按 Agent、Turn 和请求标识关联，后续 Turn 可以复用 `req_1`。整个 Session 的用量与所选 Agent 的快照分别记录。任务成功仍由原 benchmark 判定器决定。
+
+检查器每个事件最多读取 1 MiB，累计最多 100,000 个事件，SDK 报告上限 4 MiB；只保留有界 hash／元数据，不复制上下文历史。诊断上限为 4,096 个准备请求及 8,192 个工具调用／provider 报告。无需再次调用模型即可复核已有证据：`inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`；报告使用宿主路径时省略 `--container-data`。此只读选择不要求凭据或费用预留。
+
+SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`。这些样本不能证明空闲 Agent 占用、冷打开／恢复、追加／上下文准备或并发 Agent 测量。后者从相关 SDK 检查记录，不把整容器数据归因于 SDK。
 
 ## 真实协议验收
 
@@ -111,9 +115,9 @@ python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION
 python3 scripts/acceptance/run.py budget show
 ```
 
-`live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环。
+`live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 要求 `--sdk-result` 和 `--session-data`，执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环。
 
-未完成、失败或缺失用量的运行按完整预留记账，中断及重启后仍然保留。入口不会自动重跑付费命令。检查证据后，才能通过 `budget settle --entry RUN_ID --cost-usd AMOUNT --basis provider_reported|token_estimate --evidence PATH` 释放多余预留。区分 provider 回报费用、按 token 估算和保守上界。再次请求前运行 `budget show`；授权余额不足会阻止启动。重复尝试需要新运行标识，并在同一授权内另作预留。
+未完成、失败或缺失用量的运行按完整预留记账，中断及重启后仍然保留。null／缺失用量保持未知；非空请求的零输入不能证明没有费用。部分回报的计数／费用单独标识，不能作为完整总量。入口不会自动重跑付费命令或释放预留。检查证据后，才能通过 `budget settle --entry RUN_ID --cost-usd AMOUNT --basis provider_reported|token_estimate --evidence PATH` 释放多余预留。区分 provider 回报费用、按 token 估算和保守上界。再次请求前运行 `budget show`；授权余额不足会阻止启动。重复尝试需要新运行标识，并在同一授权内另作预留。
 
 脱敏的本地预检与路由报告位于已有忽略开发输出目录中的 `benchmarks/provider-preflight.json`。重复调用前先检查其范围和覆盖。该文件未提交，不保证其他 checkout 中存在，直接 API 结果不代表重写运行时已验收。运行时间和逐请求细节保存在此类产物中，不写入架构或贡献者规范正文。
 
