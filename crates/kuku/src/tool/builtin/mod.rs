@@ -6,7 +6,7 @@ mod find_files;
 mod memory;
 pub(crate) mod query_session;
 mod read_file;
-mod run_command;
+pub(crate) mod run_command;
 mod search_text;
 mod write_file;
 

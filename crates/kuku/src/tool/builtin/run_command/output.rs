@@ -1,0 +1,722 @@
+use std::fs;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+const HEADER_BYTES: usize = 4096;
+const MAGIC: &[u8; 8] = b"KUKUOUT1";
+const FRAME_HEADER_BYTES: usize = 5;
+const MAX_FRAME_BYTES: usize = 8192;
+const MAX_READ_BYTES: usize = super::RUN_COMMAND_MAX_CHARS;
+const MAX_READ_SEGMENTS: usize = 4096;
+const MAX_SEARCH_BYTES: usize = 4096;
+const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_SUMMARY_LINES: usize = 6;
+const MAX_SUMMARY_LINE_BYTES: usize = 192;
+const MAX_PENDING_LINE_BYTES: usize = 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputLimits {
+    pub max_output_bytes: u64,
+    pub max_preview_bytes: usize,
+}
+
+impl Default for OutputLimits {
+    fn default() -> Self {
+        Self {
+            max_output_bytes: 16 * 1024 * 1024,
+            max_preview_bytes: MAX_READ_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OutputRead {
+    pub offset: u64,
+    pub limit: usize,
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl OutputStream {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Stdout => 1,
+            Self::Stderr => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> io::Result<Self> {
+        match tag {
+            1 => Ok(Self::Stdout),
+            2 => Ok(Self::Stderr),
+            _ => Err(invalid_output("invalid output stream tag")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OutputSegment {
+    pub stream: OutputStream,
+    pub offset: u64,
+    pub bytes: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OutputChunk {
+    pub output_id: String,
+    pub offset: u64,
+    pub next_offset: u64,
+    pub total_bytes: u64,
+    pub segments: Vec<OutputSegment>,
+    pub summary: Vec<String>,
+    pub complete: bool,
+    pub capture_truncated: bool,
+    pub cleanup_incomplete: bool,
+    pub filtered: bool,
+    pub lossy_utf8: bool,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(super) struct CaptureMetadata {
+    pub complete: bool,
+    pub stored_bytes: u64,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub stdout_lines: u64,
+    pub stderr_lines: u64,
+    pub quota_truncated: bool,
+    pub cleanup_incomplete: bool,
+    pub summary: Vec<String>,
+}
+
+pub(super) struct OutputWriter {
+    file: tokio::fs::File,
+    file_bytes: u64,
+    quota: u64,
+    metadata: CaptureMetadata,
+    stdout: StreamSummary,
+    stderr: StreamSummary,
+}
+
+impl OutputWriter {
+    pub(super) async fn create(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<Self> {
+        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
+            return Err(invalid_output(
+                "output quota must be between 4096 bytes and 1 GiB",
+            ));
+        }
+        if limits.max_preview_bytes > MAX_READ_BYTES {
+            return Err(invalid_output("output preview must be at most 80000 bytes"));
+        }
+        let path = output_path(output_dir, output_id)?;
+        tokio::fs::create_dir_all(output_dir).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .await?;
+        let metadata = CaptureMetadata::default();
+        file.write_all(&encode_header(&metadata)?).await?;
+        file.flush().await?;
+        Ok(Self {
+            file,
+            file_bytes: HEADER_BYTES as u64,
+            quota: limits.max_output_bytes,
+            metadata,
+            stdout: StreamSummary::default(),
+            stderr: StreamSummary::default(),
+        })
+    }
+
+    pub(super) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
+        let summary = match stream {
+            OutputStream::Stdout => &mut self.stdout,
+            OutputStream::Stderr => &mut self.stderr,
+        };
+        summary.observe(bytes, &mut self.metadata.summary);
+        let remaining = self.quota.saturating_sub(self.file_bytes);
+        let kept = bytes
+            .len()
+            .min(remaining.saturating_sub(FRAME_HEADER_BYTES as u64) as usize);
+        self.metadata.quota_truncated |= kept < bytes.len();
+        if kept == 0 {
+            return Ok(());
+        }
+        let mut header = [0; FRAME_HEADER_BYTES];
+        header[0] = stream.tag();
+        header[1..].copy_from_slice(&(kept as u32).to_le_bytes());
+        self.file.write_all(&header).await?;
+        self.file.write_all(&bytes[..kept]).await?;
+        self.file_bytes += (FRAME_HEADER_BYTES + kept) as u64;
+        self.metadata.stored_bytes += kept as u64;
+        Ok(())
+    }
+
+    pub(super) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
+        self.stdout.finish(&mut self.metadata.summary);
+        self.stderr.finish(&mut self.metadata.summary);
+        self.metadata.stdout_bytes = self.stdout.bytes;
+        self.metadata.stderr_bytes = self.stderr.bytes;
+        self.metadata.stdout_lines = self.stdout.line_count();
+        self.metadata.stderr_lines = self.stderr.line_count();
+        self.metadata.complete = true;
+        self.metadata.cleanup_incomplete = cleanup_incomplete;
+        self.file.flush().await?;
+        self.file.seek(SeekFrom::Start(0)).await?;
+        self.file.write_all(&encode_header(&self.metadata)?).await?;
+        self.file.flush().await?;
+        self.file.sync_data().await?;
+        Ok(self.metadata)
+    }
+}
+
+#[derive(Default)]
+struct StreamSummary {
+    bytes: u64,
+    newlines: u64,
+    last_newline: bool,
+    pending: Vec<u8>,
+    long_line: bool,
+}
+
+impl StreamSummary {
+    fn observe(&mut self, bytes: &[u8], summary: &mut Vec<String>) {
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
+        for &byte in bytes {
+            self.last_newline = byte == b'\n';
+            if self.last_newline {
+                self.newlines = self.newlines.saturating_add(1);
+                self.finish(summary);
+            } else if self.pending.len() < MAX_PENDING_LINE_BYTES {
+                self.pending.push(byte);
+            } else {
+                self.long_line = true;
+            }
+        }
+    }
+
+    fn finish(&mut self, summary: &mut Vec<String>) {
+        let text = String::from_utf8_lossy(&self.pending);
+        let text = text.trim();
+        if !self.long_line && is_summary_line(text) {
+            let mut line = text
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .collect::<String>();
+            truncate_utf8(&mut line, MAX_SUMMARY_LINE_BYTES);
+            if summary.last() != Some(&line) {
+                if summary.len() == MAX_SUMMARY_LINES {
+                    summary.remove(0);
+                }
+                summary.push(line);
+            }
+        }
+        self.pending.clear();
+        self.long_line = false;
+    }
+
+    fn line_count(&self) -> u64 {
+        self.newlines + u64::from(self.bytes > 0 && !self.last_newline)
+    }
+}
+
+pub(crate) fn read_output(
+    output_dir: &Path,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    validate_read(&request)?;
+    let mut file = fs::File::open(output_path(output_dir, output_id)?)?;
+    let metadata = decode_header(&mut file)?;
+    let mut window = OutputWindow::default();
+    let mut logical_offset = 0;
+    let file_bytes = file.metadata()?.len();
+    while file.stream_position()? < file_bytes {
+        let Some((stream, frame_bytes)) = read_frame_header(&mut file, &metadata)? else {
+            break;
+        };
+        if file.stream_position()? + frame_bytes as u64 > file_bytes {
+            if metadata.complete {
+                return Err(invalid_output("output frame exceeds file length"));
+            }
+            break;
+        }
+        window.read_frame(&mut file, stream, logical_offset, frame_bytes, &request)?;
+        logical_offset += frame_bytes as u64;
+    }
+    if metadata.complete && logical_offset != metadata.stored_bytes {
+        return Err(invalid_output(
+            "output length disagrees with committed metadata",
+        ));
+    }
+    render_chunk(output_id, request, metadata, window, logical_offset)
+}
+
+#[derive(Default)]
+struct OutputWindow {
+    bytes: Vec<u8>,
+    spans: Vec<(OutputStream, u64, usize, usize)>,
+}
+
+impl OutputWindow {
+    fn read_frame(
+        &mut self,
+        file: &mut fs::File,
+        stream: OutputStream,
+        frame_offset: u64,
+        frame_bytes: usize,
+        request: &OutputRead,
+    ) -> io::Result<()> {
+        let skip = request
+            .offset
+            .saturating_sub(frame_offset)
+            .min(frame_bytes as u64) as usize;
+        let room = request.limit.saturating_sub(self.bytes.len());
+        let keep = if self.spans.len() < MAX_READ_SEGMENTS {
+            (frame_bytes - skip).min(room)
+        } else {
+            0
+        };
+        file.seek(SeekFrom::Current(skip as i64))?;
+        if keep > 0 {
+            let start = self.bytes.len();
+            self.bytes.resize(start + keep, 0);
+            file.read_exact(&mut self.bytes[start..])?;
+            if let Some((previous_stream, previous_offset, previous_start, previous_end)) =
+                self.spans.last_mut()
+            {
+                if *previous_stream == stream
+                    && *previous_offset + (*previous_end - *previous_start) as u64
+                        == frame_offset + skip as u64
+                {
+                    *previous_end = start + keep;
+                } else {
+                    self.spans
+                        .push((stream, frame_offset + skip as u64, start, start + keep));
+                }
+            } else {
+                self.spans
+                    .push((stream, frame_offset + skip as u64, start, start + keep));
+            }
+        }
+        file.seek(SeekFrom::Current((frame_bytes - skip - keep) as i64))?;
+        Ok(())
+    }
+}
+
+fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+    if output_id.is_empty()
+        || output_id.len() > 128
+        || !output_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid_output(
+            "output id must contain 1-128 ASCII letters, digits, '-' or '_'",
+        ));
+    }
+    Ok(output_dir.join(format!("{output_id}.output")))
+}
+
+fn encode_header(metadata: &CaptureMetadata) -> io::Result<[u8; HEADER_BYTES]> {
+    let json = serde_json::to_vec(metadata).map_err(io::Error::other)?;
+    if json.len() > HEADER_BYTES - 12 {
+        return Err(invalid_output("output metadata exceeds fixed header"));
+    }
+    let mut header = [0; HEADER_BYTES];
+    header[..8].copy_from_slice(MAGIC);
+    header[8..12].copy_from_slice(&(json.len() as u32).to_le_bytes());
+    header[12..12 + json.len()].copy_from_slice(&json);
+    Ok(header)
+}
+
+fn decode_header(file: &mut fs::File) -> io::Result<CaptureMetadata> {
+    let mut header = [0; HEADER_BYTES];
+    file.read_exact(&mut header)?;
+    if &header[..8] != MAGIC {
+        return Err(invalid_output("unsupported output file header"));
+    }
+    let length = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+    if length > HEADER_BYTES - 12 {
+        return Err(invalid_output("invalid output metadata length"));
+    }
+    serde_json::from_slice(&header[12..12 + length]).map_err(invalid_output)
+}
+
+fn read_frame_header(
+    file: &mut fs::File,
+    metadata: &CaptureMetadata,
+) -> io::Result<Option<(OutputStream, usize)>> {
+    let mut header = [0; FRAME_HEADER_BYTES];
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && !metadata.complete => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    }
+    let stream = OutputStream::from_tag(header[0])?;
+    let length = u32::from_le_bytes(header[1..].try_into().unwrap()) as usize;
+    if length == 0 || length > MAX_FRAME_BYTES {
+        return Err(invalid_output("invalid output frame length"));
+    }
+    Ok(Some((stream, length)))
+}
+
+fn validate_read(request: &OutputRead) -> io::Result<()> {
+    if request.limit == 0 || request.limit > MAX_READ_BYTES {
+        return Err(invalid_output(
+            "output read limit must be between 1 and 80000 bytes",
+        ));
+    }
+    if let Some(search) = &request.search {
+        if search.is_empty() || search.len() > MAX_SEARCH_BYTES || search.len() > request.limit {
+            return Err(invalid_output(
+                "literal search must contain 1-4096 bytes and fit the read limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn render_chunk(
+    output_id: &str,
+    request: OutputRead,
+    metadata: CaptureMetadata,
+    window: OutputWindow,
+    total_bytes: u64,
+) -> io::Result<OutputChunk> {
+    let mut next_offset = request.offset.saturating_add(window.bytes.len() as u64);
+    let ranges = match &request.search {
+        Some(search) => {
+            if next_offset < total_bytes && window.bytes.len() >= search.len() {
+                next_offset -= (search.len() - 1) as u64;
+            }
+            let matcher =
+                regex::bytes::Regex::new(&regex::escape(search)).map_err(invalid_output)?;
+            matcher
+                .find_iter(&window.bytes)
+                .map(|hit| hit.range())
+                .collect::<Vec<_>>()
+        }
+        None => std::iter::once(0..window.bytes.len()).collect(),
+    };
+    let mut ranges = ranges.into_iter().peekable();
+    let mut segments = Vec::new();
+    let mut lossy_utf8 = false;
+    for (stream, offset, start, end) in window.spans {
+        while ranges.peek().is_some_and(|range| range.end <= start) {
+            ranges.next();
+        }
+        if ranges.peek().is_some_and(|range| range.start < end) {
+            let bytes = &window.bytes[start..end];
+            lossy_utf8 |= std::str::from_utf8(bytes).is_err();
+            segments.push(OutputSegment {
+                stream,
+                offset,
+                bytes: bytes.len(),
+                text: String::from_utf8_lossy(bytes).into_owned(),
+            });
+        }
+    }
+    Ok(OutputChunk {
+        output_id: output_id.to_string(),
+        offset: request.offset,
+        next_offset,
+        total_bytes,
+        segments,
+        summary: metadata.summary,
+        complete: metadata.complete,
+        capture_truncated: metadata.quota_truncated,
+        cleanup_incomplete: metadata.cleanup_incomplete,
+        filtered: request.search.is_some(),
+        lossy_utf8,
+        has_more: next_offset < total_bytes,
+    })
+}
+
+fn is_summary_line(line: &str) -> bool {
+    line.starts_with("test result:")
+        || line.starts_with("Finished ")
+        || line.starts_with("error:")
+        || line.starts_with("error[")
+        || line.starts_with("FAILED ")
+        || line.starts_with("Tests:")
+        || (line.contains(" passed") && (line.contains(" in ") || line.contains(" failed")))
+}
+
+fn truncate_utf8(text: &mut String, max_bytes: usize) {
+    let mut keep = max_bytes.min(text.len());
+    while !text.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    text.truncate(keep);
+}
+
+fn invalid_output(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    fn request(offset: u64, limit: usize) -> OutputRead {
+        OutputRead {
+            offset,
+            limit,
+            search: None,
+        }
+    }
+
+    fn text(chunk: &OutputChunk) -> String {
+        chunk
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn output_round_trip_preserves_stream_order_and_byte_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "call-1", OutputLimits::default())
+            .await
+            .unwrap();
+        writer.write(OutputStream::Stdout, b"hello ").await.unwrap();
+        writer.write(OutputStream::Stderr, b"world").await.unwrap();
+        writer.write(OutputStream::Stdout, b"!\n").await.unwrap();
+        writer.finish(false).await.unwrap();
+        let chunk = read_output(dir.path(), "call-1", request(0, 100)).unwrap();
+        assert_eq!("hello world!\n", text(&chunk));
+        assert_eq!(
+            vec![
+                OutputStream::Stdout,
+                OutputStream::Stderr,
+                OutputStream::Stdout
+            ],
+            chunk
+                .segments
+                .iter()
+                .map(|segment| segment.stream)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(13, chunk.total_bytes);
+        assert!(chunk.complete);
+        assert!(!chunk.capture_truncated);
+        let chunk = read_output(dir.path(), "call-1", request(6, 5)).unwrap();
+        assert_eq!("world", text(&chunk));
+        assert_eq!(11, chunk.next_offset);
+        assert!(chunk.has_more);
+        let last = read_output(dir.path(), "call-1", request(chunk.next_offset, 5)).unwrap();
+        assert_eq!("!\n", text(&last));
+        assert!(!last.has_more);
+    }
+
+    #[tokio::test]
+    async fn output_quota_includes_headers_and_retains_observed_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = OutputLimits {
+            max_output_bytes: (HEADER_BYTES + FRAME_HEADER_BYTES + 7) as u64,
+            max_preview_bytes: 100,
+        };
+        let mut writer = OutputWriter::create(dir.path(), "quota", limits)
+            .await
+            .unwrap();
+        writer
+            .write(OutputStream::Stdout, b"123456789\n")
+            .await
+            .unwrap();
+        writer
+            .write(
+                OutputStream::Stderr,
+                b"test result: ok. 3 passed; 0 failed\n",
+            )
+            .await
+            .unwrap();
+        let metadata = writer.finish(false).await.unwrap();
+        assert_eq!(7, metadata.stored_bytes);
+        assert_eq!(10, metadata.stdout_bytes);
+        assert!(metadata.quota_truncated);
+        assert_eq!(
+            limits.max_output_bytes,
+            fs::metadata(dir.path().join("quota.output")).unwrap().len()
+        );
+        let chunk = read_output(dir.path(), "quota", request(0, 100)).unwrap();
+        assert_eq!("1234567", text(&chunk));
+        assert!(chunk.capture_truncated);
+        assert!(chunk.summary[0].contains("3 passed"));
+    }
+
+    #[tokio::test]
+    async fn output_search_handles_frame_and_incremental_window_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "search", OutputLimits::default())
+            .await
+            .unwrap();
+        writer
+            .write(OutputStream::Stdout, b"hello wor")
+            .await
+            .unwrap();
+        writer
+            .write(OutputStream::Stdout, b"ld and goodbye")
+            .await
+            .unwrap();
+        writer.finish(false).await.unwrap();
+        let first = read_output(
+            dir.path(),
+            "search",
+            OutputRead {
+                offset: 0,
+                limit: 8,
+                search: Some("world".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(first.segments.is_empty());
+        assert!(first.filtered);
+        assert_eq!(4, first.next_offset);
+        let next = read_output(
+            dir.path(),
+            "search",
+            OutputRead {
+                offset: first.next_offset,
+                limit: 8,
+                search: Some("world".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(text(&next).contains("world"));
+        assert!(next.next_offset > first.next_offset);
+        let absent = read_output(
+            dir.path(),
+            "search",
+            OutputRead {
+                offset: 0,
+                limit: 100,
+                search: Some("absent".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(absent.segments.is_empty());
+        assert!(!absent.has_more);
+    }
+
+    #[tokio::test]
+    async fn output_preserves_raw_bytes_and_reports_lossy_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "unicode", OutputLimits::default())
+            .await
+            .unwrap();
+        let bytes = "你好".as_bytes();
+        writer
+            .write(OutputStream::Stdout, &bytes[..2])
+            .await
+            .unwrap();
+        writer
+            .write(OutputStream::Stdout, &bytes[2..])
+            .await
+            .unwrap();
+        writer.finish(false).await.unwrap();
+        let chunk = read_output(dir.path(), "unicode", request(0, 100)).unwrap();
+        assert_eq!("你好", text(&chunk));
+        assert!(!chunk.lossy_utf8);
+        let partial = read_output(dir.path(), "unicode", request(1, 2)).unwrap();
+        assert!(partial.lossy_utf8);
+        assert_eq!(3, partial.next_offset);
+    }
+
+    #[tokio::test]
+    async fn output_rejects_escape_ids_and_never_overwrites_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["", "../escape", "a/b", "a\\b", ".", "..", "💥"] {
+            assert!(
+                OutputWriter::create(dir.path(), id, OutputLimits::default())
+                    .await
+                    .is_err(),
+                "unsafe id {id:?} was accepted"
+            );
+            assert!(read_output(dir.path(), id, request(0, 10)).is_err());
+        }
+        let writer = OutputWriter::create(dir.path(), "same", OutputLimits::default())
+            .await
+            .unwrap();
+        writer.finish(false).await.unwrap();
+        assert_eq!(
+            io::ErrorKind::AlreadyExists,
+            OutputWriter::create(dir.path(), "same", OutputLimits::default())
+                .await
+                .err()
+                .unwrap()
+                .kind()
+        );
+        assert!(
+            read_output(dir.path(), "same", request(0, 100))
+                .unwrap()
+                .complete
+        );
+    }
+
+    #[tokio::test]
+    async fn output_detects_committed_corruption_and_bounds_read_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "corrupt", OutputLimits::default())
+            .await
+            .unwrap();
+        writer.write(OutputStream::Stdout, b"hello").await.unwrap();
+        writer.finish(false).await.unwrap();
+        assert!(read_output(dir.path(), "corrupt", request(0, 0)).is_err());
+        assert!(read_output(dir.path(), "corrupt", request(0, MAX_READ_BYTES + 1)).is_err());
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("corrupt.output"))
+            .unwrap();
+        file.seek(SeekFrom::Start(HEADER_BYTES as u64 + 1)).unwrap();
+        file.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        assert!(read_output(dir.path(), "corrupt", request(0, 10)).is_err());
+    }
+
+    #[tokio::test]
+    async fn unfinished_capture_is_readable_and_marked_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "partial", OutputLimits::default())
+            .await
+            .unwrap();
+        writer
+            .write(OutputStream::Stdout, b"partial\n")
+            .await
+            .unwrap();
+        writer.file.flush().await.unwrap();
+        let chunk = read_output(dir.path(), "partial", request(0, 100)).unwrap();
+        assert!(!chunk.complete);
+        assert_eq!("partial\n", text(&chunk));
+        drop(writer);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("partial.output"))
+            .unwrap()
+            .write_all(&[1, 10])
+            .unwrap();
+        assert_eq!(
+            "partial\n",
+            text(&read_output(dir.path(), "partial", request(0, 100)).unwrap())
+        );
+    }
+}

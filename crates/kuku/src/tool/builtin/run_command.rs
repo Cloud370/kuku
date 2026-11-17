@@ -1,24 +1,32 @@
 use std::io;
 use std::path::Path;
-use std::process::{ExitStatus, Stdio};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Notify};
-use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep_until, timeout, Duration, Instant as TokioInstant};
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{plural, require_brief};
+use super::common::require_brief;
+use output::{read_output, OutputLimits, OutputRead, OutputStream, OutputWriter};
+use process::ProcessTree;
+use render::render_command_result;
+
+pub(crate) mod output;
+mod process;
+mod render;
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
 const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
-const FLUSH_THRESHOLD_MS: u64 = 50;
-const FLUSH_THRESHOLD_BYTES: usize = 4096;
+const READ_BUFFER_BYTES: usize = 8192;
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub(crate) enum CommandEvent {
@@ -32,12 +40,52 @@ struct CommandRequest {
     _brief: String,
 }
 
+#[derive(Default)]
+struct CommandOutcome {
+    exit_code: Option<i32>,
+    timed_out: bool,
+    cancelled: bool,
+    cleanup_incomplete: bool,
+    dropped_events: u64,
+}
+
 pub(crate) async fn run_command(
     args: &Value,
     workspace: &Path,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancel: Option<Arc<Notify>>,
 ) -> ToolResultEnvelope {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let output_id = format!("command-{}-{timestamp}-{sequence}", std::process::id());
+    run_command_with_output(
+        args,
+        workspace,
+        event_tx,
+        cancel,
+        &workspace.join(".kuku").join("outputs"),
+        &output_id,
+        OutputLimits::default(),
+    )
+    .await
+}
+
+pub(crate) async fn run_command_with_output(
+    args: &Value,
+    workspace: &Path,
+    event_tx: Option<mpsc::Sender<CommandEvent>>,
+    cancel: Option<Arc<Notify>>,
+    output_dir: &Path,
+    output_id: &str,
+    limits: OutputLimits,
+) -> ToolResultEnvelope {
+    let cancel = cancel.unwrap_or_else(|| Arc::new(Notify::new()));
+    let cancelled = cancel.notified();
+    tokio::pin!(cancelled);
+    cancelled.as_mut().enable();
     let request = match run_command_request(args) {
         Ok(request) => request,
         Err(result) => return result,
@@ -57,102 +105,174 @@ pub(crate) async fn run_command(
             )
         }
     };
-
     let started = Instant::now();
+    let mut output = match OutputWriter::create(output_dir, output_id, limits).await {
+        Ok(output) => output,
+        Err(error) => return output_error("create", error),
+    };
+    let already_cancelled = tokio::select! {
+        biased;
+        _ = cancelled.as_mut() => true,
+        _ = std::future::ready(()) => false,
+    };
+    let outcome = if already_cancelled {
+        CommandOutcome {
+            cancelled: true,
+            ..CommandOutcome::default()
+        }
+    } else {
+        match execute_command(&request, &workspace, &mut output, event_tx, cancelled.as_mut()).await {
+            Ok(outcome) => outcome,
+            Err(error) => return ToolResultEnvelope::error(
+                format!("failed: command execution: {error}"),
+                format!("command execution or output capture failed: {error}; output was not acknowledged"),
+            ),
+        }
+    };
+    let metadata = match output.finish(outcome.cleanup_incomplete).await {
+        Ok(metadata) => metadata,
+        Err(error) => return output_error("sync", error),
+    };
+    render_command_result(
+        &request,
+        outcome,
+        metadata,
+        started.elapsed(),
+        output_dir,
+        output_id,
+        limits,
+    )
+}
+
+async fn execute_command(
+    request: &CommandRequest,
+    workspace: &Path,
+    output: &mut OutputWriter,
+    event_tx: Option<mpsc::Sender<CommandEvent>>,
+    cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+) -> io::Result<CommandOutcome> {
     let mut command = shell_command(&request.command);
     command
-        .current_dir(&workspace)
+        .current_dir(workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let (mut child, mut tree) = ProcessTree::spawn(&mut command)?;
+    let capture =
+        capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
+    let cleanup = tree.terminate();
+    if child.id().is_some() {
+        let _ = child.start_kill();
+        timeout(CLEANUP_TIMEOUT, child.wait())
+            .await
+            .map_err(|_| io::Error::other("command process did not exit during cleanup"))??;
+    }
+    cleanup?;
+    capture
+}
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: command could not start: {error}"),
-                format!("command could not start: {error}"),
-            )
-        }
-    };
-    let stdout_task = child
-        .stdout
-        .take()
-        .map(|p| read_pipe_streaming(p, event_tx.clone(), true));
-    let stderr_task = child
-        .stderr
-        .take()
-        .map(|p| read_pipe_streaming(p, event_tx, false));
-
-    let cancel_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = match &cancel
-    {
-        Some(c) => {
-            let c = c.clone();
-            Box::pin(async move { c.notified().await })
-        }
-        None => Box::pin(std::future::pending()),
-    };
-
-    let status = tokio::select! {
-        status = child.wait() => match status {
-            Ok(status) => status,
-            Err(error) => {
-                return ToolResultEnvelope::error(
-                    format!("failed: command wait error: {error}"),
-                    format!("command wait error: {error}"),
-                )
+async fn capture_command(
+    child: &mut Child,
+    tree: &mut ProcessTree,
+    request: &CommandRequest,
+    output: &mut OutputWriter,
+    event_tx: &Option<mpsc::Sender<CommandEvent>>,
+    mut cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+) -> io::Result<CommandOutcome> {
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let mut stdout_buf = [0; READ_BUFFER_BYTES];
+    let mut stderr_buf = [0; READ_BUFFER_BYTES];
+    let mut outcome = CommandOutcome::default();
+    let mut exited = false;
+    let mut stopping = false;
+    let deadline = TokioInstant::now() + Duration::from_secs(request.timeout_seconds);
+    let mut cleanup_deadline = None;
+    while !exited || stdout.is_some() || stderr.is_some() {
+        tokio::select! {
+            _ = cancelled.as_mut(), if !stopping && !exited => {
+                outcome.cancelled = true;
+                stopping = true;
+                tree.terminate()?;
+                let _ = child.start_kill();
+                cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
-        },
-        _ = sleep(Duration::from_secs(request.timeout_seconds)) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let duration_ms = started.elapsed().as_millis() as u64;
-            let stdout = collect_pipe(stdout_task).await.unwrap_or_default();
-            let stderr = collect_pipe(stderr_task).await.unwrap_or_default();
-            return render_command_timeout_result(
-                &request.command,
-                request.timeout_seconds,
-                duration_ms,
-                &stdout,
-                &stderr,
-            );
+            _ = sleep_until(deadline), if !stopping && !exited => {
+                outcome.timed_out = true;
+                stopping = true;
+                tree.terminate()?;
+                let _ = child.start_kill();
+                cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
+            }
+            status = child.wait(), if !exited => {
+                outcome.exit_code = status?.code();
+                exited = true;
+                tree.terminate()?;
+                cleanup_deadline.get_or_insert(TokioInstant::now() + CLEANUP_TIMEOUT);
+            }
+            read = read_stream(&mut stdout, &mut stdout_buf), if stdout.is_some() => {
+                let bytes = read?;
+                if bytes == 0 { stdout = None; } else {
+                    output.write(OutputStream::Stdout, &stdout_buf[..bytes]).await?;
+                    outcome.dropped_events += emit_event(event_tx, OutputStream::Stdout, &stdout_buf[..bytes]);
+                }
+            }
+            read = read_stream(&mut stderr, &mut stderr_buf), if stderr.is_some() => {
+                let bytes = read?;
+                if bytes == 0 { stderr = None; } else {
+                    output.write(OutputStream::Stderr, &stderr_buf[..bytes]).await?;
+                    outcome.dropped_events += emit_event(event_tx, OutputStream::Stderr, &stderr_buf[..bytes]);
+                }
+            }
+            _ = wait_cleanup(cleanup_deadline), if cleanup_deadline.is_some() => {
+                outcome.cleanup_incomplete = !exited || stdout.is_some() || stderr.is_some();
+                break;
+            }
         }
-        _ = cancel_fut => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let duration_ms = started.elapsed().as_millis() as u64;
-            let stdout = collect_pipe(stdout_task).await.unwrap_or_default();
-            let stderr = collect_pipe(stderr_task).await.unwrap_or_default();
-            return render_command_cancelled_result(
-                &request.command,
-                duration_ms,
-                &stdout,
-                &stderr,
-            );
-        }
-    };
+    }
+    Ok(outcome)
+}
 
-    let duration_ms = started.elapsed().as_millis() as u64;
-    let stdout = match collect_pipe(stdout_task).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: stdout capture error: {error}"),
-                format!("stdout capture error: {error}"),
-            )
-        }
-    };
-    let stderr = match collect_pipe(stderr_task).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: stderr capture error: {error}"),
-                format!("stderr capture error: {error}"),
-            )
-        }
-    };
+async fn read_stream<P: AsyncRead + Unpin>(
+    pipe: &mut Option<P>,
+    buffer: &mut [u8],
+) -> io::Result<usize> {
+    match pipe {
+        Some(pipe) => pipe.read(buffer).await,
+        None => std::future::pending().await,
+    }
+}
 
-    render_command_result(&request.command, status, stdout, stderr, duration_ms)
+async fn wait_cleanup(deadline: Option<TokioInstant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn emit_event(tx: &Option<mpsc::Sender<CommandEvent>>, stream: OutputStream, bytes: &[u8]) -> u64 {
+    let Some(tx) = tx else {
+        return 0;
+    };
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    let shortened = text.len() > READ_BUFFER_BYTES;
+    let mut keep = READ_BUFFER_BYTES.min(text.len());
+    while !text.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    text.truncate(keep);
+    let event = match stream {
+        OutputStream::Stdout => CommandEvent::Stdout(text),
+        OutputStream::Stderr => CommandEvent::Stderr(text),
+    };
+    u64::from(tx.try_send(event).is_err() || shortened)
+}
+
+fn output_error(operation: &str, error: io::Error) -> ToolResultEnvelope {
+    ToolResultEnvelope::error(
+        format!("failed: output {operation}: {error}"),
+        format!("command output {operation} failed: {error}; no output reference was acknowledged"),
+    )
 }
 
 fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelope> {
@@ -287,253 +407,6 @@ fn shell_command(command: &str) -> Command {
     let mut child = Command::new("sh");
     child.arg("-c").arg(command);
     child
-}
-
-fn read_pipe_streaming<P>(
-    pipe: P,
-    tx: Option<mpsc::Sender<CommandEvent>>,
-    is_stdout: bool,
-) -> JoinHandle<io::Result<Vec<u8>>>
-where
-    P: AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut pipe = pipe;
-        let mut full_buf = Vec::new();
-        let mut flush_buf = String::new();
-        let mut buf = [0u8; 4096];
-
-        loop {
-            tokio::select! {
-                result = pipe.read(&mut buf) => {
-                    match result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            full_buf.extend_from_slice(&buf[..n]);
-                            flush_buf.push_str(&String::from_utf8_lossy(&buf[..n]));
-                            if flush_buf.len() >= FLUSH_THRESHOLD_BYTES {
-                                flush_send(&mut flush_buf, &tx, is_stdout).await;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                _ = sleep(Duration::from_millis(FLUSH_THRESHOLD_MS)), if !flush_buf.is_empty() => {
-                    flush_send(&mut flush_buf, &tx, is_stdout).await;
-                }
-            }
-        }
-        if !flush_buf.is_empty() {
-            flush_send(&mut flush_buf, &tx, is_stdout).await;
-        }
-        Ok(full_buf)
-    })
-}
-
-async fn flush_send(buf: &mut String, tx: &Option<mpsc::Sender<CommandEvent>>, is_stdout: bool) {
-    if let Some(tx) = tx {
-        let text = std::mem::take(buf);
-        let event = if is_stdout {
-            CommandEvent::Stdout(text)
-        } else {
-            CommandEvent::Stderr(text)
-        };
-        let _ = tx.send(event).await;
-    } else {
-        buf.clear();
-    }
-}
-
-async fn collect_pipe(task: Option<JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
-    match task {
-        Some(task) => task.await.map_err(io::Error::other)?,
-        None => Ok(Vec::new()),
-    }
-}
-
-fn render_command_result(
-    command: &str,
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    duration_ms: u64,
-) -> ToolResultEnvelope {
-    let stdout = String::from_utf8_lossy(&stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr).into_owned();
-    let stdout_lines = line_count(&stdout);
-    let stderr_lines = line_count(&stderr);
-    let exit_code = status.code();
-    let rendered = render_command_output(&stdout, &stderr);
-    let (model_content, truncated) = truncate_text(
-        rendered,
-        RUN_COMMAND_MAX_CHARS,
-        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
-    );
-    let mut summary = format!(
-        "command exited {} in {}ms, stdout {} line{}, stderr {} line{}",
-        exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string()),
-        duration_ms,
-        stdout_lines,
-        plural(stdout_lines),
-        stderr_lines,
-        plural(stderr_lines),
-    );
-    if truncated {
-        summary.push_str(", output truncated");
-    }
-    let structured = serde_json::json!({
-        "kind": "command_result",
-        "command": command,
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "stdout_lines": stdout_lines,
-        "stderr_lines": stderr_lines,
-        "timed_out": false,
-        "line_numbered": false,
-    });
-
-    if truncated {
-        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
-    } else {
-        ToolResultEnvelope::ok(summary, model_content, structured)
-    }
-}
-
-fn render_command_timeout_result(
-    command: &str,
-    timeout_seconds: u64,
-    duration_ms: u64,
-    stdout: &[u8],
-    stderr: &[u8],
-) -> ToolResultEnvelope {
-    let stdout = String::from_utf8_lossy(stdout).into_owned();
-    let stderr = String::from_utf8_lossy(stderr).into_owned();
-    let stdout_lines = line_count(&stdout);
-    let stderr_lines = line_count(&stderr);
-    let rendered = render_command_output(&stdout, &stderr);
-    let model_content = if rendered == "(command produced no output)" {
-        format!("command timed out after {timeout_seconds}s")
-    } else {
-        format!("command timed out after {timeout_seconds}s\n\n{rendered}")
-    };
-    let (model_content, truncated) = truncate_text(
-        model_content,
-        RUN_COMMAND_MAX_CHARS,
-        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
-    );
-    let mut summary = format!(
-        "command timed out after {timeout_seconds}s, stdout {stdout_lines} line{}, stderr {stderr_lines} line{}",
-        plural(stdout_lines),
-        plural(stderr_lines),
-    );
-    if truncated {
-        summary.push_str(", output truncated");
-    }
-    ToolResultEnvelope {
-        status: "error".to_string(),
-        summary,
-        model_content,
-        truncated,
-        structured: Some(serde_json::json!({
-            "kind": "command_result",
-            "command": command,
-            "exit_code": null,
-            "duration_ms": duration_ms,
-            "stdout_lines": stdout_lines,
-            "stderr_lines": stderr_lines,
-            "timed_out": true,
-            "line_numbered": false,
-        })),
-    }
-}
-
-fn render_command_cancelled_result(
-    command: &str,
-    duration_ms: u64,
-    stdout: &[u8],
-    stderr: &[u8],
-) -> ToolResultEnvelope {
-    let stdout = String::from_utf8_lossy(stdout).into_owned();
-    let stderr = String::from_utf8_lossy(stderr).into_owned();
-    let stdout_lines = line_count(&stdout);
-    let stderr_lines = line_count(&stderr);
-    let rendered = render_command_output(&stdout, &stderr);
-    let model_content = if rendered == "(command produced no output)" {
-        format!("command cancelled after {duration_ms}ms")
-    } else {
-        format!("command cancelled after {duration_ms}ms\n\n{rendered}")
-    };
-    let (model_content, truncated) = truncate_text(
-        model_content,
-        RUN_COMMAND_MAX_CHARS,
-        "(Command output truncated. Run a narrower command or inspect files with dedicated tools.)",
-    );
-    let mut summary = format!(
-        "command cancelled after {duration_ms}ms, stdout {stdout_lines} line{}, stderr {stderr_lines} line{}",
-        plural(stdout_lines),
-        plural(stderr_lines),
-    );
-    if truncated {
-        summary.push_str(", output truncated");
-    }
-    ToolResultEnvelope {
-        status: "cancelled".to_string(),
-        summary,
-        model_content,
-        truncated,
-        structured: Some(serde_json::json!({
-            "kind": "command_result",
-            "command": command,
-            "exit_code": null,
-            "duration_ms": duration_ms,
-            "stdout_lines": stdout_lines,
-            "stderr_lines": stderr_lines,
-            "timed_out": false,
-            "cancelled": true,
-            "line_numbered": false,
-        })),
-    }
-}
-
-fn render_command_output(stdout: &str, stderr: &str) -> String {
-    let mut sections = Vec::new();
-    if !stdout.is_empty() {
-        sections.push(format!(
-            "stdout:\n{}",
-            stdout.trim_end_matches(['\r', '\n'])
-        ));
-    }
-    if !stderr.is_empty() {
-        sections.push(format!(
-            "stderr:\n{}",
-            stderr.trim_end_matches(['\r', '\n'])
-        ));
-    }
-    if sections.is_empty() {
-        "(command produced no output)".to_string()
-    } else {
-        sections.join("\n\n")
-    }
-}
-
-fn line_count(text: &str) -> usize {
-    text.lines().count()
-}
-
-fn truncate_text(mut text: String, max_chars: usize, truncation_message: &str) -> (String, bool) {
-    if text.len() <= max_chars {
-        return (text, false);
-    }
-    let keep = max_chars.saturating_sub(truncation_message.len() + 1);
-    text.truncate(keep);
-    while !text.is_char_boundary(text.len()) {
-        text.pop();
-    }
-    if !text.is_empty() {
-        text.push('\n');
-    }
-    text.push_str(truncation_message);
-    (text, true)
 }
 
 #[cfg(test)]
@@ -915,5 +788,262 @@ mod tests {
         assert_eq!(result.status, "ok");
         // Must not panic from invalid UTF-8; U+FFFD replacement is fine
         assert!(!events.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn large_output_is_persisted_within_quota_without_an_event_consumer() {
+        let dir = workspace();
+        let outputs = dir.path().join("outputs");
+        let (tx, _rx) = mpsc::channel(1);
+        let result = timeout(Duration::from_secs(5), run_command_with_output(
+            &serde_json::json!({"command": "head -c 2097152 /dev/zero | tr '\\0' x", "timeout": 4, "brief": "large output"}),
+            dir.path(), Some(tx), None, &outputs, "large", OutputLimits { max_output_bytes: 8192, max_preview_bytes: 512 },
+        )).await.unwrap();
+        assert_eq!("ok", result.status);
+        assert!(result.truncated);
+        assert!(result.model_content.len() <= 512);
+        let facts = result.structured.unwrap();
+        assert_eq!(2097152, facts["stdout_bytes"]);
+        assert_eq!(true, facts["quota_truncated"]);
+        assert!(facts["dropped_events"].as_u64().unwrap() > 0);
+        assert!(
+            std::fs::metadata(outputs.join("large.output"))
+                .unwrap()
+                .len()
+                <= 8192
+        );
+        let chunk = read_output(
+            &outputs,
+            "large",
+            OutputRead {
+                offset: 0,
+                limit: 80_000,
+                search: None,
+            },
+        )
+        .unwrap();
+        assert!(chunk.complete);
+        assert!(chunk.capture_truncated);
+        assert!(chunk
+            .segments
+            .iter()
+            .all(|segment| segment.text.bytes().all(|byte| byte == b'x')));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_test_summary_survives_the_capture_quota_and_reopen() {
+        let dir = workspace();
+        let outputs = dir.path().join("outputs");
+        let result = run_command_with_output(
+            &serde_json::json!({"command": "head -c 131072 /dev/zero | tr '\\0' x; printf '\\ntest result: ok. 7 passed; 0 failed; 0 ignored\\n'", "timeout": 5, "brief": "test summary"}),
+            dir.path(), None, None, &outputs, "summary", OutputLimits { max_output_bytes: 8192, max_preview_bytes: 1024 },
+        ).await;
+        assert_eq!("ok", result.status);
+        assert!(result.model_content.contains("7 passed"));
+        assert!(result.model_content.contains("Capture quota reached"));
+        assert_eq!(true, result.structured.as_ref().unwrap()["output_filtered"]);
+        let reopened = read_output(
+            &outputs,
+            "summary",
+            OutputRead {
+                offset: 0,
+                limit: 100,
+                search: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            vec!["test result: ok. 7 passed; 0 failed; 0 ignored".to_string()],
+            reopened.summary
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_persists_the_observed_stdout_stderr_sequence() {
+        let dir = workspace();
+        let outputs = dir.path().join("outputs");
+        let result = run_command_with_output(
+            &serde_json::json!({"command": "printf first; sleep 0.05; printf second >&2; sleep 0.05; printf third", "timeout": 5, "brief": "ordered streams"}),
+            dir.path(), None, None, &outputs, "ordered", OutputLimits::default(),
+        ).await;
+        assert_eq!("ok", result.status);
+        let chunk = read_output(
+            &outputs,
+            "ordered",
+            OutputRead {
+                offset: 0,
+                limit: 100,
+                search: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            vec![
+                (OutputStream::Stdout, "first"),
+                (OutputStream::Stderr, "second"),
+                (OutputStream::Stdout, "third")
+            ],
+            chunk
+                .segments
+                .iter()
+                .map(|segment| (segment.stream, segment.text.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn wait_for_pid(path: &Path) -> u32 {
+        timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(path) {
+                    if let Ok(pid) = pid.trim().parse() {
+                        return pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: u32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => !stat.rsplit_once(") ").unwrap().1.starts_with('Z'),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => panic!("could not inspect descendant {pid}: {error}"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancelling_a_command_stops_its_descendant_process() {
+        let dir = workspace();
+        let marker = dir.path().join("child.pid");
+        let cancel = Arc::new(Notify::new());
+        let worker_cancel = cancel.clone();
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(&serde_json::json!({"command": "sleep 30 & echo $! > child.pid; wait", "timeout": 20, "brief": "cancel tree"}), &worker_dir, None, Some(worker_cancel)).await
+        });
+        let pid = wait_for_pid(&marker).await;
+        assert!(process_is_running(pid));
+        cancel.notify_waiters();
+        let result = timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!("cancelled", result.status);
+        assert!(
+            !process_is_running(pid),
+            "cancelled command left descendant {pid} running"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn timeout_stops_descendants_and_dropping_the_command_future_does_too() {
+        let dir = workspace();
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(&serde_json::json!({"command": "sleep 30 & echo $! > timeout.pid; wait", "timeout": 1, "brief": "timeout tree"}), &worker_dir, None, None).await
+        });
+        let pid = wait_for_pid(&dir.path().join("timeout.pid")).await;
+        let result = timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(true, result.structured.unwrap()["timed_out"]);
+        assert!(!process_is_running(pid));
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(&serde_json::json!({"command": "sleep 30 & echo $! > dropped.pid; wait", "timeout": 20, "brief": "drop tree"}), &worker_dir, None, None).await
+        });
+        let pid = wait_for_pid(&dir.path().join("dropped.pid")).await;
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        timeout(Duration::from_secs(2), async {
+            while process_is_running(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn escaped_inherited_pipes_have_a_bounded_cleanup_deadline() {
+        struct EscapedProcess(u32);
+        impl Drop for EscapedProcess {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{}", self.0)])
+                    .status();
+            }
+        }
+        let dir = workspace();
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(&serde_json::json!({"command": "setsid sh -c 'echo $$ > detached.pid; sleep 30' & while [ ! -f detached.pid ]; do sleep 0.01; done", "timeout": 5, "brief": "bounded pipe cleanup"}), &worker_dir, None, None).await
+        });
+        let escaped = EscapedProcess(wait_for_pid(&dir.path().join("detached.pid")).await);
+        let result = timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!("ok", result.status);
+        assert_eq!(true, result.structured.unwrap()["cleanup_incomplete"]);
+        assert!(result.truncated);
+        assert!(
+            process_is_running(escaped.0),
+            "test must exercise a process outside the original group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn invalid_output_storage_and_preexisting_ids_prevent_command_side_effects() {
+        let dir = workspace();
+        let output_file = dir.path().join("not-a-directory");
+        std::fs::write(&output_file, "occupied").unwrap();
+        let result = run_command_with_output(
+            &serde_json::json!({"command": "touch should-not-exist", "timeout": 5, "brief": "storage failure"}),
+            dir.path(), None, None, &output_file, "blocked", OutputLimits::default(),
+        ).await;
+        assert_eq!("error", result.status);
+        assert!(!dir.path().join("should-not-exist").exists());
+        let outputs = dir.path().join("outputs");
+        std::fs::create_dir(&outputs).unwrap();
+        std::fs::write(outputs.join("same.output"), "keep existing evidence").unwrap();
+        let result = run_command_with_output(
+            &serde_json::json!({"command": "touch should-not-exist", "timeout": 5, "brief": "existing id"}),
+            dir.path(), None, None, &outputs, "same", OutputLimits::default(),
+        ).await;
+        assert_eq!("error", result.status);
+        assert!(!dir.path().join("should-not-exist").exists());
+        assert_eq!(
+            "keep existing evidence",
+            std::fs::read_to_string(outputs.join("same.output")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stored_cancellation_permit_prevents_command_spawn() {
+        let dir = workspace();
+        let cancel = Arc::new(Notify::new());
+        cancel.notify_one();
+        let result = run_command(
+            &serde_json::json!({"command": "touch should-not-exist", "timeout": 5, "brief": "cancel before spawn"}),
+            dir.path(), None, Some(cancel),
+        ).await;
+        assert_eq!("cancelled", result.status);
+        assert!(!dir.path().join("should-not-exist").exists());
+        assert_eq!(0, result.structured.unwrap()["stdout_bytes"]);
     }
 }
