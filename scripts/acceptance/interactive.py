@@ -116,7 +116,7 @@ def two_workspaces_and_disconnect(client):
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
-    print("Two native workspaces shared one service; busy upgrade deferred; closed terminal recovered")
+    print("Two native workspaces shared one service. Busy restart was deferred and the closed terminal recovered.")
     return workspace, session, prompt
 
 
@@ -155,7 +155,7 @@ def preserve_draft_after_interrupt(client):
 
         eventually("post-interrupt result to commit", committed)
         terminal.exit_cleanly()
-    print("Esc interrupted observed work; only Enter sent the preserved draft; terminal modes restored")
+    print("Esc interrupted the observed work. Enter sent the preserved draft and exit restored the terminal.")
 
 
 def wait_restart_and_recover_crash(client, workspace, session, title):
@@ -197,7 +197,7 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         assert snapshot["last_output"] != "Uncommitted response after crash"
         client.provider.assert_idle(duration=0.2)
         terminal.exit_cleanly()
-    print("Normal restart preserved a pending request; crashed service recovered stale discovery and interrupted work")
+    print("Restart preserved a pending request. Recovery from a crash showed the interrupted work.")
 
 
 def remote_authorization_and_script_json(client, workspace):
@@ -231,20 +231,34 @@ def remote_authorization_and_script_json(client, workspace):
     progress = [json.loads(line) for line in stdout.splitlines()]
     assert len(progress) >= 2 and progress[-1]["response"] == "script streamed output"
 
+    client.provider.assert_idle()
+    print("Remote requests required authentication and installed scripts produced JSON and JSONL.")
+
+
+def recover_from_provider_failure(client):
+    workspace = client.workspace("work-provider-error")
     prompt = "provider failure in scripted run"
     with client.command(workspace, "run", "--json", prompt) as process:
         client.provider.next(prompt).fail()
         stdout, stderr = client.finish(process, success=False)
     assert "fixture provider failure" in stdout + stderr
     failed = json.loads(stdout)
-    assert failed["error"], "The failed scripted run must retain its failure in JSON output"
+    assert failed["error"] and failed["status"] == "interrupted"
+    session = failed["session_id"]
     recovery = "recover explicitly from provider failure"
-    with client.command(workspace, "run", "--json", "--session", failed["session_id"], recovery) as process:
+    with client.terminal(workspace) as terminal:
+        terminal.resume(prompt)
+        terminal.expect("/continue", state="Interrupted")
+        terminal.submit(recovery)
+        eventually("recovery input to queue before explicit continuation",
+                   lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
+        client.provider.assert_idle(duration=0.2)
+        terminal.press("/continue\r")
         client.provider.next(recovery).text("provider recovered")
-        stdout, _ = client.finish(process)
-    assert json.loads(stdout)["response"] == "provider recovered"
+        terminal.expect("provider recovered")
+        terminal.exit_cleanly()
     client.provider.assert_idle()
-    print("Remote requests required authentication; installed command produced JSON, JSONL and provider failure status")
+    print("The failed script returned an error and the terminal continued only after an explicit recovery action.")
 
 
 def lost_first_receipt(client):
@@ -303,6 +317,7 @@ def main():
         preserve_draft_after_interrupt(client)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))
+        recover_from_provider_failure(client)
         lost_first_receipt(client)
         if options.browser:
             from interactive_browser import browser_handoff
