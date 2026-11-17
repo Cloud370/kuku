@@ -1,3 +1,7 @@
+mod resolve;
+
+pub(super) use resolve::ensure_resolved;
+
 use crate::context::{
     assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,
     AgentRegistryProvenance, CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock,
@@ -12,7 +16,6 @@ use crate::notice::{
     NoticeAssemblyInput,
 };
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
-use crate::provider::config::{resolve_config, ResolveConfigInput};
 use crate::tool;
 
 use super::helpers::{
@@ -21,9 +24,7 @@ use super::helpers::{
 };
 use super::request::OwnedRequestBase;
 use super::tool_exec::record_plugin_hooks;
-use super::types::{PendingRun, PendingStep, ResolvedRuntime, StreamingChunkState, UiEvent};
-
-const MAX_REQUEST_LOOP: u64 = 20;
+use super::types::{PendingRun, PendingStep, StreamingChunkState, UiEvent};
 
 pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     ensure_resolved(&mut pending)?;
@@ -187,7 +188,11 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     assembly.handoff_summary = handoff_summary;
 
-    let estimated_input = last_input_tokens(&resolved_config.kind, &existing_events);
+    let estimated_input = last_input_tokens(
+        &resolved_config.kind,
+        &existing_events,
+        pending.conversation.as_str(),
+    );
     let thinking_overhead = resolved_config.think_level.overhead_tokens();
     let headroom = compute_context_headroom(
         resolved_config
@@ -443,6 +448,16 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         })?;
     }
 
+    let frozen_context = if pending.query.runtime.is_some() {
+        Some(super::frozen::freeze(
+            &pending,
+            &mut assembly,
+            &resolved_config,
+            &existing_events,
+        )?)
+    } else {
+        None
+    };
     let current_input = assembly
         .history
         .get(current_user_index)
@@ -507,7 +522,36 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         .as_ref()
         .expect("request base captured")
         .request();
-    match crate::provider::stream_provider(&resolved_config, &request, provider_trace).await {
+    let correlation = crate::provider::types::ProviderCorrelation {
+        session_id: pending.session_id.clone(),
+        agent_address: pending.conversation.as_str().into(),
+        connection_name: resolved_config.connection_name.clone(),
+    };
+    let prepared =
+        crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
+            .map_err(|failure| crate::Error::Provider {
+            kind: failure.kind,
+            message: failure.message,
+            provider: Some(resolved_config.connection_name.clone()),
+            model: Some(resolved_config.model.clone()),
+        })?;
+    if serde_json::to_vec(&prepared.body)?.len() > pending.query.runtime_limits.max_request_bytes {
+        return Err(crate::Error::InvalidArgument(
+            "prepared model request exceeds the configured byte limit".into(),
+        ));
+    }
+    if let Some(context) = frozen_context {
+        super::frozen::record_prepared(&pending, &request_id, &prepared, context)?;
+    }
+    let capacity = match &pending.query.model_capacity {
+        Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
+            crate::Error::InvalidArgument("session model capacity is closed".into())
+        })?),
+        None => None,
+    };
+    match crate::provider::stream_prepared_provider(&resolved_config, &prepared, provider_trace)
+        .await
+    {
         Ok(stream) => {
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
@@ -534,6 +578,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                 },
                 thinking_start: None,
                 thinking_duration_ms: 0,
+                model_permit: capacity,
             })))
         }
         Err(failure)
@@ -669,7 +714,7 @@ pub(super) fn emit_runtime_log(
 }
 
 fn check_loop_limit(pending: &PendingRun) -> Result<()> {
-    if pending.request_num > MAX_REQUEST_LOOP {
+    if pending.request_num > pending.query.runtime_limits.max_steps_per_turn {
         let provider_name = pending
             .resolved
             .as_ref()
@@ -732,7 +777,7 @@ fn build_runtime_blocks(
     existing_events: &[crate::event::StoredEvent],
     catalog: &crate::prompt::PromptCatalog,
 ) -> Result<(Option<String>, Option<String>, Option<String>)> {
-    let estimated_input = last_input_tokens(&resolved_config.kind, existing_events);
+    let estimated_input = last_input_tokens(&resolved_config.kind, existing_events, conversation);
     let thinking_overhead = resolved_config.think_level.overhead_tokens();
     let context_headroom = compute_context_headroom(
         resolved_config
@@ -941,54 +986,6 @@ fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: Stri
     message
         .blocks
         .insert(insert_at, crate::context::MessageBlock::Text(text));
-}
-
-pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
-    if pending.resolved.is_some() {
-        return Ok(());
-    }
-
-    let config = match resolve_config(ResolveConfigInput {
-        provider: pending.query.provider,
-        model: pending.query.model.clone(),
-        tier: pending.query.tier.clone(),
-        base_url: pending.query.base_url.clone(),
-        api_key: pending.query.api_key.clone(),
-        max_output_tokens: pending.query.max_output_tokens,
-        config: Some((*pending.config).clone()),
-        ..Default::default()
-    }) {
-        Ok(config) => config,
-        Err(error) => {
-            let request_id = format!(
-                "req_{}",
-                EventStore::replay(&pending.events_path)?.len() + 1
-            );
-            append_model_error(
-                &pending.events_path,
-                &pending.conversation,
-                pending.turn,
-                request_id,
-                "missing_config",
-                &error.to_string(),
-            )?;
-            append_turn_interrupted(
-                &pending.events_path,
-                &pending.conversation,
-                pending.turn,
-                "missing_config",
-            )?;
-            return Err(error);
-        }
-    };
-
-    let registry = if let Some(ref overridden) = pending.tool_registry_override {
-        overridden.clone()
-    } else {
-        tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
-    };
-    pending.resolved = Some(ResolvedRuntime { config, registry });
-    Ok(())
 }
 
 #[cfg(test)]

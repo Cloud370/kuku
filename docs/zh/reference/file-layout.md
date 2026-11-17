@@ -55,21 +55,15 @@ $KUKU_HOME/p/<workspace>/
 ## Session Layout
 
 ```text
-$KUKU_HOME/p/<workspace>/sessions/<session-id>/
-├── lock
+<data-dir>/p/<workspace>/sessions/<session-id>/
 ├── events.jsonl
-└── pre-revert-<event-id>/
+├── events.jsonl.lock
+└── outputs/<output-id>.output
 ```
 
-说明：
+`events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 在 Session 生命周期内保留有界帧 stdout/stderr。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留；新 Session API 不原地改写已接纳上下文。
 
-- `lock` 记录当前活跃写入者。
-- `events.jsonl` 是 Session 账本。
-- `pre-revert-<event-id>/` 会在文件回滚创建备份时出现。
-
-`subs/` 已不再是 agent 工作的规范主模型。规范的 agent conversation 存在于同一个 Session 账本中，并通过 `events.jsonl` 里的 conversation address 来区分。
-
-更老的 Session 里仍可能保留早期委派布局留下的兼容产物。应把这些视为历史遗留。
+所有权见 [Sessions](../how-it-works/sessions.md)，有界读取与保留边界见 [SDK](sdk.md)。
 
 ## User and Project Extensions
 

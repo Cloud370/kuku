@@ -29,6 +29,7 @@ async fn async_error_completion_is_counted_exactly_once() {
         },
     );
     let mut run = Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots,
@@ -63,6 +64,7 @@ async fn async_error_completion_is_counted_exactly_once() {
         other => panic!("expected pending run, got {other:?}"),
     };
     let step = crate::query::step::finish_streaming(StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_complete".to_string(),
@@ -111,6 +113,7 @@ async fn length_stop_interrupts_without_completing_the_turn() {
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
     let step = crate::query::step::finish_streaming(StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_length".to_string(),

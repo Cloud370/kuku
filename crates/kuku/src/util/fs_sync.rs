@@ -56,10 +56,6 @@ pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "Output publication uses this helper after integration."
-)]
 pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {

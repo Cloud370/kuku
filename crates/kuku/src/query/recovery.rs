@@ -19,6 +19,9 @@ pub(super) async fn schedule(
     usage: Option<&crate::provider::types::ProviderUsage>,
 ) -> Result<PendingStep> {
     let mut pending = pending;
+    if pending.query.runtime.is_some() {
+        return interrupt(pending, "length");
+    }
     if pending.recovery_count >= MAX_RECOVERY_ATTEMPTS {
         return interrupt(pending, "length");
     }
@@ -193,6 +196,7 @@ async fn dispatch_recovery(
     let handoff_active = pending.handoff_triggered;
     match crate::provider::stream_provider(&resolved, &provider_request, trace).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
+            model_permit: None,
             conversation: pending.conversation.clone(),
             request_id,
             pending,

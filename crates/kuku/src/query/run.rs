@@ -25,7 +25,13 @@ use super::types::{
 
 impl Drop for Run {
     fn drop(&mut self) {
-        crate::session::release_lock(&self.lock_path);
+        if self
+            .lock_path
+            .extension()
+            .is_none_or(|extension| extension != "nested")
+        {
+            crate::session::release_lock(&self.lock_path);
+        }
     }
 }
 
@@ -193,12 +199,7 @@ impl Run {
                     return Ok(Some(UiEvent::PermissionRequested { request }));
                 }
                 RunState::Cancelled { events_path, turn } => {
-                    append_turn_cancelled(
-                        &events_path,
-                        &crate::conversation::address::ConversationAddress::MAIN,
-                        turn,
-                        "user_cancelled",
-                    )?;
+                    append_turn_cancelled(&events_path, &self.agent, turn, "user_cancelled")?;
                     self.state = RunState::Done(None);
                     return Ok(Some(UiEvent::Cancelled { turn }));
                 }
@@ -250,9 +251,14 @@ impl Run {
         &mut self,
         pending: Box<super::types::PendingRun>,
     ) -> Result<Option<UiEvent>> {
-        match super::step::advance_pending(*pending, self.slot_event_tx.clone(), self.slots.len())
-            .await?
-        {
+        let step =
+            super::step::advance_pending(*pending, self.slot_event_tx.clone(), self.slots.len())
+                .await?;
+        self.apply_pending_step(step).await
+    }
+
+    async fn apply_pending_step(&mut self, step: PendingStep) -> Result<Option<UiEvent>> {
+        match step {
             PendingStep::Pending {
                 pending,
                 slot,
@@ -697,6 +703,10 @@ impl Run {
             tool_call,
             display_summary: queued_summary,
         } = queued;
+        if pending.query.runtime.is_some() {
+            super::provider::ensure_resolved(&mut pending)?;
+            super::runtime_tools::validate_prepared(&pending, &tool_call)?;
+        }
         let rule = permission_rule(
             &pending.kuku_home,
             &pending.workspace,
@@ -724,6 +734,24 @@ impl Run {
             &rule,
         )?;
         let prior_events = EventStore::replay(&pending.events_path)?;
+        if pending.query.runtime.is_some() {
+            let queued = QueuedToolCall {
+                tool_call,
+                display_summary: queued_summary,
+            };
+            let step = if matches!(choice, PermissionChoice::Deny) {
+                super::runtime_tools::reject(pending, queued)?
+            } else {
+                super::runtime_tools::dispatch(
+                    pending,
+                    queued,
+                    self.slot_event_tx.clone(),
+                    self.slots.len(),
+                )
+                .await?
+            };
+            return self.apply_pending_step(step).await;
+        }
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
             let result = execute_tool_call(&mut pending, &tool_call).await?;
@@ -778,6 +806,7 @@ impl Run {
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+            output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
             conversation: (!pending.conversation.is_main()).then(|| pending.conversation.clone()),

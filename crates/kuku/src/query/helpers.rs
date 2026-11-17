@@ -479,12 +479,17 @@ pub(super) fn load_memory_sources(
 pub(super) fn last_input_tokens(
     kind: &ProviderKind,
     events: &[crate::event::StoredEvent],
+    conversation: &str,
 ) -> Option<u32> {
     let _ = kind;
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ModelResponse {
-            input_tokens_total, ..
-        } => input_tokens_total.and_then(|value| u32::try_from(value).ok()),
+            input_tokens_total,
+            conversation: response_conversation,
+            ..
+        } if response_conversation.as_deref().unwrap_or("main") == conversation => {
+            input_tokens_total.and_then(|value| u32::try_from(value).ok())
+        }
         _ => None,
     })
 }

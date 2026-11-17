@@ -19,6 +19,13 @@ impl std::fmt::Display for SessionStatus {
 pub mod id;
 pub mod list;
 pub mod paths;
+pub mod runtime;
+
+pub use runtime::{
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, InputSource, Observation,
+    OutputChunk, OutputRead, OutputSegment, OutputStream, QuestionRequest, Receipt, RuntimeLimits,
+    Session, SessionObserver, SessionOptions, UsageTotals,
+};
 
 pub use id::{new_session_id, validate_session_id};
 pub use list::{list_sessions, SessionSummary};

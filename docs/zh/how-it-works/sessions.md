@@ -1,142 +1,39 @@
 # Sessions
 
-`Session` 是一个目录，也是一本账本。kuku 不会把独立数据库记录当作真相来源。
+`Session` 拥有一组 Agent 的持久历史、writer、命令输出和活动运行资源。直接嵌入公开 SDK，无需 daemon 或 CLI 子进程。操作与调用程序见 [SDK 参考](../reference/sdk.md)。
 
-## Canonical Mental Model
+## 身份与所有权
 
-- Session 是一份账本。
-- conversation 是账本中的一个聊天线程。
-- agent 是从 agent 文件发现的联系人卡片。
-- conversation address 是连续性键；复用相同 address 就表示继续同一线程。
+Agent 使用稳定的 Session 内扁平地址，例如 `main`、`reviewer` 或 `agent-3`。保留中的地址不能转交。新 Agent 从独立上下文开始；可复用行为 Preset 提供初始指令与默认值，不复制其他 Agent 的历史。显式配置仅影响对应 Agent。
 
-## Layout
+## 投递与推进
 
-Session 位于 `$KUKU_HOME` 下按工作区分隔的目录中：
+创建、配置、投递和回复接收调用者命令身份。相同身份与内容返回原持久回执，冲突复用失败。投递、模型接纳、执行完成是不同事实。
 
-```text
-$KUKU_HOME/p/<workspace-path>/sessions/<id>/
-|- lock
-|- events.jsonl
-`- pre-revert-<id>/
-```
+`Activation::Wake` 请求推进，`Activation::Enqueue` 仅保存输入，直到调用 `advance`。运行中的 Agent 在下一 Turn 边界接纳有界批次。每个 Agent 最多一条推进链，不同 Agent 可并发。取消后保持停止，直到明确 `advance`。
 
-`events.jsonl` 是持久账本。conversation 通过账本中的事件表达。
+执行独立于观察。`events(after, limit)` 返回有界持久分页。`observe(after)` 组合持久可续接游标和有界临时更新。慢消费者收到落后通知，仍能查询持久结果。
 
-## Event Log
+## 存储与上下文
 
-`events.jsonl` 的每一行都是一个持久事实。规范的 conversation 事件包括：
+[Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部，拒绝已提交历史损坏。
 
-- `session.created`
-- `conversation.opened`
-- `conversation.bound`
-- `prompt.snapshot`
-- `message.user`
-- `message.assistant`
-- `turn.started`
-- `turn.completed`
-- `turn.cancelled`
-- `turn.interrupted`
-- `context.skills`
-- `tool.call`
-- `permission.requested`
-- `permission.allow`
-- `permission.deny`
-- `tool.result`
-- `handoff`
-- `conversation.rollback`
-- `conversation.rollback.undone`
+Agent 创建／配置、投递／接纳、Step 准备、授权、派发、结果、等待、回复与结算分别记录。Turn 完成或模型措辞不证明业务成功，应检查实际文件、命令结果和判定器。
 
-完整事件集合见 [Events](../reference/events.md)。
+provider 可见的 system 文本、prelude、工具和已接纳 canonical 消息冻结在上下文段中。每条消息在该段接纳一次，准备好的 Step 记录段与消息边界、连接／设置、关联和请求 hash，不重复追加完整线路请求。重开保持已提交前缀。配置、工具、协议或明确交接变化建立已提交后继段。
 
-读取方依赖文件顺序。恢复时会忽略末尾不完整的行。
+行为 Prompt 仍是外部或内嵌的版本化资源，与上下文选择、provider 转换分离。原生协议续接数据随 assistant 响应保存，不能静默跨不兼容协议使用。
 
-## Conversations Inside One Session
+## 等待与回复
 
-`main` conversation 是 Host 线程。像 `review` 或 `review/api` 这样的 agent conversation 与它一起存在于同一本账本中。
+`ToolAuthorizer` 接收真实来源、Agent、最终参数、实际工具定义和目录。默认本地策略为 `TrustedLocal`。拒绝或授权错误阻止派发，`Defer` 持久保存精确待决动作并释放活动执行上下文。匹配的 `reply_permission` 核对已准备动作与当前工具定义后仅续接一次。
 
-- `main` 是保留的 Host conversation。
-- `review` 和 `review/api` 都是有效 conversation address。
-- 复用 `review` 会继续该线程。
-- 打开 `review/api` 会创建一个新的嵌套线程，它的根联系人是 `review`。
+`ask_user` 持久保存问题，一次返回等待句柄；当前工具批次结束后让出执行。`reply_question` 仅向匹配待决请求投递关联输入。重开重建等待；无关、内容冲突的重复回复或过期回复不能授权其他动作。等待不轮询模型，也不占模型名额。
 
-conversation 作用域 replay、notice、中断恢复和 rollback 都是通过把同一本账本过滤到单个 address 来实现的。
+## 输出与清理
 
-## Observability Logs
+命令 stdout/stderr 从首字节经有界帧写入 Session 文件。首次模型视图是有界预览或识别的构建／测试摘要，携带保留引用与明确过滤／不完整标志。`read_output` 支持有界范围、字面搜索和增量偏移。超配额后继续排空管道并标记不完整。
 
-`$KUKU_HOME/logs/` 是可观测性日志树：
+`cancel` 停止新派发并等待所属工作清理。Unix 进程组和 Windows Job 对象提供进程树清理；主动逃离不在可信本地进程边界内。继承管道具有清理截止时间。已知清理不完整会被持久记录，并使取消或关闭报告失败。
 
-```text
-$KUKU_HOME/logs/
-|- session/<session-id>.jsonl
-|- runtime/<yyyy-mm-dd>.jsonl
-|- provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
-`- host/cli|server|webui/<yyyy-mm-dd>.jsonl
-```
-
-这些日志用于 host 和 runtime 可见性。保留策略和默认值在 [`[logs]`](../reference/config.md#logs) 中配置。Provider trace 日志通过 `KUKU_PROVIDER_TRACE=1` 显式开启；它们只是诊断信息，不是 Session 事实。
-
-## Lifecycle
-
-### New session
-
-在没有 session id 的情况下启动运行，会创建新的 Session 目录，并在第一轮之前写入 `session.created`。
-
-### Continuing a session
-
-带已有 session id 启动运行时，会向同一本账本追加新 turn。kuku 会通过回放账本并过滤到当前 conversation 来重建上下文。
-
-如果前一次运行停在 `permission.requested` 之后、`permission.allow`、`permission.deny` 或 `tool.result` 之前，重启时可以从 `events.jsonl` 恢复这个未解决的权限状态。
-
-### Status
-
-Session 状态是账本级别的：
-
-| Status | Meaning |
-|---|---|
-| `Active` | 存在活动写锁。 |
-| `Done` | 不存在锁，且最近一次主线程 turn 的终止事件是完成。 |
-| `Interrupted` | 不存在锁，且账本在中途结束或以中断结束。 |
-
-conversation 状态是分开的，可以按 address 列出。见 [Manage Sessions](../guides/manage-sessions.md)。
-
-## Writer Lock
-
-任意时刻只有一个写入者可以向 Session 追加内容。读取操作可以并发进行。
-
-## Replay and Handoff
-
-Replay 是 conversation 作用域的：
-
-- `main` replay 读取历史 host turn 事实和主线程 Tool 活动
-- agent conversation replay 只读取该 address 及其 Tool 活动
-- handoff 会压缩更早的历史，并为后续 replay 留下摘要边界
-
-后续请求会保留少量最近的 turns，并用 handoff 摘要替换更早的历史。
-
-## Rollback
-
-Rollback 是追加式的。kuku 会记录 rollback 标记事件，而不是删除历史。
-
-conversation rollback 按 address 生效：
-
-| Scope | Effect |
-|---|---|
-| `messages` | 在未来 replay 中隐藏该 conversation 后续事件。 |
-| `file_changes` | 把工作区文件恢复到较早状态，但不隐藏后续消息。 |
-| `both` | 同时应用这两种行为。 |
-
-主线程 conversation 的 rollback 可以隐藏较晚的 host turn 事实。agent conversation 的 rollback 只会隐藏该 address 的较晚事件。
-
-文件回滚会使用 `tool.result` 中已经捕获的快照，并把回滚前备份存入 `pre-revert-<id>/`。
-
-## Cancellation and Interruption
-
-- 取消会用 `turn.cancelled` 结束某个 conversation turn。
-- 崩溃、在新 turn 前恢复、或运行中途停止，会用 `turn.interrupted` 结束某个 conversation turn。
-- runtime notice 可以提示中断 turn、待决权限、打开的 conversation、收件箱消息和已加载 skills。
-
-## Session Operations
-
-Host 可以列出 Session、列出 Session 内的 conversations、检查完整账本、按 conversation 过滤事件、继续某个线程，或删除 Session 目录。
-
-turn 执行流程见 [Agent Loop](agent-loop.md)，Host 暴露方式见 [Host Apps](../architecture/host-apps.md)。
+`close().await` 等待清理与持久写入后释放 writer。待处理输入与可恢复等待保留。打开不自动激活 Agent。中断副作用要求对账，不自动重做。provider trace 仍是独立于 Session 事实的可选诊断日志。

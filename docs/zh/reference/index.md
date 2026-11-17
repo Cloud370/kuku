@@ -5,6 +5,7 @@
 ## 页面
 
 - [CLI](cli.md)
+- [SDK](sdk.md)
 - [Config](config.md)
 - [Environment Variables](environment-variables.md)
 - [File Layout](file-layout.md)

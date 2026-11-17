@@ -15,6 +15,29 @@ use crate::query::types::{
 impl Run {
     pub(super) async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
         let has_active_workspace_ordered_slot = self.has_active_workspace_ordered_slot();
+        if let RunState::Pending(pending) = &self.state {
+            if pending.query.runtime.is_some() {
+                let index = pending.queued_tool_calls.iter().position(|queued| {
+                    !has_active_workspace_ordered_slot
+                        || !requires_workspace_ordering(&queued.tool_call.name)
+                });
+                let Some(index) = index else { return Ok(None) };
+                if self.slots.len() >= pending.query.runtime_limits.max_tools_per_agent {
+                    return Ok(None);
+                }
+                let RunState::Pending(mut pending) =
+                    std::mem::replace(&mut self.state, RunState::Done(None))
+                else {
+                    unreachable!()
+                };
+                let queued = pending
+                    .queued_tool_calls
+                    .remove(index)
+                    .expect("queued index was selected");
+                pending.queued_tool_calls.push_front(queued);
+                return self.advance_from_pending(pending).await;
+            }
+        }
         let (queue_index, tool_call_id, tool_name) = match &self.state {
             RunState::Pending(pending) => {
                 let queue_index = if has_active_workspace_ordered_slot
@@ -158,6 +181,7 @@ impl Run {
                 pending.record_tool_call(&tool_call.name);
                 let (slot, tool_kind) = crate::query::slots::dispatch_tool_slot(
                     crate::query::slots::SlotDispatchArgs {
+                        output: None,
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),
                         conversation: (!pending.conversation.is_main())
@@ -300,6 +324,7 @@ mod tests {
             },
         );
         let mut run = Run {
+            agent: crate::conversation::address::ConversationAddress::MAIN,
             session_id: "test".to_string(),
             state: RunState::Pending(Box::new(pending)),
             slots,

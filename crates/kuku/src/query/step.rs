@@ -191,7 +191,8 @@ async fn execute_inline_tool(
     })
 }
 
-pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<PendingStep> {
+pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<PendingStep> {
+    state.model_permit.take();
     let StreamingChunkState {
         mut pending,
         conversation,
@@ -251,6 +252,9 @@ pub(super) async fn finish_streaming(state: StreamingChunkState) -> Result<Pendi
     );
     {
         let mut store = EventStore::open(&pending.events_path)?;
+        if pending.query.runtime.is_some() {
+            store.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.model_usage","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,"usage":usage})))?;
+        }
         store.append(EventPayload::ModelResponse {
             conversation: Some(pending.conversation.as_str().to_string()),
             turn: pending.turn,
@@ -538,20 +542,7 @@ fn persist_runtime_model_usage_log(
 }
 
 fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
-    let mut total: u64 = 0;
-    let mut seen = false;
-    for value in [
-        usage.input_tokens,
-        usage.cache_read_input_tokens,
-        usage.cache_creation_input_tokens,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        total = total.checked_add(value)?;
-        seen = true;
-    }
-    seen.then_some(total)
+    usage.input_tokens
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
@@ -623,6 +614,15 @@ pub(super) async fn advance_pending(
     }
 
     if let Some(mut queued) = pending.queued_tool_calls.pop_front() {
+        if pending.query.runtime.is_some() {
+            return super::runtime_tools::advance(
+                pending,
+                queued,
+                slot_event_tx,
+                active_slot_count,
+            )
+            .await;
+        }
         let id = queued.tool_call.id.clone();
         let summary = queued.display_summary.clone();
 
@@ -869,6 +869,7 @@ pub(super) async fn advance_pending(
                     }
 
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
+                        output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),
                         conversation: (!pending.conversation.is_main())
@@ -933,6 +934,9 @@ pub(super) async fn advance_pending(
         }
     }
 
+    if pending.query.runtime.is_some() && super::runtime_tools::should_yield(&pending)? {
+        return super::runtime_tools::yield_step(pending);
+    }
     super::provider::call_provider_step(pending).await
 }
 

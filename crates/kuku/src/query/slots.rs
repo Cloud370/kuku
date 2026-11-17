@@ -238,6 +238,7 @@ pub(crate) fn spawn_command_slot(
     summary: String,
     workspace: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
+    output: Option<CommandOutputSpec>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
@@ -254,19 +255,33 @@ pub(crate) fn spawn_command_slot(
                     crate::tool::builtin::CommandEvent::Stdout(text) => ToolEvent::Stdout { text },
                     crate::tool::builtin::CommandEvent::Stderr(text) => ToolEvent::Stderr { text },
                 };
-                if fwd_event_tx
-                    .send((fwd_tc_id.clone(), SlotEvent::Output(te)))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
+                let _ = fwd_event_tx.try_send((fwd_tc_id.clone(), SlotEvent::Output(te)));
             }
         });
 
-        let r =
-            crate::tool::builtin::run_command(&args, &workspace, Some(tool_tx), Some(cancel_cmd))
-                .await;
+        let r = match output {
+            Some(output) => {
+                crate::tool::builtin::run_command::run_command_with_output(
+                    &args,
+                    &workspace,
+                    Some(tool_tx),
+                    Some(cancel_cmd),
+                    &output.dir,
+                    &output.id,
+                    output.limits,
+                )
+                .await
+            }
+            None => {
+                crate::tool::builtin::run_command(
+                    &args,
+                    &workspace,
+                    Some(tool_tx),
+                    Some(cancel_cmd),
+                )
+                .await
+            }
+        };
         let _ = forward_handle.await;
         let result = SlotEvent::Done {
             status: r.status,
@@ -290,6 +305,7 @@ pub(crate) fn spawn_command_slot(
 }
 
 pub(crate) struct SlotDispatchArgs {
+    pub(crate) output: Option<CommandOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
     pub(crate) conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -304,6 +320,12 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) events_path: PathBuf,
 }
 
+pub(crate) struct CommandOutputSpec {
+    pub(crate) dir: PathBuf,
+    pub(crate) id: String,
+    pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
+}
+
 pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {
     if args.tool_name == "run_command" {
         let slot = spawn_command_slot(
@@ -313,6 +335,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.summary,
             args.workspace,
             args.event_tx,
+            args.output,
         );
         (slot, ToolKind::Command { pid: None })
     } else {

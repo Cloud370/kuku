@@ -10,14 +10,14 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 | Module | Owns | May depend on | Must not |
 |---|---|---|---|
-| `query/` | run orchestration, turn execution, slot lifecycle | all other modules | — |
+| `query/` | one execution chain, turn execution, slot lifecycle | all other modules | — |
 | `conversation/` | conversation addresses, bindings, reduction, conversation-scoped status | `event/`, `context/` | provider logic, host transport |
 | `agent/` | agent definitions, catalog, registry, delegated-run preparation | `conversation/`, `tool/`, `query/`, `session/` | unrelated host concerns |
 | `context/` | message replay, provenance, rollback planning | `event/`, `conversation/`, `prompt/`, `config/` | provider calls, permission decisions |
 | `provider/` | protocol conversion for model APIs | canonical messages, tool schemas, config | session state, event store, permissions |
 | `tool/` | definitions, registry, dispatch, built-ins | `event/`, `conversation/`, shared context types | provider protocol, slot scheduling policy |
 | `permission/` | runtime gate decisions | `event/`, `conversation/` | tool execution, provider logic, session ownership |
-| `session/` | paths, lock, list, delete, session-wide status | `event/`, `conversation/` scan helpers | provider logic, prompt ownership |
+| `session/` | runtime ownership, agent delivery/scheduling, paths, queries, cleanup | `query/`, `event/`, `permission/`, `config/` | provider logic, prompt ownership |
 | `event/` | event types and `events.jsonl` storage | — | provider, tools, permissions |
 | `prompt/` | prompt assets and rendering | — | runtime decisions, session state |
 | `config/` | config parsing, validation, defaults, patching | — | provider logic, tool execution |
@@ -29,11 +29,11 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 ### `query/`
 
-`query/` is the only orchestration layer that may depend on everything else. It advances the run state machine and turns module outputs into the live agent loop.
+`session/runtime/` owns the public Session operations, one writer, agent inboxes, one active execution epoch per agent, observations, and asynchronous cleanup. It schedules the existing `query/` state machine as the single execution engine; observers never advance that engine. `query/` advances one chain and owns prepared model steps and tool slots. Model and tool I/O do not hold the Session commit lock.
 
 ### `conversation/`
 
-`conversation/` owns the canonical low-mental-model abstraction: one ledger, many threads. Address parsing, continuity, binding status, and conversation reduction belong here, not in `agent/` or `session/`.
+`conversation/` retains the event codec and history-reduction representation. Public Session Agent identities are validated flat addresses, owned by `session/runtime/`; slash-separated legacy conversation syntax does not create hidden Agent identities.
 
 ### `agent/`
 

@@ -33,6 +33,11 @@ pub use query::{
     ToolEvent, ToolKind, ToolSummary, UiEvent,
 };
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
+pub use session::{
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, InputSource, Observation,
+    OutputChunk, OutputRead, OutputSegment, OutputStream, QuestionRequest, Receipt, RuntimeLimits,
+    Session, SessionObserver, SessionOptions, UsageTotals,
+};
 
 #[cfg(test)]
 pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {

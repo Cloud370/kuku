@@ -138,6 +138,7 @@ pub(super) struct CaptureMetadata {
 
 pub(super) struct OutputWriter {
     file: tokio::fs::File,
+    path: PathBuf,
     file_bytes: u64,
     quota: u64,
     metadata: CaptureMetadata,
@@ -160,17 +161,18 @@ impl OutputWriter {
             return Err(invalid_output("output preview must be at most 80000 bytes"));
         }
         let path = output_path(output_dir, output_id)?;
-        tokio::fs::create_dir_all(output_dir).await?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-            .await?;
+        crate::util::fs_sync::create_dir_all(output_dir)?;
+        let mut file = tokio::fs::File::from_std(
+            crate::util::fs_sync::write_options()
+                .create_new(true)
+                .open(&path)?,
+        );
         let metadata = CaptureMetadata::default();
         file.write_all(&encode_header(&metadata)?).await?;
         file.flush().await?;
         Ok(Self {
             file,
+            path,
             file_bytes: HEADER_BYTES as u64,
             quota: limits.max_output_bytes,
             metadata,
@@ -216,7 +218,9 @@ impl OutputWriter {
         self.file.seek(SeekFrom::Start(0)).await?;
         self.file.write_all(&encode_header(&self.metadata)?).await?;
         self.file.flush().await?;
-        self.file.sync_data().await?;
+        let file = self.file.into_std().await;
+        crate::util::fs_sync::sync_file(&file)?;
+        crate::util::fs_sync::sync_parent(&self.path)?;
         Ok(self.metadata)
     }
 }

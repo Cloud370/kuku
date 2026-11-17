@@ -10,14 +10,14 @@
 
 | Module | Owns | May depend on | Must not |
 |---|---|---|---|
-| `query/` | 运行编排、turn 执行、slot 生命周期 | 所有其他模块 | — |
+| `query/` | 单条执行链、turn 执行、slot 生命周期 | 所有其他模块 | — |
 | `conversation/` | conversation address、binding、reducer、conversation 作用域状态 | `event/`, `context/` | provider 逻辑、host 传输 |
 | `agent/` | agent 定义、catalog、registry、委派运行准备 | `conversation/`, `tool/`, `query/`, `session/` | 不相关的 host 关注点 |
 | `context/` | message replay、provenance、rollback 规划 | `event/`, `conversation/`, `prompt/`, `config/` | provider 调用、权限决策 |
 | `provider/` | 模型 API 协议转换 | canonical messages、tool schemas、config | session 状态、event store、permissions |
 | `tool/` | 定义、registry、dispatch、built-ins | `event/`, `conversation/`, 共享 context 类型 | provider 协议、slot 调度策略 |
 | `permission/` | 运行时 gate 决策 | `event/`, `conversation/` | tool 执行、provider 逻辑、session 归属 |
-| `session/` | 路径、锁、列举、删除、session 级状态 | `event/`, `conversation/` 扫描辅助 | provider 逻辑、prompt 归属 |
+| `session/` | 运行归属、Agent 投递／调度、路径、查询、清理 | `query/`, `event/`, `permission/`, `config/` | provider 逻辑、prompt 归属 |
 | `event/` | 事件类型与 `events.jsonl` 存储 | — | provider、tools、permissions |
 | `prompt/` | prompt 资源与渲染 | — | 运行时决策、session 状态 |
 | `config/` | 配置解析、校验、默认值、patch | — | provider 逻辑、tool 执行 |
@@ -29,11 +29,11 @@
 
 ### `query/`
 
-`query/` 是唯一允许依赖所有其他模块的编排层。它推进运行状态机，并把各模块输出转成实时 agent loop。
+`session/runtime/` 拥有公开 Session 操作、唯一 writer、Agent inbox、每 Agent 唯一活动执行代次、观察和异步清理。它调度已有 `query/` 状态机作为唯一执行器，观察者不推进执行。`query/` 推进单条链，拥有准备好的模型 Step 与工具 slot。模型／工具 I/O 不持有 Session 提交锁。
 
 ### `conversation/`
 
-`conversation/` 拥有规范的低心理负担抽象：一本账本，多条线程。address 解析、连续性、binding 状态和 conversation reduction 都应归它，而不是归 `agent/` 或 `session/`。
+`conversation/` 保留事件 codec 与历史归约表示。公开 Session Agent 身份由 `session/runtime/` 校验并拥有，使用扁平地址；旧斜杠 conversation 语法不创建隐藏 Agent 身份。
 
 ### `agent/`
 

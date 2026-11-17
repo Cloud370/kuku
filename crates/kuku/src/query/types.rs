@@ -44,6 +44,16 @@ pub struct Query {
     pub(crate) response_contract: Option<HostResponseContract>,
     pub(crate) agent_instructions: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
+    pub(crate) connection: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) authorizer: Option<Arc<dyn crate::permission::ToolAuthorizer>>,
+    pub(crate) input_source: crate::session::InputSource,
+    pub(crate) runtime_limits: crate::session::RuntimeLimits,
+    pub(crate) model_capacity: Option<Arc<tokio::sync::Semaphore>>,
+    pub(crate) runtime: Option<std::sync::Weak<crate::session::runtime::SessionInner>>,
+    pub(crate) turn_override: Option<u64>,
+    pub(crate) events_path_override: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +244,7 @@ pub enum UiEvent {
 /// An active query execution that yields UI events via `next()`.
 #[derive(Debug)]
 pub struct Run {
+    pub(crate) agent: ConversationAddress,
     pub(super) session_id: String,
     pub(super) state: RunState,
     pub(crate) slots: std::collections::HashMap<String, ExecSlot>,
@@ -475,6 +486,7 @@ pub(super) enum PendingStep {
 }
 
 pub(super) struct StreamingChunkState {
+    pub(super) model_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     pub(super) pending: PendingRun,
     pub(super) conversation: ConversationAddress,
     pub(super) request_id: String,
@@ -567,6 +579,16 @@ impl Query {
             response_contract: None,
             agent_instructions: None,
             tool_registry_override: None,
+            connection: None,
+            reasoning_effort: None,
+            service_tier: None,
+            authorizer: None,
+            input_source: crate::session::InputSource::Host("local".into()),
+            runtime_limits: crate::session::RuntimeLimits::default(),
+            model_capacity: None,
+            runtime: None,
+            turn_override: None,
+            events_path_override: None,
         }
     }
 

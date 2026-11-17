@@ -48,6 +48,7 @@ struct ToolLifecycle {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ToolKey {
+    turn: u64,
     conversation: Option<String>,
     tool_call_id: String,
 }
@@ -67,6 +68,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 ..
             } => {
                 let key = ToolKey {
+                    turn: *turn,
                     conversation: conversation.clone(),
                     tool_call_id: tool_call_id.clone(),
                 };
@@ -117,18 +119,24 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                     lifecycle.turn = *turn;
                 }
             }
-            EventPayload::PermissionAllow { tool_call_id, .. } => {
-                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
+            EventPayload::PermissionAllow {
+                tool_call_id, turn, ..
+            } => {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
                     lifecycle.permission_allowed = true;
                 }
             }
-            EventPayload::PermissionDeny { tool_call_id, .. } => {
-                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
+            EventPayload::PermissionDeny {
+                tool_call_id, turn, ..
+            } => {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
                     lifecycle.permission_denied = true;
                 }
             }
-            EventPayload::ToolResult { tool_call_id, .. } => {
-                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, None) {
+            EventPayload::ToolResult {
+                tool_call_id, turn, ..
+            } => {
+                if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
                     lifecycle.has_result = true;
                 }
             }

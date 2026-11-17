@@ -232,6 +232,30 @@ pub(super) async fn execute_tool_call(
     pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
+    if pending.query.runtime.is_some() && super::runtime_tools::is_inline(&tool_call.name) {
+        let result = match super::runtime_tools::execute(pending, tool_call) {
+            Ok(result) => result,
+            Err(error) => crate::tool::ToolResultEnvelope::error(
+                "session operation failed",
+                error.to_string(),
+            ),
+        };
+        write_tool_result(
+            &ExecSlot {
+                tool_call_id: tool_call.id.clone(),
+                conversation: Some(pending.conversation.clone()),
+                kind: super::types::ToolKind::Simple,
+                workspace_ordered: false,
+                label: String::new(),
+                cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+                nested_permissions: Default::default(),
+            },
+            &result,
+            &pending.events_path,
+            pending.turn,
+        )?;
+        return Ok(result);
+    }
     if is_inline_skill_tool(&tool_call.name) && !resolved_tool_available(pending, &tool_call.name) {
         return Ok(crate::tool::ToolResultEnvelope::error(
             format!("failed: unknown tool: {}", tool_call.name),

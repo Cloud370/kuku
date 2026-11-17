@@ -1,5 +1,8 @@
 pub(crate) mod gate;
 pub(crate) mod policy;
+mod runtime;
+
+pub use runtime::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer, TrustedLocal};
 
 pub use gate::{
     decide_tool_call, recover_session_grants, GateDecision, GateDecisionKind, GateScope,

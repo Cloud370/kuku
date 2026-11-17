@@ -27,6 +27,7 @@ struct ResponseGroup {
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
+    replay: Vec<MessageBlock>,
 }
 
 /// Reconstruct conversation history messages from a session's stored events.
@@ -52,17 +53,22 @@ pub(crate) fn effective_snapshot_events<'a>(
     conversation: &ConversationAddress,
 ) -> Vec<&'a StoredEvent> {
     let filtered = filter_rolled_back_events(events);
-    let suppressed_turns = suppressed_turns(&filtered, conversation);
+    let suppressed_turns = if is_session_runtime(events) {
+        HashSet::new()
+    } else {
+        suppressed_turns(&filtered, conversation)
+    };
+    let turns = turn_conversations(&filtered);
     let handoff_pos = filtered
         .iter()
         .enumerate()
-        .rfind(|(_, event)| matches!(event.payload, EventPayload::Handoff { .. }));
+        .rfind(|(_, event)| matches!(event.payload, EventPayload::Handoff { turn, .. } if unscoped_turn_belongs_to_conversation(turn, conversation, &turns)));
     let start_idx = handoff_pos.map_or(0, |(index, _)| {
         let keep_turns = match &filtered[index].payload {
             EventPayload::Handoff { keep_turns, .. } => *keep_turns,
             _ => 0,
         };
-        handoff_start_index(&filtered, index, keep_turns)
+        handoff_start_index(&filtered, index, keep_turns, conversation)
     });
 
     filtered[start_idx..]
@@ -95,13 +101,17 @@ fn rebuild_history_internal(
     wrap_delegated_prompts: bool,
 ) -> (Option<String>, Vec<CanonicalMessage>) {
     let filtered = filter_rolled_back_events(events);
-    let suppressed_turns = suppressed_turns(&filtered, conversation);
+    let suppressed_turns = if is_session_runtime(events) {
+        HashSet::new()
+    } else {
+        suppressed_turns(&filtered, conversation)
+    };
     let turn_conversations = turn_conversations(&filtered);
 
     let handoff_pos = filtered
         .iter()
         .enumerate()
-        .rfind(|(_, e)| matches!(e.payload, EventPayload::Handoff { .. }));
+        .rfind(|(_, e)| matches!(e.payload, EventPayload::Handoff { turn, .. } if unscoped_turn_belongs_to_conversation(turn, conversation, &turn_conversations)));
 
     let (summary, effective) = match handoff_pos {
         Some((idx, event)) => {
@@ -113,7 +123,7 @@ fn rebuild_history_internal(
                 } => (Some(summary.clone()), *keep_turns),
                 _ => (None, 0),
             };
-            let start_idx = handoff_start_index(&filtered, idx, keep_turns);
+            let start_idx = handoff_start_index(&filtered, idx, keep_turns, conversation);
             (summary, &filtered[start_idx..])
         }
         None => (None, filtered.as_slice()),
@@ -142,6 +152,31 @@ fn rebuild_history_internal(
             continue;
         }
         match &event.payload {
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.provider_replay"
+                    && value["agent"] == conversation.as_str()
+                    && !value["turn"]
+                        .as_u64()
+                        .is_some_and(|turn| suppressed_turns.contains(&turn)) =>
+            {
+                let Some(request_id) = value["request_id"].as_str() else {
+                    continue;
+                };
+                if current_group
+                    .request_id
+                    .as_ref()
+                    .is_some_and(|active| active != request_id)
+                {
+                    flush_group(&mut messages, &mut current_group);
+                }
+                current_group.request_id = Some(request_id.into());
+                if let Ok(protocol) = serde_json::from_value(value["protocol"].clone()) {
+                    current_group.replay.push(MessageBlock::ProviderReplay {
+                        protocol,
+                        value: value["value"].clone(),
+                    });
+                }
+            }
             EventPayload::MessageUser {
                 conversation: event_conversation,
                 text,
@@ -345,35 +380,37 @@ fn wrap_delegated_prompt_for_provider(text: &str) -> String {
     format!("<kuku_delegated_prompt>\n{escaped}\n</kuku_delegated_prompt>")
 }
 
-fn handoff_start_index(events: &[&StoredEvent], handoff_idx: usize, keep_turns: usize) -> usize {
+fn is_session_runtime(events: &[StoredEvent]) -> bool {
+    events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.operation" && value["record"]["operation"] == "agent_created"))
+}
+
+fn handoff_start_index(
+    events: &[&StoredEvent],
+    handoff_idx: usize,
+    keep_turns: usize,
+    conversation: &ConversationAddress,
+) -> usize {
     if keep_turns == 0 {
         return handoff_idx + 1;
     }
-
-    let mut turns_seen = 0;
-    let mut last_turn = None;
-    let mut scan_idx = handoff_idx;
-
-    loop {
-        if let Some(turn) = event_turn(&events[scan_idx].payload) {
-            if last_turn != Some(turn) {
-                turns_seen += 1;
-                last_turn = Some(turn);
-            }
-            if turns_seen == keep_turns {
-                let mut start_idx = scan_idx;
-                while start_idx > 0 && event_turn(&events[start_idx - 1].payload) == Some(turn) {
-                    start_idx -= 1;
-                }
-                return start_idx;
-            }
+    let turns = turn_conversations(events);
+    let mut retained = HashSet::new();
+    for event in events[..=handoff_idx].iter().rev() {
+        let Some(turn) = event_turn(&event.payload) else {
+            continue;
+        };
+        if !unscoped_turn_belongs_to_conversation(turn, conversation, &turns) {
+            continue;
         }
-
-        if scan_idx == 0 {
-            return 0;
+        retained.insert(turn);
+        if retained.len() == keep_turns {
+            return events[..=handoff_idx]
+                .iter()
+                .position(|event| event_turn(&event.payload) == Some(turn))
+                .unwrap_or(0);
         }
-        scan_idx -= 1;
     }
+    0
 }
 
 fn event_turn(payload: &EventPayload) -> Option<u64> {
@@ -551,6 +588,7 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
     calls.sort_by_key(|(_, call)| call.index);
 
     let mut assistant_blocks = Vec::new();
+    assistant_blocks.append(&mut group.replay);
     if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
         assistant_blocks.push(MessageBlock::Thinking(thinking));
     }

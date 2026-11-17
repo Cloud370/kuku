@@ -225,10 +225,9 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     let mut temp_file = builder.tempfile_in(parent)?;
     temp_file.write_all(bytes)?;
     temp_file.flush()?;
-    temp_file
-        .persist(path)
-        .map(|_| ())
-        .map_err(|error| error.error)
+    crate::util::fs_sync::sync_file(temp_file.as_file())?;
+    let temporary = temp_file.into_temp_path();
+    crate::util::fs_sync::rename(&temporary, path)
 }
 
 fn temp_file_prefix(path: &Path) -> OsString {

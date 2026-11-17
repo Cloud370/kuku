@@ -38,6 +38,7 @@ fn test_config() -> crate::config::Config {
 fn make_cancelled_run(events_path: std::path::PathBuf, turn: u64) -> Run {
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),
@@ -108,6 +109,7 @@ fn tool_stream_state(
     chunks: Vec<crate::provider::chunk::ProviderChunk>,
 ) -> StreamingChunkState {
     StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_tool_stream".to_string(),
@@ -209,6 +211,7 @@ fn make_waiting_run(
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::WaitingForPermission(Box::new(PendingPermission {
             pending,
@@ -275,6 +278,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -335,6 +339,7 @@ fn make_skill_queued_run(
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -567,6 +572,7 @@ async fn cancel_sets_token_and_transitions_state() {
     let cancel_token = std::sync::Arc::new(tokio::sync::Notify::new());
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let run = Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),
@@ -638,6 +644,7 @@ async fn runtime_log_persists_only_after_host_consumes_log_event() {
 
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let mut run = Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(pending)),
         slots: std::collections::HashMap::new(),
@@ -683,6 +690,7 @@ async fn completion_flush_failure_does_not_block_done() {
     .unwrap();
 
     let state = StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_1".to_string(),
@@ -722,6 +730,7 @@ async fn completion_persists_runtime_model_usage_log() {
     pending.runtime_log_writer = crate::log::BufferedLogWriter::with_flush_every(&log_path, 1);
 
     let state = StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_7".to_string(),
@@ -769,6 +778,7 @@ async fn usage_overflow_persists_attempt_and_interrupts_turn() {
     );
     pending.cumulative.output_tokens = Some(u64::MAX);
     let state = StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_2".to_string(),
@@ -856,6 +866,7 @@ async fn incomplete_handoff_marker_does_not_leak_to_final_output() {
     ]));
 
     let mut streaming = StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_1".to_string(),
@@ -936,6 +947,7 @@ async fn cancel_during_streaming_aborts_stream() {
     > = Box::pin(tokio_stream::pending());
 
     let mut streaming = StreamingChunkState {
+        model_permit: None,
         pending,
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_1".to_string(),
@@ -959,6 +971,7 @@ async fn cancel_during_streaming_aborts_stream() {
 
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     let _run = Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Pending(Box::new(make_test_pending(
             events_path.clone(),
@@ -1900,6 +1913,7 @@ async fn command_slot_preserves_timeout_truncation() {
         "produce bounded timeout output".to_string(),
         dir.path().to_path_buf(),
         event_tx,
+        None,
     );
 
     loop {
@@ -2035,6 +2049,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
         },
     );
     let mut run = Run {
+        agent: crate::conversation::address::ConversationAddress::MAIN,
         session_id: "test".to_string(),
         state: RunState::Cancelled {
             events_path: events_path.clone(),

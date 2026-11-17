@@ -5,6 +5,7 @@ Use this section to look up exact facts: commands, config, environment variables
 ## Pages
 
 - [CLI](cli.md)
+- [SDK](sdk.md)
 - [Config](config.md)
 - [Environment Variables](environment-variables.md)
 - [File Layout](file-layout.md)

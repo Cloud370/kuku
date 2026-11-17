@@ -126,7 +126,10 @@ impl Query {
         } else {
             lock_path.with_extension("nested")
         };
-        let events_path = session_events_path(&kuku_home, &workspace, &session_id)?;
+        let events_path = match &self.events_path_override {
+            Some(path) => path.clone(),
+            None => session_events_path(&kuku_home, &workspace, &session_id)?,
+        };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = EventStore::replay(&events_path)?;
         validate_existing_session(&existing_events)?;
@@ -138,9 +141,12 @@ impl Query {
         };
         let conversation = self.conversation.clone();
         reject_interrupted_open_tools(lifecycle.as_ref(), &session_id, &conversation)?;
-        let resumed_permission = lifecycle
-            .as_ref()
-            .and_then(|state| state.pending_permissions.first());
+        let resumed_permission = lifecycle.as_ref().and_then(|state| {
+            state
+                .pending_permissions
+                .iter()
+                .find(|pending| pending.request.conversation == conversation)
+        });
         let mut bootstrap_skill = if resumed_permission.is_some() {
             None
         } else {
@@ -148,7 +154,10 @@ impl Query {
         };
         let turn = resumed_permission
             .map(|pending| pending.turn)
-            .unwrap_or_else(|| next_turn(&existing_events));
+            .unwrap_or_else(|| {
+                self.turn_override
+                    .unwrap_or_else(|| next_turn(&existing_events))
+            });
         let mut store = EventStore::open(&events_path)?;
         if is_new_session {
             let created_at = now_timestamp()?;
@@ -338,7 +347,29 @@ impl Query {
             }),
         );
 
-        let resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        let mut resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        if self.runtime.is_some() {
+            for queued in &mut resumed_state.queued_tool_calls {
+                if let Some(args) =
+                    existing_events
+                        .iter()
+                        .rev()
+                        .find_map(|event| match &event.payload {
+                            EventPayload::Unknown(value)
+                                if value["kind"] == "runtime.tool_prepared"
+                                    && value["agent"] == conversation.as_str()
+                                    && value["turn"] == turn
+                                    && value["tool_call_id"] == queued.tool_call.id =>
+                            {
+                                Some(value["args"].clone())
+                            }
+                            _ => None,
+                        })
+                {
+                    queued.tool_call.args = args;
+                }
+            }
+        }
         let agent_binding_id = self.agent_binding_id.clone();
 
         let pending = PendingRun {
@@ -393,6 +424,7 @@ impl Query {
         };
 
         Ok(Run {
+            agent: conversation,
             session_id: session_id.clone(),
             state,
             slots: std::collections::HashMap::new(),

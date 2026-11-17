@@ -55,21 +55,15 @@ $KUKU_HOME/p/<workspace>/
 ## Session Layout
 
 ```text
-$KUKU_HOME/p/<workspace>/sessions/<session-id>/
-├── lock
+<data-dir>/p/<workspace>/sessions/<session-id>/
 ├── events.jsonl
-└── pre-revert-<event-id>/
+├── events.jsonl.lock
+└── outputs/<output-id>.output
 ```
 
-Notes:
+`events.jsonl` is authoritative. The OS lock protects a single writer; its file can remain after close. `outputs/` retains bounded framed stdout/stderr for the session lifetime. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions; the new Session API does not rewrite admitted context in place.
 
-- `lock` records the active writer.
-- `events.jsonl` is the session ledger.
-- `pre-revert-<event-id>/` appears when file rollback creates backups.
-
-`subs/` is no longer the supported primary model for agent work. Canonical agent conversations live inside the same session ledger and are distinguished by conversation address in `events.jsonl`.
-
-Older sessions may still contain compatibility artifacts from earlier delegated-layout experiments. Treat those as historical.
+See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
 
 ## User and Project Extensions
 
