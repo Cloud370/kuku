@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use kuku::context::{CanonicalMessage, MessageBlock, Role};
-use kuku::event::{EventPayload, StoredEvent};
+use kuku::event::{EventPayload, EventStore, StoredEvent};
 use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
 
 fn options(server: &MockServer, workspace: &Path, data: &Path) -> (SessionOptions, String) {
@@ -198,6 +198,116 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
                 }),
         );
         assert_eq!(json!(messages), body["messages"]);
+    }
+}
+
+#[tokio::test]
+async fn unprepared_catalog_does_not_freeze_the_first_model_request() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let prompts = tempfile::tempdir().unwrap();
+    std::fs::write(prompts.path().join("system.md"), "UNPREPARED_SYSTEM").unwrap();
+    let (mut original, path) = options(&server, workspace.path(), data.path());
+    original.prompts_dir = Some(prompts.path().into());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"done"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original.clone()).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    original.session_id = Some(session.id().into());
+    let events_path = session.events_path().to_path_buf();
+    session.close().await.unwrap();
+    let catalog = kuku::PromptCatalog::load_from_dir(prompts.path()).unwrap();
+    let orphan = EventStore::open(&events_path)
+        .unwrap()
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "catalog":catalog,
+        })))
+        .unwrap();
+    std::fs::write(prompts.path().join("system.md"), "CURRENT_SYSTEM").unwrap();
+    let session = Session::open(original).await.unwrap();
+    session
+        .send(Input::new("first", "main", "first request"))
+        .unwrap();
+    idle(&session, "main").await;
+    let events = session.events(0, 256).unwrap();
+    session.close().await.unwrap();
+    model.assert_hits_async(1).await;
+    let bodies = common::take_http_requests(&path);
+    assert_eq!("CURRENT_SYSTEM", bodies[0]["messages"][0]["content"]);
+    assert!(!bodies[0].to_string().contains("UNPREPARED_SYSTEM"));
+    let prepared = facts(&events, "runtime.step_prepared", "main");
+    assert_eq!(1, prepared.len());
+    assert_ne!(json!(orphan.id), prepared[0]["segment"]);
+}
+
+#[tokio::test]
+async fn rendered_policy_boundary_survives_behavior_reconfiguration() {
+    for (policy, behavior) in [
+        ("", "OLD_BEHAVIOR"),
+        ("OLD_BEHAVIOR", "OLD_BEHAVIOR"),
+        ("", ""),
+    ] {
+        let server = MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let prompts = tempfile::tempdir().unwrap();
+        std::fs::create_dir(prompts.path().join("blocks")).unwrap();
+        std::fs::write(
+            prompts.path().join("blocks/project-policy.md"),
+            "{{project_instructions_rendered}}",
+        )
+        .unwrap();
+        std::fs::write(workspace.path().join("AGENTS.md"), policy).unwrap();
+        let (mut original, path) = options(&server, workspace.path(), data.path());
+        original.prompts_dir = Some(prompts.path().into());
+        let model = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path(&path)
+                    .matches(common::capture_http_request);
+                then.status(200)
+                    .body(response(json!({"content":"done"}), "stop"));
+            })
+            .await;
+        let session = Session::open(original.clone()).await.unwrap();
+        let mut config = agent();
+        config.instructions = Some(behavior.into());
+        session
+            .create_agent("create", "main", config.clone())
+            .unwrap();
+        session.send(Input::new("first", "main", "first")).unwrap();
+        idle(&session, "main").await;
+        original.session_id = Some(session.id().into());
+        session.close().await.unwrap();
+        std::fs::remove_dir_all(prompts.path()).unwrap();
+        let session = Session::open(original).await.unwrap();
+        config.instructions = Some("NEW_BEHAVIOR".into());
+        session
+            .configure_agent("configure", "main", config)
+            .unwrap();
+        session.send(Input::new("next", "main", "next")).unwrap();
+        idle(&session, "main").await;
+        let events = session.events(0, 256).unwrap();
+        session.close().await.unwrap();
+        model.assert_hits_async(2).await;
+        let bodies = common::take_http_requests(&path);
+        let slot = usize::from(!policy.is_empty());
+        assert_eq!("NEW_BEHAVIOR", bodies[1]["messages"][slot + 1]["content"]);
+        if !policy.is_empty() {
+            assert_eq!(policy, bodies[1]["messages"][1]["content"]);
+        }
+        let segments = facts(&events, "runtime.context_segment", "main");
+        assert_eq!(2, segments.len());
+        assert_eq!(json!(slot), segments[0]["identity_slot"]);
+        assert_eq!(json!(slot), segments[1]["identity_slot"]);
     }
 }
 

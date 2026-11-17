@@ -1,0 +1,422 @@
+use super::{
+    project_source, read_agent_events, read_frozen_catalog, ContextCursor, MAX_CACHED_READS,
+    MAX_SELECTION_BYTES_FACTOR,
+};
+use crate::context::{CanonicalMessage, MessageBlock};
+use crate::conversation::address::ConversationAddress;
+use crate::event::{EventPayload, EventStore, StoredEvent};
+use serde_json::json;
+
+#[test]
+fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let render = |events: &[StoredEvent]| {
+        let (_, history) =
+            super::super::replay::rebuild_history_for_provider(events, &ConversationAddress::MAIN);
+        let request = crate::provider::types::ProviderRequest {
+            assembly: crate::context::ContextAssembly {
+                system_prompt: String::new(),
+                prelude_messages: Vec::new(),
+                history,
+                tools: Vec::new(),
+                prompt_asset_sources: Vec::new(),
+                project_instruction_sources: Vec::new(),
+                memory_sources: Vec::new(),
+                runtime_context: None,
+                handoff_summary: None,
+            },
+            catalog: &catalog,
+            current_input: crate::provider::types::CanonicalPromptInput { parts: Vec::new() },
+            model: "fixture".into(),
+            max_output_tokens: Some(128),
+            temperature: None,
+            stream: true,
+            think_level: crate::config::ThinkLevel::Off,
+            thinking: Default::default(),
+        };
+        [
+            crate::provider::openai_compat::render_body(&request),
+            crate::provider::anthropic::render_body(&request),
+            crate::provider::openai_responses::render_body(&request),
+        ]
+    };
+    for status in ["ok", "error", "cancelled"] {
+        for model_content in ["", "EXACT_MODEL_VIEW"] {
+            let events = vec![
+                StoredEvent {
+                    id: 1,
+                    payload: EventPayload::ToolCall {
+                        turn: 1,
+                        ts: String::new(),
+                        conversation: Some("main".into()),
+                        tool_call_id: "tool".into(),
+                        request_id: "req_1".into(),
+                        index: 0,
+                        tool: "fixture".into(),
+                        args: json!({}),
+                    },
+                },
+                StoredEvent {
+                    id: 2,
+                    payload: EventPayload::ToolResult {
+                        turn: 1,
+                        ts: String::new(),
+                        conversation: Some("main".into()),
+                        tool_call_id: "tool".into(),
+                        status: status.into(),
+                        summary: "DIAGNOSTIC_SUMMARY".into(),
+                        model_content: model_content.into(),
+                        truncated: true,
+                        files_read: vec!["read".into()],
+                        files_changed: vec!["changed".into()],
+                        commands_run: vec!["command".into()],
+                        memory_changed: Some(json!({"diagnostic":true})),
+                        structured: Some(json!({"diagnostic":"x".repeat(65_536)})),
+                    },
+                },
+            ];
+            let projected = events
+                .iter()
+                .cloned()
+                .filter_map(|event| project_source(event, "main", Some(1)))
+                .collect::<Vec<_>>();
+            assert!(matches!(
+                &projected[1].payload,
+                EventPayload::ToolResult {
+                    structured: None,
+                    ..
+                }
+            ));
+            let original = render(&events);
+            assert_eq!(original, render(&projected));
+            assert_eq!(
+                model_content,
+                original[0]["messages"].as_array().unwrap().last().unwrap()["content"]
+            );
+            let messages = original[1]["messages"].as_array().unwrap();
+            assert_eq!(
+                model_content,
+                messages.last().unwrap()["content"][0]["content"]
+            );
+            assert_eq!(
+                status != "ok",
+                messages.last().unwrap()["content"][0]["is_error"]
+            );
+            assert_eq!(
+                model_content,
+                original[2]["input"].as_array().unwrap().last().unwrap()["output"]
+            );
+        }
+    }
+}
+
+#[test]
+fn frozen_assets_are_selected_by_agent_across_bounded_pages() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    let mut original = crate::prompt::builtin_prompt_catalog();
+    original.system.text = "original main system".into();
+    let prepared = writer
+        .append(EventPayload::Unknown(
+            json!({"kind":"runtime.context_segment","agent":"main","catalog":original}),
+        ))
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(
+            json!({"kind":"runtime.step_prepared","agent":"main","segment":prepared.id}),
+        ))
+        .unwrap();
+    for index in 0..300 {
+        writer.append(EventPayload::Unknown(json!({"kind":"fixture.other_agent_output","agent":"reviewer","index":index,"output":"x".repeat(4096)}))).unwrap();
+    }
+    let mut unrelated = original.clone();
+    unrelated.system.text = "other agent system".into();
+    let prepared = writer
+        .append(EventPayload::Unknown(
+            json!({"kind":"runtime.context_segment","agent":"reviewer","catalog":unrelated}),
+        ))
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(
+            json!({"kind":"runtime.step_prepared","agent":"reviewer","segment":prepared.id}),
+        ))
+        .unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_segment","agent":"main","catalog":"unprepared invalid catalog"}))).unwrap();
+    assert_eq!(Some(original), read_frozen_catalog(&path, "main").unwrap());
+    assert_eq!(None, read_frozen_catalog(&path, "missing").unwrap());
+}
+
+fn segment(agent: &str, system: &str) -> EventPayload {
+    EventPayload::Unknown(
+        json!({"kind":"runtime.context_segment","agent":agent,"signature":"fixture","configuration":0,"handoff":0,
+        "system_prompt":system,"prelude":[],"tools":[],"catalog":crate::prompt::builtin_prompt_catalog()}),
+    )
+}
+
+#[test]
+fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            ts: "ts".into(),
+            conversation: "reviewer".into(),
+            turn: 1,
+        })
+        .unwrap();
+    let input = writer
+        .append(EventPayload::MessageUser {
+            ts: "ts".into(),
+            conversation: "reviewer".into(),
+            turn: 1,
+            text: "input".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    let first = writer
+        .append(segment("reviewer", "committed system"))
+        .unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","agent":"reviewer","segment":first.id,"ordinal":0,"turn":1,"origin":"input","message":CanonicalMessage::user_text("input")}))).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.step_prepared","agent":"reviewer","segment":first.id,"context_head":1,"source_head":input.id}))).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            ts: "ts".into(),
+            conversation: "noisy".into(),
+            turn: 2,
+        })
+        .unwrap();
+    for _ in 0..40 {
+        writer
+            .append(EventPayload::ModelResponse {
+                ts: "ts".into(),
+                conversation: Some("noisy".into()),
+                turn: 2,
+                request_id: "noise".into(),
+                text: "x".repeat(64 * 1024),
+                thinking: None,
+                stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+                input_tokens_total: None,
+                output_tokens_total: None,
+            })
+            .unwrap();
+    }
+    writer
+        .append(EventPayload::ModelResponse {
+            ts: "ts".into(),
+            conversation: Some("reviewer".into()),
+            turn: 1,
+            request_id: "reply".into(),
+            text: "done".into(),
+            thinking: None,
+            stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+            input_tokens_total: Some(100),
+            output_tokens_total: Some(1),
+        })
+        .unwrap();
+    let orphan = writer
+        .append(segment("reviewer", "unprepared replacement"))
+        .unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","agent":"reviewer","segment":orphan.id,"ordinal":0,"turn":1,"origin":"input","message":CanonicalMessage::user_text("unprepared view")}))).unwrap();
+    let mut cursor = ContextCursor::default();
+    cursor.refresh(&path, "reviewer", 16 * 1024).unwrap();
+    assert_eq!(
+        Some(first.id),
+        cursor.segment.as_ref().map(|segment| segment.id)
+    );
+    assert!(cursor.retained_bytes < 4096);
+    let conversation = ConversationAddress::parse("reviewer").unwrap();
+    let history = cursor.history(&conversation);
+    assert_eq!(2, history.len());
+    assert_eq!(
+        CanonicalMessage::assistant(vec![MessageBlock::Text("done".into())]),
+        history[1].message
+    );
+    let read = cursor.events_read;
+    writer
+        .append(EventPayload::MessageAssistant {
+            ts: "ts".into(),
+            conversation: "reviewer".into(),
+            turn: 1,
+            message_id: "reply".into(),
+            text: "done".into(),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::MessageAssistant {
+            ts: "ts".into(),
+            conversation: "reviewer".into(),
+            turn: 1,
+            message_id: "independent".into(),
+            text: "independent notice".into(),
+        })
+        .unwrap();
+    cursor.refresh(&path, "reviewer", 16 * 1024).unwrap();
+    assert_eq!(2, cursor.events_read - read);
+    assert_eq!(3, cursor.history(&conversation).len());
+    let read = cursor.events_read;
+    cursor.refresh(&path, "reviewer", 16 * 1024).unwrap();
+    assert_eq!(read, cursor.events_read);
+}
+
+#[test]
+fn an_orphan_segment_does_not_hide_a_later_prepared_head_of_the_active_segment() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            ts: "ts".into(),
+            conversation: "main".into(),
+            turn: 1,
+        })
+        .unwrap();
+    let first = writer.append(segment("main", "prepared system")).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","agent":"main","segment":first.id,"ordinal":0,"turn":1,"origin":"input","message":CanonicalMessage::user_text("first input")}))).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.step_prepared","agent":"main","segment":first.id,"context_head":1,"source_head":first.id}))).unwrap();
+    let reply = writer
+        .append(EventPayload::ModelResponse {
+            ts: "ts".into(),
+            conversation: Some("main".into()),
+            turn: 1,
+            request_id: "reply".into(),
+            text: "accepted response".into(),
+            thinking: None,
+            stop_reason: Some(crate::event::ModelStopReason::EndTurn),
+            input_tokens_total: Some(100),
+            output_tokens_total: Some(1),
+        })
+        .unwrap();
+    let orphan = writer.append(segment("main", "unprepared system")).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","agent":"main","segment":orphan.id,"ordinal":0,"turn":1,"origin":"input","message":CanonicalMessage::user_text("orphan input")}))).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","agent":"main","segment":first.id,"ordinal":1,"turn":1,"origin":"response","message":CanonicalMessage::assistant(vec![MessageBlock::Text("accepted response".into())])}))).unwrap();
+    writer.append(EventPayload::Unknown(json!({"kind":"runtime.step_prepared","agent":"main","segment":first.id,"context_head":2,"source_head":reply.id}))).unwrap();
+    let mut cursor = ContextCursor::default();
+    cursor.refresh(&path, "main", 16 * 1024).unwrap();
+    assert_eq!(
+        Some(first.id),
+        cursor.segment.as_ref().map(|segment| segment.id)
+    );
+    assert_eq!(2, cursor.admitted.len());
+    assert_eq!(
+        CanonicalMessage::assistant(vec![MessageBlock::Text("accepted response".into())]),
+        cursor.history(&ConversationAddress::MAIN)[1].message
+    );
+}
+fn append_read(writer: &mut EventStore, turn: u64, file: u64, cached: bool) {
+    writer
+        .append(EventPayload::TurnStarted {
+            ts: "ts".into(),
+            conversation: "main".into(),
+            turn,
+        })
+        .unwrap();
+    writer.append(EventPayload::ToolResult { ts: "ts".into(), conversation: Some("main".into()), turn, tool_call_id: format!("read-{turn}"), status: "ok".into(), summary: "read".into(), model_content: "model view".into(), truncated: false,
+        files_read: Vec::new(), files_changed: Vec::new(), commands_run: Vec::new(), memory_changed: None,
+        structured: Some(json!({"kind":"file_content","canonical_path":format!("/fixture/{file}.txt"),"start_line":1,"raw_text":"x".repeat(4096),"cached":cached})) }).unwrap();
+}
+
+#[test]
+fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: String::new(),
+            conversation: "reviewer".into(),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: None,
+            turn: 1,
+            ts: String::new(),
+            request_id: "req_3".into(),
+            text: "x".repeat(65_536),
+            thinking: Some("y".repeat(65_536)),
+            stop_reason: Some(crate::event::ModelStopReason::ToolUse),
+            input_tokens_total: Some(100),
+            output_tokens_total: Some(100),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::ToolCall {
+            turn: 1,
+            ts: String::new(),
+            conversation: None,
+            tool_call_id: "pending".into(),
+            request_id: "req_3".into(),
+            index: 0,
+            tool: "run_command".into(),
+            args: json!({"command":"echo exact"}),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 2,
+            ts: String::new(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 2,
+            ts: String::new(),
+            request_id: "req_9".into(),
+            text: "z".repeat(65_536),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap();
+    let events = read_agent_events(&path, "reviewer", 1024).unwrap();
+    assert_eq!(3, events.len());
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelResponse { conversation: Some(agent), request_id, text, thinking, .. }
+        if agent == "reviewer" && request_id == "req_3" && text.is_empty() && thinking.is_none()
+    )));
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ToolCall { conversation: Some(agent), args, .. }
+        if agent == "reviewer" && args["command"] == "echo exact"
+    )));
+}
+
+#[test]
+fn startup_read_snapshots_follow_both_byte_and_recent_access_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    for file in 0..130 {
+        append_read(&mut writer, file + 1, file, false);
+    }
+    let generous = read_agent_events(&path, "main", 1024 * 1024).unwrap();
+    let snapshots = |events: &[StoredEvent]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ToolResult {
+                    structured: Some(value),
+                    ..
+                } if value["kind"] == "file_content" => {
+                    value["canonical_path"].as_str().map(str::to_string)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(MAX_CACHED_READS, snapshots(&generous).len());
+    append_read(&mut writer, 131, 127, true);
+    append_read(&mut writer, 132, 130, false);
+    let bounded = read_agent_events(&path, "main", 4096).unwrap();
+    assert!(serde_json::to_vec(&bounded).unwrap().len() <= 4096 * MAX_SELECTION_BYTES_FACTOR);
+    let paths = snapshots(&bounded);
+    assert!(paths.contains(&"/fixture/127.txt".into()));
+    assert!(paths.contains(&"/fixture/130.txt".into()));
+    assert!(!paths.contains(&"/fixture/128.txt".into()));
+}

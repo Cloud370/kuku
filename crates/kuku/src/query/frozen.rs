@@ -10,7 +10,7 @@ use crate::context::{
     MessageBlock,
 };
 use crate::event::{EventPayload, EventStore};
-use crate::prompt::PromptCatalog;
+use crate::prompt::{render_project_context, ProjectContextInput, PromptCatalog};
 use crate::provider::types::{PreparedProviderRequest, ResolvedProvider};
 use crate::{Error, Result};
 
@@ -293,27 +293,26 @@ fn initial_segment(
     let project_instructions = load_project_instruction_sources(&pending.workspace)?;
     let (global_memory, project_memory) =
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
-    let mut assembly = assemble_context(
-        ContextInput {
-            environment: EnvironmentSource {
-                workspace_path: pending.workspace.display().to_string(),
-                platform: platform_label().into(),
-                current_date: current_date_string(),
-            },
-            project_instructions,
-            global_memory,
-            project_memory,
-            history: Vec::new(),
-            tools: tools.to_vec(),
-            model_tiers: pending.config.tier_infos(),
-            runtime_blocks: None,
-            enable_memory: true,
-            agent_name: pending.conversation.as_str().into(),
-            agent_instructions: behavior.into(),
-            response_contract: pending.query.response_contract.clone(),
+    let input = ContextInput {
+        environment: EnvironmentSource {
+            workspace_path: pending.workspace.display().to_string(),
+            platform: platform_label().into(),
+            current_date: current_date_string(),
         },
-        catalog,
-    )?;
+        project_instructions,
+        global_memory,
+        project_memory,
+        history: Vec::new(),
+        tools: tools.to_vec(),
+        model_tiers: pending.config.tier_infos(),
+        runtime_blocks: None,
+        enable_memory: true,
+        agent_name: pending.conversation.as_str().into(),
+        agent_instructions: behavior.into(),
+        response_contract: pending.query.response_contract.clone(),
+    };
+    let slot = rendered_identity_slot(&input, catalog)?;
+    let mut assembly = assemble_context(input, catalog)?;
     if let Some(text) = pending
         .agent_registry
         .as_ref()
@@ -337,12 +336,6 @@ fn initial_segment(
             .prelude_messages
             .push(CanonicalMessage::user_text(skill.body.clone()));
     }
-    let slot = usize::from(
-        catalog
-            .blocks
-            .get("project-policy")
-            .is_some_and(|asset| !asset.text.is_empty()),
-    );
     Ok(FrozenSegment {
         id: 0,
         signature: String::new(),
@@ -361,6 +354,42 @@ fn initial_segment(
         handoff_prelude: None,
         workspace: pending.workspace.to_string_lossy().into_owned(),
     })
+}
+
+fn rendered_identity_slot(input: &ContextInput, catalog: &PromptCatalog) -> Result<usize> {
+    let policy = catalog
+        .blocks
+        .get("project-policy")
+        .ok_or_else(|| Error::PromptRender("missing project-policy template".into()))?;
+    let policy = render_project_context(
+        &policy.text,
+        &ProjectContextInput {
+            workspace_root: input.environment.workspace_path.clone(),
+            platform: input.environment.platform.clone(),
+            current_date: input.environment.current_date.clone(),
+            project_instructions_rendered: if input.project_instructions.is_empty() {
+                "No project instructions found.".into()
+            } else {
+                input
+                    .project_instructions
+                    .iter()
+                    .map(|source| source.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            },
+            model_tiers_rendered: if input.model_tiers.is_empty() {
+                "No model tiers configured.".into()
+            } else {
+                input
+                    .model_tiers
+                    .iter()
+                    .map(|tier| format!("{} — {}", tier.name, tier.purpose))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        },
+    )?;
+    Ok(usize::from(!policy.is_empty()))
 }
 
 fn signature(
