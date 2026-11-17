@@ -286,7 +286,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 9);
+    assert_eq!(11, events.len());
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSources { .. })));
@@ -2152,7 +2152,7 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(events.len(), 9);
+    assert_eq!(11, events.len());
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
