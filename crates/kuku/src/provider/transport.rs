@@ -8,6 +8,8 @@ use super::prepare::{authentication, invalid_request};
 use super::trace::{ProviderTrace, ProviderTraceDirection, ProviderTraceMetadata};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderKind, ResolvedProvider};
 
+const MAX_ERROR_BODY_BYTES: usize = 4096;
+
 pub(crate) struct TransportResponse {
     pub(crate) response: wreq::Response,
     pub(crate) trace: Option<ProviderTrace>,
@@ -81,7 +83,12 @@ pub(crate) async fn send_prepared(
             .or_else(|| response.headers().get("request-id"))
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let body = response.text().await.unwrap_or_default();
+        let body = read_error_body(response).await;
+        let body = if config.api_key.expose().is_empty() {
+            body
+        } else {
+            body.replace(config.api_key.expose(), "<redacted>")
+        };
         let mut failure = classify_http_error(status.as_u16(), &body);
         failure.provider_request_id = request_id;
         return Err(failure);
@@ -102,11 +109,10 @@ fn request_headers(
             format!("Bearer {}", config.api_key.expose()),
         ),
     };
-    headers.insert(
-        name,
-        HeaderValue::from_str(&value)
-            .map_err(|_| invalid_request("credential is not a valid HTTP header value"))?,
-    );
+    let mut credential = HeaderValue::from_str(&value)
+        .map_err(|_| invalid_request("credential is not a valid HTTP header value"))?;
+    credential.set_sensitive(true);
+    headers.insert(name, credential);
     if prepared.kind == ProviderKind::Anthropic {
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
@@ -119,6 +125,26 @@ fn request_headers(
         );
     }
     Ok(headers)
+}
+
+async fn read_error_body(response: wreq::Response) -> String {
+    use tokio_stream::StreamExt;
+
+    let read = async move {
+        let mut stream = response.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(Ok(bytes)) = stream.next().await {
+            let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+            body.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+            if body.len() == MAX_ERROR_BODY_BYTES {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&body).into_owned()
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read)
+        .await
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

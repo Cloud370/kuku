@@ -180,6 +180,7 @@ pub(crate) struct CanonicalPromptInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProviderUsage {
+    /// Total input tokens, including cached input when reported.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,

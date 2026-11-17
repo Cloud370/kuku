@@ -2,8 +2,37 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::chunk::ProviderChunk;
 use super::error::transport_error;
-use super::types::ProviderFailure;
+use super::types::{ProviderFailure, ProviderFailureKind};
 use super::ProviderChunkStream;
+
+const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+
+pub(crate) struct SseFrame {
+    pub(crate) event: Option<String>,
+    pub(crate) data: String,
+}
+
+pub(crate) fn parse_sse_frame(frame: &str) -> Option<SseFrame> {
+    let mut event = None;
+    let mut data = Vec::new();
+    for line in frame.split(['\r', '\n']) {
+        if let Some(value) = line.strip_prefix("event:") {
+            event = Some(value.trim_start_matches(' ').to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value));
+        } else if line == "data" {
+            data.push("");
+        }
+    }
+    if data.is_empty() {
+        None
+    } else {
+        Some(SseFrame {
+            event,
+            data: data.join("\n"),
+        })
+    }
+}
 
 pub(crate) fn stream_sse_events(
     response: wreq::Response,
@@ -12,11 +41,9 @@ pub(crate) fn stream_sse_events(
     mut on_eof: impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
 ) -> ProviderChunkStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
-
     tokio::spawn(async move {
         run_sse_loop(response, &mut on_raw_frame, &mut on_frame, &mut on_eof, &tx).await;
     });
-
     Box::pin(ReceiverStream::new(rx))
 }
 
@@ -29,51 +56,42 @@ async fn run_sse_loop(
 ) {
     use tokio_stream::StreamExt;
     let mut byte_stream = response.bytes_stream();
-    let mut buf = String::new();
-
+    let mut decoder = SseDecoder::default();
     loop {
-        match byte_stream.next().await {
+        let next = tokio::select! {
+            _ = tx.closed() => return,
+            next = byte_stream.next() => next,
+        };
+        match next {
             Some(Ok(bytes)) => {
-                buf.push_str(&String::from_utf8_lossy(&bytes));
-                while let Some(pos) = buf.find("\n\n") {
-                    let frame = buf[..pos].to_string();
-                    buf.drain(..pos + 2);
-                    let trimmed = frame.trim().to_string();
-                    if trimmed.is_empty() {
-                        continue;
+                let frames = match decoder.feed(&bytes) {
+                    Ok(frames) => frames,
+                    Err(failure) => {
+                        let _ = tx.send(Err(failure)).await;
+                        return;
                     }
-                    on_raw_frame(&trimmed);
-                    let chunks = match on_frame(&trimmed) {
-                        Ok(chunks) => chunks,
-                        Err(failure) => {
-                            let _ = tx.send(Err(failure)).await;
-                            return;
-                        }
-                    };
-                    for chunk in chunks {
-                        if tx.send(Ok(chunk)).await.is_err() {
-                            return;
-                        }
+                };
+                for frame in frames {
+                    if !emit_frame(&frame, on_raw_frame, on_frame, tx).await {
+                        return;
                     }
                 }
             }
-            Some(Err(e)) => {
-                let _ = tx.send(Err(transport_error(&e))).await;
+            Some(Err(error)) => {
+                let _ = tx.send(Err(transport_error(&error))).await;
                 return;
             }
             None => {
-                let remaining = buf.trim().to_string();
-                if !remaining.is_empty() {
-                    on_raw_frame(&remaining);
-                    let chunks = match on_frame(&remaining) {
-                        Ok(chunks) => chunks,
-                        Err(failure) => {
-                            let _ = tx.send(Err(failure)).await;
+                match decoder.finish() {
+                    Ok(Some(frame)) => {
+                        if !emit_frame(&frame, on_raw_frame, on_frame, tx).await {
                             return;
                         }
-                    };
-                    for chunk in chunks {
-                        let _ = tx.send(Ok(chunk)).await;
+                    }
+                    Ok(None) => {}
+                    Err(failure) => {
+                        let _ = tx.send(Err(failure)).await;
+                        return;
                     }
                 }
                 let chunks = match on_eof() {
@@ -84,10 +102,194 @@ async fn run_sse_loop(
                     }
                 };
                 for chunk in chunks {
-                    let _ = tx.send(Ok(chunk)).await;
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        return;
+                    }
                 }
                 return;
             }
         }
+    }
+}
+
+async fn emit_frame(
+    frame: &str,
+    on_raw_frame: &mut (impl FnMut(&str) + Send),
+    on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
+    tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
+) -> bool {
+    if frame.trim().is_empty() {
+        return true;
+    }
+    on_raw_frame(frame);
+    match on_frame(frame) {
+        Ok(chunks) => {
+            for chunk in chunks {
+                if tx.send(Ok(chunk)).await.is_err() {
+                    return false;
+                }
+            }
+            true
+        }
+        Err(failure) => {
+            let _ = tx.send(Err(failure)).await;
+            false
+        }
+    }
+}
+
+#[derive(Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+    scan: usize,
+    line_start: usize,
+}
+
+impl SseDecoder {
+    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<String>, ProviderFailure> {
+        self.buffer.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        let mut consumed = 0;
+        while let Some((end, next)) = self.next_boundary() {
+            if end - consumed > MAX_FRAME_BYTES {
+                return Err(invalid_frame("provider SSE frame exceeds the byte limit"));
+            }
+            let frame = std::str::from_utf8(&self.buffer[consumed..end])
+                .map_err(|_| invalid_frame("provider SSE frame contains invalid UTF-8"))?
+                .trim_end()
+                .to_string();
+            frames.push(frame);
+            consumed = next;
+        }
+        if self.buffer.len() - consumed > MAX_FRAME_BYTES {
+            return Err(invalid_frame("provider SSE frame exceeds the byte limit"));
+        }
+        if consumed > 0 {
+            self.buffer.drain(..consumed);
+            self.scan -= consumed;
+            self.line_start -= consumed;
+        }
+        Ok(frames)
+    }
+
+    fn next_boundary(&mut self) -> Option<(usize, usize)> {
+        while self.scan < self.buffer.len() {
+            let width = match self.buffer[self.scan] {
+                b'\n' => 1,
+                b'\r' if self.scan + 1 == self.buffer.len() => return None,
+                b'\r' if self.buffer[self.scan + 1] == b'\n' => 2,
+                b'\r' => 1,
+                _ => {
+                    self.scan += 1;
+                    continue;
+                }
+            };
+            let end = self.scan;
+            let empty = self.line_start == end;
+            self.scan += width;
+            self.line_start = self.scan;
+            if empty {
+                return Some((end, self.scan));
+            }
+        }
+        None
+    }
+
+    fn finish(&mut self) -> Result<Option<String>, ProviderFailure> {
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+        let frame = std::str::from_utf8(&self.buffer)
+            .map_err(|_| invalid_frame("provider SSE stream ends with invalid UTF-8"))?
+            .trim()
+            .to_string();
+        self.buffer.clear();
+        Ok((!frame.is_empty()).then_some(frame))
+    }
+}
+
+fn invalid_frame(message: &str) -> ProviderFailure {
+    ProviderFailure {
+        kind: ProviderFailureKind::Transport,
+        message: message.into(),
+        status: None,
+        provider_request_id: None,
+        retryable: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_boundaries_preserve_utf8_and_crlf_frames() {
+        let source = "event: text\r\ndata: {\"text\":\"你好😀\"}\r\n\r\ndata: [DONE]\n\n";
+        for width in 1..=source.len() {
+            let mut decoder = SseDecoder::default();
+            let mut frames = Vec::new();
+            for bytes in source.as_bytes().chunks(width) {
+                frames.extend(decoder.feed(bytes).unwrap());
+            }
+            if let Some(frame) = decoder.finish().unwrap() {
+                frames.push(frame);
+            }
+            assert_eq!(2, frames.len(), "network chunk width {width}");
+            assert_eq!(
+                "{\"text\":\"你好😀\"}",
+                parse_sse_frame(&frames[0]).unwrap().data
+            );
+            assert_eq!("[DONE]", parse_sse_frame(&frames[1]).unwrap().data);
+        }
+    }
+
+    #[test]
+    fn comments_and_multiline_data_follow_sse_field_rules() {
+        let frame =
+            parse_sse_frame(": keepalive\nevent: update\ndata: {\ndata: \"ok\":true}\nid: 1")
+                .unwrap();
+        assert_eq!(Some("update"), frame.event.as_deref());
+        assert_eq!("{\n\"ok\":true}", frame.data);
+        assert!(parse_sse_frame(": ping\nretry: 1000").is_none());
+    }
+
+    #[test]
+    fn oversized_and_invalid_utf8_frames_fail_with_bounded_diagnostics() {
+        let mut decoder = SseDecoder::default();
+        let failure = decoder.feed(&vec![b'x'; MAX_FRAME_BYTES + 1]).unwrap_err();
+        assert!(!failure.retryable);
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.feed(b"data: \xff\n\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_a_stream_closes_a_stalled_http_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut headers = Vec::new();
+            let mut buffer = [0; 1024];
+            while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                headers.extend_from_slice(&buffer[..count]);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            assert_eq!(0, socket.read(&mut buffer).await.unwrap());
+        });
+        let response = super::super::http_client::api_client()
+            .get(format!("http://{address}/stall"))
+            .send()
+            .await
+            .unwrap();
+        let stream = stream_sse_events(response, |_| {}, |_| Ok(Vec::new()), || Ok(Vec::new()));
+        drop(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

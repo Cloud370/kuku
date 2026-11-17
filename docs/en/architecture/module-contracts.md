@@ -51,6 +51,8 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 Provider adapters own protocol translation, endpoint capability validation, authentication, and transport correlation. They should not grow ledger, conversation, or permission behavior. Connections are selected by their configured names; a wire format never selects the first matching connection. Requested settings, effective wire settings, and optional provider reports remain separate facts. The runtime supplies stable Session/Agent/connection correlation and prepared context; the adapter freezes the wire request before dispatch and does not render behavioral Prompt assets during replay. Native reasoning replay data stays attached to the assistant message and is used only by its matching protocol.
 
+Native replay preserves Messages thinking signatures and block order, Responses reasoning/output items, and Chat reasoning details. An incompatible protocol requires a successor context segment. Stream decoding preserves UTF-8 across network chunks, accepts SSE line endings and multiline data, and closes the HTTP reader when its consumer is dropped. Each SSE event is limited to 2 MiB; retained native replay and raw usage are limited to 512 KiB each. Limits fail explicitly before dependent tool dispatch. `ProviderUsage.input_tokens` means total input including available cache reads/writes in every protocol; cache counters are subsets, while the original usage object and optional reported model, upstream, service, reasoning, and cost remain available separately. Missing provider confirmation stays unknown.
+
 ## Related Pages
 
 - [Prompt Assembly](prompt-assembly.md)

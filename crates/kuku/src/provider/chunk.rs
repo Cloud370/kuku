@@ -8,6 +8,13 @@ pub(crate) enum ProviderChunk {
     TextDelta { text: String },
     /// A thinking/reasoning content fragment.
     ThinkingDelta { text: String },
+    Replay {
+        protocol: crate::config::ProviderFormat,
+        value: serde_json::Value,
+    },
+    Report {
+        report: super::types::ProviderReport,
+    },
     /// A tool call has begun (id and name are now known).
     ToolCallStart {
         index: u64,

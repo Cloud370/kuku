@@ -1,11 +1,14 @@
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::sse::stream_sse_events;
+use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::report::ReportAccumulator;
+use super::sse::{parse_sse_frame, stream_sse_events};
 use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
@@ -114,7 +117,9 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
                     "content": result.model_content,
                 }));
             }
-            MessageBlock::ToolUse(_) | MessageBlock::Thinking(_) => {}
+            MessageBlock::ToolUse(_)
+            | MessageBlock::Thinking(_)
+            | MessageBlock::ProviderReplay { .. } => {}
         }
     }
 
@@ -141,9 +146,10 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
         .iter()
         .filter_map(|block| match block {
             MessageBlock::Text(text) => Some(text.as_str()),
-            MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) => {
-                None
-            }
+            MessageBlock::ToolUse(_)
+            | MessageBlock::ToolResult(_)
+            | MessageBlock::Thinking(_)
+            | MessageBlock::ProviderReplay { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("");
@@ -161,12 +167,20 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
                         .unwrap_or_else(|_| "{}".to_string()),
                 }
             })),
-            MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) => None,
+            MessageBlock::Text(_)
+            | MessageBlock::ToolResult(_)
+            | MessageBlock::Thinking(_)
+            | MessageBlock::ProviderReplay { .. } => None,
         })
         .collect::<Vec<_>>();
 
     let mut msg = json!({"role": "assistant"});
-    if !thinking.is_empty() {
+    if let Some(details) = native_replay(message, ProviderFormat::OpenAiChat)
+        .and_then(|value| value.get("reasoning_details"))
+    {
+        msg["reasoning_details"] = details.clone();
+    }
+    if !thinking.is_empty() && msg.get("reasoning_details").is_none() {
         msg["reasoning_content"] = json!(thinking);
     }
     if tool_calls.is_empty() {
@@ -224,6 +238,9 @@ struct OpenAiCompatSseParser {
     tool_call_indices: Vec<u64>,
     invalid_tool_stream: bool,
     saw_done: bool,
+    reasoning_details: Vec<Value>,
+    replay_budget: ReplayBudget,
+    reports: ReportAccumulator,
 }
 
 impl OpenAiCompatSseParser {
@@ -234,6 +251,9 @@ impl OpenAiCompatSseParser {
             tool_call_indices: Vec::new(),
             invalid_tool_stream: false,
             saw_done: false,
+            reasoning_details: Vec::new(),
+            replay_budget: ReplayBudget::default(),
+            reports: ReportAccumulator::default(),
         }
     }
 
@@ -242,10 +262,10 @@ impl OpenAiCompatSseParser {
             return Ok(self.take_chunks());
         }
 
-        let data_str = match frame.strip_prefix("data:") {
-            Some(s) => s.trim(),
-            None => return Ok(self.take_chunks()),
+        let Some(frame) = parse_sse_frame(frame) else {
+            return Ok(self.take_chunks());
         };
+        let data_str = frame.data.trim();
 
         if data_str == "[DONE]" {
             self.saw_done = true;
@@ -253,10 +273,9 @@ impl OpenAiCompatSseParser {
             return Ok(self.take_chunks());
         }
 
-        let data: Value = match serde_json::from_str(data_str) {
-            Ok(v) => v,
-            Err(_) => return Ok(self.take_chunks()),
-        };
+        let data: Value = serde_json::from_str(data_str).map_err(|_| {
+            super::prepare::invalid_request("provider emitted malformed JSON event")
+        })?;
 
         if let Some(err) = data.get("error") {
             let code = err
@@ -285,23 +304,13 @@ impl OpenAiCompatSseParser {
             self.started = true;
         }
 
-        if let Some(usage) = data.get("usage").and_then(Value::as_object) {
-            let input_tokens_total = usage.get("prompt_tokens").and_then(Value::as_u64);
-            let cache_read_input_tokens = usage
-                .get("prompt_tokens_details")
-                .and_then(|details| details.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
-            self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
-                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
-                    (Some(total), None) => Some(total),
-                    (None, _) => None,
-                },
-                output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
-                cache_read_input_tokens,
-                cache_creation_input_tokens: None,
-            });
+        if let Some(report) = self.reports.observe(&data)? {
+            self.chunks.push(ProviderChunk::Report { report });
+        }
+        if data.get("usage").is_some_and(Value::is_object) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiChat) {
+                self.chunks.push(usage);
+            }
         }
 
         let choices = match data.get("choices").and_then(Value::as_array) {
@@ -321,7 +330,7 @@ impl OpenAiCompatSseParser {
         }
 
         if let Some(text) = delta
-            .and_then(|d| d.get("reasoning_content"))
+            .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
             .and_then(Value::as_str)
         {
             if !text.is_empty() {
@@ -329,6 +338,13 @@ impl OpenAiCompatSseParser {
                     text: text.to_string(),
                 });
             }
+        }
+
+        if let Some(details) = delta
+            .and_then(|delta| delta.get("reasoning_details"))
+            .and_then(Value::as_array)
+        {
+            self.merge_reasoning_details(details)?;
         }
 
         if let Some(tool_calls) = delta
@@ -374,6 +390,14 @@ impl OpenAiCompatSseParser {
         }
 
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if !self.reasoning_details.is_empty() {
+                let value = json!({"reasoning_details": self.reasoning_details});
+                validate_replay_size(&value)?;
+                self.chunks.push(ProviderChunk::Replay {
+                    protocol: ProviderFormat::OpenAiChat,
+                    value,
+                });
+            }
             for &idx in &self.tool_call_indices {
                 self.chunks.push(ProviderChunk::ToolCallStop { index: idx });
             }
@@ -391,6 +415,45 @@ impl OpenAiCompatSseParser {
         }
 
         Ok(self.take_chunks())
+    }
+
+    fn merge_reasoning_details(&mut self, details: &[Value]) -> Result<(), ProviderFailure> {
+        for detail in details {
+            self.replay_budget.add(detail)?;
+            let existing = detail
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|index| {
+                    self.reasoning_details
+                        .iter_mut()
+                        .find(|value| value.get("index").and_then(Value::as_u64) == Some(index))
+                });
+            if let Some(existing) = existing {
+                if let (Some(target), Some(update)) = (existing.as_object_mut(), detail.as_object())
+                {
+                    for (key, value) in update {
+                        if matches!(key.as_str(), "text" | "summary" | "data") {
+                            if let (Some(existing), Some(fragment)) = (
+                                target.get(key).and_then(Value::as_str).map(str::to_string),
+                                value.as_str(),
+                            ) {
+                                target.insert(key.clone(), Value::String(existing + fragment));
+                                continue;
+                            }
+                        }
+                        target.insert(key.clone(), value.clone());
+                    }
+                }
+            } else {
+                if self.reasoning_details.len() >= MAX_REPLAY_ITEMS {
+                    return Err(super::prepare::invalid_request(
+                        "too many native reasoning items",
+                    ));
+                }
+                self.reasoning_details.push(detail.clone());
+            }
+        }
+        Ok(())
     }
 
     fn finish(&mut self) -> Result<Vec<ProviderChunk>, ProviderFailure> {
@@ -442,7 +505,7 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: Some(54),
+                input_tokens: Some(88),
                 output_tokens: Some(18),
                 cache_read_input_tokens: Some(34),
                 cache_creation_input_tokens: None
@@ -460,7 +523,7 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: Some(54),
+                input_tokens: Some(88),
                 output_tokens: Some(18),
                 cache_read_input_tokens: Some(34),
                 cache_creation_input_tokens: None

@@ -925,9 +925,10 @@ fn append_current_turn_prefix_once(messages: &mut Vec<CanonicalMessage>, prefix:
     if messages.iter().any(|message| {
         message.blocks.iter().any(|block| match block {
             MessageBlock::Text(text) => text.contains(prefix),
-            MessageBlock::Thinking(_) | MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => {
-                false
-            }
+            MessageBlock::Thinking(_)
+            | MessageBlock::ToolUse(_)
+            | MessageBlock::ToolResult(_)
+            | MessageBlock::ProviderReplay { .. } => false,
         })
     }) {
         return;

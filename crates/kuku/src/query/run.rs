@@ -519,6 +519,20 @@ impl Run {
                         entry.cache_creation_input_tokens = cache_creation_input_tokens;
                     }
                 }
+                ProviderChunk::Replay { protocol, value } => {
+                    EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+                        "kind": "runtime.provider_replay", "ts": now_timestamp()?,
+                        "agent": streaming.conversation.as_str(), "turn": streaming.pending.turn,
+                        "request_id": streaming.request_id, "protocol": protocol, "value": value,
+                    })))?;
+                }
+                ProviderChunk::Report { report } => {
+                    EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+                        "kind": "runtime.provider_report", "ts": now_timestamp()?,
+                        "agent": streaming.conversation.as_str(), "turn": streaming.pending.turn,
+                        "request_id": streaming.request_id, "report": report,
+                    })))?;
+                }
                 ProviderChunk::ServerError { code, message } => {
                     return Err(crate::error::Error::Provider {
                         kind: crate::provider::types::ProviderFailureKind::Unknown,

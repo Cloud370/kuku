@@ -2,11 +2,14 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::sse::stream_sse_events;
+use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::report::ReportAccumulator;
+use super::sse::{parse_sse_frame, stream_sse_events};
 use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
@@ -18,6 +21,14 @@ pub(crate) fn responses_url(base_url: &str) -> String {
 }
 
 fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
+    if message.role == Role::Assistant {
+        if let Some(items) = native_replay(message, ProviderFormat::OpenAiResponses)
+            .and_then(|value| value.get("output"))
+            .and_then(Value::as_array)
+        {
+            return items.clone();
+        }
+    }
     match message.role {
         Role::User => {
             let mut items = Vec::new();
@@ -41,7 +52,9 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
                             "output": result.model_content,
                         }));
                     }
-                    MessageBlock::ToolUse(_) | MessageBlock::Thinking(_) => {}
+                    MessageBlock::ToolUse(_)
+                    | MessageBlock::Thinking(_)
+                    | MessageBlock::ProviderReplay { .. } => {}
                 }
             }
 
@@ -65,6 +78,7 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
                     MessageBlock::ToolUse(_)
                     | MessageBlock::ToolResult(_)
                     | MessageBlock::Thinking(_) => None,
+                    MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("");
@@ -82,9 +96,9 @@ fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
                     "type": "function_call",
                     "call_id": tool_use.id,
                     "name": tool_use.name,
-                    "arguments": tool_use.args,
+                    "arguments": serde_json::to_string(&tool_use.args).expect("tool arguments are JSON"),
                 })),
-                MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) => {
+                MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) | MessageBlock::ProviderReplay { .. } => {
                     None
                 }
             }));
@@ -216,6 +230,9 @@ struct OpenAiResponsesSseParser {
     item_id_indices: BTreeMap<String, u64>,
     function_calls: BTreeMap<u64, ResponseFunctionCall>,
     invalid_function_calls: bool,
+    replay_items: BTreeMap<u64, Value>,
+    replay_budget: ReplayBudget,
+    reports: ReportAccumulator,
 }
 
 impl OpenAiResponsesSseParser {
@@ -228,6 +245,9 @@ impl OpenAiResponsesSseParser {
             item_id_indices: BTreeMap::new(),
             function_calls: BTreeMap::new(),
             invalid_function_calls: false,
+            replay_items: BTreeMap::new(),
+            replay_budget: ReplayBudget::default(),
+            reports: ReportAccumulator::default(),
         }
     }
 
@@ -349,26 +369,21 @@ impl OpenAiResponsesSseParser {
             return Ok(self.take_chunks());
         }
 
-        let mut event_type = "";
-        let mut data_str = "";
-
-        for line in frame.lines() {
-            if let Some(rest) = line.strip_prefix("event:") {
-                event_type = rest.trim();
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                data_str = rest.trim();
-            }
-        }
-
-        if data_str.is_empty() {
+        let Some(frame) = parse_sse_frame(frame) else {
+            return Ok(self.take_chunks());
+        };
+        if frame.data.is_empty() {
             return Ok(self.take_chunks());
         }
+        let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
+            super::prepare::invalid_request("provider emitted malformed JSON event")
+        })?;
 
-        let data: Value = match serde_json::from_str(data_str) {
-            Ok(v) => v,
-            Err(_) => return Ok(self.take_chunks()),
-        };
-
+        let event_type = frame
+            .event
+            .as_deref()
+            .or_else(|| data.get("type").and_then(Value::as_str))
+            .unwrap_or("");
         match event_type {
             "response.created" if !self.started => {
                 let rid = data
@@ -380,11 +395,20 @@ impl OpenAiResponsesSseParser {
                 self.chunks
                     .push(ProviderChunk::StreamStart { request_id: rid });
                 self.started = true;
+                if let Some(response) = data.get("response") {
+                    self.push_usage(response)?;
+                }
             }
             "response.output_item.added" => {
                 let Some(item) = data.get("item") else {
                     return Ok(self.take_chunks());
                 };
+                self.replay_budget.add(item)?;
+                if self.output_item_types.len() >= MAX_REPLAY_ITEMS {
+                    return Err(super::prepare::invalid_request(
+                        "too many native response items",
+                    ));
+                }
                 let Some(item_type) = item.get("type").and_then(Value::as_str) else {
                     return Ok(self.take_chunks());
                 };
@@ -477,6 +501,7 @@ impl OpenAiResponsesSseParser {
                     self.invalidate_tool_stream();
                     return Ok(self.take_chunks());
                 };
+                self.replay_budget.add(&Value::String(delta.into()))?;
                 if !self.validate_function_identity(index, &data, None, true) {
                     return Ok(self.take_chunks());
                 }
@@ -545,6 +570,7 @@ impl OpenAiResponsesSseParser {
                     self.invalidate_tool_stream();
                     return Ok(self.take_chunks());
                 };
+                self.replay_budget.add(&Value::String(arguments.into()))?;
                 let Some(call) = self.function_calls.get_mut(&index) else {
                     self.invalidate_tool_stream();
                     return Ok(self.take_chunks());
@@ -570,14 +596,35 @@ impl OpenAiResponsesSseParser {
                 }
             }
             "response.output_item.done" => {
+                if let (Some(index), Some(item)) = (
+                    data.get("output_index").and_then(Value::as_u64),
+                    data.get("item"),
+                ) {
+                    self.replay_budget.add(item)?;
+                    self.replay_items.insert(index, item.clone());
+                }
                 self.finish_output_item(&data);
             }
             "response.completed" => {
                 if let Some(resp) = data.get("response") {
-                    self.push_usage(resp);
-                    self.chunks.push(ProviderChunk::StopReason {
-                        reason: self.completed_reason(resp),
-                    });
+                    self.push_usage(resp)?;
+                    let reason = self.completed_reason(resp);
+                    if reason != ModelStopReason::InvalidResponse {
+                        let output = resp
+                            .get("output")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_else(|| self.replay_items.values().cloned().collect());
+                        if !output.is_empty() {
+                            let value = json!({"output": output});
+                            validate_replay_size(&value)?;
+                            self.chunks.push(ProviderChunk::Replay {
+                                protocol: ProviderFormat::OpenAiResponses,
+                                value,
+                            });
+                        }
+                    }
+                    self.chunks.push(ProviderChunk::StopReason { reason });
                 } else {
                     self.chunks.push(ProviderChunk::StopReason {
                         reason: ModelStopReason::InvalidResponse,
@@ -588,7 +635,7 @@ impl OpenAiResponsesSseParser {
             }
             "response.incomplete" => {
                 if let Some(resp) = data.get("response") {
-                    self.push_usage(resp);
+                    self.push_usage(resp)?;
                     let reason = resp
                         .get("incomplete_details")
                         .and_then(|details| details.get("reason"))
@@ -606,7 +653,7 @@ impl OpenAiResponsesSseParser {
             }
             "response.failed" | "error" => {
                 if let Some(response) = data.get("response") {
-                    self.push_usage(response);
+                    self.push_usage(response)?;
                 }
                 let error = if event_type == "error" {
                     Some(&data)
@@ -634,24 +681,16 @@ impl OpenAiResponsesSseParser {
         Ok(self.take_chunks())
     }
 
-    fn push_usage(&mut self, response: &Value) {
-        if let Some(usage) = response.get("usage") {
-            let input_tokens_total = usage.get("input_tokens").and_then(Value::as_u64);
-            let cache_read_input_tokens = usage
-                .get("input_tokens_details")
-                .and_then(|details| details.get("cached_tokens"))
-                .and_then(Value::as_u64);
-            self.chunks.push(ProviderChunk::StreamUsage {
-                input_tokens: match (input_tokens_total, cache_read_input_tokens) {
-                    (Some(total), Some(cached)) => Some(total.saturating_sub(cached)),
-                    (Some(total), None) => Some(total),
-                    (None, _) => None,
-                },
-                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-                cache_read_input_tokens,
-                cache_creation_input_tokens: None,
-            });
+    fn push_usage(&mut self, response: &Value) -> Result<(), ProviderFailure> {
+        if let Some(report) = self.reports.observe(response)? {
+            self.chunks.push(ProviderChunk::Report { report });
         }
+        if response.get("usage").is_some_and(Value::is_object) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiResponses) {
+                self.chunks.push(usage);
+            }
+        }
+        Ok(())
     }
 
     fn finish_output_item(&mut self, data: &Value) {
@@ -865,7 +904,7 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: Some(50),
+                input_tokens: Some(120),
                 output_tokens: Some(30),
                 cache_read_input_tokens: Some(70),
                 cache_creation_input_tokens: None
@@ -907,7 +946,7 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::StreamUsage {
-                input_tokens: Some(50),
+                input_tokens: Some(120),
                 output_tokens: Some(30),
                 cache_read_input_tokens: Some(70),
                 cache_creation_input_tokens: None

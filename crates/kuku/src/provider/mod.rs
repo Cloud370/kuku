@@ -7,6 +7,8 @@ pub(crate) mod http_client;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
 pub(crate) mod prepare;
+pub(crate) mod replay;
+pub(crate) mod report;
 pub(crate) mod sse;
 pub(crate) mod trace;
 pub(crate) mod transport;

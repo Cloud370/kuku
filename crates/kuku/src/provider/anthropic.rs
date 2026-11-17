@@ -1,12 +1,15 @@
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::sse::stream_sse_events;
+use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::report::ReportAccumulator;
+use super::sse::{parse_sse_frame, stream_sse_events};
 use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
@@ -97,6 +100,15 @@ fn cache_control_ephemeral() -> Value {
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {
+    if message.role == Role::Assistant {
+        if let Some(native) = native_replay(message, ProviderFormat::Anthropic) {
+            if native.get("role").and_then(Value::as_str) == Some("assistant")
+                && native.get("content").is_some_and(Value::is_array)
+            {
+                return native.clone();
+            }
+        }
+    }
     match message.role {
         Role::User => {
             let content = message
@@ -108,8 +120,11 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                         "type": "tool_result",
                         "tool_use_id": result.tool_call_id,
                         "content": result.model_content,
+                        "is_error": result.status != "ok",
                     })),
-                    MessageBlock::ToolUse(_) | MessageBlock::Thinking(_) => None,
+                    MessageBlock::ToolUse(_)
+                    | MessageBlock::Thinking(_)
+                    | MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>();
 
@@ -121,10 +136,6 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                 .iter()
                 .filter_map(|block| match block {
                     MessageBlock::Thinking(text) => {
-                        // NOTE: Anthropic API requires a `signature` field on replayed thinking
-                        // blocks for multi-turn sessions. Proxies that strip signatures will
-                        // accept blocks without it; direct Anthropic API access needs signature
-                        // capture from content_block_stop events (future work).
                         Some(json!({"type": "thinking", "thinking": text}))
                     }
                     MessageBlock::Text(text) => Some(json!({"type": "text", "text": text})),
@@ -134,7 +145,7 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                         "name": tool_use.name,
                         "input": tool_use.args,
                     })),
-                    MessageBlock::ToolResult(_) => None,
+                    MessageBlock::ToolResult(_) | MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>();
 
@@ -186,6 +197,11 @@ struct AnthropicSseParser {
     tool_blocks: BTreeSet<u64>,
     invalid_tool_stream: bool,
     saw_terminal: bool,
+    content_blocks: BTreeMap<u64, Value>,
+    completed_blocks: BTreeSet<u64>,
+    tool_arguments: BTreeMap<u64, String>,
+    replay_budget: ReplayBudget,
+    reports: ReportAccumulator,
 }
 
 impl AnthropicSseParser {
@@ -195,6 +211,11 @@ impl AnthropicSseParser {
             tool_blocks: BTreeSet::new(),
             invalid_tool_stream: false,
             saw_terminal: false,
+            content_blocks: BTreeMap::new(),
+            completed_blocks: BTreeSet::new(),
+            tool_arguments: BTreeMap::new(),
+            replay_budget: ReplayBudget::default(),
+            reports: ReportAccumulator::default(),
         }
     }
 
@@ -203,26 +224,21 @@ impl AnthropicSseParser {
             return Ok(self.take_chunks());
         }
 
-        let mut event_type = "";
-        let mut data_str = "";
-
-        for line in frame.lines() {
-            if let Some(rest) = line.strip_prefix("event:") {
-                event_type = rest.trim();
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                data_str = rest.trim();
-            }
-        }
-
-        if data_str.is_empty() || event_type == "ping" {
+        let Some(frame) = parse_sse_frame(frame) else {
+            return Ok(self.take_chunks());
+        };
+        if frame.data.is_empty() || frame.event.as_deref() == Some("ping") {
             return Ok(self.take_chunks());
         }
+        let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
+            super::prepare::invalid_request("provider emitted malformed JSON event")
+        })?;
 
-        let data: Value = match serde_json::from_str(data_str) {
-            Ok(v) => v,
-            Err(_) => return Ok(self.take_chunks()),
-        };
-
+        let event_type = frame
+            .event
+            .as_deref()
+            .or_else(|| data.get("type").and_then(Value::as_str))
+            .unwrap_or("");
         match event_type {
             "message_start" => {
                 if let Some(msg) = data.get("message") {
@@ -233,21 +249,44 @@ impl AnthropicSseParser {
                         .to_string();
                     self.chunks
                         .push(ProviderChunk::StreamStart { request_id: rid });
-                    if let Some(usage) = msg.get("usage") {
-                        self.chunks.push(ProviderChunk::StreamUsage {
-                            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-                            output_tokens: None,
-                            cache_read_input_tokens: None,
-                            cache_creation_input_tokens: None,
-                        });
-                    }
+                    self.record_report(msg)?;
                 }
             }
             "content_block_start" => {
                 if let Some(block) = data.get("content_block") {
+                    self.replay_budget.add(block)?;
+                    if self.content_blocks.len() >= MAX_REPLAY_ITEMS {
+                        return Err(super::prepare::invalid_request(
+                            "too many native content blocks",
+                        ));
+                    }
+                    if let Some(index) = data.get("index").and_then(Value::as_u64) {
+                        if self.content_blocks.insert(index, block.clone()).is_some() {
+                            self.invalid_tool_stream = true;
+                            self.chunks.push(ProviderChunk::InvalidToolStream);
+                        }
+                    }
                     match block.get("type").and_then(Value::as_str) {
-                        Some("text") => {}
-                        Some("thinking") => {}
+                        Some("text") => {
+                            if let Some(text) = block
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                            {
+                                self.chunks
+                                    .push(ProviderChunk::TextDelta { text: text.into() });
+                            }
+                        }
+                        Some("thinking") => {
+                            if let Some(text) = block
+                                .get("thinking")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                            {
+                                self.chunks
+                                    .push(ProviderChunk::ThinkingDelta { text: text.into() });
+                            }
+                        }
                         Some("tool_use") => {
                             let Some(index) = data.get("index").and_then(Value::as_u64) else {
                                 self.invalid_tool_stream = true;
@@ -270,6 +309,16 @@ impl AnthropicSseParser {
                                 id: id.clone(),
                                 name: name.clone(),
                             });
+                            if let Some(input) = block
+                                .get("input")
+                                .and_then(Value::as_object)
+                                .filter(|input| !input.is_empty())
+                            {
+                                self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                                    index,
+                                    fragment: serde_json::to_string(input).expect("input is JSON"),
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -284,6 +333,11 @@ impl AnthropicSseParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
+                            self.append_native(
+                                data.get("index").and_then(Value::as_u64),
+                                "text",
+                                &text,
+                            )?;
                             self.chunks.push(ProviderChunk::TextDelta { text });
                         }
                         Some("thinking_delta") => {
@@ -292,7 +346,22 @@ impl AnthropicSseParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
+                            self.append_native(
+                                data.get("index").and_then(Value::as_u64),
+                                "thinking",
+                                &text,
+                            )?;
                             self.chunks.push(ProviderChunk::ThinkingDelta { text });
+                        }
+                        Some("signature_delta") => {
+                            if let Some(signature) = delta.get("signature").and_then(Value::as_str)
+                            {
+                                self.append_native(
+                                    data.get("index").and_then(Value::as_u64),
+                                    "signature",
+                                    signature,
+                                )?;
+                            }
                         }
                         Some("input_json_delta") => {
                             let Some(index) = data.get("index").and_then(Value::as_u64) else {
@@ -305,6 +374,22 @@ impl AnthropicSseParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
+                            self.replay_budget.add(&Value::String(fragment.clone()))?;
+                            self.tool_arguments
+                                .entry(index)
+                                .or_default()
+                                .push_str(&fragment);
+                            if !self.tool_blocks.contains(&index)
+                                || self
+                                    .content_blocks
+                                    .get(&index)
+                                    .and_then(|block| block.get("input"))
+                                    .and_then(Value::as_object)
+                                    .is_some_and(|input| !input.is_empty())
+                            {
+                                self.invalid_tool_stream = true;
+                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                            }
                             self.chunks
                                 .push(ProviderChunk::ToolCallArgDelta { index, fragment });
                         }
@@ -318,7 +403,35 @@ impl AnthropicSseParser {
                     self.chunks.push(ProviderChunk::InvalidToolStream);
                     return Ok(self.take_chunks());
                 };
+                if !self.completed_blocks.insert(index) {
+                    self.invalid_tool_stream = true;
+                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                }
                 if self.tool_blocks.contains(&index) {
+                    if let Some(arguments) = self.tool_arguments.remove(&index) {
+                        match serde_json::from_str::<Value>(&arguments) {
+                            Ok(input) if input.is_object() => {
+                                if let Some(block) = self.content_blocks.get_mut(&index) {
+                                    block["input"] = input;
+                                }
+                            }
+                            Ok(_) | Err(_) => {
+                                self.invalid_tool_stream = true;
+                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                            }
+                        }
+                    } else if self
+                        .content_blocks
+                        .get(&index)
+                        .and_then(|block| block.get("input"))
+                        .and_then(Value::as_object)
+                        .is_some_and(|input| input.is_empty())
+                    {
+                        self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                            index,
+                            fragment: "{}".into(),
+                        });
+                    }
                     self.chunks.push(ProviderChunk::ToolCallStop { index });
                 } else {
                     self.chunks.push(ProviderChunk::ContentBlockStop { index });
@@ -338,20 +451,23 @@ impl AnthropicSseParser {
                         }
                     }
                 }
-                if let Some(usage) = data.get("usage") {
-                    self.chunks.push(ProviderChunk::StreamUsage {
-                        input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-                        output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-                        cache_read_input_tokens: usage
-                            .get("cache_read_input_tokens")
-                            .and_then(Value::as_u64),
-                        cache_creation_input_tokens: usage
-                            .get("cache_creation_input_tokens")
-                            .and_then(Value::as_u64),
-                    });
-                }
+                self.record_report(&data)?;
             }
             "message_stop" => {
+                if !self.invalid_tool_stream
+                    && !self.content_blocks.is_empty()
+                    && self
+                        .content_blocks
+                        .keys()
+                        .all(|index| self.completed_blocks.contains(index))
+                {
+                    let value = json!({"role": "assistant", "content": self.content_blocks.values().cloned().collect::<Vec<_>>()});
+                    validate_replay_size(&value)?;
+                    self.chunks.push(ProviderChunk::Replay {
+                        protocol: ProviderFormat::Anthropic,
+                        value,
+                    });
+                }
                 self.saw_terminal = true;
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
@@ -375,6 +491,32 @@ impl AnthropicSseParser {
         }
 
         Ok(self.take_chunks())
+    }
+
+    fn append_native(
+        &mut self,
+        index: Option<u64>,
+        field: &str,
+        fragment: &str,
+    ) -> Result<(), ProviderFailure> {
+        self.replay_budget.add(&Value::String(fragment.into()))?;
+        if let Some(block) = index.and_then(|index| self.content_blocks.get_mut(&index)) {
+            let existing = block.get(field).and_then(Value::as_str).unwrap_or("");
+            block[field] = Value::String(existing.to_string() + fragment);
+        }
+        Ok(())
+    }
+
+    fn record_report(&mut self, response: &Value) -> Result<(), ProviderFailure> {
+        if let Some(report) = self.reports.observe(response)? {
+            self.chunks.push(ProviderChunk::Report { report });
+        }
+        if response.get("usage").is_some_and(Value::is_object) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::Anthropic) {
+                self.chunks.push(usage);
+            }
+        }
+        Ok(())
     }
 
     fn finish(&mut self) -> Result<Vec<ProviderChunk>, ProviderFailure> {
@@ -536,8 +678,8 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            chunks.as_slice(),
-            [ProviderChunk::ToolCallStop { index: 1 }]
+            chunks.last(),
+            Some(ProviderChunk::ToolCallStop { index: 1 })
         ));
     }
 

@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::config::{ProviderAuth, ProviderProfile};
+use crate::config::{ProviderAuth, ProviderFormat, ProviderProfile};
+use crate::context::MessageBlock;
 
 use super::types::{
     PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ProviderFailureKind,
@@ -23,6 +24,7 @@ pub(crate) fn prepare_provider_request(
             "transport correlation belongs to another connection",
         ));
     }
+    validate_replay(config, request)?;
     let (url, mut body) = match config.kind {
         ProviderKind::Anthropic => (
             super::anthropic::messages_url(&config.base_url),
@@ -163,6 +165,61 @@ fn correlation_id(correlation: &ProviderCorrelation) -> String {
         hash.update(value.as_bytes());
     }
     format!("kuku-{:x}", hash.finalize())
+}
+
+fn validate_replay(
+    config: &ResolvedProvider,
+    request: &ProviderRequest<'_>,
+) -> Result<(), ProviderFailure> {
+    let protocol = match config.kind {
+        ProviderKind::Anthropic => ProviderFormat::Anthropic,
+        ProviderKind::OpenAiCompatible => ProviderFormat::OpenAiChat,
+        ProviderKind::OpenAiResponses => ProviderFormat::OpenAiResponses,
+    };
+    for message in request
+        .assembly
+        .prelude_messages
+        .iter()
+        .chain(&request.assembly.history)
+    {
+        for block in &message.blocks {
+            if let MessageBlock::ProviderReplay {
+                protocol: source, ..
+            } = block
+            {
+                if *source != protocol {
+                    return Err(invalid_request("native replay data belongs to another protocol; prepare a successor context segment"));
+                }
+            }
+        }
+        if config.capabilities.profile == ProviderProfile::Anthropic {
+            let native = super::replay::native_replay(message, protocol);
+            let unsigned_native = native
+                .and_then(|value| value.get("content"))
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("thinking")
+                            && block
+                                .get("signature")
+                                .and_then(Value::as_str)
+                                .is_none_or(str::is_empty)
+                    })
+                });
+            if unsigned_native
+                || (native.is_none()
+                    && message
+                        .blocks
+                        .iter()
+                        .any(|block| matches!(block, MessageBlock::Thinking(_))))
+            {
+                return Err(invalid_request(
+                    "native Messages thinking replay requires its original signed block",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

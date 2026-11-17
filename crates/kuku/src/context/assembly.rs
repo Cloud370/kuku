@@ -30,7 +30,7 @@ pub struct MemorySource {
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 /// Tool definition passed to the provider in the request.
 pub struct ToolSchema {
     pub name: String,
@@ -97,7 +97,9 @@ impl ContextAssembly {
                     .map(|b| match b {
                         MessageBlock::Text(t) => t.as_str(),
                         MessageBlock::Thinking(t) => t.as_str(),
-                        MessageBlock::ToolUse(_) | MessageBlock::ToolResult(_) => "",
+                        MessageBlock::ToolUse(_)
+                        | MessageBlock::ToolResult(_)
+                        | MessageBlock::ProviderReplay { .. } => "",
                     })
                     .collect::<Vec<_>>()
                     .join("");
