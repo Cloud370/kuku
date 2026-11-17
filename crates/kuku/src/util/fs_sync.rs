@@ -15,6 +15,15 @@ pub(crate) fn write_options() -> OpenOptions {
     options
 }
 
+pub(crate) fn lock_writer(file: &File, path: &Path) -> io::Result<()> {
+    file.try_lock().map_err(|error| lock_error(path, error))
+}
+
+pub(crate) fn lock_reader(file: &File, path: &Path) -> io::Result<()> {
+    file.try_lock_shared()
+        .map_err(|error| lock_error(path, error))
+}
+
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     // NOTE: Windows publication uses write-through file handles and flushes instead of directory fsync.
@@ -65,6 +74,22 @@ pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     {
         fs::rename(from, to)?;
         sync_parent(to)
+    }
+}
+
+fn lock_error(path: &Path, error: fs::TryLockError) -> io::Error {
+    match error {
+        fs::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "event store {} already has an active writer or reader",
+                path.display()
+            ),
+        ),
+        fs::TryLockError::Error(error) => io::Error::new(
+            error.kind(),
+            format!("cannot lock event file {}: {error}", path.display()),
+        ),
     }
 }
 
@@ -150,7 +175,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{create_dir_all, rename, sync_file, sync_parent, write_options};
+    use super::{
+        create_dir_all, lock_reader, lock_writer, rename, sync_file, sync_parent, write_options,
+    };
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
 
@@ -212,6 +239,67 @@ mod tests {
         assert!(write_options().create_new(true).open(&path).is_err());
         assert_eq!(b"original", fs::read(&path).unwrap().as_slice());
         assert!(File::open(root.join("missing")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_locks_follow_hardlink_aliases_and_release_with_the_handle() {
+        if let Some(path) = std::env::var_os("KUKU_FS_SYNC_LOCK_CHILD") {
+            let path = PathBuf::from(path);
+            let writer = write_options().read(true).append(true).open(&path).unwrap();
+            assert_eq!(
+                std::io::ErrorKind::WouldBlock,
+                lock_writer(&writer, &path).unwrap_err().kind()
+            );
+            let reader = File::open(&path).unwrap();
+            assert_eq!(
+                std::io::ErrorKind::WouldBlock,
+                lock_reader(&reader, &path).unwrap_err().kind()
+            );
+            return;
+        }
+        let root = test_directory();
+        create_dir_all(&root).unwrap();
+        let path = root.join("events");
+        let alias = root.join("alias");
+        let mut writer = write_options()
+            .read(true)
+            .append(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        lock_writer(&writer, &path).unwrap();
+        writer.write_all(b"record\n").unwrap();
+        sync_file(&writer).unwrap();
+        sync_parent(&path).unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .env("KUKU_FS_SYNC_LOCK_CHILD", &alias)
+            .arg("--exact")
+            .arg(std::thread::current().name().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop(writer);
+
+        let reader = File::open(&alias).unwrap();
+        lock_reader(&reader, &alias).unwrap();
+        let other_reader = File::open(&path).unwrap();
+        lock_reader(&other_reader, &path).unwrap();
+        let writer = write_options().read(true).append(true).open(&path).unwrap();
+        assert_eq!(
+            std::io::ErrorKind::WouldBlock,
+            lock_writer(&writer, &path).unwrap_err().kind()
+        );
+        drop(reader);
+        assert!(lock_writer(&writer, &path).is_err());
+        drop(other_reader);
+        lock_writer(&writer, &path).unwrap();
+        drop(writer);
         fs::remove_dir_all(root).unwrap();
     }
 }

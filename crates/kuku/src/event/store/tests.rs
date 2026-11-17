@@ -60,7 +60,7 @@ fn write_failure_stops_all_shared_handles() {
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
     let mut shared = store.clone();
-    store.inner.writer.lock().unwrap().file = std::fs::File::open(&path).unwrap();
+    store.inner.writer.lock().unwrap().file = Some(std::fs::File::open(&path).unwrap());
 
     assert!(store.append(payload()).is_err());
     assert_eq!(0, shared.last_id());
@@ -101,11 +101,13 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
     let notification = changed.notified();
     tokio::pin!(notification);
     notification.as_mut().enable();
-    store.inner.writer.lock().unwrap().file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/null")
-        .unwrap();
+    store.inner.writer.lock().unwrap().file = Some(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap(),
+    );
 
     let error = store.append(payload()).unwrap_err();
     assert!(error.to_string().contains("cannot commit event 1"));
@@ -116,11 +118,13 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
             .await
             .is_err()
     );
-    store.inner.writer.lock().unwrap().file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(&path)
-        .unwrap();
+    store.inner.writer.lock().unwrap().file = Some(
+        OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap(),
+    );
     assert!(shared.append(payload()).is_err());
     assert!(std::fs::read(&path).unwrap().is_empty());
 

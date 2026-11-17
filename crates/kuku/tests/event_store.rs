@@ -866,3 +866,50 @@ fn normalized_paths_share_the_writer() {
     assert_eq!(2, aliased.append(session_created()).unwrap().id);
     assert_eq!(2, original.last_id());
 }
+
+#[test]
+fn hardlink_aliases_cannot_bypass_writer_or_reader_exclusion() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let alias = temp.path().join("alias.jsonl");
+    let mut original = EventStore::open(&path).unwrap();
+    original.append(session_created()).unwrap();
+    std::fs::hard_link(&path, &alias).unwrap();
+
+    assert!(
+        matches!(EventStore::open(&alias), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
+    );
+    assert!(
+        matches!(EventStore::replay(&alias), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
+    );
+    assert!(
+        matches!(EventStore::read_page(&alias, 0, 256), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
+    );
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env("KUKU_EVENT_STORE_LOCK_CHILD", "locked")
+        .env("KUKU_EVENT_STORE_PATH", &alias)
+        .arg("--exact")
+        .arg("active_writer_rejects_another_process_until_the_last_clone_is_dropped")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(2, original.append(session_created()).unwrap().id);
+    drop(original);
+    let mut aliased = EventStore::open(&alias).unwrap();
+    assert_eq!(2, aliased.last_id());
+    assert_eq!(3, aliased.append(session_created()).unwrap().id);
+    drop(aliased);
+    assert_eq!(
+        vec![1, 2, 3],
+        EventStore::replay(&path)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>()
+    );
+}

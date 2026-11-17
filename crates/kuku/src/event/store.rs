@@ -1,5 +1,5 @@
 //! Durable append-only session event storage.
-//! Use a stable log path without hard-link aliases or external modification.
+//! Open log paths must remain stable during a writer's lifetime.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -46,6 +46,7 @@ impl Drop for StoreInner {
             .writer
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(writer.file.take());
         drop(writer.file_lock.take());
         self.release.finish();
     }
@@ -81,7 +82,7 @@ impl WriterRelease {
 }
 
 struct Writer {
-    file: File,
+    file: Option<File>,
     file_lock: Option<fslock::LockFile>,
     index: Vec<EventOffset>,
     event_count: usize,
@@ -93,6 +94,7 @@ struct Writer {
 impl Writer {
     fn open(path: &Path, mut file: File) -> Result<Self> {
         let file_lock = acquire_file_lock(path)?;
+        fs_sync::lock_writer(&file, path)?;
         let mut reader = EventReader::new(BufReader::new(&mut file), path, 0);
         let mut index = Vec::new();
         let mut event_count = 0_usize;
@@ -117,7 +119,7 @@ impl Writer {
         file.sync_all()?;
         fs_sync::sync_parent(path)?;
         Ok(Self {
-            file,
+            file: Some(file),
             file_lock: Some(file_lock),
             index,
             event_count,
@@ -139,10 +141,10 @@ impl Writer {
     }
 
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
-        if let Err(error) = self
-            .file
+        let file = self.file.as_mut().unwrap();
+        if let Err(error) = file
             .write_all(record)
-            .and_then(|()| fs_sync::sync_file(&self.file))
+            .and_then(|()| fs_sync::sync_file(file))
         {
             self.poison = Some(error.to_string());
             return Err(io::Error::new(
@@ -168,8 +170,9 @@ impl Writer {
 
     fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
-        self.file.seek(SeekFrom::Start(0))?;
-        read_all((&mut self.file).take(self.committed_len), path)
+        let file = self.file.as_mut().unwrap();
+        file.seek(SeekFrom::Start(0))?;
+        read_all(file.take(self.committed_len), path)
     }
 
     fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
@@ -182,8 +185,9 @@ impl Writer {
             .partition_point(|entry| entry.id <= after)
             .saturating_sub(1);
         let start = self.index[checkpoint].offset;
-        self.file.seek(SeekFrom::Start(start))?;
-        let file = (&mut self.file).take(self.committed_len - start);
+        let file = self.file.as_mut().unwrap();
+        file.seek(SeekFrom::Start(start))?;
+        let file = file.take(self.committed_len - start);
         read_page_from(file, path, start, after, limit)
     }
 }
@@ -283,6 +287,7 @@ impl EventStore {
         }
         let _file_lock = acquire_file_lock(&path)?;
         let file = File::open(&path)?;
+        fs_sync::lock_reader(&file, &path)?;
         let result = read_page_from(file, &path, 0, after, limit);
         drop(stores);
         result
@@ -307,6 +312,7 @@ impl EventStore {
         }
         let _file_lock = acquire_file_lock(&path)?;
         let file = File::open(&path)?;
+        fs_sync::lock_reader(&file, &path)?;
         let result = read_all(file, &path);
         drop(stores);
         result
