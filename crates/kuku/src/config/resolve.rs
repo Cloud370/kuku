@@ -110,6 +110,8 @@ impl ConfigFile {
                     provider: entry.provider.trim().to_string(),
                     model: entry.model.trim().to_string(),
                     think,
+                    reasoning_effort: entry.reasoning_effort.clone(),
+                    service_tier: entry.service_tier.clone(),
                     context_window: entry.context_window.unwrap_or(200000),
                     max_output_tokens: entry.max_output_tokens.unwrap_or(48000),
                     purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
@@ -131,6 +133,7 @@ impl ConfigFile {
                     format: entry.format,
                     base_url: entry.base_url.trim().to_string(),
                     api_key,
+                    options: entry.options.clone(),
                 },
             );
         }

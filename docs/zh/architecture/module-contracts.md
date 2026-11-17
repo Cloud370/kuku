@@ -49,7 +49,7 @@
 
 ### `provider/`
 
-provider adapter 只负责协议翻译，不应增长账本、conversation 或 permission 行为。
+Provider 适配器负责协议转换、端点能力校验、认证和传输关联，不应增长账本、conversation 或 permission 行为。按配置名称选择连接；线路协议不用于选择第一条匹配连接。请求设置、实际发送的设置与可选 provider 回报保持为不同事实。运行时提供稳定的 Session／Agent／连接关联和已准备的上下文；适配器在派发前冻结线路请求，重放时不渲染行为 Prompt 资源。供应商原生的推理重放数据附在 assistant 消息上，只供匹配协议使用。
 
 ## Related Pages
 

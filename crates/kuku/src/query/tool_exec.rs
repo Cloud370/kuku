@@ -419,6 +419,7 @@ mod tests {
                 max_output_tokens: 1000,
                 think_level: crate::config::ThinkLevel::Off,
                 thinking: crate::config::ResolvedThinking::default(),
+                ..Default::default()
             },
             registry,
         }

@@ -218,6 +218,7 @@ mod tests {
             max_output_tokens: 1000,
             think_level: crate::config::ThinkLevel::Medium,
             thinking: crate::config::ResolvedThinking::default(),
+            ..Default::default()
         };
 
         assert_eq!(5904, base.context_limit(&resolved));

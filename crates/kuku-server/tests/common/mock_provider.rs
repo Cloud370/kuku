@@ -36,6 +36,16 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
+            options: kuku::config::ProviderOptions {
+                profile: kuku::config::ProviderProfile::Compatible,
+                reasoning_efforts: Some(vec![
+                    "none".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                ]),
+                ..Default::default()
+            },
             format: kuku::config::ProviderFormat::Anthropic,
             base_url: format!("http://127.0.0.1:{mock_port}"),
             api_key: ApiKey::Plaintext("test-key".to_string()),
@@ -46,6 +56,8 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            reasoning_effort: None,
+            service_tier: None,
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Off,

@@ -244,6 +244,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
             max_output_tokens: 1000,
             think_level: crate::config::ThinkLevel::Off,
             thinking: crate::config::ResolvedThinking::default(),
+            ..Default::default()
         },
         registry: vec![crate::tool::ToolDefinition {
             name: "run_command".to_string(),

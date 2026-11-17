@@ -955,6 +955,7 @@ pub(super) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> {
         api_key: pending.query.api_key.clone(),
         max_output_tokens: pending.query.max_output_tokens,
         config: Some((*pending.config).clone()),
+        ..Default::default()
     }) {
         Ok(config) => config,
         Err(error) => {

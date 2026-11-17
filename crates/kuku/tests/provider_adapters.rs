@@ -1,5 +1,7 @@
 mod config {
-    pub use kuku::config::{ResolvedThinking, ThinkLevel};
+    pub use kuku::config::{
+        ProviderAuth, ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel,
+    };
 }
 
 mod context {
@@ -48,6 +50,42 @@ mod provider {
             env!("CARGO_MANIFEST_DIR"),
             "/src/provider/http_client.rs"
         ));
+    }
+
+    #[allow(dead_code)]
+    pub mod prepare {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/prepare.rs"
+        ));
+    }
+
+    #[allow(dead_code)]
+    pub mod transport {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/transport.rs"
+        ));
+    }
+
+    pub(crate) use prepare::prepare_provider_request;
+
+    pub(crate) async fn stream_prepared_provider(
+        config: &types::ResolvedProvider,
+        request: &types::PreparedProviderRequest,
+        trace: Option<trace::ProviderTraceMetadata>,
+    ) -> Result<ProviderChunkStream, types::ProviderFailure> {
+        match request.kind {
+            types::ProviderKind::Anthropic => {
+                anthropic::stream_prepared(config, request, trace).await
+            }
+            types::ProviderKind::OpenAiCompatible => {
+                openai_compat::stream_prepared(config, request, trace).await
+            }
+            types::ProviderKind::OpenAiResponses => {
+                openai_responses::stream_prepared(config, request, trace).await
+            }
+        }
     }
 
     use futures_core::Stream;

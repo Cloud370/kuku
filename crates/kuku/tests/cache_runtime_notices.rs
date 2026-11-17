@@ -151,6 +151,8 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
     config.tiers.insert(
         "light".to_string(),
         TierConfig {
+            reasoning_effort: None,
+            service_tier: None,
             provider: "anthropic".to_string(),
             model: "claude-haiku-4-5".to_string(),
             think: kuku::config::ThinkLevel::Off,

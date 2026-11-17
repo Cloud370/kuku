@@ -102,6 +102,10 @@ pub struct ModelEntry {
     #[serde(default)]
     pub think: Option<String>,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
     pub context_window: Option<u32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
@@ -114,6 +118,8 @@ pub struct ProviderEntry {
     pub format: ProviderFormat,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default, flatten)]
+    pub options: super::provider::ProviderOptions,
 }
 
 // ── Validated / resolved config ──
@@ -245,6 +251,8 @@ pub struct TierConfig {
     pub provider: String,
     pub model: String,
     pub think: ThinkLevel,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub purpose: String,
@@ -255,6 +263,7 @@ pub struct ProviderConfig {
     pub format: ProviderFormat,
     pub base_url: String,
     pub api_key: ApiKey,
+    pub options: super::provider::ProviderOptions,
 }
 
 #[derive(Debug, Clone, PartialEq)]

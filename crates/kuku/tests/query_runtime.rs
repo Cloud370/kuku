@@ -1248,6 +1248,8 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
     config.tiers.insert(
         "strong".to_string(),
         kuku::config::TierConfig {
+            reasoning_effort: None,
+            service_tier: None,
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
             think: kuku::config::ThinkLevel::Medium,

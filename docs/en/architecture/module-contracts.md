@@ -49,7 +49,7 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 ### `provider/`
 
-Provider adapters own protocol translation only. They should not grow ledger, conversation, or permission behavior.
+Provider adapters own protocol translation, endpoint capability validation, authentication, and transport correlation. They should not grow ledger, conversation, or permission behavior. Connections are selected by their configured names; a wire format never selects the first matching connection. Requested settings, effective wire settings, and optional provider reports remain separate facts. The runtime supplies stable Session/Agent/connection correlation and prepared context; the adapter freezes the wire request before dispatch and does not render behavioral Prompt assets during replay. Native reasoning replay data stays attached to the assistant message and is used only by its matching protocol.
 
 ## Related Pages
 

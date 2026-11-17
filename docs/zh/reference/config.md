@@ -36,6 +36,8 @@ $KUKU_HOME/config.toml
 | `provider` | string | `provider.<name>` 中的 provider 名称 |
 | `model` | string | provider 模型 ID |
 | `think` | `off`\|`low`\|`medium`\|`high` | thinking 等级 |
+| `reasoning_effort` | string | 原生思考值，覆盖 `think` |
+| `service_tier` | string | 独立于思考设置的原生服务选项 |
 | `context_window` | integer | 最大输入 token 数 |
 | `max_output_tokens` | integer | 最大输出 token 数 |
 | `purpose` | string | 面向人的 tier 摘要 |
@@ -49,6 +51,19 @@ $KUKU_HOME/config.toml
 | `format` | string | `anthropic`、`openai-chat` 或 `openai-responses` |
 | `base_url` | string | provider API 基础 URL，或 `$ENV_VAR_NAME` |
 | `api_key` | string | 直接填写的 key，或 `$ENV_VAR_NAME` |
+| `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证方式 |
+| `profile` | string | `auto`（默认）、`openai`、`anthropic`、`deepseek`、`openrouter` 或 `compatible` |
+| `reasoning_efforts` | string[] | 覆盖该连接模型已声明的原生思考值 |
+| `service_tiers` | string[] | 覆盖该连接模型已声明的原生服务值 |
+| `routing` | table | OpenRouter 上游路由选项 |
+
+SDK 按配置名称选择连接。多个连接可以使用同一个 `format`；单独选择协议不会选择第一条匹配连接。显式模型设置覆盖选中的 tier。选择其他连接不会携带无关默认 tier 的原生设置；显式选择的 tier 仍提供默认值，不兼容的选择会失败。
+
+`auto` 根据已知端点主机名选择端点 profile。自定义网关使用 `compatible`，使用原生设置时必须显式声明能力。Profile 描述文档规定的适配行为，不代表上游已经确认。显式选择不支持的思考或服务值会在派发前失败。`think` 保持为可移植的 tier 偏好：直接 DeepSeek 的 `medium` 映射为原生 `high`，请求值与有效值分别记录。`reasoning_effort` 精确选择原生值，不会静默改档。启用服务 tier 不改变模型或思考设置。
+
+Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bearer。DeepSeek Messages 将 `thinking.type` 发送为 `enabled` 或 `disabled`，省略不支持的缓存控制并拒绝服务 tier。DeepSeek Responses 发送完整的无状态历史，绝不使用 `previous_response_id`。参见 [DeepSeek 思考](https://api-docs.deepseek.com/guides/thinking_mode/)、[Messages](https://api-docs.deepseek.com/guides/anthropic_api/) 和 [Responses](https://api-docs.deepseek.com/guides/responses_api/) 契约，以及 [OpenRouter Messages 认证](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message)。
+
+`routing.order` 和 `routing.only` 填写上游端点 tag。`allow_fallbacks` 控制上游回退；TOML 与 SDK 构造的 `require_parameters` 均默认 `true`。可选的 `routing.max_price.prompt` 和 `.completion` 限制每百万 token 的美元单价，不限制总支出。OpenRouter 收到由 Session、Agent 地址和连接名派生的稳定传输关联；不同 Agent 在跨 Turn 和重开后仍保持独立。路由亲和不保证缓存保留。参见[路由](https://openrouter.ai/docs/guides/routing/provider-selection)和[提示缓存](https://openrouter.ai/docs/guides/best-practices/prompt-caching)契约。
 
 任何第一个字符为 `$` 的字符串配置值都会被视为环境变量引用，并在校验前解析；但 `api_key` 会保留环境变量引用，并在使用 provider 时再解析。
 

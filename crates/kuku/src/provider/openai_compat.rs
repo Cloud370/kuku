@@ -1,16 +1,14 @@
-use super::http_client;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::error::{classify_http_error, transport_error};
 use super::sse::stream_sse_events;
-use super::trace::{ProviderTrace, ProviderTraceDirection};
-use super::types::{ProviderFailure, ProviderRequest, ResolvedProvider};
+use super::trace::ProviderTraceDirection;
+use super::transport::{send_prepared, TransportResponse};
+use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
 
@@ -187,76 +185,18 @@ pub(crate) async fn stream(
     request: &ProviderRequest<'_>,
     trace_metadata: Option<super::trace::ProviderTraceMetadata>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
-    let mut body = render_body(request);
-    body["stream"] = json!(true);
-    body["stream_options"] = json!({"include_usage": true});
-    let url = chat_completions_url(&config.base_url);
-    let client = http_client::api_client();
-    let trace = ProviderTrace::from_request(
-        trace_metadata.as_ref(),
-        config.kind.as_str(),
-        config.model.clone(),
-    );
-    let headers = openai_headers(config);
+    let prepared = super::prepare_provider_request(config, request, None)?;
+    super::stream_prepared_provider(config, &prepared, trace_metadata).await
+}
 
-    if let Some(trace) = &trace {
-        trace.record(
-            ProviderTraceDirection::Request,
-            Some(&url),
-            Some(&headers),
-            json!({ "body": body }),
-        );
-    }
-
-    let response = client
-        .post(url.clone())
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            if let Some(trace) = &trace {
-                trace.record(
-                    ProviderTraceDirection::Error,
-                    Some(&url),
-                    None,
-                    json!({ "error": error.to_string() }),
-                );
-            }
-            transport_error(&error)
-        })?;
-
-    let status = response.status();
-    let response_headers = response.headers().clone();
-    let request_id = response
-        .headers()
-        .get("x-request-id")
-        .or_else(|| response.headers().get("request-id"))
-        .and_then(|v| v.to_str().ok())
-        .map(ToOwned::to_owned);
-    if let Some(trace) = &trace {
-        trace.record(
-            ProviderTraceDirection::Response,
-            Some(&url),
-            Some(&response_headers),
-            json!({ "status": status.as_u16() }),
-        );
-    }
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        if let Some(trace) = &trace {
-            trace.record(
-                ProviderTraceDirection::Error,
-                Some(&url),
-                Some(&response_headers),
-                json!({ "status": status.as_u16(), "body": body_text }),
-            );
-        }
-        let mut failure = classify_http_error(status.as_u16(), &body_text);
-        failure.provider_request_id = request_id;
-        return Err(failure);
-    }
-
+pub(crate) async fn stream_prepared(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+    trace_metadata: Option<super::trace::ProviderTraceMetadata>,
+) -> Result<super::ProviderChunkStream, ProviderFailure> {
+    let TransportResponse { response, trace } =
+        send_prepared(config, prepared, trace_metadata).await?;
+    let url = prepared.url.clone();
     let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new()));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
@@ -276,17 +216,6 @@ pub(crate) async fn stream(
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))
-}
-
-fn openai_headers(config: &ResolvedProvider) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("application/json"));
-    let authorization = format!("Bearer {}", config.api_key.expose());
-    headers.insert(
-        "authorization",
-        HeaderValue::from_str(&authorization).unwrap_or_else(|_| HeaderValue::from_static("")),
-    );
-    headers
 }
 
 struct OpenAiCompatSseParser {

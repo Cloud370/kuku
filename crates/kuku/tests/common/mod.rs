@@ -209,6 +209,8 @@ pub fn test_config() -> kuku::config::Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            reasoning_effort: None,
+            service_tier: None,
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Medium,
@@ -222,6 +224,16 @@ pub fn test_config() -> kuku::config::Config {
     providers.insert(
         "anthropic".to_string(),
         ProviderConfig {
+            options: kuku::config::ProviderOptions {
+                profile: kuku::config::ProviderProfile::Compatible,
+                reasoning_efforts: Some(vec![
+                    "none".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                ]),
+                ..Default::default()
+            },
             format: kuku::config::ProviderFormat::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
             api_key: ApiKey::Plaintext("unused".to_string()),
@@ -230,6 +242,16 @@ pub fn test_config() -> kuku::config::Config {
     providers.insert(
         "openai".to_string(),
         ProviderConfig {
+            options: kuku::config::ProviderOptions {
+                profile: kuku::config::ProviderProfile::Compatible,
+                reasoning_efforts: Some(vec![
+                    "none".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                ]),
+                ..Default::default()
+            },
             format: kuku::config::ProviderFormat::OpenAiChat,
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: ApiKey::Plaintext("unused".to_string()),
