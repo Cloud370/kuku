@@ -1,12 +1,13 @@
 use std::fs;
 
 use kuku::config::generate_default;
-use kuku::session::kuku_home;
+
+use crate::cli_args::ConnectionArgs;
 
 /// Initialize kuku: generate config.toml and create directory structure.
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let home = kuku_home()?;
-    let config_path = home.join("config.toml");
+pub fn run(target: &ConnectionArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let home = target.data_dir()?;
+    let config_path = super::config_path(target)?;
 
     if config_path.exists() {
         eprintln!("config file already exists: {}", config_path.display());

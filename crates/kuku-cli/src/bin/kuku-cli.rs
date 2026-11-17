@@ -1,33 +1,15 @@
 use clap::Parser;
-use kuku_cli::cli_args::{Cli, Command};
+use kuku_cli::cli_args::Cli;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 4)]
 async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Command::Run(args)) => kuku_cli::commands::run::run(args).await,
-        Some(Command::Reply(args)) => kuku_cli::commands::run::reply(args).await,
-        Some(Command::Show(args)) => kuku_cli::commands::show::run(args).await,
-        Some(Command::Events(args)) => kuku_cli::commands::events::run(args).await,
-        Some(Command::List(args)) => kuku_cli::commands::list::run(args).await,
-        Some(Command::Delete(args)) => kuku_cli::commands::delete::run(args).await,
-        Some(Command::Config(args)) => kuku_cli::commands::config::run(args).await,
-        Some(Command::Init) => kuku_cli::commands::init::run(),
-        Some(Command::Prompts(args)) => kuku_cli::commands::prompts::run(args),
-        Some(Command::Agents(args)) => kuku_cli::commands::agents::run(args),
-        Some(Command::Skills(args)) => kuku_cli::commands::skills::run(args),
-        #[cfg(feature = "server")]
-        Some(Command::Server(_args)) => {
-            eprintln!("error: use `kuku server` instead of `kuku-cli server`");
-            std::process::exit(1);
-        }
-        #[cfg(feature = "server")]
-        Some(Command::Web(_args)) => {
-            eprintln!("error: use `kuku web` instead of `kuku-cli web`");
-            std::process::exit(1);
-        }
-        None => kuku_cli::commands::run::interactive(None).await,
+        Some(command) => kuku_cli::commands::dispatch(command, &cli.target).await,
+        None => Err(
+            "use `kuku-cli run --json PROMPT` for scripts or `kuku-cli --help` for commands".into(),
+        ),
     };
 
     if let Err(err) = result {

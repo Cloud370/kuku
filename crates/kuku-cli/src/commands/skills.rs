@@ -1,27 +1,25 @@
 use kuku::skill::registry::SkillRegistry;
 
-use crate::cli_args::{SkillsArgs, SkillsSubcommand};
+use crate::cli_args::{ConnectionArgs, SkillsArgs, SkillsSubcommand};
 use crate::display::util::truncate;
-
-fn build_registry() -> Result<SkillRegistry, Box<dyn std::error::Error>> {
-    let workspace = kuku::session::current_workspace()?;
-    let kuku_home = kuku::session::kuku_home()?;
-    build_registry_for(&workspace, &kuku_home)
-}
 
 fn build_registry_for(
     workspace: &std::path::Path,
     kuku_home: &std::path::Path,
+    config_path: &std::path::Path,
 ) -> Result<SkillRegistry, Box<dyn std::error::Error>> {
-    let config_path = kuku_home.join("config.toml");
-    let config = kuku::config::load_config(&config_path)?.resolve()?;
+    let config = kuku::config::load_config(config_path)?.resolve()?;
     Ok(kuku::skill::build_registry_snapshot_for_host(
         kuku_home, workspace, &config,
     )?)
 }
 
-pub fn run(args: SkillsArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = build_registry()?;
+pub fn run(args: SkillsArgs, target: &ConnectionArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = build_registry_for(
+        &target.workspace()?,
+        &target.data_dir()?,
+        &super::config_path(target)?,
+    )?;
 
     match args.cmd {
         None | Some(SkillsSubcommand::List) => {
@@ -115,7 +113,7 @@ mod tests {
         )
         .unwrap();
 
-        let registry = build_registry_for(&workspace, &home).unwrap();
+        let registry = build_registry_for(&workspace, &home, &home.join("config.toml")).unwrap();
 
         assert!(registry.get("packaged-skill").is_some());
 
@@ -153,7 +151,7 @@ mod tests {
         )
         .unwrap();
 
-        let registry = build_registry_for(&workspace, &home).unwrap();
+        let registry = build_registry_for(&workspace, &home, &home.join("config.toml")).unwrap();
 
         assert!(registry.get("packaged-skill").is_none());
 
@@ -168,7 +166,8 @@ mod tests {
 
         std::fs::write(home.join("config.toml"), "[model\ninvalid = true\n").unwrap();
 
-        let error = build_registry_for(&workspace, &home).expect_err("expected config error");
+        let error = build_registry_for(&workspace, &home, &home.join("config.toml"))
+            .expect_err("expected config error");
 
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(home);

@@ -1,17 +1,55 @@
 use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
-use kuku::session::{AgentSnapshot, AgentStatus, Session};
-use kuku::UiEvent;
-use serde_json::json;
+use kuku::{ModelRecoveryInfo, ToolKind};
+use kuku_client::{AgentSnapshot, AgentStatus};
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::cli_args::RunArgs;
 use crate::display::{Display, OutputLine};
 
-use super::{
-    conversation_for_tool_kind, nested_model_recovery_info, nested_permission_parent_tool_id,
-    permission_ask_line, tool_call_line, tool_result_line,
-};
+use super::permission_ask_line;
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Preview {
+    Text {
+        content: String,
+    },
+    Thinking {
+        content: String,
+    },
+    ToolStart {
+        id: String,
+        tool: String,
+        summary: String,
+        kind: ToolKind,
+    },
+    ToolEnd {
+        id: String,
+        status: String,
+        summary: String,
+    },
+    ModelRecovery {
+        #[serde(flatten)]
+        info: ModelRecoveryInfo,
+    },
+    ToolOutput {
+        event: Value,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
+    Permission,
+    Done,
+    Cancelled,
+    TurnStart,
+    ModelRequest,
+    #[serde(other)]
+    Other,
+}
 
 pub(super) struct RunRenderer {
     display: Display,
@@ -44,12 +82,19 @@ impl RunRenderer {
         }
     }
 
-    pub(super) fn event(&mut self, event: UiEvent) {
+    pub(super) fn needs_preview(&self) -> bool {
+        !self.json
+    }
+
+    pub(super) fn event(&mut self, event: Value) {
         if self.json {
             return;
         }
-        match event {
-            UiEvent::TextDelta { text } => {
+        let Ok(preview) = serde_json::from_value(event.clone()) else {
+            return;
+        };
+        match preview {
+            Preview::Text { content: text } => {
                 self.close_thinking();
                 self.rendered_text.push_str(&text);
                 if self.stream_json {
@@ -59,7 +104,7 @@ impl RunRenderer {
                     let _ = io::stdout().flush();
                 }
             }
-            UiEvent::ThinkingDelta { text } => {
+            Preview::Thinking { content: text } => {
                 if !self.in_thinking {
                     self.in_thinking = true;
                     self.thinking_start = Some(Instant::now());
@@ -73,7 +118,7 @@ impl RunRenderer {
                     }
                 }
             }
-            UiEvent::ToolStart {
+            Preview::ToolStart {
                 id,
                 tool,
                 summary,
@@ -92,11 +137,10 @@ impl RunRenderer {
                     println!("\n{}", self.display.tool_call(&tool, &summary, &id));
                 }
             }
-            UiEvent::ToolEnd {
+            Preview::ToolEnd {
                 id,
                 status,
                 summary,
-                ..
             } => {
                 if self.stream_json {
                     let conversation = self.tool_conversations.remove(&id);
@@ -108,32 +152,23 @@ impl RunRenderer {
                     println!("{}", self.display.tool_result(&status, &summary, &id));
                 }
             }
-            UiEvent::ModelRecovery { info } => self.recovery(info),
-            event @ UiEvent::ToolOutput { .. } => {
-                if let Some(info) = nested_model_recovery_info(&event) {
-                    self.recovery(info.clone());
-                } else if self.stream_json && nested_permission_parent_tool_id(&event).is_none() {
-                    if let Some(value) = kuku::wire::to_wire(&event) {
-                        println!("{value}");
-                    }
+            Preview::ModelRecovery { info } => self.recovery(info),
+            Preview::ToolOutput { event: nested } => {
+                if let Some(info) = nested_model_recovery(&nested) {
+                    self.recovery(info);
+                } else if self.stream_json && nested.get("permission").is_none() {
+                    println!("{event}");
                 }
             }
-            UiEvent::Log { record } => {
+            Preview::Error { code, message } => eprintln!("{code}: {message}"),
+            Preview::Permission
+            | Preview::Done
+            | Preview::Cancelled
+            | Preview::TurnStart
+            | Preview::ModelRequest => {}
+            Preview::Other => {
                 if self.stream_json {
-                    println!("{}", OutputLine::log(record).to_json_line());
-                }
-            }
-            UiEvent::Error { code, message } => eprintln!("{code}: {message}"),
-            UiEvent::PermissionRequested { .. }
-            | UiEvent::Done { .. }
-            | UiEvent::Cancelled { .. }
-            | UiEvent::TurnStart { .. }
-            | UiEvent::ModelRequest { .. } => {}
-            event => {
-                if self.stream_json {
-                    if let Some(value) = kuku::wire::to_wire(&event) {
-                        println!("{value}");
-                    }
+                    println!("{event}");
                 }
             }
         }
@@ -141,7 +176,7 @@ impl RunRenderer {
 
     pub(super) fn finish(
         &mut self,
-        session: &Session,
+        session_id: &str,
         agent: &AgentSnapshot,
         elapsed: std::time::Duration,
     ) {
@@ -161,7 +196,7 @@ impl RunRenderer {
             println!(
                 "{}",
                 json!({
-                    "type": "session", "event": event, "session_id": session.id(),
+                    "type": "session", "event": event, "session_id": session_id,
                     "agent": agent.address, "status": agent.status, "turns": agent.turn,
                     "response": agent.last_output, "error": agent.last_error,
                     "config": agent.config, "usage": agent.usage,
@@ -177,7 +212,7 @@ impl RunRenderer {
                 }
             }
             println!();
-            eprintln!("session {} agent {}: {event}", session.id(), agent.address);
+            eprintln!("session {session_id} agent {}: {event}", agent.address);
             if let Some(request) = &agent.permission {
                 eprintln!("pending authorization {}: {}", request.id, request.summary);
             }
@@ -215,4 +250,34 @@ impl RunRenderer {
             println!("{}", self.display.model_recovery(&info));
         }
     }
+}
+
+pub(super) fn conversation_for_tool_kind(kind: &ToolKind) -> Option<String> {
+    match kind {
+        ToolKind::Agent { conversation, .. } => Some(conversation.as_str().into()),
+        _ => None,
+    }
+}
+
+pub(super) fn tool_call_line(
+    tool: String,
+    id: String,
+    summary: String,
+    kind: &ToolKind,
+) -> OutputLine {
+    OutputLine::tool_call(tool, id, summary, Value::Null)
+        .with_conversation(conversation_for_tool_kind(kind))
+}
+
+pub(super) fn tool_result_line(
+    id: String,
+    status: String,
+    summary: String,
+    conversation: Option<String>,
+) -> OutputLine {
+    OutputLine::tool_result(id, status, summary, None, false).with_conversation(conversation)
+}
+
+pub(super) fn nested_model_recovery(event: &Value) -> Option<ModelRecoveryInfo> {
+    serde_json::from_value(event.get("model_recovery")?.clone()).ok()
 }

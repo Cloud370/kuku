@@ -1,320 +1,259 @@
-//! Local input, rendering, and cleanup over the public Session SDK.
+//! Script submission, exact replies, and observation through the Session service.
 
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-use kuku::session::{AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions};
-use kuku::{ToolEvent, UiEvent};
+use kuku_client::{
+    new_id, Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection,
+    Error, Observation, PermissionRequest, Snapshot, Target, Timing,
+};
 use serde_json::json;
 
-use crate::cli_args::{ReplyArgs, RunArgs};
+use crate::cli_args::{ConnectionArgs, ReplyArgs, RunArgs};
+use crate::commands::CliResult;
 use crate::display::OutputLine;
 
 mod render;
 
 use render::RunRenderer;
 
-type HostResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-struct PreparedRun {
-    options: SessionOptions,
-    agent: AgentConfig,
-    prompt: String,
-    update_config: bool,
-}
-
-/// Execute a task through the same persistent Session API used by embedded callers.
-pub async fn run(args: RunArgs) -> HostResult<()> {
-    let prepared = prepare_run(&args, resolve_config_path(args.config.as_deref())?)?;
-    let session = Session::open(prepared.options).await?;
-    let result = run_open_session(
-        &args,
-        &session,
-        prepared.agent,
-        prepared.prompt,
-        prepared.update_config,
-    )
-    .await;
-    let close = session.close().await;
-    finish_close(result, close)
-}
-
-/// Reply to a matching durable request, observe its continuation, and await cleanup.
-pub async fn reply(args: ReplyArgs) -> HostResult<()> {
-    let config = load_config(resolve_config_path(args.config.as_deref())?)?;
-    let workspace = workspace_path(args.workspace.as_deref())?;
-    let home = data_path(args.data_dir.as_deref())?;
-    if !kuku::session::session_events_path(&home, &workspace, &args.session_id)?.exists() {
-        return Err(format!(
-            "session '{}' does not exist in this workspace",
-            args.session_id
-        )
-        .into());
-    }
-    let mut options = SessionOptions::new(workspace, home, config);
-    options.session_id = Some(args.session_id);
-    let session = Session::open(options).await?;
-    let command_id = args.command_id.unwrap_or_else(command_id);
-    let result = async {
-        let replayed = match args.answer.as_ref() {
-            Some(text) => session.reply_question_receipt(&command_id, &args.agent, &args.request_id, text)?,
-            None => session.reply_permission_receipt(&command_id, &args.agent, &args.request_id, args.allow)?,
-        };
-        if let Some(receipt) = replayed {
-            return render_acknowledgement(&session, &args.agent, receipt, true);
-        }
-        let pending = if args.answer.is_none() { session.agent(&args.agent)?.permission } else { None };
-        let receipt = match args.answer.as_ref() {
-            Some(text) => session.reply_question(&command_id, &args.agent, &args.request_id, text)?,
-            None => session.reply_permission(&command_id, &args.agent, &args.request_id, args.allow)?,
-        };
-        if let Some(request) = pending {
-            println!("{}", permission_decision_line(&request, if args.allow { "allow" } else { "deny" }.into(), "host".into()).to_json_line());
-        }
-        let mut observer = session.observe(receipt.event_id);
-        loop {
-            let snapshot = session.agent(&args.agent)?;
-            if snapshot.status != AgentStatus::Running && !session.agents().iter().any(|agent| agent.status == AgentStatus::Running) {
-                println!("{}", serde_json::to_string(&snapshot)?);
-                if let Some(error) = snapshot.last_error { return Err(error.into()) }
-                if snapshot.status == AgentStatus::Stopped { return Err("agent cancelled after cleanup".into()) }
-                return Ok::<(), Box<dyn std::error::Error>>(());
-            }
-            tokio::select! {
-                event = observer.next() => { if event?.is_none() { return Err("session observation ended before continuation settled".into()); } }
-                _ = tokio::signal::ctrl_c() => {
-                    session.cancel(&args.agent).await?;
-                    return Err("agent cancelled after cleanup".into());
-                }
-            }
-        }
-    }.await;
-    let close = session.close().await;
-    finish_close(result, close)
-}
-
-/// Read local prompts until EOF, preserving the same Session between inputs.
-pub async fn interactive(config: Option<String>) -> HostResult<()> {
-    let mut session_id = None;
-    loop {
-        print!("> ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
-        let prompt = input.trim();
-        if matches!(prompt, "exit" | "quit") {
-            break;
-        }
-        if prompt.is_empty() {
-            continue;
-        }
-        let args = RunArgs {
-            prompt: vec![prompt.into()],
-            auto_yes: true,
-            model: None,
-            connection: None,
-            command_id: None,
-            tier: None,
-            agent: "main".into(),
-            workspace: None,
-            data_dir: None,
-            reasoning_effort: None,
-            service_tier: None,
-            max_output_tokens: None,
-            session: session_id.clone(),
-            cont: false,
-            json: false,
-            stream_json: false,
-            show_thinking: false,
-            raw: false,
-            verbose: false,
-            config: config.clone(),
-            prompts_dir: None,
-            no_agents: false,
-            no_skills: false,
-            skill_body: None,
-            bootstrap_skill_name: None,
-        };
-        let prepared = prepare_run(&args, resolve_config_path(args.config.as_deref())?)?;
-        let session = Session::open(prepared.options).await?;
-        session_id = Some(session.id().to_string());
-        let result = run_open_session(
-            &args,
-            &session,
-            prepared.agent,
-            prepared.prompt,
-            prepared.update_config,
+/// Execute one script command, then render the settled Agent state.
+pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
+    let connection = options.connect().await?;
+    let (command, recovered) = prepare_run(&args, &connection).await?;
+    if let Some(acknowledgement) = recovered {
+        return render_acknowledgement(
+            &connection,
+            &command.target,
+            acknowledgement,
+            args.json || args.stream_json,
         )
         .await;
-        let close = session.close().await;
-        if let Err(error) = result {
-            eprintln!("error: {error}");
-        }
-        close?;
     }
-    Ok(())
-}
-
-async fn run_open_session(
-    args: &RunArgs,
-    session: &Session,
-    config: AgentConfig,
-    prompt: String,
-    update_config: bool,
-) -> HostResult<()> {
-    let input_id = args.command_id.clone().unwrap_or_else(command_id);
-    let input = Input::new(input_id, &args.agent, prompt);
-    if let Some(receipt) = session.input_receipt(&input)? {
-        return render_acknowledgement(
-            session,
-            &args.agent,
-            receipt,
-            args.json || args.stream_json,
-        );
-    }
-
-    let prior = session
-        .agents()
-        .into_iter()
-        .find(|agent| agent.address == args.agent);
-    if prior
-        .as_ref()
-        .is_some_and(|agent| agent.status == AgentStatus::Waiting)
-    {
-        return Err(
-            "agent is waiting; use `kuku reply` with its exact pending request identity".into(),
-        );
-    }
-    match prior {
-        None => {
-            session.create_agent(&command_id(), &args.agent, config)?;
-        }
-        Some(snapshot) if update_config || snapshot.config.bootstrap_skill.is_some() => {
-            session.configure_agent(
-                &command_id(),
-                &args.agent,
-                merge_agent_config(snapshot.config, config),
-            )?;
-        }
-        Some(_) => {}
-    }
-    let mut renderer = RunRenderer::new(args);
     let start = Instant::now();
-    let receipt = session.send(input)?;
-    let mut observer = session.observe(receipt.event_id.saturating_sub(1));
-    if matches!(
-        session.agent(&args.agent)?.status,
-        AgentStatus::Stopped | AgentStatus::Interrupted
-    ) {
-        session.advance(&args.agent)?;
+    let acknowledgement = submit(&connection, &command).await?;
+    if acknowledgement.replayed {
+        return render_acknowledgement(
+            &connection,
+            &command.target,
+            acknowledgement,
+            args.json || args.stream_json,
+        )
+        .await;
     }
+    let target = &command.target;
     if args.stream_json {
         println!(
             "{}",
-            json!({"type":"session", "event":"started", "session_id": session.id(), "agent":args.agent,"receipt":receipt})
+            json!({"type":"session","event":"started","session_id":target.session_id,
+            "agent":target.agent,"receipt":acknowledgement.receipt})
         );
     } else if !args.json {
-        eprintln!("session {} agent {}", session.id(), args.agent);
+        eprintln!("session {} agent {}", target.session_id, target.agent);
     }
-    loop {
-        let event = tokio::select! {
-            event = observer.next() => event?,
-            _ = tokio::signal::ctrl_c() => {
-                session.cancel(&args.agent).await?;
-                break;
-            }
-        };
-        match event {
-            Some(Observation::Live { agent, event }) if agent == args.agent => {
-                renderer.event(*event)
-            }
-            Some(Observation::Live { .. }) => {}
-            Some(Observation::Committed(event)) if event.id >= receipt.event_id => {
-                let snapshot = session.agent(&args.agent)?;
-                let target_settled = snapshot.status == AgentStatus::Waiting
-                    || (snapshot.status != AgentStatus::Running && snapshot.pending_inputs == 0);
-                if target_settled
-                    && !session
-                        .agents()
-                        .iter()
-                        .any(|agent| agent.status == AgentStatus::Running)
-                {
-                    break;
-                }
-            }
-            Some(Observation::Committed(_)) => {}
-            Some(Observation::Lagged { skipped }) => {
-                if args.stream_json {
-                    println!("{}", json!({"type":"lagged","skipped":skipped}));
-                }
-            }
-            None => return Err("session observation ended before the agent settled".into()),
-        }
-    }
-    for _ in 0..256 {
-        match tokio::time::timeout(std::time::Duration::from_millis(1), observer.next()).await {
-            Ok(Ok(Some(Observation::Live { agent, event }))) if agent == args.agent => {
-                renderer.event(*event)
-            }
-            Ok(Ok(Some(_))) => {}
-            Ok(Ok(None)) | Err(_) => break,
-            Ok(Err(error)) => return Err(error.into()),
-        }
-    }
-    let snapshot = session.agent(&args.agent)?;
-    renderer.finish(session, &snapshot, start.elapsed());
-    if let Some(error) = snapshot.last_error {
-        return Err(error.into());
-    }
-    if snapshot.status == AgentStatus::Stopped {
-        return Err("agent cancelled after cleanup".into());
-    }
-    Ok(())
+    let mut renderer = RunRenderer::new(&args);
+    let snapshot = settle(
+        &connection,
+        target,
+        acknowledgement,
+        Some(&mut renderer),
+        args.stream_json,
+    )
+    .await?;
+    renderer.finish(&target.session_id, &snapshot, start.elapsed());
+    check_outcome(snapshot)
 }
 
-fn prepare_run(args: &RunArgs, config_path: PathBuf) -> HostResult<PreparedRun> {
-    let config = load_config(config_path)?;
-    let workspace = workspace_path(args.workspace.as_deref())?;
-    let home = data_path(args.data_dir.as_deref())?;
-    let mut prompt = args.prompt.join(" ");
-    let mut bootstrap_skill = args.bootstrap_skill_name.clone();
-    if !args.no_skills {
-        if let Some((name, rest)) = slash_command_candidate(&prompt) {
-            let registry =
-                kuku::skill::build_registry_snapshot_for_host(&home, &workspace, &config)?;
-            if registry.get(&name).is_none() {
-                return Err(format!("unknown skill: {name}").into());
-            }
-            bootstrap_skill = Some(name);
-            prompt = rest;
-        }
-    }
-    if args.skill_body.is_some() && bootstrap_skill.is_none() {
-        return Err("bootstrap skill input requires its skill name".into());
-    }
-    let session_id = if args.cont {
-        Some(
-            kuku::session::list_sessions(&home, Some(&workspace))?
-                .into_iter()
-                .max_by(|left, right| left.created_at.cmp(&right.created_at))
-                .ok_or("no sessions found")?
-                .session_id,
-        )
-    } else {
-        args.session.clone()
+/// Reply to one exact durable request and observe the continuation.
+pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
+    let connection = options.connect().await?;
+    let has_explicit_id = args.command_id.is_some();
+    let target = connection.target(args.session_id, args.agent);
+    let (action, permission_reply) = match args.answer {
+        Some(text) => (
+            Action::ReplyQuestion {
+                request_id: args.request_id,
+                text,
+            },
+            false,
+        ),
+        None => (
+            Action::ReplyPermission {
+                request_id: args.request_id,
+                allow: args.allow,
+            },
+            true,
+        ),
     };
-    if let Some(id) = &session_id {
-        if !kuku::session::session_events_path(&home, &workspace, id)?.exists() {
-            return Err(format!("session '{id}' does not exist in this workspace").into());
+    let command = Command {
+        target,
+        command_id: args.command_id.unwrap_or_else(new_id),
+        action,
+    };
+    if has_explicit_id {
+        if let Some(acknowledgement) = connection
+            .pending
+            .reconcile(&connection.client, &command)
+            .await?
+        {
+            return render_acknowledgement(&connection, &command.target, acknowledgement, true)
+                .await;
         }
     }
-    let mut options = SessionOptions::new(workspace, home, config);
-    options.session_id = session_id;
-    options.prompts_dir = args.prompts_dir.as_ref().map(PathBuf::from);
-    let agent = AgentConfig {
+    let request = if permission_reply {
+        connection
+            .client
+            .snapshot(&command.target)
+            .await?
+            .agent
+            .permission
+    } else {
+        None
+    };
+    let acknowledgement = submit(&connection, &command).await?;
+    if acknowledgement.replayed {
+        return render_acknowledgement(&connection, &command.target, acknowledgement, true).await;
+    }
+    if let Some(request) = request {
+        let decision = if args.allow { "allow" } else { "deny" };
+        println!(
+            "{}",
+            permission_decision_line(&request, decision.into(), "host".into()).to_json_line()
+        );
+    }
+    let snapshot = settle(&connection, &command.target, acknowledgement, None, false).await?;
+    println!("{}", serde_json::to_string(&snapshot)?);
+    check_outcome(snapshot)
+}
+
+async fn prepare_run(
+    args: &RunArgs,
+    connection: &Connection,
+) -> Result<(Command, Option<Acknowledgement>), Box<dyn std::error::Error>> {
+    let requested_session = requested_session(args, connection).await?;
+    let pending = match &args.command_id {
+        Some(id) => super::pending::find(connection, id, requested_session.as_deref())?,
+        None => None,
+    };
+    let is_creation = match &pending {
+        Some(command) => matches!(
+            command.action,
+            Action::Send {
+                create: Some(_),
+                ..
+            }
+        ),
+        None => requested_session.is_none(),
+    };
+    let session_id = pending
+        .as_ref()
+        .map(|pending| pending.target.session_id.clone())
+        .or(requested_session)
+        .unwrap_or_else(new_id);
+    let target = connection.target(session_id, &args.agent);
+    let (text, mut config) = run_input(args);
+    let bootstrap_skill = config.bootstrap_skill.take();
+    let prompts_dir = resolve_prompts_dir(connection, args.prompts_dir.as_deref())?;
+    let command = Command {
+        target,
+        command_id: args.command_id.clone().unwrap_or_else(new_id),
+        action: Action::Send {
+            text: text.clone(),
+            timing: Timing::Steer,
+            bootstrap_skill: bootstrap_skill.clone(),
+            create: is_creation.then(|| Box::new(config.clone())),
+            config_patch: (!is_creation).then(|| Box::new(config)),
+            prompts_dir,
+            create_agent_if_missing: !is_creation,
+        },
+    };
+    if let Some(pending) = &pending {
+        if *pending != command {
+            return Err(Error::PendingConflict(command.command_id).into());
+        }
+        let acknowledgement = connection
+            .pending
+            .reconcile(&connection.client, pending)
+            .await?;
+        if acknowledgement.is_some() {
+            return Ok((command, acknowledgement));
+        }
+    } else if !is_creation && args.command_id.is_some() {
+        if let Some(acknowledgement) =
+            replay_run(connection, &command, text, bootstrap_skill.clone()).await?
+        {
+            return Ok((command, Some(acknowledgement)));
+        }
+    }
+    if !is_creation {
+        check_waiting(connection, &command.target).await?;
+    }
+    if let Some(name) = &bootstrap_skill {
+        let skills = connection
+            .client
+            .skills(&connection.workspace, Some(name))
+            .await?;
+        if !skills.iter().any(|skill| skill.name == *name) {
+            return Err(format!("unknown skill: {name}").into());
+        }
+    }
+    Ok((command, None))
+}
+
+async fn replay_run(
+    connection: &Connection,
+    command: &Command,
+    text: String,
+    bootstrap_skill: Option<String>,
+) -> Result<Option<Acknowledgement>, Error> {
+    match connection.client.recover(command).await {
+        Err(error) if error.code() == Some("command_conflict") => {
+            let original_creation_input = Command {
+                action: Action::Send {
+                    text,
+                    timing: Timing::Steer,
+                    bootstrap_skill,
+                    create: None,
+                    config_patch: None,
+                    prompts_dir: None,
+                    create_agent_if_missing: false,
+                },
+                ..command.clone()
+            };
+            connection.client.recover(&original_creation_input).await
+        }
+        result => result,
+    }
+}
+
+async fn requested_session(
+    args: &RunArgs,
+    connection: &Connection,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if !args.cont {
+        return Ok(args.session.clone());
+    }
+    let session = connection
+        .client
+        .sessions(Some(&connection.workspace), None)
+        .await?
+        .into_iter()
+        .max_by(|left, right| left.created_at.cmp(&right.created_at))
+        .ok_or("no sessions found")?;
+    Ok(Some(session.session_id))
+}
+
+fn run_input(args: &RunArgs) -> (String, AgentConfig) {
+    let mut text = args.prompt.join(" ");
+    let bootstrap_skill = if args.no_skills {
+        None
+    } else {
+        slash_command_candidate(&text).map(|(name, rest)| {
+            text = rest;
+            name
+        })
+    };
+    let config = AgentConfig {
         connection: args.connection.clone(),
         tier: args.tier.clone(),
         model: args.model.clone(),
@@ -326,93 +265,152 @@ fn prepare_run(args: &RunArgs, config_path: PathBuf) -> HostResult<PreparedRun> 
         bootstrap_skill,
         ..AgentConfig::default()
     };
-    let update_config = agent != AgentConfig::default();
-    Ok(PreparedRun {
-        options,
-        agent,
-        prompt,
-        update_config,
-    })
+    (text, config)
 }
 
-fn merge_agent_config(mut current: AgentConfig, update: AgentConfig) -> AgentConfig {
-    if update.connection.is_some() || update.model.is_some() || update.tier.is_some() {
-        current.reasoning_effort = None;
-        current.service_tier = None;
-    }
-    if update.connection.is_some() {
-        current.connection = update.connection;
-    }
-    if update.tier.is_some() {
-        current.tier = update.tier;
-        current.model = None;
-    }
-    if update.model.is_some() {
-        current.model = update.model;
-    }
-    if update.reasoning_effort.is_some() {
-        current.reasoning_effort = update.reasoning_effort;
-    }
-    if update.service_tier.is_some() {
-        current.service_tier = update.service_tier;
-    }
-    if update.max_output_tokens.is_some() {
-        current.max_output_tokens = update.max_output_tokens;
-    }
-    current.no_agents |= update.no_agents;
-    current.no_skills |= update.no_skills;
-    current.bootstrap_skill = update.bootstrap_skill;
-    current
+fn resolve_prompts_dir(
+    connection: &Connection,
+    path: Option<&Path>,
+) -> Result<Option<std::path::PathBuf>, Error> {
+    path.map(|path| connection.service_path(path)).transpose()
 }
 
-fn resolve_config_path(custom: Option<&str>) -> HostResult<PathBuf> {
-    Ok(match custom {
-        Some(path) => PathBuf::from(path),
-        None => data_path(None)?.join("config.toml"),
-    })
-}
-
-fn load_config(path: PathBuf) -> HostResult<kuku::config::Config> {
-    if !path.exists() {
-        return Err(format!("config file not found: {}; run `kuku init`", path.display()).into());
+async fn check_waiting(connection: &Connection, target: &Target) -> CliResult {
+    match connection.client.snapshot(target).await {
+        Ok(snapshot) if snapshot.agent.status == AgentStatus::Waiting => {
+            Err("agent is waiting; use `kuku reply` with its exact pending request identity".into())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.code() == Some("agent_not_found") => Ok(()),
+        Err(error) => Err(error.into()),
     }
-    Ok(kuku::config::load_config(&path)?.resolve()?)
 }
 
-fn workspace_path(path: Option<&str>) -> HostResult<PathBuf> {
-    Ok(match path {
-        Some(path) => std::fs::canonicalize(path)?,
-        None => kuku::session::current_workspace()?,
-    })
+async fn submit(
+    connection: &Connection,
+    command: &Command,
+) -> Result<Acknowledgement, Box<dyn std::error::Error>> {
+    connection
+        .pending
+        .submit(&connection.client, command)
+        .await
+        .map_err(|error| {
+            if error.definitively_rejected() {
+                error.into()
+            } else {
+                format!(
+                    "{error}. Check `kuku pending list` for command {}",
+                    command.command_id
+                )
+                .into()
+            }
+        })
 }
 
-fn data_path(path: Option<&str>) -> HostResult<PathBuf> {
-    Ok(match path {
-        Some(path) => PathBuf::from(path),
-        None => kuku::session::kuku_home()?,
-    })
+async fn settle(
+    connection: &Connection,
+    target: &Target,
+    acknowledgement: Acknowledgement,
+    mut renderer: Option<&mut RunRenderer>,
+    stream_json: bool,
+) -> Result<AgentSnapshot, Box<dyn std::error::Error>> {
+    let receipt_cursor = acknowledgement.receipt.event_id;
+    let mut observer = connection
+        .client
+        .subscribe_session(target, receipt_cursor.saturating_sub(1));
+    let mut settled = connection.client.snapshot(target).await?;
+    while !is_settled(&settled, receipt_cursor) {
+        let event = tokio::select! {
+            result = observer.next() => result?,
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                if let Some(execution_id) = settled.execution_id() {
+                    submit(connection, &Command { target: target.clone(), command_id: new_id(), action: Action::Cancel { execution_id } }).await?;
+                    return Ok(connection.client.snapshot(target).await?.agent);
+                }
+                return Err("no observed Agent execution to cancel".into());
+            }
+        };
+        match event {
+            Observation::Committed {
+                id, state_changed, ..
+            } if state_changed && id > settled.cursor => {
+                settled = connection.client.snapshot(target).await?;
+            }
+            Observation::Live { agent, event, .. } if agent == target.agent => {
+                if let Some(renderer) = renderer.as_mut() {
+                    renderer.event(event);
+                }
+            }
+            Observation::Lagged { skipped } => {
+                if stream_json {
+                    println!("{}", json!({"type":"lagged","skipped":skipped}));
+                }
+                settled = connection.client.snapshot(target).await?;
+            }
+            Observation::Committed { .. } | Observation::Live { .. } | Observation::Heartbeat => {}
+        }
+    }
+    if let Some(renderer) = renderer.filter(|renderer| renderer.needs_preview()) {
+        let drain = async {
+            for _ in 0..256 {
+                match observer.next().await {
+                    Ok(Observation::Live { agent, event, .. }) if agent == target.agent => {
+                        renderer.event(event)
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(20), drain).await;
+    }
+    Ok(settled.agent)
 }
 
-fn render_acknowledgement(
-    session: &Session,
-    address: &str,
-    receipt: kuku::Receipt,
+fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {
+    let target_completed = match snapshot.agent.status {
+        AgentStatus::Idle => snapshot.agent.pending_inputs == 0,
+        AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted => true,
+        AgentStatus::Running => false,
+    };
+    snapshot.cursor >= receipt_cursor
+        && target_completed
+        && !snapshot.cleaning_up
+        && !snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.status == AgentStatus::Running)
+}
+
+fn check_outcome(snapshot: AgentSnapshot) -> CliResult {
+    if let Some(error) = snapshot.last_error {
+        return Err(error.into());
+    }
+    if snapshot.status == AgentStatus::Stopped {
+        return Err("agent cancelled after cleanup".into());
+    }
+    Ok(())
+}
+
+async fn render_acknowledgement(
+    connection: &Connection,
+    target: &Target,
+    acknowledgement: Acknowledgement,
     json_output: bool,
-) -> HostResult<()> {
-    let snapshot = session.agent(address)?;
+) -> CliResult {
+    let snapshot = connection.client.snapshot(target).await?.agent;
+    let receipt = acknowledgement.receipt;
     if json_output {
         println!(
             "{}",
-            json!({"type":"session","event":"acknowledged","session_id":session.id(),"agent":address,"replayed":true,"receipt":receipt,"state":snapshot})
+            json!({"type":"session","event":"acknowledged","session_id":target.session_id,
+            "agent":target.agent,"replayed":true,"receipt":receipt,"state":snapshot})
         );
     } else {
         eprintln!(
-            "command {} already committed at event {}; session {} agent {}: {:?}",
-            receipt.command_id,
-            receipt.event_id,
-            session.id(),
-            address,
-            snapshot.status
+            "command {} already committed at event {}. Session {} agent {}: {:?}",
+            receipt.command_id, receipt.event_id, target.session_id, target.agent, snapshot.status
         );
         if let Some(output) = snapshot.last_output {
             println!("{output}");
@@ -421,68 +419,7 @@ fn render_acknowledgement(
     Ok(())
 }
 
-fn command_id() -> String {
-    kuku::session::new_session_id()
-}
-
-fn finish_close(result: HostResult<()>, close: kuku::Result<()>) -> HostResult<()> {
-    match (result, close) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error.into()),
-        (Err(error), Err(cleanup)) => {
-            Err(format!("{error}; session cleanup failed: {cleanup}").into())
-        }
-    }
-}
-
-fn nested_permission_parent_tool_id(event: &UiEvent) -> Option<&str> {
-    match event {
-        UiEvent::ToolOutput {
-            id,
-            event: ToolEvent::PermissionRequested { .. },
-        } => Some(id.as_str()),
-        _ => None,
-    }
-}
-
-fn nested_model_recovery_info(event: &UiEvent) -> Option<&kuku::query::ModelRecoveryInfo> {
-    match event {
-        UiEvent::ToolOutput {
-            event: ToolEvent::ModelRecovery { info },
-            ..
-        } => Some(info),
-        _ => None,
-    }
-}
-
-fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
-    match kind {
-        kuku::query::ToolKind::Agent { conversation, .. } => Some(conversation.as_str().into()),
-        _ => None,
-    }
-}
-
-fn tool_call_line(
-    tool: String,
-    id: String,
-    summary: String,
-    kind: &kuku::query::ToolKind,
-) -> OutputLine {
-    OutputLine::tool_call(tool, id, summary, serde_json::Value::Null)
-        .with_conversation(conversation_for_tool_kind(kind))
-}
-
-fn tool_result_line(
-    id: String,
-    status: String,
-    summary: String,
-    conversation: Option<String>,
-) -> OutputLine {
-    OutputLine::tool_result(id, status, summary, None, false).with_conversation(conversation)
-}
-
-fn permission_ask_line(request: &kuku::query::PermissionRequest) -> OutputLine {
+fn permission_ask_line(request: &PermissionRequest) -> OutputLine {
     OutputLine::permission_ask(
         request.id.clone(),
         request.tool.clone(),
@@ -493,7 +430,7 @@ fn permission_ask_line(request: &kuku::query::PermissionRequest) -> OutputLine {
 }
 
 fn permission_decision_line(
-    request: &kuku::query::PermissionRequest,
+    request: &PermissionRequest,
     decision: String,
     rule: String,
 ) -> OutputLine {
@@ -505,10 +442,10 @@ fn parse_slash_command(input: &str) -> (String, String) {
     let without_slash = input[1..].trim_start();
     match without_slash.find(char::is_whitespace) {
         Some(pos) => (
-            without_slash[..pos].to_string(),
-            without_slash[pos..].trim().to_string(),
+            without_slash[..pos].into(),
+            without_slash[pos..].trim().into(),
         ),
-        None => (without_slash.to_string(), String::new()),
+        None => (without_slash.into(), String::new()),
     }
 }
 
@@ -517,15 +454,11 @@ fn slash_command_candidate(input: &str) -> Option<(String, String)> {
         return None;
     }
     let (name, rest) = parse_slash_command(input);
-    if name.is_empty()
-        || name.contains('/')
-        || !name
+    (!name.is_empty()
+        && name
             .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-    {
-        return None;
-    }
-    Some((name, rest))
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'))
+    .then_some((name, rest))
 }
 
 #[cfg(test)]

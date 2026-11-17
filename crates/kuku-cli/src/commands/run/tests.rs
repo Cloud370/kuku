@@ -1,40 +1,19 @@
-use std::sync::{Mutex, OnceLock};
-
-use super::{
-    conversation_for_tool_kind, nested_model_recovery_info, nested_permission_parent_tool_id,
-    parse_slash_command, permission_ask_line, permission_decision_line, prepare_run,
-    slash_command_candidate, tool_call_line, tool_result_line,
-};
-use crate::cli_args::RunArgs;
 use clap::Parser;
-use kuku::UiEvent;
+use kuku::conversation::address::ConversationAddress;
+use kuku::{PermissionRequest, ToolEvent, ToolKind, UiEvent};
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
+use crate::cli_args::{Cli, Command};
 
-fn temp_workspace() -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "kuku-cli-run-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&path).unwrap();
-    path
-}
-
-fn test_config_path(dir: &std::path::Path) -> std::path::PathBuf {
-    let path = dir.join("config.toml");
-    std::fs::write(&path, kuku::config::generate_default()).unwrap();
-    path
-}
+use super::render::{
+    conversation_for_tool_kind, nested_model_recovery, tool_call_line, tool_result_line,
+};
+use super::{
+    parse_slash_command, permission_ask_line, permission_decision_line, run_input,
+    slash_command_candidate,
+};
 
 #[test]
 fn reply_requires_one_explicit_decision() {
-    use crate::cli_args::Cli;
     assert!(Cli::try_parse_from(["kuku", "reply", "s_test", "request"]).is_err());
     assert!(
         Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--allow", "--deny"]).is_err()
@@ -51,276 +30,138 @@ fn reply_requires_one_explicit_decision() {
 }
 
 #[test]
-fn nested_permission_event_exposes_parent_tool_id() {
-    let request = kuku::query::PermissionRequest {
-        id: "perm_child".to_string(),
-        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
-        turn: 1,
-        tool_call_id: "toolu_child".to_string(),
-        tool: "run_command".to_string(),
-        risk: "command".to_string(),
-        summary: "run gated command".to_string(),
-        candidate: "cargo test".to_string(),
-        source: "default_ask".to_string(),
+fn script_connection_flags_remain_available_on_the_run_command() {
+    let cli = Cli::try_parse_from([
+        "kuku",
+        "run",
+        "--remote",
+        "https://example.test",
+        "--token",
+        "secret",
+        "--workspace",
+        "/work",
+        "--json",
+        "inspect",
+        "--a-prompt-flag",
+    ])
+    .unwrap();
+    let Some(Command::Run(args)) = cli.command else {
+        panic!("expected run command")
     };
-    let event = UiEvent::ToolOutput {
-        id: "toolu_agent_parent".to_string(),
-        event: kuku::query::ToolEvent::PermissionRequested { request },
-    };
-
+    assert_eq!(Some("https://example.test"), cli.target.remote.as_deref());
     assert_eq!(
-        nested_permission_parent_tool_id(&event),
-        Some("toolu_agent_parent")
+        Some("/work"),
+        cli.target
+            .workspace
+            .as_deref()
+            .and_then(std::path::Path::to_str)
     );
+    assert_eq!(["inspect", "--a-prompt-flag"], args.prompt.as_slice());
+    assert!(args.json);
 }
 
 #[test]
 fn nested_model_recovery_exposes_child_invalidation_boundary() {
     let info = kuku::query::ModelRecoveryInfo {
-        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
+        conversation: ConversationAddress::parse("review").unwrap(),
         turn: 2,
-        from_request_id: "req_1".to_string(),
-        to_request_id: "req_2".to_string(),
+        from_request_id: "req_1".into(),
+        to_request_id: "req_2".into(),
         reason: kuku::event::ModelStopReason::Length,
         attempt: 1,
         max_attempts: 1,
     };
     let event = UiEvent::ToolOutput {
-        id: "toolu_agent_parent".to_string(),
-        event: kuku::query::ToolEvent::ModelRecovery { info },
+        id: "toolu_agent_parent".into(),
+        event: ToolEvent::ModelRecovery { info: info.clone() },
     };
-
-    let recovered = nested_model_recovery_info(&event).expect("nested recovery must be exposed");
-    assert_eq!(recovered.conversation.as_str(), "review");
-    assert_eq!(recovered.from_request_id, "req_1");
-    assert_eq!(recovered.to_request_id, "req_2");
+    let wire = kuku::wire::to_wire(&event).unwrap();
+    assert_eq!(Some(info), nested_model_recovery(&wire["event"]));
 }
 
 #[test]
 fn stream_json_permission_lines_include_request_conversation() {
-    let request = kuku::query::PermissionRequest {
-        id: "perm_review".to_string(),
-        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
+    let request = PermissionRequest {
+        id: "perm_review".into(),
+        conversation: ConversationAddress::parse("review").unwrap(),
         turn: 1,
-        tool_call_id: "toolu_review".to_string(),
-        tool: "run_command".to_string(),
-        risk: "command".to_string(),
-        summary: "run gated command".to_string(),
-        candidate: "cargo test".to_string(),
-        source: "default_ask".to_string(),
+        tool_call_id: "toolu_review".into(),
+        tool: "run_command".into(),
+        risk: "command".into(),
+        summary: "run gated command".into(),
+        candidate: "cargo test".into(),
+        source: "default_ask".into(),
     };
-
     let ask: serde_json::Value =
         serde_json::from_str(&permission_ask_line(&request).to_json_line()).unwrap();
     let decision: serde_json::Value = serde_json::from_str(
-        &permission_decision_line(&request, "deny".to_string(), "noninteractive".to_string())
-            .to_json_line(),
+        &permission_decision_line(&request, "deny".into(), "noninteractive".into()).to_json_line(),
     )
     .unwrap();
-
-    assert_eq!(ask["conversation"], "review");
-    assert_eq!(decision["conversation"], "review");
+    assert_eq!("review", ask["conversation"]);
+    assert_eq!("review", decision["conversation"]);
 }
 
 #[test]
 fn stream_json_agent_tool_call_includes_conversation() {
-    let kind = kuku::query::ToolKind::Agent {
-        conversation: kuku::conversation::address::ConversationAddress::parse("review").unwrap(),
-        binding_id: "binding_1".to_string(),
+    let kind = ToolKind::Agent {
+        conversation: ConversationAddress::parse("review").unwrap(),
+        binding_id: "binding_1".into(),
     };
-
     let line = tool_call_line(
-        "agent".to_string(),
-        "toolu_agent".to_string(),
-        "run review agent".to_string(),
+        "agent".into(),
+        "toolu_agent".into(),
+        "run review agent".into(),
         &kind,
     );
     let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
-
-    assert_eq!(
-        conversation_for_tool_kind(&kind),
-        Some("review".to_string())
-    );
-    assert_eq!(value["conversation"], "review");
+    assert_eq!(Some("review".into()), conversation_for_tool_kind(&kind));
+    assert_eq!("review", value["conversation"]);
 }
 
 #[test]
 fn stream_json_agent_tool_result_includes_conversation() {
     let line = tool_result_line(
-        "toolu_agent".to_string(),
-        "ok".to_string(),
-        "review complete".to_string(),
-        Some("review".to_string()),
+        "toolu_agent".into(),
+        "ok".into(),
+        "review complete".into(),
+        Some("review".into()),
     );
     let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
-
-    assert_eq!(value["conversation"], "review");
+    assert_eq!("review", value["conversation"]);
 }
 
 #[test]
-fn slash_command_with_prompt() {
-    let (name, rest) = parse_slash_command("/tdd implement login");
-    assert_eq!(name, "tdd");
-    assert_eq!(rest, "implement login");
+fn slash_command_splits_a_skill_from_the_remaining_prompt() {
+    for (input, name, prompt) in [
+        ("/tdd implement login", "tdd", "implement login"),
+        ("/review", "review", ""),
+        (
+            "/code-review check auth module",
+            "code-review",
+            "check auth module",
+        ),
+        ("/  tdd implement login", "tdd", "implement login"),
+    ] {
+        assert_eq!((name.into(), prompt.into()), parse_slash_command(input));
+        assert_eq!(
+            Some((name.into(), prompt.into())),
+            slash_command_candidate(input)
+        );
+    }
 }
 
 #[test]
-fn slash_command_without_prompt() {
-    let (name, rest) = parse_slash_command("/review");
-    assert_eq!(name, "review");
-    assert_eq!(rest, "");
-}
-
-#[test]
-fn slash_command_with_multiple_words() {
-    let (name, rest) = parse_slash_command("/code-review check auth module");
-    assert_eq!(name, "code-review");
-    assert_eq!(rest, "check auth module");
-}
-
-#[test]
-fn slash_command_trims_leading_whitespace() {
-    let (name, rest) = parse_slash_command("/  tdd implement login");
-    assert_eq!(name, "tdd");
-    assert_eq!(rest, "implement login");
-}
-
-#[test]
-fn slash_command_candidate_rejects_path_like_prompts() {
+fn path_like_prompts_stay_plain_text() {
     assert!(slash_command_candidate("/tmp/foo").is_none());
     assert!(slash_command_candidate("/etc/hosts").is_none());
     assert!(slash_command_candidate("/").is_none());
-}
-
-#[test]
-fn prepare_run_treats_path_like_prompt_as_plain_text() {
-    let _guard = env_lock().lock().unwrap();
-    let workspace = temp_workspace();
-    let previous_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&workspace).unwrap();
-
-    let args = RunArgs {
-        prompt: vec!["/tmp/foo".to_string()],
-        auto_yes: false,
-        model: None,
-        connection: None,
-        command_id: None,
-        tier: None,
-        agent: "main".into(),
-        workspace: None,
-        data_dir: None,
-        reasoning_effort: None,
-        service_tier: None,
-        max_output_tokens: None,
-        session: None,
-        cont: false,
-        json: false,
-        stream_json: false,
-        show_thinking: false,
-        raw: false,
-        verbose: false,
-        config: None,
-        prompts_dir: None,
-        no_agents: true,
-        no_skills: false,
-        skill_body: None,
-        bootstrap_skill_name: None,
+    let cli = Cli::try_parse_from(["kuku", "run", "--no-agents", "/tmp/foo"]).unwrap();
+    let Some(Command::Run(args)) = cli.command else {
+        panic!("expected run command")
     };
-
-    let result = prepare_run(&args, test_config_path(&workspace)).unwrap();
-
-    std::env::set_current_dir(previous_cwd).unwrap();
-    let _ = std::fs::remove_dir_all(&workspace);
-
-    assert_eq!(result.prompt, "/tmp/foo");
-}
-
-#[test]
-fn slash_command_candidate_accepts_valid_skill_names() {
-    assert_eq!(
-        slash_command_candidate("/review check this"),
-        Some(("review".to_string(), "check this".to_string()))
-    );
-    assert_eq!(
-        slash_command_candidate("/code-review"),
-        Some(("code-review".to_string(), String::new()))
-    );
-}
-
-#[test]
-fn slash_command_surfaces_skill_discovery_errors() {
-    let _guard = env_lock().lock().unwrap();
-    let workspace = temp_workspace();
-    let previous_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&workspace).unwrap();
-
-    let skill_dir = workspace.join(".kuku").join("skills").join("broken-skill");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: other-name\ndescription: broken\n---\n\n# Broken\n",
-    )
-    .unwrap();
-
-    let args = RunArgs {
-        prompt: vec!["/broken-skill do something".to_string()],
-        auto_yes: false,
-        model: None,
-        connection: None,
-        command_id: None,
-        tier: None,
-        agent: "main".into(),
-        workspace: None,
-        data_dir: None,
-        reasoning_effort: None,
-        service_tier: None,
-        max_output_tokens: None,
-        session: None,
-        cont: false,
-        json: false,
-        stream_json: false,
-        show_thinking: false,
-        raw: false,
-        verbose: false,
-        config: None,
-        prompts_dir: None,
-        no_agents: true,
-        no_skills: false,
-        skill_body: None,
-        bootstrap_skill_name: None,
-    };
-
-    let error = match prepare_run(&args, test_config_path(&workspace)) {
-        Ok(_) => panic!("expected discovery failure"),
-        Err(error) => error,
-    };
-
-    std::env::set_current_dir(previous_cwd).unwrap();
-    let _ = std::fs::remove_dir_all(&workspace);
-
-    assert!(!error.to_string().is_empty());
-}
-
-#[test]
-fn switching_route_clears_incompatible_settings_without_changing_other_agents() {
-    let current = kuku::AgentConfig {
-        model: Some("old".into()),
-        tier: Some("old-tier".into()),
-        reasoning_effort: Some("high".into()),
-        service_tier: Some("fast".into()),
-        ..Default::default()
-    };
-    let untouched = current.clone();
-    let next = super::merge_agent_config(
-        current,
-        kuku::AgentConfig {
-            connection: Some("second".into()),
-            tier: Some("new-tier".into()),
-            ..Default::default()
-        },
-    );
-    assert_eq!(None, next.model);
-    assert_eq!(None, next.reasoning_effort);
-    assert_eq!(None, next.service_tier);
-    assert_eq!(Some("high"), untouched.reasoning_effort.as_deref());
+    let (text, config) = run_input(&args);
+    assert_eq!("/tmp/foo", text);
+    assert_eq!(None, config.bootstrap_skill);
+    assert!(config.no_agents);
 }

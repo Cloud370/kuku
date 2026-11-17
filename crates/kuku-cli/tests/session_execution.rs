@@ -3,6 +3,7 @@ use std::process::{Command, Output};
 
 use httpmock::{Method, MockServer};
 use kuku::session::{AgentStatus, Session};
+use kuku_client::local::LocalService;
 use serde_json::{json, Value};
 
 fn tool_round(request: &httpmock::prelude::HttpMockRequest) -> usize {
@@ -132,6 +133,29 @@ fn result(output: &Output) -> Value {
     })
 }
 
+async fn stop_managed(home: &Path) {
+    let service = LocalService::resolve(home, None).unwrap();
+    if let Some(connection) = service.status().await.unwrap() {
+        let response = wreq::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{}/service/restart", connection.endpoint()))
+            .bearer_auth(connection.token())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wreq::StatusCode::ACCEPTED, response.status());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.status().await.unwrap().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("fixture should release its local service");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     let mock = MockServer::start_async().await;
@@ -185,6 +209,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     );
     assert!(!workspace.path().join(".git").exists());
     let session_id = value["session_id"].as_str().unwrap();
+    stop_managed(home.path()).await;
     let path =
         kuku::session::session_events_path(home.path(), workspace.path(), session_id).unwrap();
     let agents = Session::read_agents(&path).unwrap();
@@ -227,6 +252,8 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
             "balanced",
             "--model",
             "reopened-exact-model",
+            "--command-id",
+            "configured-continuation",
             "--json",
             "verify model selection",
         ],
@@ -235,6 +262,25 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     assert_eq!("primary", overridden["config"]["connection"]);
     assert_eq!("balanced", overridden["config"]["tier"]);
     assert_eq!("reopened-exact-model", overridden["config"]["model"]);
+    let replayed = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--session",
+            session_id,
+            "--tier",
+            "balanced",
+            "--model",
+            "reopened-exact-model",
+            "--command-id",
+            "configured-continuation",
+            "--json",
+            "verify model selection",
+        ],
+    ));
+    assert_eq!("acknowledged", replayed["event"]);
+    assert_eq!(true, replayed["replayed"]);
     explicit_model.assert_hits(1);
     let show = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace.path())
@@ -247,6 +293,24 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         "Explicit model.",
         String::from_utf8(show.stdout).unwrap().trim()
     );
+    let events = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+        .current_dir(workspace.path())
+        .env("KUKU_HOME", home.path())
+        .args([
+            "events",
+            session_id,
+            "--limit",
+            "1",
+            "--agent",
+            "unmatched",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(events.status.success());
+    assert!(events.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&events.stderr).contains("next event cursor: 1"));
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -277,6 +341,7 @@ async fn cli_selects_exact_connection_when_protocol_matches() {
     ));
     assert_eq!("Secondary route.", output["response"]);
     assert_eq!("secondary", output["config"]["connection"]);
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -350,6 +415,7 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
     assert!(!reply("stale-new-command").status.success());
     question.assert_hits(1);
     answer.assert_hits(1);
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -400,6 +466,7 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         "delegated\n",
         std::fs::read_to_string(workspace.path().join("delegated-proof.txt")).unwrap()
     );
+    stop_managed(home.path()).await;
     let path = kuku::session::session_events_path(
         home.path(),
         workspace.path(),
@@ -416,12 +483,12 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resume() {
+async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it() {
     let mock = MockServer::start_async().await;
     let model = mock.mock(|when, then| {
         when.method(Method::POST).path("/v1/messages");
         then.status(200).delay(std::time::Duration::from_secs(3)).body(kuku::test_support::anthropic_sse_response(json!({
-            "id":"interrupted","type":"message","role":"assistant","content":[{"type":"text","text":"Must not resume on retry."}],
+            "id":"detached","type":"message","role":"assistant","content":[{"type":"text","text":"Completed after disconnect."}],
             "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
         })));
     });
@@ -478,26 +545,30 @@ async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resu
         ],
     ));
     assert_eq!("acknowledged", acknowledged["event"]);
-    assert_eq!("interrupted", acknowledged["state"]["status"]);
-    let restored = Session::open(options).await.unwrap();
-    assert_eq!(
-        AgentStatus::Interrupted,
-        restored.agent("main").unwrap().status
-    );
-    let mut cursor = 0;
-    loop {
-        let page = restored.events(cursor, 128).unwrap();
-        if page.is_empty() {
-            break;
-        }
-        for event in page {
-            cursor = event.id;
-            if let kuku::event::EventPayload::Unknown(value) = event.payload {
-                assert_ne!("agent_resumed", value["record"]["operation"]);
+    assert_eq!(true, acknowledged["replayed"]);
+    let service = LocalService::resolve(home.path(), Some(&config_path)).unwrap();
+    let client = kuku_client::Client::local(&service).await.unwrap();
+    let target = kuku_client::Target {
+        workspace: workspace.path().canonicalize().unwrap(),
+        session_id: "retry-interrupted".into(),
+        agent: "main".into(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let snapshot = client.snapshot(&target).await.unwrap();
+            if snapshot.agent.status == AgentStatus::Idle {
+                assert_eq!(
+                    Some("Completed after disconnect."),
+                    snapshot.agent.last_output.as_deref()
+                );
+                break;
             }
+            assert_eq!(AgentStatus::Running, snapshot.agent.status);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }
-    restored.close().await.unwrap();
+    })
+    .await
+    .expect("server must complete the original run after the CLI process exits");
     model.assert_hits(1);
     let continued = result(&invoke(
         workspace.path(),
@@ -509,10 +580,11 @@ async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resu
             "--command-id",
             "authorized-continuation",
             "--json",
-            "explicitly continue after checking no effects",
+            "explicitly send a new input",
         ],
     ));
     assert_eq!("completed", continued["event"]);
     assert_eq!("idle", continued["status"]);
     model.assert_hits(2);
+    stop_managed(home.path()).await;
 }

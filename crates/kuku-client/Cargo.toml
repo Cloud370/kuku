@@ -1,0 +1,31 @@
+[package]
+name = "kuku-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Headless client for the kuku Session service"
+repository = "https://github.com/Cloud370/kuku"
+readme = "../../README.md"
+
+[dependencies]
+bytes = "1"
+fslock = "0.2"
+kuku = { workspace = true }
+futures-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "time"] }
+tokio-stream = { workspace = true }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+wreq = { version = "6.0.0-rc.28", features = ["json", "query", "stream"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt"] }

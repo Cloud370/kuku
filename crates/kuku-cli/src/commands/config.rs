@@ -1,15 +1,13 @@
 use kuku::config::{load_config, set_value, show_redacted};
-use kuku::session::kuku_home;
 
-use crate::cli_args::{ConfigArgs, ConfigSubcommand, PolicySubcommand};
+use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, PolicySubcommand};
 
 /// Show or manage configuration: `kuku config [show|validate|set|policy]`
-pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let path = if let Some(p) = &args.config {
-        std::path::PathBuf::from(p)
-    } else {
-        kuku_home()?.join("config.toml")
-    };
+pub async fn run(
+    args: ConfigArgs,
+    target: &ConnectionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = super::config_path(target)?;
 
     match args.cmd {
         None | Some(ConfigSubcommand::Show) => {
