@@ -441,7 +441,7 @@ mod tests {
         let publisher_target = Arc::clone(&target);
         let publisher = std::thread::spawn(move || {
             publish_directory(&publisher_target, &mut |path| {
-                if path == &*publisher_target {
+                if path == *publisher_target {
                     created_tx.send(()).unwrap();
                     publish_rx.recv().unwrap();
                 }
