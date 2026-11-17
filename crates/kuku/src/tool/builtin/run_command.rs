@@ -22,6 +22,9 @@ pub(crate) mod output;
 mod process;
 mod render;
 
+#[cfg(all(test, windows))]
+mod windows_tests;
+
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
 const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
 const READ_BUFFER_BYTES: usize = 8192;
