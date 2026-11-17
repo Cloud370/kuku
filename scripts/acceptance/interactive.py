@@ -9,8 +9,52 @@ import re
 from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
-    InstalledClient, TOOL_OUTPUT, eventually, http_fixture, json_response, local_request,
+    InstalledClient, TOOL_OUTPUT, eventually, http_fixture, install, json_response, local_request,
 )
+
+
+def installed_upgrade(client, previous, current):
+    from run import config_record
+
+    prefix = client.binary.parent.parent
+    workspace = client.workspace("work-upgrade")
+    prompt = "finish the tool across a package upgrade"
+    output = "upgrade tool finished once"
+    target_hash = config_record(client.binary)["sha256"]
+    install(previous, prefix, client.env)
+    assert config_record(client.binary)["sha256"] != target_hash, "Upgrade needs two distinct executables"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        client.gated_tool(workspace, client.provider.next(prompt), "upgrade-gated-tool")
+        session = client.session(workspace)
+        original = client.connection()
+        original_version = client.status()["version"]
+        terminal.exit_cleanly()
+
+    install(current, prefix, client.env)
+    assert config_record(client.binary)["sha256"] == target_hash
+    version, _ = client.cli(workspace, "--version")
+    stdout, _ = client.cli(workspace, "server", "restart", success=False)
+    deferred = json.loads(stdout)
+    assert deferred["state"] == "deferred" and deferred["service"]["busy"]
+    assert deferred["service"]["version"] == original_version
+    client.assert_current_service(original)
+    client.release_tool(workspace)
+    client.provider.next("upgrade-gated-tool").text(output)
+    eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
+    eventually("old service to become idle", lambda: not client.status()["busy"])
+    client.verify_tool(workspace)
+    client.cli(workspace, "server", "restart")
+    assert client.connection()["instance_id"] != original["instance_id"]
+    assert version.strip() == "kuku " + client.status()["version"]
+    with client.terminal(workspace) as terminal:
+        terminal.resume(prompt)
+        terminal.expect(output)
+        terminal.exit_cleanly()
+    client.verify_tool(workspace)
+    client.provider.assert_idle()
+    print(f"Upgraded {original_version} to {version.strip()} across a busy tool and restored Session {session}.")
 
 
 @contextlib.contextmanager
@@ -311,8 +355,11 @@ def main():
     parser.add_argument("--bridge", required=True, type=Path)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     options = parser.parse_args()
     with InstalledClient(options.binary, options.bridge, options.directory) as client:
+        if options.upgrade:
+            installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)
         preserve_draft_after_interrupt(client)
         wait_restart_and_recover_crash(client, workspace, session, title)

@@ -51,10 +51,13 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 ```bash
 python3 scripts/acceptance/run.py interactive
 python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+python3 scripts/acceptance/run.py interactive --archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE
 python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_LINUX_ARCHIVE
 ```
 
 默认使用仓库指定的 Node 版本构建 Web 资源，再安装当前源码中带 `embedded-web-assets` 的 `kuku`。`--archive` 测试对应平台的 `.tar.gz` 或 `.zip` 发行包。`--binary` 复制已经构建或安装的可执行文件。临时安装前缀、空白数据目录和工作区都在源码树外。`--scratch-base` 可另选源码树外的临时目录。选择入口将二进制 hash、原生终端类型、所选场景和结果写入现有的证据目录。
+
+要复测安装包升级，提供两个包含不同可执行文件、均支持持久 Session 的平台归档。选择入口在工具运行期间调用平台安装器替换程序，验证重启被推迟、原工具仅执行一次，以及新服务能恢复同一 Session。
 
 终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。
 

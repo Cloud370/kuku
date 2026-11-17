@@ -2,6 +2,7 @@
 
 import contextlib
 from dataclasses import dataclass
+import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import count
@@ -12,6 +13,7 @@ import queue
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlencode, urlsplit
@@ -82,7 +84,13 @@ def http_fixture(dispatch):
         def log_message(self, _format, *_args):
             pass
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    with serve(Handler) as endpoint:
+        yield endpoint
+
+
+@contextlib.contextmanager
+def serve(handler):
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
         thread.start()
         try:
@@ -421,3 +429,45 @@ class InstalledClient:
             except (OSError, http.client.HTTPException):
                 return True
         eventually("isolated managed service to release its listener", ended, timeout=10)
+
+
+def install(archive, home, env):
+    platform = "windows-x86_64" if os.name == "nt" else (
+        "darwin-aarch64" if sys.platform == "darwin" else "linux-x86_64")
+    with archive.open("rb") as source:
+        digest = hashlib.sha256()
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    sha256 = digest.hexdigest()
+
+    class Release(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if self.path == "/latest.json":
+                body = json.dumps({"version": "acceptance", "platforms": {platform: {
+                    "url": f"http://127.0.0.1:{self.server.server_port}/package", "sha256": sha256,
+                }}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/package":
+                self.send_response(200)
+                self.send_header("Content-Length", str(archive.stat().st_size))
+                self.end_headers()
+                with archive.open("rb") as handle:
+                    shutil.copyfileobj(handle, self.wfile)
+            else:
+                self.send_error(404)
+
+    scripts = Path(__file__).resolve().parents[1]
+    env = {**env, "KUKU_HOME": str(home), "PATH": str(home / "bin") + os.pathsep + env["PATH"]}
+    with serve(Release) as address:
+        cmd = (["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(scripts / "install.ps1"), "-Force", "-NoModifyPath", "-Source"]
+               if os.name == "nt" else ["sh", str(scripts / "install.sh"), "--force", "--source"])
+        subprocess.run([*cmd, address + "/latest.json"], cwd=home, env=env, check=True,
+                       stdout=subprocess.DEVNULL, timeout=90)

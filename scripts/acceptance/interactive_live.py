@@ -1,21 +1,18 @@
 """Run the installed TUI, WebUI and CLI on one budgeted DeepSeek development task."""
 
 import argparse
-import contextlib
-import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import threading
 from urllib.parse import quote, urlencode
 
 from interactive_browser import open_session
-from interactive_fixture import InstalledClient, eventually
+from interactive_fixture import InstalledClient, eventually, install, serve
 from playwright.sync_api import sync_playwright
 
 from run import Budget, ROOT, load_secrets, write_json
@@ -70,20 +67,6 @@ sys.exit(0 if ok else 1)
 '''
 
 
-@contextlib.contextmanager
-def serve(handler):
-    from http.server import ThreadingHTTPServer
-
-    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield f"http://127.0.0.1:{server.server_port}"
-        finally:
-            server.shutdown()
-            thread.join()
-
-
 def provider_boundary(attempts):
     """Apply hard spending limits before each upstream request, including transport retries."""
     lock = threading.Lock()
@@ -133,46 +116,6 @@ def provider_boundary(attempts):
                 upstream.close()
 
     return Forward
-
-
-def install(archive, home, env):
-    platform = "windows-x86_64" if os.name == "nt" else (
-        "darwin-aarch64" if sys.platform == "darwin" else "linux-x86_64")
-    with archive.open("rb") as source:
-        digest = hashlib.sha256()
-        for block in iter(lambda: source.read(1 << 20), b""):
-            digest.update(block)
-    sha256 = digest.hexdigest()
-
-    class Release(BaseHTTPRequestHandler):
-        def log_message(self, *_):
-            pass
-
-        def do_GET(self):
-            if self.path == "/latest.json":
-                body = json.dumps({"version": "acceptance", "platforms": {platform: {
-                    "url": f"http://127.0.0.1:{self.server.server_port}/package", "sha256": sha256,
-                }}}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif self.path == "/package":
-                self.send_response(200)
-                self.send_header("Content-Length", str(archive.stat().st_size))
-                self.end_headers()
-                with archive.open("rb") as handle:
-                    shutil.copyfileobj(handle, self.wfile)
-            else:
-                self.send_error(404)
-
-    with serve(Release) as address:
-        cmd = (["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                "-File", str(ROOT / "scripts/install.ps1"), "-Force", "-NoModifyPath", "-Source"]
-               if os.name == "nt" else ["sh", str(ROOT / "scripts/install.sh"), "--force", "--source"])
-        subprocess.run([*cmd, address + "/latest.json"], cwd=home, env=env, check=True,
-                       stdout=subprocess.DEVNULL, timeout=90)
 
 
 def setup_workspace(workspace):

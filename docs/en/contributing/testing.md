@@ -51,10 +51,13 @@ Use the installed-client selection for changes to terminal input, service discov
 ```bash
 python3 scripts/acceptance/run.py interactive
 python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+python3 scripts/acceptance/run.py interactive --archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE
 python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_LINUX_ARCHIVE
 ```
 
 The default selection uses the repository's Node version, builds the Web assets and installs the current workspace's `kuku` with `embedded-web-assets`. `--archive` tests the release `.tar.gz` or `.zip` for the current platform. `--binary` copies a previously built or installed executable. The temporary install prefix, fresh data directory and workspaces are outside the checkout. `--scratch-base` selects another external scratch root. The selector records the binary hash, native terminal type, chosen scenarios and results in its usual evidence directory.
+
+To test a package upgrade, provide two platform archives with different executables that both support durable Sessions. The selector uses the platform installer to replace the executable while a tool is running. It checks that restart defers, the original tool finishes once, and the new service reopens the Session.
 
 The terminal scenarios drive an installed `kuku` on Linux and macOS through a Unix PTY, and on Windows through ConPTY. Use `--browser` with an asset-enabled binary to add the Chromium scenario. Install the Playwright Python package and its Chromium browser as configured in the [Web CI job](../../../.github/workflows/web-ci.yml). The scenarios use a controlled local model endpoint and exercise real clients and the real service without provider credentials or paid requests. The [interactive client plan](../architecture/interactive-clients.md#testing-during-development) lists the behaviors to verify at each layer.
 

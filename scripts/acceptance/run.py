@@ -730,6 +730,8 @@ def run_interactive(args, directory, record):
         raise ValueError("Desktop interactive acceptance requires Linux and Docker")
     if args.live and (not args.archive or not args.secrets):
         raise ValueError("Live interactive acceptance requires --archive and --secrets")
+    if args.upgrade_from and (not args.archive or args.live):
+        raise ValueError("--upgrade-from requires a controlled run with --archive")
     scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
     if scratch.is_relative_to(ROOT):
         raise ValueError("Interactive acceptance needs a scratch directory outside the source tree")
@@ -792,6 +794,9 @@ def run_interactive(args, directory, record):
         bridge = build_bridge()
         command = [sys.executable, str(Path(__file__).with_name("interactive.py")), "--binary", str(binary),
                    "--bridge", str(bridge), "--directory", str(scratch_dir / "test")]
+        if args.upgrade_from:
+            record["upgrade_from"] = config_record(args.upgrade_from)
+            command.extend(["--upgrade", str(args.upgrade_from.resolve()), str(args.archive.resolve())])
         if args.browser:
             command.append("--browser")
         checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
@@ -811,6 +816,7 @@ def parser():
     product = interactive.add_mutually_exclusive_group()
     product.add_argument("--binary", type=Path, help="copy a previously installed binary to the test prefix")
     product.add_argument("--archive", type=Path, help="extract the platform release .tar.gz or .zip")
+    interactive.add_argument("--upgrade-from", type=Path, help="replace a previous package during an active tool")
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
     scenario = interactive.add_mutually_exclusive_group()
