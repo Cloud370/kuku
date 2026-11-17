@@ -57,8 +57,8 @@ Hosts own:
 
 `apps/tauri` is planned as a desktop shell that embeds `kuku-server` rather than calling the SDK directly.
 
-## Design rule
+## Current and planned connections
 
-No host embeds another host. Each host calls the SDK directly or, in the Tauri case, embeds the server library as its transport layer.
+Today the CLI opens Sessions through the SDK. The WebUI connects to the HTTP server, which owns its open Sessions. The planned CLI and TUI use that same server boundary. [Interactive clients](interactive-clients.md)
 
 See [Architecture Overview](overview.md) for the main split and [Extension Runtime](extension-runtime.md) for how packages and hooks attach around the runtime.

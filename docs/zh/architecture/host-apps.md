@@ -57,8 +57,8 @@ host 负责：
 
 `apps/tauri` 计划作为桌面壳层，通过嵌入 `kuku-server` 来工作，而不是直接调用 SDK。
 
-## Design rule
+## 当前与规划中的连接方式
 
-没有 host 会嵌入另一个 host。每个 host 都直接调用 SDK，或者像 Tauri 一样把 server library 作为自己的传输层嵌入。
+当前 CLI 通过 SDK 打开 Session。WebUI 连接 HTTP server，由 server 持有打开的 Session。规划中的 CLI 和 TUI 都通过这个服务端边界接入。[交互客户端重构计划](interactive-clients.md)
 
 主分层见 [Architecture Overview](overview.md)，package 和 hook 如何围绕运行时挂接见 [Extension Runtime](extension-runtime.md)。

@@ -8,7 +8,7 @@ Read this page first, then only task-relevant code and [Evolution](evolution.md)
 
 ## Product and design test
 
-kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harness**. A small, complete execution runtime supports interactive work, independent subagents, Teams, and event-driven long-running work. CLI, server, and UI use the same public SDK; embedding requires no daemon, HTTP server, subprocess CLI, or plugin container.
+kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harness**. A small, complete execution runtime supports interactive work, independent subagents, Teams, and event-driven long-running work. Embedded callers use the public SDK directly. For the interactive product, the server owns execution through that SDK and the CLI, TUI and WebUI use a common client protocol. [Interactive clients](interactive-clients.md)
 
 Give reliability, low resource use, and low human/model cognitive cost equal weight. A mechanism needs a concrete job and one owner. The default Harness supplies working prompts, tools, model selection, and delegation; callers need not assemble an agent platform. Custom Harnesses choose recipients, context, scheduling, and work completion through explicit SDK operations, without replacing persistence, authorization, or execution.
 
@@ -74,11 +74,11 @@ A workspace is an ordinary directory. Agents share it by default; callers may ch
 
 Target trusted callers/single-user use; the host supplies strong OS isolation when needed. The default local entry explicitly uses a trusted-local policy; embedded hosts can supply their own policy. A host authorization boundary receives the real caller, final action/arguments, and directory, and allows, denies, or defers it. Error/cancellation is never permission. No mandatory rule DSL, role hierarchy, approval platform, or model-based safety classifier is required.
 
-Do not start with all-plugin composition, hot-swappable loops, generic event middleware, multiple storage backends, distributed writers, built-in Team/task platforms, or workflow DSLs. The WebUI rewrite remains abandoned. Reference systems supply evidence for individual contracts, not a package layout or product to reproduce.
+Do not start with all-plugin composition, hot-swappable loops, generic event middleware, multiple storage backends, distributed writers, built-in Team/task platforms, or workflow DSLs. Reference systems supply evidence for individual contracts, not a package layout or product to reproduce.
 
 ## Delivery and engineering choices
 
-The existing release has one user and no continued-maintenance obligation. **No old-API, old-address, or old-Session-format compatibility layer is required.** Preserve useful code and data; this does not authorize deleting user files. Staged scope and acceptance conditions live in [Evolution](evolution.md#delivery-plan-public-sdk-execution-slice).
+Earlier releases had no external users. **Replace superseded APIs, addresses and Session formats directly.** Update in-tree callers and tests in the same change, remove obsolete adapters and keep one maintained execution path. Preserve user files and verification evidence. The SDK stages and acceptance conditions live in [Evolution](evolution.md#delivery-plan-public-sdk-execution-slice).
 
 Deliver real single-Agent work through the public SDK and a thin CLI first, then early independent Agents using different providers, then durable waiting and small external-orchestration examples. Choose a few mature benchmark cases with their original verifiers, plus focused contract tests. Do not build a benchmark platform or demand an architecture-proof phase before useful execution.
 

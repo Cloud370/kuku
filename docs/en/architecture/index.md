@@ -8,6 +8,7 @@ Use this section for maintainer-facing design: crate boundaries, host structure,
 - [Core Evolution](evolution.md) — delivery stages, implementation rationale, and acceptance conditions; progress belongs to the development workflow
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
+- [Interactive clients — server, Rust TUI and WebUI](interactive-clients.md) — proposed client contract, delivery order and terminal testing
 - [Prompt Assembly](prompt-assembly.md)
 - [Module Contracts](module-contracts.md)
 - [Extension Runtime](extension-runtime.md)
