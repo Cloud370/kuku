@@ -155,6 +155,31 @@ fn segment(agent: &str, system: &str) -> EventPayload {
 }
 
 #[test]
+fn prepared_boundary_requires_the_matching_complete_admission_batch() {
+    for (head, source_head, succeeds) in [(2, 1, true), (1, 1, false), (2, 2, false)] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.jsonl");
+        let mut writer = EventStore::open(&path).unwrap();
+        let segment = writer.append(segment("main", "system")).unwrap();
+        for ordinal in 0..2 {
+            writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted", "agent":"main", "segment":segment.id,
+                "ordinal":ordinal, "turn":1, "source_head":1, "message":CanonicalMessage::user_text(format!("input-{ordinal}"))}))).unwrap();
+        }
+        writer
+            .append(EventPayload::Unknown(
+                json!({"kind":"runtime.step_prepared", "agent":"main", "segment":segment.id,
+            "context_head":head, "source_head":source_head}),
+            ))
+            .unwrap();
+        let mut cursor = ContextCursor::default();
+        assert_eq!(succeeds, cursor.refresh(&path, "main", 4096).is_ok());
+        if succeeds {
+            assert_eq!(2, cursor.admitted.len());
+        }
+    }
+}
+
+#[test]
 fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.jsonl");

@@ -4,13 +4,14 @@ use std::time::Instant;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::context::assembly::render_project_policy;
 use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin};
 use crate::context::{
     assemble_context, CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource,
     MessageBlock,
 };
 use crate::event::{EventPayload, EventStore};
-use crate::prompt::{render_project_context, ProjectContextInput, PromptCatalog};
+use crate::prompt::PromptCatalog;
 use crate::provider::types::{PreparedProviderRequest, ResolvedProvider};
 use crate::{Error, Result};
 
@@ -311,7 +312,7 @@ fn initial_segment(
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
-    let slot = rendered_identity_slot(&input, catalog)?;
+    let slot = usize::from(!render_project_policy(&input, catalog)?.is_empty());
     let mut assembly = assemble_context(input, catalog)?;
     if let Some(text) = pending
         .agent_registry
@@ -354,42 +355,6 @@ fn initial_segment(
         handoff_prelude: None,
         workspace: pending.workspace.to_string_lossy().into_owned(),
     })
-}
-
-fn rendered_identity_slot(input: &ContextInput, catalog: &PromptCatalog) -> Result<usize> {
-    let policy = catalog
-        .blocks
-        .get("project-policy")
-        .ok_or_else(|| Error::PromptRender("missing project-policy template".into()))?;
-    let policy = render_project_context(
-        &policy.text,
-        &ProjectContextInput {
-            workspace_root: input.environment.workspace_path.clone(),
-            platform: input.environment.platform.clone(),
-            current_date: input.environment.current_date.clone(),
-            project_instructions_rendered: if input.project_instructions.is_empty() {
-                "No project instructions found.".into()
-            } else {
-                input
-                    .project_instructions
-                    .iter()
-                    .map(|source| source.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
-            },
-            model_tiers_rendered: if input.model_tiers.is_empty() {
-                "No model tiers configured.".into()
-            } else {
-                input
-                    .model_tiers
-                    .iter()
-                    .map(|tier| format!("{} — {}", tier.name, tier.purpose))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-        },
-    )?;
-    Ok(usize::from(!policy.is_empty()))
 }
 
 fn signature(

@@ -88,9 +88,10 @@ pub(crate) struct ContextCursor {
     pub(crate) events_read: u64,
     latest_turn: Option<u64>,
     tail: Vec<StoredEvent>,
+    pending_admissions: Vec<StoredEvent>,
+    pending_source_head: Option<u64>,
     retained_bytes: usize,
     approved_segment: u64,
-    admission_limit: usize,
 }
 
 impl ContextCursor {
@@ -155,16 +156,8 @@ impl ContextCursor {
                                 .as_ref()
                                 .filter(|(segment, _)| value["segment"] == segment.id)
                             {
-                                self.admission_limit =
-                                    value["context_head"].as_u64().unwrap_or(0) as usize;
                                 segment_turn = *turn;
                                 latest = Some(segment.clone());
-                            } else if latest
-                                .as_ref()
-                                .is_some_and(|segment: &StoredEvent| value["segment"] == segment.id)
-                            {
-                                self.admission_limit =
-                                    value["context_head"].as_u64().unwrap_or(0) as usize;
                             }
                         }
                     }
@@ -229,6 +222,8 @@ impl ContextCursor {
                             self.segment = Some(segment);
                             self.admitted.clear();
                             self.tail.clear();
+                            self.pending_admissions.clear();
+                            self.pending_source_head = None;
                             self.retained_bytes = 0;
                         }
                         return Ok(());
@@ -242,39 +237,33 @@ impl ContextCursor {
                         let ordinal = value["ordinal"].as_u64().ok_or_else(|| {
                             Error::InvalidEventStream("context admission has no ordinal".into())
                         })? as usize;
-                        if ordinal >= self.admission_limit {
-                            return Ok(());
-                        }
-                        let message: CanonicalMessage =
-                            serde_json::from_value(value["message"].clone())?;
                         if ordinal < self.admitted.len() {
+                            let message: CanonicalMessage =
+                                serde_json::from_value(value["message"].clone())?;
                             if self.admitted[ordinal].message != message {
                                 return Err(Error::InvalidEventStream(
                                     "committed context admission changed".into(),
                                 ));
                             }
-                        } else {
-                            if ordinal != self.admitted.len() {
-                                return Err(Error::InvalidEventStream(
-                                    "context admissions are not contiguous".into(),
-                                ));
-                            }
-                            self.reserve(&message, max_bytes)?;
-                            let origin = value
-                                .get("origin")
-                                .cloned()
-                                .map(serde_json::from_value)
-                                .transpose()?
-                                .unwrap_or_else(|| MessageOrigin::of(&message));
-                            self.admitted.push(AdmittedMessage {
-                                turn: value["turn"].as_u64().or(self.latest_turn).unwrap_or(0),
-                                origin,
-                                message,
-                            });
+                            return Ok(());
                         }
+                        let source_head = value["source_head"].as_u64();
+                        if source_head != self.pending_source_head
+                            || self.pending_admissions.first().is_some_and(|event| {
+                                matches!(&event.payload, EventPayload::Unknown(value)
+                                    if value["ordinal"].as_u64().is_some_and(|first| ordinal as u64 <= first))
+                            })
+                        {
+                            self.pending_admissions.clear();
+                            self.pending_source_head = source_head;
+                            self.recount()?;
+                        }
+                        self.reserve(&event, max_bytes)?;
+                        self.pending_admissions.push(event);
                         return Ok(());
                     }
                     Some("runtime.step_prepared") if value["segment"] == self.approved_segment => {
+                        self.confirm_admissions(value)?;
                         let source_head = value["source_head"].as_u64().unwrap_or(event.id);
                         self.tail.retain(|event| event.id > source_head);
                         self.recount()?;
@@ -337,6 +326,65 @@ impl ContextCursor {
         result
     }
 
+    fn confirm_admissions(&mut self, prepared: &serde_json::Value) -> Result<()> {
+        let head = prepared["context_head"].as_u64().ok_or_else(|| {
+            Error::InvalidEventStream("prepared context has no admission boundary".into())
+        })? as usize;
+        if head < self.admitted.len() {
+            return Err(Error::InvalidEventStream(
+                "prepared context removed its committed admission prefix".into(),
+            ));
+        }
+        let count = head - self.admitted.len();
+        if count > 0 {
+            if self.pending_source_head.is_some()
+                && prepared["source_head"].as_u64().is_some()
+                && self.pending_source_head != prepared["source_head"].as_u64()
+            {
+                return Err(Error::InvalidEventStream(
+                    "prepared context does not reference its pending admission batch".into(),
+                ));
+            }
+            if self.pending_admissions.len() != count {
+                return Err(Error::InvalidEventStream(
+                    "prepared context does not match its admission batch length".into(),
+                ));
+            }
+        }
+        for event in std::mem::take(&mut self.pending_admissions)
+            .into_iter()
+            .take(count)
+        {
+            let EventPayload::Unknown(value) = event.payload else {
+                unreachable!("pending context admissions are runtime facts")
+            };
+            if value["ordinal"].as_u64() != Some(self.admitted.len() as u64) {
+                return Err(Error::InvalidEventStream(
+                    "context admissions are not contiguous".into(),
+                ));
+            }
+            let message: CanonicalMessage = serde_json::from_value(value["message"].clone())?;
+            let origin = value
+                .get("origin")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or_else(|| MessageOrigin::of(&message));
+            self.admitted.push(AdmittedMessage {
+                turn: value["turn"].as_u64().or(self.latest_turn).unwrap_or(0),
+                origin,
+                message,
+            });
+        }
+        self.pending_source_head = None;
+        if self.admitted.len() != head {
+            return Err(Error::InvalidEventStream(
+                "prepared context admission batch is incomplete".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn commit(
         &mut self,
         segment: FrozenSegment,
@@ -344,10 +392,11 @@ impl ContextCursor {
         source_head: u64,
     ) -> Result<()> {
         self.approved_segment = segment.id;
-        self.admission_limit = admitted.len();
         self.catalog = Some(segment.catalog.clone());
         self.segment = Some(segment);
         self.admitted = admitted;
+        self.pending_admissions.clear();
+        self.pending_source_head = None;
         self.tail.retain(|event| event.id > source_head);
         self.recount()
     }
@@ -370,6 +419,9 @@ impl ContextCursor {
             self.retained_bytes += serde_json::to_vec(&admitted.message)?.len();
         }
         for event in &self.tail {
+            self.retained_bytes += serde_json::to_vec(event)?.len();
+        }
+        for event in &self.pending_admissions {
             self.retained_bytes += serde_json::to_vec(event)?.len();
         }
         Ok(())

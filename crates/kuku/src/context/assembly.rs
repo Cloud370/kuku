@@ -135,23 +135,10 @@ pub fn restore_prompt_snapshot(
     )
 }
 
-/// Build a complete context assembly with 6-layer snapshot.
-///
-/// Layers:
-///   1. system_prompt (catalog.system.text)
-///   2. project_policy (blocks["project-policy"] + render_project_context)
-///   3. agent identity (input.agent_instructions)
-///   4. tool_guidance (blocks["tool-guidance"])
-///   5. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
-///   6. agent catalog + loaded skills (appended by caller after memory blocks)
-///
-/// Per-turn runtime_context is built from input.runtime_blocks (and
-/// optionally response_contract) by wrapping with the catalog's
-/// runtime/context template. The caller injects it into the current user turn.
-pub fn assemble_context(
-    input: ContextInput,
+pub(crate) fn render_project_policy(
+    input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
-) -> Result<ContextAssembly> {
+) -> Result<String> {
     let project_instructions_text = if input.project_instructions.is_empty() {
         "No project instructions found.".to_string()
     } else {
@@ -178,7 +165,7 @@ pub fn assemble_context(
     let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
         crate::error::Error::PromptRender("missing project-policy template".into())
     })?;
-    let project_policy_text = render_project_context(
+    render_project_context(
         &project_policy.text,
         &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
@@ -187,7 +174,27 @@ pub fn assemble_context(
             project_instructions_rendered: project_instructions_text,
             model_tiers_rendered: model_tiers_text,
         },
-    )?;
+    )
+}
+
+/// Build a complete context assembly with 6-layer snapshot.
+///
+/// Layers:
+///   1. system_prompt (catalog.system.text)
+///   2. project_policy (blocks["project-policy"] + render_project_context)
+///   3. agent identity (input.agent_instructions)
+///   4. tool_guidance (blocks["tool-guidance"])
+///   5. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
+///   6. agent catalog + loaded skills (appended by caller after memory blocks)
+///
+/// Per-turn runtime_context is built from input.runtime_blocks (and
+/// optionally response_contract) by wrapping with the catalog's
+/// runtime/context template. The caller injects it into the current user turn.
+pub fn assemble_context(
+    input: ContextInput,
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<ContextAssembly> {
+    let project_policy_text = render_project_policy(&input, catalog)?;
 
     // ---- Layer 3: agent identity ----
     let identity_text = input.agent_instructions.clone();

@@ -311,6 +311,130 @@ async fn rendered_policy_boundary_survives_behavior_reconfiguration() {
     }
 }
 
+#[tokio::test]
+async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut original, path) = options(&server, workspace.path(), data.path());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"done"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original.clone()).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session
+        .send(Input::new("first", "main", "first-input"))
+        .unwrap();
+    idle(&session, "main").await;
+    let mut pending = Input::new("candidate", "main", "retry-input");
+    pending.activation = kuku::Activation::Enqueue;
+    session.send(pending).unwrap();
+    original.session_id = Some(session.id().into());
+    let events_path = session.events_path().to_path_buf();
+    let prepared = facts(
+        &session.events(0, 256).unwrap(),
+        "runtime.step_prepared",
+        "main",
+    );
+    assert_eq!(1, prepared[0]["context_head"]);
+    let segment = prepared[0]["segment"].as_u64().unwrap();
+    let initial_turn = prepared[0]["turn"].as_u64().unwrap();
+    session.close().await.unwrap();
+    {
+        let mut writer = EventStore::open(&events_path).unwrap();
+        let turn = writer
+            .append(EventPayload::Unknown(
+                json!({"kind":"runtime.operation", "record":{
+                    "operation":"inputs_accepted", "address":"main", "input_ids":["candidate"]
+                }}),
+            ))
+            .unwrap()
+            .id;
+        writer
+            .append(EventPayload::TurnStarted {
+                ts: "fixture".into(),
+                conversation: "main".into(),
+                turn,
+            })
+            .unwrap();
+        let source_head = writer
+            .append(EventPayload::MessageUser {
+                ts: "fixture".into(),
+                conversation: "main".into(),
+                turn,
+                text: "retry-input".into(),
+                from: None,
+                via_tool_call_id: None,
+            })
+            .unwrap()
+            .id;
+        for (ordinal, origin, turn, message) in [
+            (
+                1,
+                "response",
+                initial_turn,
+                CanonicalMessage::assistant(vec![MessageBlock::Text("done".into())]),
+            ),
+            (2, "input", turn, CanonicalMessage::user_text("retry-input")),
+            (
+                3,
+                "runtime",
+                turn,
+                CanonicalMessage::user_text("UNCONFIRMED_DYNAMIC_NOTICE"),
+            ),
+        ] {
+            writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted", "agent":"main", "segment":segment,
+                "ordinal":ordinal, "origin":origin, "turn":turn, "source_head":source_head, "message":message}))).unwrap();
+        }
+    }
+    let session = Session::open(original.clone()).await.unwrap();
+    assert_eq!(
+        AgentStatus::Interrupted,
+        session.agent("main").unwrap().status
+    );
+    session.advance("main").unwrap();
+    idle(&session, "main").await;
+    let admissions = facts(
+        &session.events(0, 256).unwrap(),
+        "runtime.context_admitted",
+        "main",
+    );
+    for ordinal in [1, 2, 3] {
+        let versions = admissions
+            .iter()
+            .filter(|value| value["segment"] == segment && value["ordinal"] == ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(2, versions.len());
+        if ordinal < 3 {
+            assert_eq!(versions[0]["message"], versions[1]["message"]);
+        } else {
+            assert_ne!(versions[0]["message"], versions[1]["message"]);
+        }
+    }
+    session.close().await.unwrap();
+    let session = Session::open(original).await.unwrap();
+    session
+        .send(Input::new("after-retry", "main", "after-retry"))
+        .unwrap();
+    idle(&session, "main").await;
+    session.close().await.unwrap();
+    model.assert_hits_async(3).await;
+    let bodies = common::take_http_requests(&path);
+    assert!(bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .starts_with(bodies[1]["messages"].as_array().unwrap()));
+    assert!(!bodies
+        .iter()
+        .any(|body| body.to_string().contains("UNCONFIRMED_DYNAMIC_NOTICE")));
+}
+
 fn tool_count(request: &HttpMockRequest) -> usize {
     let body: Value = serde_json::from_slice(request.body.as_deref().unwrap()).unwrap();
     body["messages"]
