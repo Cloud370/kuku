@@ -9,6 +9,17 @@ use super::boundary::TurnWork;
 use super::record::{Record, State};
 use super::{ensure_open, Activation, AgentStatus, InputSource, Session, UsageTotals, Worker};
 
+enum DriveFailure {
+    Execution(Error),
+    Cleanup(Error),
+}
+
+impl From<Error> for DriveFailure {
+    fn from(error: Error) -> Self {
+        Self::Execution(error)
+    }
+}
+
 impl Session {
     pub(super) fn schedule_locked(&self, state: &mut State, address: &str) -> Result<()> {
         ensure_open(state)?;
@@ -43,12 +54,10 @@ impl Session {
         let session = self.clone();
         let target = address.to_string();
         let join = runtime.spawn(async move {
-            let mut result = session.drive_agent(&target, epoch, receive_cancel).await;
-            if let Err(error) = &result {
-                if let Err(commit_error) = session.settle_failure(&target, epoch, error) {
-                    result = Err(session.remember_settlement_failure(commit_error));
-                }
-            }
+            let result = match session.drive_agent(&target, epoch, receive_cancel).await {
+                Ok(()) => Ok(()),
+                Err(failure) => session.settle_worker_failure(&target, epoch, failure),
+            };
             let _ = complete.send(Some(
                 result.as_ref().map(|_| ()).map_err(ToString::to_string),
             ));
@@ -71,15 +80,17 @@ impl Session {
         address: &str,
         epoch: u64,
         mut cancel: watch::Receiver<bool>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), DriveFailure> {
+        let settle_cancelled = || {
+            self.settle_cancelled(address, epoch)
+                .map_err(DriveFailure::Cleanup)
+        };
         loop {
             if *cancel.borrow() || self.inner.state.lock().unwrap().closing {
-                self.settle_cancelled(address, epoch)?;
-                return Ok(());
+                return settle_cancelled();
             }
             let Some(mut work) = self.accept_turn(address, epoch)? else {
-                self.settle_cancelled(address, epoch)?;
-                return Ok(());
+                return settle_cancelled();
             };
             let execution = work.execution;
             let turn = work.turn;
@@ -88,9 +99,9 @@ impl Session {
             let mut run = query.start_nested().await?;
             if *cancel.borrow() || self.inner.state.lock().unwrap().closing {
                 self.cleanup_failed_run(address, execution, turn, &mut run)
-                    .await;
-                self.settle_cancelled(address, epoch)?;
-                return Ok(());
+                    .await
+                    .map_err(DriveFailure::Cleanup)?;
+                return settle_cancelled();
             }
             if let Some((request_id, allow)) = reply {
                 let original_id = self
@@ -125,24 +136,24 @@ impl Session {
                     Ok(event) => event,
                     Err(error) => {
                         self.cleanup_failed_run(address, execution, turn, &mut run)
-                            .await;
+                            .await
+                            .map_err(DriveFailure::Cleanup)?;
                         if matches!(error, Error::ExecutionNotActive(id) if id == execution) {
-                            return self.settle_cancelled(address, epoch);
+                            return settle_cancelled();
                         }
-                        return Err(error);
+                        return Err(error.into());
                     }
                 };
                 let Some((event, faults)) = event else {
                     if cancelling {
-                        self.settle_cancelled(address, epoch)?;
-                        return match cleanup_failure {
-                            Some(error) => Err(error),
-                            None => Ok(()),
-                        };
+                        settle_cancelled()?;
+                        return cleanup_failure
+                            .map_or(Ok(()), |error| Err(DriveFailure::Cleanup(error)));
                     }
                     return Err(Error::InvalidEventStream(format!(
                         "agent '{address}' execution ended without a durable completion"
-                    )));
+                    ))
+                    .into());
                 };
                 if !matches!(
                     event,
@@ -158,21 +169,24 @@ impl Session {
                         "agent '{address}' tool cleanup did not finish; owned resources may remain"
                     );
                     let mut state = self.inner.state.lock().unwrap();
-                    self.commit(
+                    let result = self.commit(
                         &mut state,
                         Record::CleanupFailed {
                             address: address.into(),
                             message: message.clone(),
                         },
-                    )?;
-                    cleanup_failure = Some(Error::InvalidEventStream(message));
+                    );
+                    cleanup_failure.get_or_insert_with(|| {
+                        result.err().unwrap_or(Error::InvalidEventStream(message))
+                    });
                     cancelling = true;
                     continue;
                 }
                 if let Some(error) = output_failure {
                     self.cleanup_failed_run(address, execution, turn, &mut run)
-                        .await;
-                    return Err(error);
+                        .await
+                        .map_err(DriveFailure::Cleanup)?;
+                    return Err(DriveFailure::Cleanup(error));
                 }
                 match event {
                     UiEvent::Done { output, .. } => {
@@ -184,7 +198,7 @@ impl Session {
                         cancelling |= state.agents[address].snapshot.status == AgentStatus::Stopped;
                         if cancelling || state.closing {
                             drop(state);
-                            return self.settle_cancelled(address, epoch);
+                            return settle_cancelled();
                         }
                         let waiting = state.agents[address].snapshot.question.is_some();
                         self.commit(
@@ -230,11 +244,9 @@ impl Session {
                         break;
                     }
                     UiEvent::Cancelled { .. } => {
-                        self.settle_cancelled(address, epoch)?;
-                        return match cleanup_failure {
-                            Some(error) => Err(error),
-                            None => Ok(()),
-                        };
+                        settle_cancelled()?;
+                        return cleanup_failure
+                            .map_or(Ok(()), |error| Err(DriveFailure::Cleanup(error)));
                     }
                     UiEvent::PermissionRequested { mut request } => {
                         request.id = format!(
@@ -245,8 +257,9 @@ impl Session {
                             return Ok(());
                         }
                         self.cleanup_failed_run(address, execution, turn, &mut run)
-                            .await;
-                        return self.settle_cancelled(address, epoch);
+                            .await
+                            .map_err(DriveFailure::Cleanup)?;
+                        return settle_cancelled();
                     }
                     UiEvent::TextDelta { .. }
                     | UiEvent::ThinkingDelta { .. }
@@ -260,6 +273,23 @@ impl Session {
                     | UiEvent::TurnStart { .. } => {}
                 }
             }
+        }
+    }
+
+    fn settle_worker_failure(
+        &self,
+        address: &str,
+        epoch: u64,
+        failure: DriveFailure,
+    ) -> Result<()> {
+        let error = match &failure {
+            DriveFailure::Execution(error) | DriveFailure::Cleanup(error) => error,
+        };
+        self.settle_failure(address, epoch, error)
+            .map_err(|error| self.remember_settlement_failure(error))?;
+        match failure {
+            DriveFailure::Execution(_) => Ok(()),
+            DriveFailure::Cleanup(error) => Err(self.remember_settlement_failure(error)),
         }
     }
 
@@ -499,26 +529,40 @@ impl Session {
         execution: u64,
         turn: u64,
         run: &mut crate::Run,
-    ) {
+    ) -> Result<()> {
         run.cancel();
+        let mut failure = None;
         while !run.slots.is_empty() {
             match run.next_with_tool_faults().await {
                 Ok(Some((event, faults))) => {
                     if faults.output_persistence_failed {
-                        self.remember_output_failure(address);
+                        failure.get_or_insert_with(|| self.remember_output_failure(address));
                     }
                     if faults.cleanup_incomplete {
+                        let message = format!(
+                            "agent '{address}' cleanup after an execution error was incomplete"
+                        );
                         let mut state = self.inner.state.lock().unwrap();
-                        if let Err(error) = self.commit(&mut state, Record::CleanupFailed { address: address.into(), message: format!("agent '{address}' cleanup after an execution error was incomplete") }) {
-                            self.remember_settlement_failure(error);
-                        }
+                        let result = self.commit(
+                            &mut state,
+                            Record::CleanupFailed {
+                                address: address.into(),
+                                message: message.clone(),
+                            },
+                        );
+                        failure.get_or_insert_with(|| {
+                            result.err().unwrap_or(Error::InvalidEventStream(message))
+                        });
                     }
                     self.publish(address, execution, turn, event);
                 }
                 Ok(None) => break,
-                Err(_) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
+        failure.map_or(Ok(()), Err)
     }
 
     fn pending_usage(&self, agent: &super::record::AgentState) -> Result<UsageTotals> {

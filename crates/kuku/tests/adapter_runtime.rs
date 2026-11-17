@@ -422,7 +422,7 @@ async fn host_tool_output_commit_failure_stops_dispatch_and_survives_another_age
 
 #[cfg(unix)]
 #[tokio::test]
-async fn close_reports_both_the_reaped_output_failure_and_another_worker_error() {
+async fn close_reports_reaped_output_failure_separately_from_another_agents_execution_error() {
     verify_output_failure_on_close(true).await;
 }
 
@@ -466,9 +466,14 @@ async fn verify_output_failure_on_close(exhaust_request_budget: bool) {
         session
             .send(Input::new("over-budget", "child", "one more turn"))
             .unwrap();
-        assert_eq!(
-            AgentStatus::Interrupted,
-            settled(&session, "child").await.status
+        let interrupted = settled(&session, "child").await;
+        assert_eq!(AgentStatus::Interrupted, interrupted.status);
+        assert!(
+            interrupted
+                .last_error
+                .as_ref()
+                .is_some_and(|error| error.contains("model request limit exhausted")),
+            "{interrupted:?}"
         );
     }
     assert!(
@@ -496,9 +501,7 @@ async fn verify_output_failure_on_close(exhaust_request_budget: bool) {
         error.contains("tool output could not be durably captured"),
         "{error}"
     );
-    if exhaust_request_budget {
-        assert!(error.contains("model request limit exhausted"), "{error}");
-    }
+    assert!(!error.contains("model request limit exhausted"), "{error}");
     assert_eq!(error, session.close().await.unwrap_err().to_string());
     assert!(
         session

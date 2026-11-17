@@ -463,7 +463,7 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
 }
 
 #[tokio::test]
-async fn explicit_advance_retries_an_interrupted_input_after_reopen() {
+async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
     retry_interrupted_input(true, 400).await;
 }
 
@@ -492,6 +492,14 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
         .unwrap();
     let failed = settled(&session, "main").await;
     assert_eq!(AgentStatus::Interrupted, failed.status);
+    assert!(
+        failed
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.contains(&format!("HTTP {status}"))),
+        "{failed:?}"
+    );
+    assert!(session.active_executions().is_empty());
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(1, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
@@ -499,8 +507,10 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
     let session = if reopen {
         let mut options = original;
         options.session_id = Some(session.id().into());
-        assert!(session.close().await.is_err());
-        Session::open(options).await.unwrap()
+        session.close().await.unwrap();
+        let reopened = Session::open(options).await.unwrap();
+        assert_eq!(failed, reopened.agent("main").unwrap());
+        reopened
     } else {
         session
     };
@@ -661,7 +671,7 @@ async fn execution_error_drains_dispatched_command_and_preserves_reported_usage(
     assert_eq!(AgentStatus::Interrupted, failed.status);
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(Some(100), failed.usage.input_tokens);
-    assert!(session.close().await.is_err());
+    session.close().await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         !workspace.path().join("after-close.txt").exists(),
