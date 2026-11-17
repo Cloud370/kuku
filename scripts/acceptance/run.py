@@ -13,6 +13,7 @@ import platform
 import re
 import shutil
 import signal
+import ssl
 import subprocess
 import sys
 import threading
@@ -322,6 +323,23 @@ def bundle_binary(binary, directory):
     return command, file_hashes(destination)
 
 
+def bundle_ca(directory, source=None):
+    if source is None:
+        explicit = os.environ.get("SSL_CERT_FILE")
+        candidates = [explicit] if explicit else ["/etc/ssl/certs/ca-certificates.crt",
+                                                "/etc/pki/tls/certs/ca-bundle.crt",
+                                                ssl.get_default_verify_paths().cafile]
+        source = next((Path(name) for name in candidates if name and Path(name).is_file()), None)
+    if source is None or not source.is_file() or source.stat().st_size == 0:
+        raise ValueError("a nonempty host CA bundle is required for the Linux SDK runtime")
+    target = directory / "ca-certificates.crt"
+    shutil.copyfile(source, target)
+    target.chmod(0o444)
+    return {"source": str(source.resolve()), "sha256": config_record(target)["sha256"],
+            "runtime_path": "/kuku/runtime/ca-certificates.crt",
+            "environment": {"SSL_CERT_FILE": "/kuku/runtime/ca-certificates.crt"}}
+
+
 def reward(logs):
     path = logs / "verifier" / "reward.txt"
     if not path.exists():
@@ -459,6 +477,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
     env.update(secrets)
     if mode == "live":
         sdk_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
+        record["runtime_ca"] = bundle_ca(attempt / "runtime")
+        record["runtime_files"]["ca-certificates.crt"] = record["runtime_ca"]["sha256"]
         data_dir = attempt / "session-data"
         data_dir.mkdir()
         command += ["--mount", f"type=bind,source={attempt / 'runtime'},target=/kuku/runtime,readonly",
@@ -467,6 +487,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                     "--mount", f"type=bind,source={source / 'instruction.md'},target=/kuku/instruction.md,readonly"]
         for name in secrets:
             command += ["--env", name]
+        command += ["--env", "SSL_CERT_FILE=" + record["runtime_ca"]["runtime_path"]]
         record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
         sdk_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
                         "--config", "/kuku/config.toml", "--data-dir", "/kuku/data",

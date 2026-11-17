@@ -89,6 +89,21 @@ class AcceptanceTests(unittest.TestCase):
         self.assertNotIn("private-inline-fixture-key", json.dumps(metadata))
         self.assertEqual(list(self.directory.iterdir()), [path])
 
+    def test_runtime_ca_bundle_is_copied_with_source_hash_and_explicit_trust_path(self):
+        source = self.directory / "host-ca.pem"
+        source.write_bytes(b"public CA fixture\n")
+        runtime = self.directory / "runtime"
+        runtime.mkdir()
+        metadata = ACCEPTANCE.bundle_ca(runtime, source)
+        self.assertEqual(metadata["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+        self.assertEqual(metadata["source"], str(source.resolve()))
+        self.assertEqual(metadata["environment"], {"SSL_CERT_FILE": "/kuku/runtime/ca-certificates.crt"})
+        self.assertEqual((runtime / "ca-certificates.crt").read_bytes(), source.read_bytes())
+
+    def test_missing_ca_bundle_fails_before_starting_a_paid_container(self):
+        with self.assertRaises(ValueError):
+            ACCEPTANCE.bundle_ca(self.directory, self.directory / "missing.pem")
+
     def test_log_is_bounded_and_redacts_secrets_across_the_retained_boundary(self):
         secret = "test-secret-" + "z" * 80
         program = ("import sys;sys.stdout.write('prefix'*20000+" + repr(secret)
