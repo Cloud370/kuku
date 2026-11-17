@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use wreq::Client;
 use wreq_util::Emulation;
 
@@ -24,4 +26,3 @@ pub(crate) fn fetch_client() -> Client {
         })
         .clone()
 }
-use std::sync::OnceLock;
