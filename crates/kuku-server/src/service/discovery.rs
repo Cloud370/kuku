@@ -91,8 +91,47 @@ impl Drop for Lease {
 }
 
 fn remove_discovery(directory: &Path) -> io::Result<()> {
-    match fs::remove_file(directory.join(DISCOVERY_NAME)) {
+    let path = directory.join(DISCOVERY_NAME);
+    #[cfg(windows)]
+    let removed = {
+        // NOTE: Unpublish the name while existing readers finish. DeleteFile can leave
+        // the name pending deletion and deny new opens until the last reader closes.
+        let retired = NamedTempFile::new_in(directory)?.into_temp_path();
+        fs::rename(path, &retired).and_then(|()| retired.close())
+    };
+    #[cfg(not(windows))]
+    let removed = fs::remove_file(path);
+    match removed {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::{self, Read};
+
+    use super::{remove_discovery, DISCOVERY_NAME};
+
+    #[test]
+    fn withdrawal_hides_discovery_while_an_existing_reader_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(DISCOVERY_NAME);
+        fs::write(&path, b"ready").unwrap();
+        let mut reader = fs::File::open(&path).unwrap();
+
+        remove_discovery(directory.path()).unwrap();
+        assert_eq!(
+            io::ErrorKind::NotFound,
+            fs::File::open(&path).unwrap_err().kind()
+        );
+        fs::write(&path, b"replacement").unwrap();
+
+        let mut original = String::new();
+        reader.read_to_string(&mut original).unwrap();
+        assert_eq!("ready", original);
+        drop(reader);
+        assert_eq!("replacement", fs::read_to_string(&path).unwrap());
     }
 }

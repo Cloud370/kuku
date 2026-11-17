@@ -434,9 +434,19 @@ fn instance_locked(directory: &Path) -> io::Result<bool> {
 }
 
 fn read_discovery(directory: &Path) -> Result<Option<Discovery>, LocalError> {
-    let file = match fs::File::open(directory.join("connection.json")) {
+    let path = directory.join("connection.json");
+    let file = match fs::File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            if fs::symlink_metadata(&path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                || !instance_locked(directory)?
+            {
+                return Ok(None);
+            }
+            return Err(error.into());
+        }
         Err(error) => return Err(error.into()),
     };
     let mut bytes = Vec::new();
@@ -649,6 +659,23 @@ mod tests {
         assert!(matches!(
             service.connect().await,
             Err(LocalError::ConfigMissing(path)) if path == service.config_path()
+        ));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_running_instance_reports_a_persistent_discovery_access_error() {
+        let home = tempfile::tempdir().unwrap();
+        let service = LocalService::resolve(home.path(), None).unwrap();
+        let directory = service.service_directory();
+        kuku::util::private_directory(&directory).unwrap();
+        let lease = fs::File::create(directory.join("instance.lock")).unwrap();
+        lease.try_lock().unwrap();
+        fs::create_dir(directory.join("connection.json")).unwrap();
+
+        assert!(matches!(
+            service.status().await,
+            Err(LocalError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
         ));
     }
 }
