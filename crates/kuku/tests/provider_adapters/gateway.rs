@@ -299,10 +299,9 @@ async fn responses_done_without_terminal_event_does_not_dispatch_tools() {
     let data = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("seed.txt"), SEED).unwrap();
     let truncated = RESPONSES
-        .split("\n\n")
-        .filter(|frame| !frame.contains("\"type\":\"response.completed\""))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .split_inclusive('\n')
+        .filter(|line| !line.contains("\"type\":\"response.completed\""))
+        .collect::<String>();
     let first = mock(&server, "/responses", initial, &truncated).await;
     let session = Session::open(options(
         &server,
@@ -320,10 +319,14 @@ async fn responses_done_without_terminal_event_does_not_dispatch_tools() {
         .unwrap();
     let snapshot = settle(&session).await;
     assert_eq!(AgentStatus::Interrupted, snapshot.status);
-    assert!(snapshot
-        .last_error
-        .as_deref()
-        .is_some_and(|error| error.contains("[DONE] before a terminal response event")));
+    assert!(
+        snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("[DONE] before a terminal response event")),
+        "unexpected provider error: {:?}",
+        snapshot.last_error
+    );
     assert!(session.close().await.is_err());
     let events = EventStore::replay(session.events_path()).unwrap();
     assert!(!events.iter().any(|event| matches!(
