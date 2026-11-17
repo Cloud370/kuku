@@ -387,7 +387,7 @@ pub(super) struct PendingRun {
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
     pub(super) request_base: Option<super::request::OwnedRequestBase>,
     pub(super) recovery_count: u8,
-    pub(super) context_cursor: Option<crate::context::runtime::ContextCursor>,
+    pub(super) context_cursor: Option<Box<crate::context::runtime::ContextCursor>>,
 }
 
 #[derive(Debug, Clone, Default)]
