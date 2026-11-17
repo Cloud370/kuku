@@ -1,48 +1,66 @@
 # 交互客户端重构计划 — server、Rust TUI 与 WebUI
 
-首个交付目标是一个能日常使用的终端会话。从 CLI 发起任务，关掉终端，再开一个 TUI 窗口，找到同一个 Agent，看到进度并继续发消息。浏览器也能接入同一 Session。
+交付目标是让开发者用安装好的 `kuku` 完成一整次开发任务。在项目目录打开终端，配好模型，发送任务，查看工具结果，回答问题，给忙碌的 Agent 插话，再换一个终端或浏览器接着工作。工具运行期间安装新客户端，原 server 仍能完成这次工作。下面的阶段规定实现顺序，安装产物通过端到端场景才算交付完成。
 
 ## 从哪里改起
 
-上一轮重构已让 CLI 和 server 都通过公开 Session SDK 执行。已有测试证明 HTTP 客户端断开后，Agent 仍会完成工具调用并提交结果。现在 CLI 依然自己打开 Session。server 拒绝给运行中的 Agent 投递新输入，列出 Agent 时读取的是离线日志快照。SDK 目前在 Turn 开始时接纳队列输入。本轮改动集中在这几处。[CLI 执行入口](../../../crates/kuku-cli/src/commands/run.rs) · [server 运行管理](../../../crates/kuku-server/src/run_manager.rs) · [Agent 列表](../../../crates/kuku-server/src/routes/sessions.rs) · [SDK 驱动](../../../crates/kuku/src/session/runtime/driver.rs) · [断开连接测试](../../../crates/kuku-server/tests/session_execution.rs)
+CLI 和 server 已通过公开 Session SDK 执行。已有 server 测试证明 HTTP 观察者断开后，Agent 仍会完成工具调用并提交结果。现在 CLI 自己打开 Session，server 拒绝给运行中的 Agent 投递新输入，SDK 在 Turn 开始时接纳队列。提交时省略 Session ID，server 会生成一个新 ID。相对工作目录则按 server 的进程目录解析。新窗口重试首次发送，或连接从另一个项目启动的 server 时，都需要显式处理这两点。[CLI 执行入口](../../../crates/kuku-cli/src/commands/run.rs) · [server 运行管理](../../../crates/kuku-server/src/run_manager.rs) · [SDK 驱动](../../../crates/kuku/src/session/runtime/driver.rs) · [断开连接测试](../../../crates/kuku-server/tests/session_execution.rs)
 
 ## 职责与客户端契约
 
 | 归属 | 职责 |
 |---|---|
-| Session SDK | 每个 Session 一个 writer，每个 Agent 一条执行链。负责输入接纳、准备模型请求、工具收尾、等待、取消和恢复。嵌入方可直接调用 SDK。 |
-| server | 为产品客户端持有打开的 Session。在服务端机器解析工作目录和模型配置、读取凭据、执行工具。通过 HTTP 提供持久命令、Agent 实时状态和可续读的观察接口。所属工作收尾后可以释放空闲运行资源。 |
-| 客户端 | 本地和远程使用同一份 HTTP 契约。CLI 与 TUI 共用一个 Rust 客户端处理投递、回执、观察和重连，WebUI 按相同契约接入。选中的 Agent、滚动位置、草稿和快捷键归各自窗口。 |
+| Session SDK | 每个 Session 持有一个日志 writer，每个 Agent 有一条执行链。负责收件队列、Step 准备、工具收尾、等待、取消与恢复。嵌入方可直接调用 SDK。 |
+| server | 为产品客户端持有打开的 Session。在服务端机器解析工作目录、模型设置和凭据，执行工具。提供命令、回执、实时状态、持久历史和已保存的输出，所属工作收尾后释放空闲资源。 |
+| 共享 Rust 客户端 | CLI 和 TUI 共用连接、提交、关联回复和断线续读的实现。可以在无终端的测试中调用。浏览器使用相同的 HTTP 契约和错误语义。 |
+| TUI | 窗口持有草稿、焦点、选中项、滚动位置和显示状态。按键和菜单调用同一组动作，组件渲染状态并发出动作，由一处应用服务端更新并执行外部操作。以后调整快捷键、主题或对话布局时，可以继续使用同一客户端和 Session 格式。 |
 
-默认复用该用户的本地 server，找不到时自动启动一个独立的回环服务。两个客户端使用相同服务配置同时启动，即使位于不同工作目录，也应连接到同一实例。明确指定远程 server 时连接该地址，并显示相应的连接或认证错误。
+Rust 和 Web 用同一组命令、回执、观察事件及错误样例测试。server 根据 SDK 事实提供 Agent 状态和对话条目。每种 SDK 工具都可以通过名称、状态、摘要和可选输出引用展示。文件编辑和命令结果包含 diff 或退出码时，再按工具类型展示这些信息。这样新增工具就有可用的默认显示，也能单独改进某类工具的阅读体验。
 
-命令按 Session 和 Agent 寻址。持久回执表示服务端已经收下命令。丢失连接后以同一命令 ID 重发相同意图，应得到原回执。复用 ID 却更换接收者、正文或投递时机时报告冲突。打断绑定到用户看到的那次执行，防止旧窗口误停后来的 Turn。回答问题或授权要带对应待决请求的标识。
+### 本地 server 与升级
 
-连接活跃 Agent 时取得实时状态和已提交事件的游标。新客户端可以读历史，再从快照边界接收新提交。流式片段使用有界缓冲，断线后从已提交事件补齐结果。列出、预览或切换 Agent 都只改变显示。最后一个窗口退出后，活动任务继续在 server 上执行。server 自身重启时恢复已提交的状态和待决请求，按 SDK 契约标明中断或结果未知的副作用。[Session SDK](../reference/sdk.md) · [现有事件接口](../../../crates/kuku-server/src/routes/events.rs)
+每个解析后的用户数据目录只运行一个受管本地服务，生效的配置文件路径属于其身份。再次启动时如果指定了另一份配置，显示正在使用的配置及显式切换入口。并发启动时只允许一方创建实例，等服务就绪再发布连接地址，接入时核对身份和协议。从不同项目目录打开的窗口复用匹配的服务。每个本地客户端传入自己解析后的工作目录。远程连接显式选择服务端的工作目录并显示该路径。指定远程地址后始终连接该地址。
+
+自动启动的本地服务绑定回环地址，服务发现和认证信息只允许当前系统用户读取。对工作区、对话历史和执行命令都验证访问权限。发行包里的浏览器界面从同一服务的同源入口接入，远程客户端显式认证。默认自动启动前，要收紧现有的回环免认证和宽松 CORS 策略。模型提供商的凭据由 server 持有。[当前 server 边界](../../../crates/kuku-server/src/lib.rs) · [Server API](../reference/server-api.md)
+
+提供服务状态、构建版本和客户端协议版本。Session 协议不匹配时，仍能发现服务、查看状态和发起正常重启。兼容的新客户端直接接入原服务。协议不兼容时显示双方版本，并给出重启受管服务的入口。执行或工具清理仍在进行时，延后替换并显示是哪项工作占用服务。正常重启时由 server 暂停接纳新提交，先释放 Session writer 再交接。重启后能找回持久等待和排队输入。进程崩溃后按 SDK 的事实显示中断或结果未知，交给用户核对。[现有健康接口](../../../crates/kuku-server/src/routes/health.rs) · [Session 恢复](../reference/sdk.md)
+
+### 命令与观察
+
+首次发送前确定工作目录、难以碰撞的 Session ID 和命令 ID。回执丢失后原样重用这些身份。如果首次提交只完成了一部分，server 能幂等补齐。独立的创建意图占用同一 ID 时报告冲突。重复提交只创建一个 Session，这条输入只投递一次。后续命令携带 Session、目标 Agent 和命令身份，复用 ID 却改变正文、接收者或投递时机时返回冲突。
+
+界面区分草稿、尚未确认的发送、已持久排队和已接纳的输入。尚未确认的发送在客户端私有存储中保留原目标、命令身份和原始意图。重新打开终端或刷新浏览器时先查询服务端回执。如果 server 查无记录，用户可以原样重发或放弃。处理完即清除这条临时记录。provider 重试由 SDK 负责。模型请求失败或工具结果未知时，界面给出用户可以明确采取的下一步。
+
+SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了下一轮消息，后来发送的插话仍能进入当前 Turn 的下一 Step。provider 重试沿用已准备的 Step。打断绑定到用户观察到的那次执行。打断后，尚未接纳的输入保留在可见队列里，明确继续或再次发送后才推进。用户可按回执撤回仍在队列中的输入，已经接纳时返回实际状态。提问和授权都标明等待中的 Agent 及具体请求。一个窗口先答复，另一个窗口就会看到已经生效的结果。[Step 准备逻辑](../../../crates/kuku/src/query/frozen.rs) · [SDK 命令](../../../crates/kuku/src/session/runtime/mod.rs)
+
+连接时取得 Agent 快照及与它对应的已提交 Session 游标。先显示该边界处最近的一页历史，向上翻阅时加载更早的页，从游标之后跟随新提交。临时文本和工具进度关联到产生它们的 Agent 和执行，正式结果替换临时预览，按事件 ID 去重。观察者掉线或落后时从持久历史补齐。每次订阅都记录自己的目标，切换 Agent 后，旧订阅的迟到事件不会混入当前对话。展开大段工具输出时按 SDK 的输出 ID 和字节偏移续读。[SDK 观察接口](../../../crates/kuku/src/session/runtime/observe.rs) · [持久工具输出](../reference/tools.md)
 
 ## 终端交互
 
-主界面用单列滚动对话、标明接收者的固定多行输入框，以及一行状态。工具输出默认显示摘要，按需展开。打开新窗口时留白，首次发送才创建 Session。用类似 `/resume` 的命令打开 Session 列表、预览历史。进入 Session 后只用一个 Agent 选择器，切换后显示该 Agent 的对话，下次主动发送才投递给它。两个窗口可以分别看不同 Agent。[Pi 交互参考](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md)
+在交互终端运行 `kuku` 后，按所选工作目录打开一个空白全屏窗口。用户首次明确发送时才创建 Session。本地数据目录尚未配置时，引导使用现有初始化流程。远程配置有误时，指出需要在服务端修正的设置。显示实际连接的 server、工作目录和模型或 Tier，修正配置期间保留草稿。环境变量凭据由加载它的 server 进程持有。更换环境后需要重启时，引导到服务状态和重启入口。在非交互终端提示可用于脚本的入口。脚本命令沿用已文档化的输出格式和退出行为。[配置指南](../start/configuration.md) · [CLI](../reference/cli.md)
 
-| 操作 | 目标行为 |
+以 Pi 的日常操作为参考。用一列滚动对话、标明接收者的固定多行输入框和一条紧凑状态栏，交付以下操作。[Pi 终端用法](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md) · [Pi 快捷键](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/keybindings.md)
+
+| 操作 | 成品行为 |
 |---|---|
-| `Enter` 发送 | 空闲 Agent 开始工作。忙时先持久收件，等在途响应及已派发工具收尾，在当前 Turn 的下一次模型请求准备前插入。若当前 Turn 已自然结束，该输入转入下一 Turn。 |
-| `Alt+Enter` 排到下一轮 | 当前 Turn 完整结束后再接纳这条输入。终端拦截该组合键时，命令菜单提供同一操作。 |
-| `Esc` 打断 | 选择器打开时先关闭选择器。在对话界面，停止当前选中 Agent 的这次执行，草稿留在输入框，界面显示清理进度或失败原因。需要用户再按 `Enter` 才发送草稿。关闭窗口会断开观察连接。 |
-
-由 SDK 在每个边界决定接纳哪些输入。同一边界上符合条件的输入按回执顺序接纳。已准备的 Step 在供应商重试时保持一致。即使先排了一条下一轮消息，后来发送的插话仍能进当前 Turn。界面显示待回答或待授权状态，只有匹配的回复会解除等待。[Step 准备逻辑](../../../crates/kuku/src/query/frozen.rs)
+| 写提示词 | `Shift+Enter` 或 `Ctrl+J` 换行。多行粘贴形成一份可编辑草稿，输入框将 CRLF 和单独的 CR 统一成 LF。支持软换行、中文输入、按用户感知的字符移动光标以及已发送提示词历史。`/` 打开可搜索的动作与 Skill 菜单，显示当前快捷键。Skill 与内置命令重名时，可从标明类型的条目选择。`@` 和路径补全插入工作区相对路径文本，按选中服务端工作区的可见范围查找。需要文件内容时通过已有读取工具获取。 |
+| 找到对话 | `/new` 打开空白草稿，原 Session 继续工作。`/resume` 在所选工作区搜索 Session。预览前就能看到可辨认的标题或首条提示词节选、最近活动和等待状态。在 Session 内用一个 Agent 选择器查看活动状态和待答问题，切换下次发送的接收者，也可以显式创建 Agent。预览或切换不发模型请求。每个目标的草稿和滚动位置留在当前窗口。 |
+| 发送与插话 | `Enter` 让空闲 Agent 开始工作。忙时先持久收件，等在途响应及已派发工具收尾，在当前 Turn 下一次模型请求准备前接纳。如果当前 Turn 已自然结束，该输入转入下一 Turn。`Alt+Enter` 排到下一轮。终端拦截组合键时，仍能从命令菜单排到下一轮或撤回待接纳输入。 |
+| 打断与离开 | `Esc` 先关闭当前获得焦点的选择器。在对话里，打断选中 Agent 的这次执行，保留草稿，显示清理进度或失败原因。随后按 `Enter` 才发送草稿。退出窗口只断开观察，其他 Agent 和已接下的工作继续由 server 持有。 |
+| 阅读与答复 | 流式显示 Markdown、代码块和工具摘要。`Ctrl+O` 展开工具详情，`/copy` 复制回复正文。生成期间向上翻阅时保持阅读位置，回到底部后继续跟随新输出。工具输出中的终端控制字节按安全方式呈现，已保存的原始字节可继续读取。提问或授权展示实际待决请求，用户显式作答或决定。 |
+| 选模型与恢复 | `/model` 与 `/thinking` 为选中 Agent 提供已配置的连接、Tier、模型 ID 和受支持的思考设置。显示当前生效值及等待生效的更改，在尚未准备请求的安全边界应用。指出问题来自连接、server 配置、provider 还是工具，并提供相应的恢复动作。 |
 
 ## 实现顺序
 
-1. **打通共享执行路径。** 在 SDK 补齐 Step 和 Turn 边界的输入接纳，沿用 server 的 Session 管理、事件读取与待决回复。让 CLI 通过可复用 Rust 客户端运行。两个客户端能发任务、断开、找到同一个 Agent、插话并读到同一份持久结果。替换接口时在同一改动中更新调用方、清除旧路径。客户端用例跑通后，这一阶段即可独立合入。[核心方向](core-direction.md)
-2. **交付终端。** 用 Ratatui 排版、Crossterm 收键盘与终端事件，选择支持软换行的多行编辑器。server 契约实现期间可以先做小型界面原型。在交互终端，裸 `kuku` 进入 TUI。显式脚本命令保留机器可读输出。验证客户端命令与 Skill 调用都能正常使用。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui 多行编辑器](https://docs.rs/ratatui-textarea/latest/ratatui_textarea/)
-3. **接入现有 WebUI。** 更换 HTTP 路由时同步调整浏览器调用方。重连、插话、下一轮发送和打断使用相同的 Session／Agent 命令。验收从 TUI 发起的任务能在浏览器继续操作，再切回终端。浏览器布局可根据终端日常使用中的反馈继续设计。[现有 WebUI API](../../../apps/web/src/api)
+1. **打通共享执行路径。** 补齐 SDK 在 Step 和 Turn 边界的输入接纳，复用其观察、输出读取及待决回复接口。实现本地服务发现、server 契约和无界面的 Rust 客户端，再将 CLI 的执行和观察命令接入。同一改动中迁移仓库内调用方并移除被替换的路由或执行路径。验证首次发送重试、两个工作区共享服务、忙时投递和断开重连。[核心方向](core-direction.md)
+2. **交付默认终端入口。** 用 Ratatui 排版、Crossterm 接收终端事件。输入编辑和对话渲染独立于网络时机，通过共享客户端实现上面的日常操作。按需翻页读取旧历史，为视口缓存和实时更新设上限，流式输出期间维持阅读位置。正常退出和可处理的错误都恢复终端模式、光标及粘贴设置。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui TestBackend](https://docs.rs/ratatui/latest/ratatui/backend/struct.TestBackend.html)
+3. **交付安装后的使用体验。** 发行包从同一服务提供现有 WebUI。通过 `kuku web` 或 TUI 菜单打开浏览器，接入该服务，带上已选的工作区、Session 和 Agent。浏览器接入时完成认证，可复用的凭据不写入链接或日志。`kuku server` 继续提供显式运行服务的入口。浏览器共用寻址、状态、回复、插话与打断契约。验证在浏览器里接着处理 TUI 发起的工作，再回到终端。按已交付的入口更新安装、快速上手、CLI 和 server 参考文档，把新增检查接入项目已有验收入口。[现有 WebUI API](../../../apps/web/src/api) · [发行打包](../../../.github/workflows/release.yml) · [测试指南](../contributing/testing.md)
 
 ## 开发时如何测试
 
-| 层次 | 验证内容 |
+| 层次 | 交付证据 |
 |---|---|
-| 画面与输入 | 用 Ratatui 的内存后端分别渲染普通和窄终端，直接驱动按键。断言接收者、草稿、滚动、中文宽字符、折行，以及等待和排队状态。[TestBackend](https://docs.rs/ratatui/latest/ratatui/backend/struct.TestBackend.html) |
-| SDK 与 server | 使用真实 server、临时工作目录和可控制返回时机的模型服务。先卡住工具，先发下一轮消息，再发当前轮插话。收到回执后断开第一个客户端，重连并放行工具。核对实际模型请求和 Turn ID，下一 Step 只接纳插话，下一 Turn 才接纳后续消息，同一命令重发只出现一次。另测旧窗口打断与新 Turn 的竞争，以及关联回复。[现有模型测试设施](../../../crates/kuku-server/tests/common/mock_provider.rs) |
-| 真实终端 | 分别在 Unix PTY 和 Windows 原生 ConPTY 上，用同一份本地配置启动两个真实客户端，核实只启动一个 server。切换 Agent、粘贴草稿、调整窗口、按 `Esc` 打断。断言草稿仍可见，再按 `Enter` 后才收到它的首个回执。退出再连接，检查持久结果、终端模式及光标恢复。[portable-pty](https://docs.rs/portable-pty/latest/portable_pty/) · [vt100 屏幕解析器](https://docs.rs/vt100/latest/vt100/struct.Parser.html) |
-| 实际使用 | 在 Linux 终端和 Windows Terminal 手测中文输入法、复制及滚动。macOS 运行 CI 自动用例，单独记录人工体验覆盖。在浏览器实测一次连回同一 server 的流程。[测试指南](../contributing/testing.md) |
+| 客户端与 SDK／server 契约 | 使用真实 server 和可控制返回时机的模型服务。丢弃首次回执后重启客户端。另测首次创建 Session 后、输入投递前 server 意外退出，再用原命令重试。卡住工具，先排下一轮再插话，核对实际请求和 Turn ID。覆盖撤回与接纳竞争、两个窗口同时答复、旧窗口打断新执行，以及取得快照时恰有新事件提交。模拟观察者落后和 provider 故障。核对恢复动作，并断言客户端重试不会重复投递输入或派发工具。[现有模型测试设施](../../../crates/kuku-server/tests/common/mock_provider.rs) |
+| 画面与输入 | 在内存后端驱动动作，渲染普通和窄终端。覆盖空白配置、粘贴、按 Agent 保留草稿、等待、错误、长对话和工具展开。放入中文宽字符、组合字符、大段输出、没有专用组件的自定义工具及原 Agent 的迟到事件，核对复制、滚动定位和下一条输入的接收者。 |
+| 原生终端与服务 | 在 Unix PTY 和 Windows 原生 ConPTY 里从两个工作目录启动客户端，核实共用一个服务且各自工作目录正确。忙时输入草稿，按 `Esc` 后草稿仍然可见，再按 `Enter` 才产生这条输入的回执。工具运行中关闭最后一个终端，重连后只看到一次结果。验证失效的发现记录、未获授权的浏览器或远程客户端、服务忙时协议不兼容、带持久等待的正常重启、进程崩溃和终端恢复。[portable-pty](https://docs.rs/portable-pty/latest/portable_pty/) · [vt100 屏幕解析器](https://docs.rs/vt100/latest/vt100/struct.Parser.html) |
+| 安装产物实用 | 从空白用户数据目录，在源码树外使用发行二进制和已配置的模型，完成一次读文件、修改、运行检查的开发任务。核对 diff 和工具输出，切换 Agent，在浏览器重连，再换一个终端收尾。单独核对脚本 JSON 输出，在 Linux 和 Windows Terminal 实操中文输入法、粘贴、复制和缩放。分别记录 macOS 自动验证与人工体验覆盖。按项目真实调用规则记录人工使用的 provider、实际文件改动和检查结果。provider 不可用时单独注明真实体验待验证。可重复的故障测试使用可控 provider。[测试与证据](../contributing/testing.md) |
