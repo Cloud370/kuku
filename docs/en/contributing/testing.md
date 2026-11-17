@@ -14,6 +14,8 @@ python3 scripts/acceptance/run.py integration
 
 `contract` runs SDK, CLI, and server tests with `kuku/test_support` enabled, including the gated runtime suites. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. CI runs the same contract selection on Linux, macOS, and Windows and retains its bounded evidence. The legacy embedded-host compilation check remains separate; live models and Linux benchmark containers are explicitly selected local checks.
 
+The selector fixes `CARGO_TARGET_DIR` to this checkout's `target/` without changing the host environment. Give each worktree its own target directory, even for serial builds: shared workspace artifacts can be incorrectly reused from another source tree. A local target may be seeded with third-party dependency cache, but clear workspace outputs once before its first build using `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app`. Record commit/tree, target directory, features, profile and binary hash; a frozen binary built from a shared target is not by itself proof of its source revision.
+
 Use focused checks while editing, then run the required Rust integration checks once for a runtime integration batch. Equivalent direct commands are:
 
 ```bash
@@ -71,7 +73,20 @@ The original reward, collected/passed/failed test counts, SDK exit status, and c
 
 The inspector reads at most 1 MiB per event, 100,000 events and a 4 MiB SDK report, retaining bounded hashes/metadata rather than duplicating context history. Diagnostic limits are 4,096 prepared requests and 8,192 tool calls/provider reports. Recheck existing evidence without another model request using `inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`; omit `--container-data` for a report written with host paths. This read-only selection needs neither credentials nor a budget reservation.
 
-While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; these samples do not establish idle-Agent footprint, cold-open/recovery, append/context preparation, or concurrent-Agent measurements. Record those from the relevant SDK checks rather than attributing whole-container measurements to the SDK.
+While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
+
+## Resource measurements
+
+```bash
+python3 scripts/acceptance/run.py metrics
+python3 scripts/acceptance/run.py metrics --profile release
+```
+
+This local selection builds [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs) in the checkout's isolated target and runs its public `Session` calls against the existing fixed SSE/configuration helpers. It never loads paid credentials or the spend ledger. Defaults are 32 idle Agents, 64 real queued-input appends, five close/reopen cycles, a 4 MiB command output with a 1 MiB retention quota, and two independently advancing Agents. The child emitting output reuses the caller binary; it does not introduce another SDK executor.
+
+`caller.json` records workload sizes, sample arrays and units, nearest-rank append/reopen percentiles, initial Session-open time, output bytes/quota/read bounds, concurrency and durable paths. It reports SDK `context_prepare_us` and `request_prepare_us` only when those actual preparation facts exist; input-to-completion latency is a separate measurement and cannot substitute for them. Initial open and reopen do not flush the operating-system filesystem cache.
+
+Linux `/proc` sampling separates the SDK caller process from its tool descendants. The in-process fixed provider is included in the caller footprint, with its baseline recorded separately. CPU is in seconds and RSS in KiB; missing I/O counters or unsampled phases stay unknown. Logical retained-output and event-file bytes are recorded independently. The run includes build profile, target directory, binary/source hashes, process limits and cleanup result. `measurements_complete` and `missing_measurements` distinguish a successful local task from missing measurements; keep conditions fixed before comparing runs. The Rust caller remains portable, while this process sampler currently requires Linux.
 
 ## Live protocol acceptance
 

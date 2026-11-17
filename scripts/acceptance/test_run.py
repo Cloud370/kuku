@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("run.py"))
@@ -161,6 +162,22 @@ class AcceptanceTests(unittest.TestCase):
         self.assertIn("kuku/test_support", command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
+
+    def test_cargo_checks_cannot_inherit_another_worktrees_target_directory(self):
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared-target"}):
+            env = ACCEPTANCE.command_environment()
+            self.assertEqual(env["CARGO_TARGET_DIR"], str(ACCEPTANCE.ROOT / "target"))
+            self.assertEqual(os.environ["CARGO_TARGET_DIR"], "/shared-target")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc resource selector")
+    def test_process_samples_keep_cpu_and_memory_when_io_counters_are_unavailable(self):
+        from metrics import process_sample
+        sample = process_sample(os.getpid())
+        self.assertIsNotNone(sample)
+        self.assertGreater(sample["rss_kib"], 0)
+        self.assertGreater(sample["threads"], 0)
+        self.assertGreaterEqual(sample["cpu_s"], 0)
+        self.assertIn("write_bytes", sample)
 
 
 if __name__ == "__main__":

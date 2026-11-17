@@ -14,6 +14,8 @@ python3 scripts/acceptance/run.py integration
 
 `contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。旧有嵌入宿主编译检查单独保留；真实模型和 Linux benchmark 容器是需明确选择的本地检查。
 
+选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
+
 编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查。等价的直接命令为：
 
 ```bash
@@ -71,7 +73,20 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 检查器每个事件最多读取 1 MiB，累计最多 100,000 个事件，SDK 报告上限 4 MiB；只保留有界 hash／元数据，不复制上下文历史。诊断上限为 4,096 个准备请求及 8,192 个工具调用／provider 报告。无需再次调用模型即可复核已有证据：`inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`；报告使用宿主路径时省略 `--container-data`。此只读选择不要求凭据或费用预留。
 
-SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`。这些样本不能证明空闲 Agent 占用、冷打开／恢复、追加／上下文准备或并发 Agent 测量。后者从相关 SDK 检查记录，不把整容器数据归因于 SDK。
+SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
+
+## 资源测量
+
+```bash
+python3 scripts/acceptance/run.py metrics
+python3 scripts/acceptance/run.py metrics --profile release
+```
+
+此本地选择在当前 checkout 的独立 target 中构建 [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs)，使用既有固定 SSE／配置 helper，通过公开 `Session` 执行。它不加载付费凭据或费用台账。默认规模为 32 个空闲 Agent、64 次真实队列输入追加、5 次关闭／重开、4 MiB 命令输出与 1 MiB 保留配额，以及两个独立推进的 Agent。输出子进程复用调用程序二进制，不增加另一套 SDK 执行器。
+
+`caller.json` 记录工作规模、样本数组及单位、nearest-rank 追加／重开百分位数、首次 Session 打开时间、输出字节／配额／读取边界、并发与持久路径。仅在实际准备事实存在时报告 SDK 的 `context_prepare_us` 和 `request_prepare_us`；输入到完成的延迟另行测量，不能替代这两项。首次打开和重开不清空操作系统文件缓存。
+
+Linux `/proc` 采样分别记录 SDK 调用进程和工具后代。固定 provider 位于调用进程内，其开销包含在进程占用中，并单独记录基线。CPU 使用秒、RSS 使用 KiB；缺失 I/O 计数或未采样阶段保持未知。保留输出和事件文件的逻辑字节数单独记录。运行包含构建 profile、target 目录、二进制／源码 hash、进程限制和清理结果。`measurements_complete` 与 `missing_measurements` 区分本地任务成功及缺失测量；对比运行前固定条件。Rust 调用程序保持可跨平台，当前进程采样器需要 Linux。
 
 ## 真实协议验收
 

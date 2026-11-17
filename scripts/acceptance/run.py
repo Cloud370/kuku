@@ -21,6 +21,7 @@ import time
 import uuid
 
 from evidence import inspect_sdk
+from metrics import ProcessSampler
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -168,13 +169,15 @@ def redact(text, secrets=()):
     return text
 
 
-def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT):
+def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None):
     directory.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     flags = {"start_new_session": True} if os.name != "nt" else {
         "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, bufsize=0, **flags)
+    if on_start:
+        on_start(process.pid)
     tail = bytearray()
     total = 0
     digest = hashlib.sha256()
@@ -268,6 +271,13 @@ def config_record(path):
         while chunk := handle.read(65536):
             digest.update(chunk)
     return {"path": str(path.resolve()), "sha256": digest.hexdigest()}
+
+
+def command_environment(secrets=None):
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(ROOT / "target")
+    env.update(secrets or {})
+    return env
 
 
 def manifest_case(case_id):
@@ -587,6 +597,46 @@ def selected_commands(group):
             contract]
 
 
+def run_metrics(args, directory, record):
+    if not sys.platform.startswith("linux"):
+        raise ValueError("process resource sampling currently requires Linux /proc")
+    command = ["cargo", "build", "-p", "kuku", "--example", "resource_probe", "--features", "test_support"]
+    if args.profile == "release":
+        command.append("--release")
+    record["build"] = require_success(capture(command, directory, "build", timeout=1800, env=command_environment()))
+    record["build"]["target_dir"] = str(ROOT / "target")
+    record["build"]["profile"] = args.profile
+    record["sources"] = [config_record(path) for path in
+                          (ROOT / "crates/kuku/examples/resource_probe.rs", Path(__file__).with_name("metrics.py"),
+                           ROOT / "crates/kuku/tests/common/mod.rs")]
+    binary = ROOT / "target" / args.profile / "examples" / "resource_probe"
+    record["binary"] = config_record(binary)
+    phase_file, result_file = directory / "phase.json", directory / "caller.json"
+    command = [str(binary), "--workspace", str(directory / "workspace"), "--data-dir", str(directory / "session-data"),
+               "--phase-file", str(phase_file), "--output", str(result_file),
+               "--idle-agents", str(args.idle_agents), "--appends", str(args.appends),
+               "--concurrent-agents", str(args.concurrent_agents), "--output-bytes", str(args.output_bytes),
+               "--output-quota", str(args.output_quota)]
+    sampler = ProcessSampler(phase_file)
+    try:
+        record["execution"] = capture(command, directory, "caller", timeout=180,
+                                       env=command_environment(), on_start=sampler.start)
+    finally:
+        record["resources"] = sampler.finish()
+    caller = json.loads(result_file.read_text())
+    record["caller_result"] = str(result_file)
+    record["measurements"] = caller.get("measurements")
+    record["passed"] = (caller.get("passed") is True and record["execution"]["exit_code"] == 0
+                        and not record["execution"]["timed_out"] and not record["execution"].get("capture_incomplete")
+                        and not record["resources"]["capture_incomplete"])
+    record["missing_measurements"] = [key for key in ("context_prepare_us", "request_prepare_us")
+                                      if caller.get("measurements", {}).get(key) is None]
+    for phase in ("idle_agents", "large_output", "concurrent_agents"):
+        if not record["resources"]["sampled_phases"].get(phase, {}).get("samples"):
+            record["missing_measurements"].append("process_samples_" + phase)
+    record["measurements_complete"] = not record["missing_measurements"]
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--output", type=Path, default=OUTPUT, help="ignored local evidence directory")
@@ -594,6 +644,13 @@ def parser():
     sub = root.add_subparsers(dest="group", required=True)
     for group in ("contract", "protocol", "integration", "list"):
         sub.add_parser(group)
+    metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
+    metrics.add_argument("--profile", choices=("debug", "release"), default="debug")
+    metrics.add_argument("--idle-agents", type=int, default=32)
+    metrics.add_argument("--appends", type=int, default=64)
+    metrics.add_argument("--concurrent-agents", type=int, default=2)
+    metrics.add_argument("--output-bytes", type=int, default=4 * 1024 * 1024)
+    metrics.add_argument("--output-quota", type=int, default=1024 * 1024)
     inspect = sub.add_parser("inspect", help="check existing durable SDK evidence without model requests")
     inspect.add_argument("--sdk-result", type=Path, required=True)
     inspect.add_argument("--session-data", type=Path, required=True)
@@ -681,6 +738,8 @@ def main():
                                 "basis": "conservative_upper_bound"}
         if args.group == "benchmark":
             run_benchmark(args, directory, record, secrets)
+        elif args.group == "metrics":
+            run_metrics(args, directory, record)
         elif args.group == "inspect":
             record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
                                                   args.connection, args.container_data)
@@ -689,8 +748,7 @@ def main():
             commands = selected_commands(args.group) if not paid else [args.command[1:] if args.command[:1] == ["--"] else args.command]
             if not all(commands):
                 raise ValueError("live requires a public SDK/CLI command after --")
-            env = os.environ.copy()
-            env.update(secrets)
+            env = command_environment(secrets)
             record["checks"] = []
             for index, command in enumerate(commands):
                 check = capture(command, directory, f"check-{index + 1}", timeout=1800,
