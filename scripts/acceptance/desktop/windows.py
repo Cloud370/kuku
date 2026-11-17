@@ -190,7 +190,8 @@ def exercise(client, desktop, workspace, state, checks):
     client.provider.assert_idle(duration=0.25)
 
     original = grid()
-    desktop.press(VK_CONTROL, VK_NUMPAD_PLUS)
+    for _ in range(3):
+        desktop.press(VK_CONTROL, VK_NUMPAD_PLUS)
 
     def enlarged_grid():
         size = grid()
@@ -307,6 +308,9 @@ def main():
     result = {"passed": False, "checks": {}, "screenshots": []}
     try:
         run(args, result)
+        if result["checks"]["ime"]["status"] == "unavailable":
+            result["partial"] = True
+            raise RuntimeError(result["checks"]["ime"]["reason"])
         result["passed"] = True
     except Exception as error:
         result["failure"] = str(error)[:2048]

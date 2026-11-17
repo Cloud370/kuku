@@ -64,7 +64,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、`/copy` 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
 
-Windows Terminal 场景需要专用的活动测试桌面、独立剪贴板、美式键盘布局和 Windows Terminal 默认快捷键。在运行场景的 Python 环境安装 Pillow，然后通过 `--windows-terminal` 指定已有的 `WindowsTerminal.exe`。启用微软拼音后可验收候选组字和提交。场景分别记录输入法不可用的情况，以及复制、可编辑的多行粘贴和字体缩放的结果。[Windows CI 任务](../../../.github/workflows/ci.yml) 准备便携版 Terminal，尝试配置拼音，并将预检结果随场景证据保存。macOS 的人工实操单独记录平台证据。
+Windows Terminal 场景需要专用的活动测试桌面、独立剪贴板、美式键盘布局和 Windows Terminal 默认快捷键。在运行场景的 Python 环境安装 Pillow，然后通过 `--windows-terminal` 指定已有的 `WindowsTerminal.exe`。启用微软拼音后可验收候选组字和提交。微软拼音不可用时，场景仍记录复制、可编辑的多行粘贴和字体缩放的结果，并将 GUI 覆盖标为不完整。[Windows CI 任务](../../../.github/workflows/ci.yml) 准备便携版 Terminal，尝试配置拼音，并将预检结果随场景证据保存。macOS 的人工实操单独记录平台证据。
 
 显式选择 `--live` 后，使用平台安装器、发行包和 Chromium，通过安装后的客户端发起有预算限制的 DeepSeek 调用。此模式要求从显式凭据文件读取 DeepSeek 密钥，并使用已有[预算账本](#凭据与运行产物)。经授权可用 `--ledger` 选择另一份现有账本。使用唯一的运行 ID 和已授权的账本。
 
