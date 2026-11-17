@@ -25,6 +25,46 @@ enum Request {
     Write { text: String },
 }
 
+#[derive(Clone)]
+struct TerminalInput(Arc<Mutex<Option<Box<dyn Write + Send>>>>);
+
+impl TerminalInput {
+    fn new(writer: Box<dyn Write + Send>) -> Self {
+        Self(Arc::new(Mutex::new(Some(writer))))
+    }
+
+    fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut slot = self.0.lock().unwrap();
+        let writer = slot
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "terminal input closed"))?;
+        writer.write_all(bytes)?;
+        writer.flush()
+    }
+
+    fn close(&self) {
+        self.0.lock().unwrap().take();
+    }
+}
+
+impl vt100::Callbacks for TerminalInput {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        first: Option<u8>,
+        second: Option<u8>,
+        parameters: &[&[u16]],
+        command: char,
+    ) {
+        // NOTE: ConPTY inherits the cursor via a report from its host terminal before the child can start.
+        if (first, second, command) == (None, None, 'n') && parameters == [&[6]] {
+            let (row, column) = screen.cursor_position();
+            let report = format!("\x1b[{};{}R", row + 1, column + 1);
+            let _ = self.write(report.as_bytes());
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let binary = args
@@ -64,8 +104,13 @@ fn host_terminal(
     command.env("TERM", "xterm-256color");
 
     let mut reader = pair.master.try_clone_reader()?;
-    let mut writer = pair.master.take_writer()?;
-    let viewport = Arc::new(Mutex::new(vt100::Parser::new(ROWS, COLS, 0)));
+    let input = TerminalInput::new(pair.master.take_writer()?);
+    let viewport = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+        ROWS,
+        COLS,
+        0,
+        input.clone(),
+    )));
     let parser = viewport.clone();
     thread::spawn(move || {
         let mut bytes = [0; 4096];
@@ -100,8 +145,7 @@ fn host_terminal(
                     })
                 }
                 Request::Write { text } => {
-                    writer.write_all(text.as_bytes())?;
-                    writer.flush()?;
+                    input.write(text.as_bytes())?;
                     json!({"written": true})
                 }
             };
@@ -109,7 +153,7 @@ fn host_terminal(
         }
         Ok(())
     })();
-    drop(writer);
+    input.close();
     drop(pair);
     if child.try_wait()?.is_none() {
         let _ = child.kill();
