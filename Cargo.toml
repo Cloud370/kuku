@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/kuku", "crates/kuku-cli", "crates/kuku-server", "apps/kuku"]
+members = [
+    "crates/kuku",
+    "crates/kuku-client",
+    "crates/kuku-cli",
+    "crates/kuku-server",
+    "crates/kuku-tui",
+    "apps/kuku",
+]
 default-members = ["apps/kuku"]
 resolver = "2"
 
