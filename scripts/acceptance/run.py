@@ -675,7 +675,15 @@ def pty_artifact(log):
     raise ValueError("Cargo did not report the compiled native PTY test helper")
 
 
-def run_linux_desktop(binary, bridge, scratch, directory, record, checked):
+def verify_desktop_report(report, record):
+    if report.stat().st_size > LOG_BYTES:
+        raise ValueError("The desktop result exceeds the evidence limit")
+    result = json.loads(report.read_text(encoding="utf-8"))
+    if result.get("passed") is not True or result.get("binary_sha256") != record["binary"]["sha256"]:
+        raise RuntimeError("The desktop evidence did not verify the installed binary")
+
+
+def run_linux_desktop(binary, bridge, scratch, evidence, record, checked):
     from interactive_fixture import CONFIG
 
     image_file = scratch / "desktop-image"
@@ -686,9 +694,6 @@ def run_linux_desktop(binary, bridge, scratch, directory, record, checked):
         raise ValueError("Docker did not report the desktop image ID")
     record["desktop_image"] = image
 
-    evidence = directory / "desktop"
-    evidence.mkdir()
-    report = evidence / "result.json"
     cidfile = scratch / "desktop-container"
     command = ["docker", "create", "--cidfile", str(cidfile), "--init", "--network", "none", "--read-only",
                "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -707,26 +712,45 @@ def run_linux_desktop(binary, bridge, scratch, directory, record, checked):
         checked([*command, image], "desktop-container", timeout=30)
         container = cidfile.read_text(encoding="utf-8").strip()
         checked(["docker", "start", "--attach", container], "installed-desktop", timeout=180)
-        if report.stat().st_size > LOG_BYTES:
-            raise ValueError("The desktop result exceeds the evidence limit")
-        desktop_result = json.loads(report.read_text(encoding="utf-8"))
-        if (desktop_result.get("passed") is not True
-                or desktop_result.get("binary_sha256") != record["binary"]["sha256"]):
-            raise RuntimeError("The desktop evidence did not verify the installed binary")
     finally:
-        if report.is_file():
-            record["desktop_result"] = str(report)
         if cidfile.is_file():
             container = cidfile.read_text(encoding="utf-8").strip()
             if container:
                 checked(["docker", "rm", "--force", container], "desktop-cleanup", timeout=30)
 
 
+def run_desktop(args, binary, bridge, scratch, directory, record, checked):
+    evidence = directory / "desktop"
+    evidence.mkdir()
+    report = evidence / "result.json"
+    try:
+        if os.name == "nt":
+            script = Path(__file__).with_name("desktop") / "windows.py"
+            checked([sys.executable, str(script), "--binary", str(binary), "--bridge", str(bridge),
+                     "--directory", str(scratch / "desktop"), "--evidence", str(evidence),
+                     "--windows-terminal", str(args.windows_terminal.resolve())],
+                    "installed-desktop", timeout=180, cwd=scratch)
+        else:
+            run_linux_desktop(binary, bridge, scratch, evidence, record, checked)
+        verify_desktop_report(report, record)
+    finally:
+        if report.is_file():
+            record["desktop_result"] = str(report)
+
+
 def run_interactive(args, directory, record):
     from interactive_fixture import EXE
 
     record["desktop"] = args.desktop
-    if args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
+    if args.windows_terminal and (not args.desktop or os.name != "nt"):
+        raise ValueError("--windows-terminal requires --desktop on a dedicated Windows test desktop")
+    if args.desktop and os.name == "nt":
+        from desktop.windows_setup import require_active_desktop
+
+        if args.windows_terminal is None:
+            raise ValueError("Select the WindowsTerminal.exe of the dedicated test desktop with --windows-terminal")
+        require_active_desktop()
+    elif args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
         raise ValueError("Desktop interactive acceptance requires Linux and Docker")
     if args.live and (not args.archive or not args.secrets):
         raise ValueError("Live interactive acceptance requires --archive and --secrets")
@@ -799,9 +823,11 @@ def run_interactive(args, directory, record):
             command.extend(["--upgrade", str(args.upgrade_from.resolve()), str(args.archive.resolve())])
         if args.browser:
             command.append("--browser")
-        checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
-        if args.desktop:
-            run_linux_desktop(binary, bridge, scratch_dir, directory, record, checked)
+        try:
+            checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
+        finally:
+            if args.desktop:
+                run_desktop(args, binary, bridge, scratch_dir, directory, record, checked)
     record["passed"] = True
 
 
@@ -820,8 +846,9 @@ def parser():
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
     scenario = interactive.add_mutually_exclusive_group()
-    scenario.add_argument("--desktop", action="store_true", help="also exercise Xfce Terminal and IBus Pinyin in Linux Docker")
+    scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    interactive.add_argument("--windows-terminal", type=Path, help="existing WindowsTerminal.exe in a dedicated test desktop")
     interactive.add_argument("--secrets", type=Path, help="explicit credentials file for --live")
     interactive.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json", help="existing live-call budget ledger")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")

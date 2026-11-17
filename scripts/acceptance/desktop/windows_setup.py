@@ -24,10 +24,14 @@ PINYIN_TIP = f"0804:{PINYIN_SERVICE}{PINYIN_PROFILE}"
 
 def powershell(script, timeout=15):
     command = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command + script],
-                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    try:
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command + script],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"PowerShell did not complete within {timeout} seconds") from error
     if result.returncode:
-        raise RuntimeError(result.stderr.strip()[-2048:])
+        raise RuntimeError(f"PowerShell returned {result.returncode}\n{result.stderr.strip()[-2000:]}")
     return result.stdout.strip()
 
 
@@ -60,13 +64,17 @@ def desktop_state():
             "interactive": station == "WinSta0" and current == input_desktop == "Default"}
 
 
+def require_active_desktop():
+    if os.name != "nt" or not desktop_state()["interactive"]:
+        raise RuntimeError("The test requires an active Windows input desktop")
+
+
 def require_hosted_desktop():
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true" or (
         os.environ.get("RUNNER_ENVIRONMENT"), os.environ.get("RUNNER_OS")
     ) != ("github-hosted", "Windows"):
         raise ValueError("Windows Terminal GUI automation requires a disposable GitHub-hosted Windows runner")
-    if not desktop_state()["interactive"]:
-        raise RuntimeError("The runner process is outside the active Windows input desktop")
+    require_active_desktop()
 
 
 def pinyin_registered():
@@ -86,12 +94,16 @@ def pinyin_configured():
 
 
 def prepare_pinyin():
-    return powershell(f"""
+    existing = pinyin_registered()
+    if not existing:
+        powershell("""
 $capability = 'Language.Basic~~~zh-CN~0.0.1.0'
-if ((Get-WindowsCapability -Online -Name $capability).State -ne 'Installed') {{
+if ((Get-WindowsCapability -Online -Name $capability).State -ne 'Installed') {
     $added = Add-WindowsCapability -Online -Name $capability
-    if ($added.RestartNeeded) {{ throw 'Microsoft Pinyin Basic Typing requires a restart' }}
-}}
+    if ($added.RestartNeeded) { throw 'Microsoft Pinyin Basic Typing requires a restart' }
+}
+""", timeout=180)
+    powershell(f"""
 $languages = Get-WinUserLanguageList
 if ($languages.InputMethodTips -notcontains '{PINYIN_TIP}') {{
     $chinese = @($languages) | Where-Object LanguageTag -Match '^zh-(Hans-)?CN$' | Select-Object -First 1
@@ -102,8 +114,10 @@ if ($languages.InputMethodTips -notcontains '{PINYIN_TIP}') {{
     if ($chinese.InputMethodTips -notcontains '{PINYIN_TIP}') {{ $chinese.InputMethodTips.Add('{PINYIN_TIP}') }}
     Set-WinUserLanguageList $languages -Force -WarningAction SilentlyContinue
 }}
-(Get-WindowsCapability -Online -Name $capability).State.ToString()
-""", timeout=180)
+""")
+    if not pinyin_registered() or not pinyin_configured():
+        raise RuntimeError("Microsoft Pinyin is unavailable after configuring the test account")
+    return "existing-profile" if existing else "basic-typing-capability"
 
 
 def prepare_terminal(directory):
@@ -137,18 +151,16 @@ def main():
         if args.prepare is not None:
             stage = "hosted-desktop"
             require_hosted_desktop()
-            stage = "pinyin"
-            result["pinyin_capability"] = prepare_pinyin()
-            result.update(pinyin_registered=pinyin_registered(), pinyin_configured=pinyin_configured())
-            if result["pinyin_capability"] != "Installed" or not all(
-                result[key] for key in ("pinyin_registered", "pinyin_configured")
-            ):
-                raise RuntimeError("Microsoft Pinyin is unavailable after setting up the Basic Typing capability")
             stage = "terminal"
             result["terminal"] = str(prepare_terminal(args.prepare.resolve()))
             result["terminal_version"] = TERMINAL_VERSION
             result["terminal_archive_sha256"] = TERMINAL_SHA256
             result["ready"] = True
+            try:
+                result["pinyin_source"] = prepare_pinyin()
+                result.update(pinyin_registered=pinyin_registered(), pinyin_configured=pinyin_configured())
+            except Exception as error:
+                result["pinyin_setup_error"] = str(error)[:2048]
     except Exception as error:
         result["failure"] = {"stage": stage, "message": str(error)[:2048]}
         print(f"Windows desktop {stage}: {error}", file=sys.stderr)

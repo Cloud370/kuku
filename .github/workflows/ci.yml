@@ -72,17 +72,27 @@ jobs:
       - name: Check acceptance tooling
         run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
       - name: Prepare isolated Windows Terminal desktop
+        id: windows_desktop
         if: runner.os == 'Windows'
         continue-on-error: true
         timeout-minutes: 5
-        run: >-
-          python3 scripts/acceptance/desktop/windows_setup.py
-          --report benchmarks/acceptance/windows-terminal-preflight.json
-          --prepare "$env:RUNNER_TEMP/kuku-windows-terminal"
+        run: |
+          python3 -m pip install --disable-pip-version-check Pillow==12.2.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python3 scripts/acceptance/desktop/windows_setup.py --report benchmarks/acceptance/windows-terminal-preflight.json --prepare "$env:RUNNER_TEMP/kuku-windows-terminal"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $preflight = Get-Content benchmarks/acceptance/windows-terminal-preflight.json -Raw | ConvertFrom-Json
+          "terminal=$($preflight.terminal)" >> $env:GITHUB_OUTPUT
       - name: Contract tests, including feature-gated runtime suites
+        id: contract
         run: python3 scripts/acceptance/run.py --run-id ci-contract contract
       - name: Installed client on ${{ matrix.terminal }}
-        run: python3 scripts/acceptance/run.py --run-id ci-interactive interactive
+        if: ${{ !cancelled() && (steps.contract.outcome == 'success' || steps.contract.outcome == 'failure') }}
+        env:
+          KUKU_ACCEPTANCE_WINDOWS_TERMINAL: ${{ steps.windows_desktop.outputs.terminal }}
+        run: >-
+          python3 scripts/acceptance/run.py --run-id ci-interactive interactive
+          ${{ steps.windows_desktop.outcome == 'success' && '--desktop --windows-terminal "$env:KUKU_ACCEPTANCE_WINDOWS_TERMINAL"' || '' }}
       - name: Upload bounded acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
