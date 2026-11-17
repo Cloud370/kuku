@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
         load_and_patch_config, load_config, ApiKey, Config, ProviderConfig, ProviderFormat,
-        ResolvedThinking, ThinkLevel, TierConfig,
+        ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel, TierConfig,
     };
 }
 
@@ -23,6 +23,14 @@ mod provider {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/provider/types.rs"
+        ));
+    }
+
+    #[allow(dead_code)]
+    pub mod capabilities {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/capabilities.rs"
         ));
     }
 
