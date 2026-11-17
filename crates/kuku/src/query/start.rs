@@ -148,13 +148,21 @@ impl Query {
             Some(super::lifecycle::reduce_lifecycle(&existing_events))
         };
         let conversation = self.conversation.clone();
-        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id, &conversation)?;
         let resumed_permission = lifecycle.as_ref().and_then(|state| {
             state
                 .pending_permissions
                 .iter()
                 .find(|pending| pending.request.conversation == conversation)
         });
+        let resumable_batch = resumed_permission
+            .filter(|_| self.runtime.is_some())
+            .map(|pending| pending.turn);
+        reject_interrupted_open_tools(
+            lifecycle.as_ref(),
+            &session_id,
+            &conversation,
+            resumable_batch,
+        )?;
         let mut bootstrap_skill = if resumed_permission.is_some() {
             None
         } else {
@@ -363,6 +371,22 @@ impl Query {
         );
 
         let mut resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        if let (Some(lifecycle), Some(turn)) = (lifecycle.as_ref(), resumable_batch) {
+            for open in lifecycle
+                .open_tools
+                .iter()
+                .filter(|open| is_undispatched_batch_call(open, &conversation, turn))
+            {
+                resumed_state.queued_tool_calls.push_back(QueuedToolCall {
+                    display_summary: super::helpers::display_summary(
+                        &open.tool_call.name,
+                        &open.tool_call.args,
+                        None,
+                    ),
+                    tool_call: open.tool_call.clone(),
+                });
+            }
+        }
         if self.runtime.is_some() {
             for queued in &mut resumed_state.queued_tool_calls {
                 if let Some(args) =
@@ -577,15 +601,16 @@ fn reject_interrupted_open_tools(
     lifecycle: Option<&super::lifecycle::LifecycleState>,
     session_id: &str,
     conversation: &crate::conversation::address::ConversationAddress,
+    resumable_batch: Option<u64>,
 ) -> Result<()> {
     let Some(lifecycle) = lifecycle else {
         return Ok(());
     };
-    let Some(open_tool) = lifecycle
-        .open_tools
-        .iter()
-        .find(|open_tool| &open_tool.conversation == conversation)
-    else {
+    let Some(open_tool) = lifecycle.open_tools.iter().find(|open| {
+        &open.conversation == conversation
+            && !resumable_batch
+                .is_some_and(|turn| is_undispatched_batch_call(open, conversation, turn))
+    }) else {
         return Ok(());
     };
 
@@ -593,6 +618,16 @@ fn reject_interrupted_open_tools(
         "session {session_id} has unresolved tool call {} from turn {}; review the session before resuming",
         open_tool.tool_call.id, open_tool.turn
     )))
+}
+
+fn is_undispatched_batch_call(
+    open: &super::lifecycle::OpenToolLifecycle,
+    conversation: &crate::conversation::address::ConversationAddress,
+    turn: u64,
+) -> bool {
+    &open.conversation == conversation
+        && open.turn == turn
+        && open.kind == super::lifecycle::OpenToolKind::Interrupted
 }
 
 fn resumed_model_request_count(

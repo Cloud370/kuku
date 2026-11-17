@@ -1,15 +1,20 @@
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::LogLevel;
+use crate::provider::types::{
+    PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ResolvedProvider,
+};
 use crate::query::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
 use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, StreamingChunkState, UiEvent};
 
 use super::{emit_runtime_log, pending_failure_step};
 
+const PROVIDER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
 pub(super) async fn dispatch_provider_step(
     mut pending: PendingRun,
-    resolved_config: crate::provider::types::ResolvedProvider,
+    resolved_config: ResolvedProvider,
     existing_events: Vec<crate::event::StoredEvent>,
     frozen_context: Option<crate::query::frozen::ContextCommit>,
 ) -> Result<PendingStep> {
@@ -84,6 +89,7 @@ pub(super) async fn dispatch_provider_step(
         })?),
         None => None,
     };
+    super::require_runtime_execution(&pending)?;
     crate::query::budget::reserve(&pending.query)?;
     if let Some(context) = frozen_context {
         crate::query::frozen::record_prepared(
@@ -94,13 +100,14 @@ pub(super) async fn dispatch_provider_step(
             request_prepare_us,
         )?;
     }
-    match crate::query::adapters::model_stream(
+    match dispatch_prepared(
         &mut pending,
         &resolved_config,
         &prepared,
+        &request_id,
         provider_trace,
     )
-    .await
+    .await?
     {
         Ok(stream) => {
             let conversation = pending.conversation.clone();
@@ -208,6 +215,42 @@ pub(super) async fn dispatch_provider_step(
             ))
         }
     }
+}
+
+async fn dispatch_prepared(
+    pending: &mut PendingRun,
+    resolved: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+    request_id: &str,
+    trace: Option<crate::provider::trace::ProviderTraceMetadata>,
+) -> Result<std::result::Result<crate::provider::ProviderChunkStream, ProviderFailure>> {
+    super::require_runtime_execution(pending)?;
+    let initial =
+        crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
+    let Err(failure) = &initial else {
+        return Ok(initial);
+    };
+    if pending.query.runtime.is_none()
+        || !pending.query.runtime_limits.retry_transient_provider_errors
+        || !failure.retryable
+        || !matches!(
+            failure.kind,
+            ProviderFailureKind::Transport | ProviderFailureKind::ProviderUnavailable
+        )
+    {
+        return Ok(initial);
+    }
+    tokio::time::sleep(PROVIDER_RETRY_DELAY).await;
+    super::require_runtime_execution(pending)?;
+    if crate::query::budget::reserve(&pending.query).is_err() {
+        return Ok(initial);
+    }
+    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+        "kind": "runtime.model_retry", "ts": now_timestamp()?,
+        "agent": pending.conversation.as_str(), "turn": pending.turn, "request_id": request_id,
+        "failed_kind": failure.kind.as_event_kind(), "attempt": 2,
+    })))?;
+    Ok(crate::query::adapters::model_stream(pending, resolved, prepared, trace).await)
 }
 
 async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {

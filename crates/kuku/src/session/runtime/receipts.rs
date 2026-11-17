@@ -1,7 +1,7 @@
 use crate::{Error, Result};
 
 use super::record::{fingerprint, validate_address, validate_key};
-use super::{Input, InputSource, Receipt, Session};
+use super::{AgentConfig, Input, InputSource, Receipt, Session};
 
 impl Session {
     /// Find a committed command receipt without accepting or activating work.
@@ -15,6 +15,32 @@ impl Session {
             .commands
             .get(command_id)
             .map(|(_, receipt)| receipt.clone()))
+    }
+
+    /// Verify an agent creation receipt against the original requested configuration.
+    pub fn create_agent_receipt(
+        &self,
+        command_id: &str,
+        address: &str,
+        config: &AgentConfig,
+    ) -> Result<Option<Receipt>> {
+        validate_key(command_id)?;
+        validate_address(address)?;
+        let digest = fingerprint(&("create_agent", address, config))?;
+        self.inner.state.lock().unwrap().retry(command_id, &digest)
+    }
+
+    /// Verify an agent configuration receipt against the original requested configuration.
+    pub fn configure_agent_receipt(
+        &self,
+        command_id: &str,
+        address: &str,
+        config: &AgentConfig,
+    ) -> Result<Option<Receipt>> {
+        validate_key(command_id)?;
+        validate_address(address)?;
+        let digest = fingerprint(&("configure_agent", address, config))?;
+        self.inner.state.lock().unwrap().retry(command_id, &digest)
     }
 
     /// Verify a delivered input's receipt without committing or activating work.
@@ -55,6 +81,13 @@ impl Session {
 pub(super) fn input_fingerprint(input: &Input) -> Result<String> {
     validate_key(&input.command_id)?;
     validate_address(&input.target)?;
+    if let Some(skill) = &input.bootstrap_skill {
+        if !crate::skill::loader::is_valid_skill_name(skill) {
+            return Err(Error::InvalidArgument(format!(
+                "invalid skill name '{skill}'"
+            )));
+        }
+    }
     if input.text.len() > 262_144 {
         return Err(Error::InvalidArgument(
             "input exceeds the supported byte limit".into(),

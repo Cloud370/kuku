@@ -65,6 +65,9 @@ pub struct RuntimeLimits {
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
     pub max_requests_per_open: Option<u64>,
+    /// Whether to retry a transient provider failure before a stream starts, at most once per step.
+    #[serde(default = "default_provider_retry")]
+    pub retry_transient_provider_errors: bool,
     /// Optional host output-token ceiling applied to every agent's resolved request.
     pub max_output_tokens_per_request: Option<u32>,
     /// Maximum logical model requests in one turn, including recovery requests.
@@ -88,6 +91,7 @@ impl Default for RuntimeLimits {
             max_request_bytes: 512 * 1024,
             max_model_requests: 4,
             max_requests_per_open: None,
+            retry_transient_provider_errors: default_provider_retry(),
             max_output_tokens_per_request: None,
             max_steps_per_turn: 20,
             max_tools_per_agent: 8,
@@ -96,6 +100,10 @@ impl Default for RuntimeLimits {
             observation_capacity: 128,
         }
     }
+}
+
+fn default_provider_retry() -> bool {
+    true
 }
 
 /// Agent-local behavior and explicit model selection.
@@ -153,6 +161,23 @@ pub enum Activation {
     Enqueue,
 }
 
+/// The earliest execution boundary at which a delivered input may be accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputTiming {
+    /// Join the next model step in the current turn, or the next turn when idle.
+    #[default]
+    NextStep,
+    /// Wait for the next turn, even when the current turn has more steps.
+    NextTurn,
+}
+
+impl InputTiming {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Idempotent delivery to one stable address within a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
@@ -168,6 +193,12 @@ pub struct Input {
     pub activation: Activation,
     /// Optional external work or message association.
     pub correlation: Option<String>,
+    /// Earliest safe boundary for acceptance.
+    #[serde(default, skip_serializing_if = "InputTiming::is_default")]
+    pub timing: InputTiming,
+    /// Native skill requested for the model step that accepts this input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_skill: Option<String>,
 }
 
 impl Input {
@@ -184,6 +215,8 @@ impl Input {
             text: text.into(),
             activation: Activation::Wake,
             correlation: None,
+            timing: InputTiming::NextStep,
+            bootstrap_skill: None,
         }
     }
 }
@@ -197,6 +230,36 @@ pub struct Receipt {
     pub event_id: u64,
     /// Target agent address.
     pub agent: String,
+}
+
+/// Durable state of a delivered input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputStatus {
+    /// The input can still be withdrawn before acceptance.
+    Queued,
+    /// The input crossed an execution boundary.
+    Accepted,
+    /// The input was withdrawn before execution accepted it.
+    Withdrawn,
+}
+
+/// A delivered input awaiting acceptance and its original receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInput {
+    /// Durable delivery acknowledgement.
+    pub receipt: Receipt,
+    /// Original input and requested timing.
+    pub input: Input,
+}
+
+/// The durable outcome of attempting to withdraw one delivered input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    /// Durable acknowledgement of the withdrawal command.
+    pub receipt: Receipt,
+    /// Actual state of the referenced input at the time of this command.
+    pub status: InputStatus,
 }
 
 /// Current execution state reconstructed from committed session facts.
@@ -239,12 +302,18 @@ pub struct AgentSnapshot {
     pub address: String,
     /// The agent's current local configuration.
     pub config: AgentConfig,
+    /// Configuration bound to the current execution, until the next safe boundary applies changes.
+    #[serde(default)]
+    pub active_config: Option<AgentConfig>,
     /// Current execution state.
     pub status: AgentStatus,
     /// Number of delivered inputs awaiting acceptance.
     pub pending_inputs: usize,
     /// Latest turn number, when any work was accepted.
     pub turn: Option<u64>,
+    /// Durable identity of the observed execution, including a pending wait or cleanup.
+    #[serde(default)]
+    pub execution_id: Option<u64>,
     /// Last durable assistant response, independent of task success.
     pub last_output: Option<String>,
     /// Last execution failure, if any.
@@ -255,6 +324,19 @@ pub struct AgentSnapshot {
     pub question: Option<QuestionRequest>,
     /// Cumulative reported usage.
     pub usage: UsageTotals,
+}
+
+/// Consistent session state and journal cursor for a selected agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentView {
+    /// Selected agent's current state.
+    pub snapshot: AgentSnapshot,
+    /// Retained agent states in stable address order.
+    pub agents: Vec<AgentSnapshot>,
+    /// Latest committed event covered by this view.
+    pub cursor: u64,
+    /// Selected agent's retractable deliveries in receipt order.
+    pub pending_inputs: Vec<PendingInput>,
 }
 
 /// Durable request for selected information at an agent's safe waiting boundary.

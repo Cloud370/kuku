@@ -1,11 +1,16 @@
 //! Session-owned execution, durable input delivery, and resumable observations.
 
+mod boundary;
+mod controls;
+mod creation;
 mod driver;
 mod observe;
 mod receipts;
 mod record;
 mod selection;
 mod types;
+
+pub(crate) use selection::resolve_agent_model;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,8 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::event::{EventPayload, EventStore, StoredEvent};
-use crate::query::UiEvent;
+use crate::event::{EventStore, StoredEvent};
 use crate::{Error, Result};
 
 pub use crate::tool::builtin::run_command::output::{
@@ -23,11 +27,12 @@ pub use crate::tool::builtin::run_command::output::{
 };
 pub use observe::{Observation, SessionObserver};
 pub use types::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, InputSource, QuestionRequest,
-    Receipt, RuntimeLimits, SessionOptions, UsageTotals,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
+    InputStatus, InputTiming, PendingInput, QuestionRequest, Receipt, RuntimeLimits,
+    SessionOptions, UsageTotals, Withdrawal,
 };
 
-use record::{fingerprint, timestamp, validate_address, validate_key, Record, State};
+use record::{fingerprint, validate_address, validate_key, Command, Record, State};
 
 type CleanupOutcome = Option<std::result::Result<(), String>>;
 
@@ -39,7 +44,7 @@ pub(crate) struct SessionInner {
     state: Mutex<State>,
     workers: Mutex<HashMap<u64, Worker>>,
     settlement_failure: OnceLock<String>,
-    live: broadcast::Sender<(String, UiEvent)>,
+    live: broadcast::Sender<observe::LiveObservation>,
     model_capacity: Arc<Semaphore>,
     tool_adapters: Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -97,7 +102,11 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     /// Acquire the session writer and reconstruct committed facts without automatically running agents.
-    pub async fn open(mut options: SessionOptions) -> Result<Self> {
+    pub async fn open(options: SessionOptions) -> Result<Self> {
+        Self::open_runtime(options, None)
+    }
+
+    fn open_runtime(mut options: SessionOptions, creation: Option<Command>) -> Result<Self> {
         validate_limits(&options.limits)?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);
         options.workspace = std::fs::canonicalize(&options.workspace)
@@ -113,35 +122,18 @@ impl Session {
         let lease = SessionLease::acquire(events_path.clone())?;
         let mut writer = EventStore::open(&events_path)?;
         let mut state = State::default();
-        let mut cursor = 0;
-        loop {
-            let events = writer.read_after(cursor, 128)?;
-            if events.is_empty() {
-                break;
-            }
-            for event in events {
-                cursor = event.id;
-                if let Some(record) = Record::from_event(&event)? {
-                    state.reduce(event.id, record)?;
-                }
-            }
+        writer.visit(|event| reduce_event(&mut state, event))?;
+        creation::prepare_journal(
+            &mut writer,
+            &mut state,
+            &id,
+            creation,
+            options.prompts_dir.as_deref(),
+        )?;
+        if let Some(claim) = &state.creation {
+            options.prompts_dir = claim.prompts_dir.clone();
         }
-        if cursor == 0 {
-            let ts = timestamp()?;
-            writer.append(EventPayload::SessionCreated {
-                ts: ts.clone(),
-                schema_version: 3,
-                session_id: id.clone(),
-                created_at: ts,
-                kuku_version: env!("CARGO_PKG_VERSION").into(),
-            })?;
-        }
-        for agent in state.agents.values_mut() {
-            if agent.snapshot.status == AgentStatus::Running {
-                agent.snapshot.status = AgentStatus::Interrupted;
-                agent.snapshot.last_error = Some("execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into());
-            }
-        }
+        state.mark_interrupted();
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));
         let model_request_budget = options
@@ -245,96 +237,103 @@ impl Session {
 
     /// Persist delivery before acknowledging it and optionally wake an idle recipient.
     pub fn send(&self, input: Input) -> Result<Receipt> {
-        validate_key(&input.command_id)?;
-        validate_address(&input.target)?;
+        self.send_input(input, None)
+    }
+
+    /// Commit a configuration and input together, using the input correlation to identify the configuration intent.
+    pub fn send_configured(&self, input: Input, config: AgentConfig) -> Result<Receipt> {
+        if input.correlation.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::InvalidArgument(
+                "configured delivery requires an input correlation for its configuration intent"
+                    .into(),
+            ));
+        }
+        self.send_input(input, Some(config))
+    }
+
+    fn send_input(&self, input: Input, config: Option<AgentConfig>) -> Result<Receipt> {
+        let digest = receipts::input_fingerprint(&input)?;
         if input.text.len() > self.inner.options.limits.max_input_bytes {
             return Err(Error::InvalidArgument(
                 "input exceeds the configured byte limit".into(),
             ));
         }
-        let identity = match &input.source {
-            InputSource::Host(identity)
-            | InputSource::Agent(identity)
-            | InputSource::External(identity) => identity,
-        };
-        if identity.len() > 256
-            || input
-                .correlation
-                .as_ref()
-                .is_some_and(|value| value.len() > 256)
-        {
-            return Err(Error::InvalidArgument(
-                "input source or correlation exceeds 256 bytes".into(),
-            ));
-        }
-        let digest = receipts::input_fingerprint(&input)?;
         let target = input.target.clone();
         let wake = input.activation == Activation::Wake;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(&input.command_id, &digest)? {
-                drop(state);
-                if wake {
-                    self.schedule(&target)?;
-                }
-                return Ok(receipt);
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(&input.command_id, &digest)? {
+            if wake {
+                self.activate_delivery(&mut state, &target, &receipt)?;
             }
-            if state.agent_mut(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{target}' inbox limit reached"
-                )));
-            }
-            let key = input.command_id.clone();
-            self.commit(
-                &mut state,
-                Record::InputDelivered {
-                    fingerprint: digest,
-                    input,
-                },
-            )?;
-            state.commands[&key].1.clone()
-        };
+            return Ok(receipt);
+        }
+        if state.agent(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+            return Err(Error::InvalidArgument(format!(
+                "agent '{target}' inbox limit reached"
+            )));
+        }
+        let config = config
+            .map(|config| {
+                let config = self.resolve_defaults(&target, config)?;
+                self.validate_config(&config)?;
+                Ok::<_, Error>(config)
+            })
+            .transpose()?;
+        if input.bootstrap_skill.is_some()
+            && config
+                .as_ref()
+                .unwrap_or(&state.agent(&target)?.snapshot.config)
+                .no_skills
+        {
+            return Err(Error::InvalidArgument(format!(
+                "skills are disabled for agent '{target}'"
+            )));
+        }
+        let key = input.command_id.clone();
+        self.commit(
+            &mut state,
+            Record::InputDelivered {
+                fingerprint: digest,
+                input,
+                config,
+            },
+        )?;
+        let receipt = state.commands[&key].1.clone();
         if wake {
-            self.schedule(&target)?;
+            self.activate_delivery(&mut state, &target, &receipt)?;
         }
         Ok(receipt)
     }
 
-    /// Explicitly authorize advancement of pending or interrupted work.
-    pub fn advance(&self, address: &str) -> Result<()> {
-        {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            let status = state.agent_mut(address)?.snapshot.status;
-            if status == AgentStatus::Stopped && state.agent_mut(address)?.active_epoch.is_some() {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{address}' cleanup is still in progress"
-                )));
-            }
-            if matches!(status, AgentStatus::Stopped | AgentStatus::Interrupted) {
-                self.commit(
-                    &mut state,
-                    Record::AgentResumed {
-                        address: address.into(),
-                    },
-                )?;
-            }
+    fn activate_delivery(&self, state: &mut State, address: &str, receipt: &Receipt) -> Result<()> {
+        if state.input_status(address, &receipt.command_id)? != InputStatus::Queued {
+            return Ok(());
         }
-        self.schedule(address)
+        let agent = state.agent(address)?;
+        if agent.snapshot.status == AgentStatus::Stopped
+            && agent.active_epoch.is_none()
+            && agent.stopped_at.is_none_or(|stop| receipt.event_id > stop)
+            && agent.inbox.iter().any(|entry| {
+                entry.receipt.event_id == receipt.event_id
+                    && matches!(entry.input.source, InputSource::Host(_))
+            })
+        {
+            self.resume(state, address, None)?;
+        }
+        self.schedule_locked(state, address)
     }
 
     /// Return an agent's derived state without affecting execution or observations.
     pub fn agent(&self, address: &str) -> Result<AgentSnapshot> {
-        let state = self.inner.state.lock().unwrap();
-        state
-            .agents
-            .get(address)
-            .map(|agent| agent.snapshot.clone())
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("agent '{address}' does not exist in this session"))
-            })
+        Ok(self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .agent(address)?
+            .snapshot
+            .clone())
     }
 
     /// Return all retained agents in stable address order.
@@ -351,40 +350,31 @@ impl Session {
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
-        let mut state = State::default();
-        let mut cursor = 0;
-        loop {
-            let page = EventStore::read_page(events_path, cursor, 128)?;
-            if page.is_empty() {
-                break;
-            }
-            for event in page {
-                cursor = event.id;
-                if let Some(record) = Record::from_event(&event)? {
-                    state.reduce(event.id, record)?;
-                }
-            }
-        }
+        let (state, _) = load_state(events_path)?;
         Ok(state
             .agents
             .into_values()
-            .map(|mut agent| {
-                if agent.snapshot.status == AgentStatus::Running {
-                    agent.snapshot.status = AgentStatus::Interrupted;
-                }
-                agent.snapshot
-            })
+            .map(|agent| agent.snapshot)
             .collect())
     }
 
     /// Read retained command output by bounded range, search, or incremental cursor.
     pub fn read_output(&self, output_id: &str, request: &OutputRead) -> Result<OutputChunk> {
+        Self::read_saved_output(&self.inner.events_path, output_id, request)
+    }
+
+    /// Read saved output without opening model or runtime resources.
+    pub fn read_saved_output(
+        events_path: &Path,
+        output_id: &str,
+        request: &OutputRead,
+    ) -> Result<OutputChunk> {
         Ok(crate::tool::builtin::run_command::output::read_output(
-            &self
-                .inner
-                .events_path
+            &events_path
                 .parent()
-                .expect("events path has session parent")
+                .ok_or_else(|| {
+                    Error::InvalidArgument("events path has no session directory".into())
+                })?
                 .join("outputs"),
             output_id,
             request.clone(),
@@ -400,94 +390,14 @@ impl Session {
         }
     }
 
+    /// Read a bounded chronological page strictly before a cursor, or the latest page.
+    pub fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<StoredEvent>> {
+        EventStore::read_page_before(&self.inner.events_path, before, limit)
+    }
+
     /// Subscribe with a durable cursor and a bounded transient streaming channel.
     pub fn observe(&self, after: u64) -> SessionObserver {
         SessionObserver::new(self.clone(), after)
-    }
-
-    /// Stop the selected agent, clean up its active work, and retain pending inputs.
-    pub async fn cancel(&self, address: &str) -> Result<()> {
-        let (done, mut failure) = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            let agent = state.agent_mut(address)?;
-            let permission = if agent.active_epoch.is_none() {
-                agent.snapshot.permission.clone()
-            } else {
-                None
-            };
-            let mut failure = permission
-                .as_ref()
-                .and_then(|request| self.cancel_waiting_action(request).err());
-            if let Err(error) = self.commit(
-                &mut state,
-                Record::AgentStopped {
-                    address: address.into(),
-                },
-            ) {
-                failure.get_or_insert(error);
-                state.agent_mut(address)?.snapshot.status = AgentStatus::Stopped;
-            }
-            let epoch = state.agent_mut(address)?.active_epoch;
-            let workers = self.inner.workers.lock().unwrap();
-            let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
-                let _ = worker.cancel.send(true);
-                worker.done.clone()
-            });
-            (done, failure)
-        };
-        if let Some(mut done) = done {
-            loop {
-                if let Some(result) = done.borrow().clone() {
-                    if let Err(error) = result {
-                        failure.get_or_insert(Error::InvalidEventStream(error));
-                    }
-                    break;
-                }
-                done.changed().await.map_err(|_| {
-                    Error::InvalidEventStream(format!(
-                        "agent '{address}' cleanup task ended without a result"
-                    ))
-                })?;
-            }
-        }
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if let Some(message) = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .cleanup_failures
-            .get(address)
-        {
-            return Err(Error::InvalidEventStream(message.clone()));
-        }
-        Ok(())
-    }
-
-    fn cancel_waiting_action(&self, request: &crate::query::PermissionRequest) -> Result<()> {
-        let mut writer = self.inner.writer.lock().unwrap();
-        let writer = writer
-            .as_mut()
-            .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
-        writer.append(EventPayload::ToolResult {
-            turn: request.turn,
-            ts: timestamp()?,
-            conversation: Some(request.conversation.as_str().into()),
-            tool_call_id: request.tool_call_id.clone(),
-            status: "cancelled".into(),
-            summary: "pending action cancelled before dispatch".into(),
-            model_content: "pending action cancelled before dispatch".into(),
-            truncated: false,
-            files_read: Vec::new(),
-            files_changed: Vec::new(),
-            commands_run: Vec::new(),
-            memory_changed: None,
-            structured: Some(serde_json::json!({"kind":"cancelled"})),
-        })?;
-        Ok(())
     }
 
     /// Reply once to the exact pending authorization and resume its bound action.
@@ -498,40 +408,42 @@ impl Session {
         request_id: &str,
         allow: bool,
     ) -> Result<Receipt> {
-        validate_key(command_id)?;
         let digest = receipts::permission_fingerprint(command_id, address, request_id, allow)?;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(command_id, &digest)? {
-                drop(state);
-                self.schedule(address)?;
-                return Ok(receipt);
-            }
-            let agent = state.agent_mut(address)?;
-            if agent.snapshot.status != AgentStatus::Waiting
-                || agent
-                    .snapshot
-                    .permission
-                    .as_ref()
-                    .is_none_or(|pending| pending.id != request_id)
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &digest)? {
+            if state
+                .agent(address)?
+                .permission_reply
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == request_id)
             {
-                return Err(Error::PermissionRequestNotPending(request_id.into()));
+                self.schedule_locked(&mut state, address)?;
             }
-            self.commit(
-                &mut state,
-                Record::PermissionReplied {
-                    command_id: command_id.into(),
-                    fingerprint: digest,
-                    address: address.into(),
-                    request_id: request_id.into(),
-                    allow,
-                },
-            )?;
-            state.commands[command_id].1.clone()
-        };
-        self.schedule(address)?;
-        Ok(receipt)
+            return Ok(receipt);
+        }
+        let agent = state.agent(address)?;
+        if agent.snapshot.status != AgentStatus::Waiting
+            || agent
+                .snapshot
+                .permission
+                .as_ref()
+                .is_none_or(|pending| pending.id != request_id)
+        {
+            return Err(Error::PermissionRequestNotPending(request_id.into()));
+        }
+        self.commit(
+            &mut state,
+            Record::PermissionReplied {
+                command_id: command_id.into(),
+                fingerprint: digest,
+                address: address.into(),
+                request_id: request_id.into(),
+                allow,
+            },
+        )?;
+        self.schedule_locked(&mut state, address)?;
+        Ok(state.commands[command_id].1.clone())
     }
 
     /// Deliver a reply only to the matching still-pending question.
@@ -542,7 +454,6 @@ impl Session {
         request_id: &str,
         text: impl Into<String>,
     ) -> Result<Receipt> {
-        validate_key(command_id)?;
         let text = text.into();
         if text.len() > self.inner.options.limits.max_input_bytes {
             return Err(Error::InvalidArgument(
@@ -550,61 +461,60 @@ impl Session {
             ));
         }
         let digest = receipts::question_fingerprint(command_id, address, request_id, &text)?;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(command_id, &digest)? {
-                drop(state);
-                self.schedule(address)?;
-                return Ok(receipt);
-            }
-            let agent = state.agent_mut(address)?;
-            if agent
-                .snapshot
-                .question
-                .as_ref()
-                .is_none_or(|question| question.id != request_id)
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "question '{request_id}' is no longer pending for agent '{address}'"
-                )));
-            }
-            if agent.inbox.len() >= self.inner.options.limits.max_pending_inputs {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{address}' inbox limit reached"
-                )));
-            }
-            let mut input = Input::new(command_id, address, text);
-            input.correlation = Some(request_id.into());
-            self.commit(
-                &mut state,
-                Record::QuestionReplied {
-                    fingerprint: digest,
-                    request_id: request_id.into(),
-                    input,
-                },
-            )?;
-            state.commands[command_id].1.clone()
-        };
-        self.schedule(address)?;
-        Ok(receipt)
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &digest)? {
+            self.activate_delivery(&mut state, address, &receipt)?;
+            return Ok(receipt);
+        }
+        let agent = state.agent(address)?;
+        if !matches!(
+            agent.snapshot.status,
+            AgentStatus::Running | AgentStatus::Waiting
+        ) || agent
+            .snapshot
+            .question
+            .as_ref()
+            .is_none_or(|question| question.id != request_id)
+        {
+            return Err(Error::QuestionRequestNotPending(request_id.into()));
+        }
+        if agent.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+            return Err(Error::InvalidArgument(format!(
+                "agent '{address}' inbox limit reached"
+            )));
+        }
+        let mut input = Input::new(command_id, address, text);
+        input.correlation = Some(request_id.into());
+        input.timing = InputTiming::NextTurn;
+        self.commit(
+            &mut state,
+            Record::QuestionReplied {
+                fingerprint: digest,
+                request_id: request_id.into(),
+                input,
+            },
+        )?;
+        self.schedule_locked(&mut state, address)?;
+        Ok(state.commands[command_id].1.clone())
     }
 
     pub(crate) fn request_question(
         &self,
         address: &str,
+        execution: u64,
         turn: u64,
         tool_call_id: &str,
         text: &str,
     ) -> Result<QuestionRequest> {
         let mut state = self.inner.state.lock().unwrap();
-        ensure_open(&state)?;
+        let agent = self.executing_agent(&state, address, execution)?;
         if text.is_empty() || text.len() > self.inner.options.limits.max_input_bytes {
             return Err(Error::InvalidArgument(
                 "question must be nonempty and within the input byte limit".into(),
             ));
         }
-        if state.agent_mut(address)?.snapshot.question.is_some() {
+        if agent.snapshot.question.is_some() {
             return Err(Error::InvalidArgument(format!(
                 "agent '{address}' already has a pending question"
             )));
@@ -684,6 +594,7 @@ impl Session {
         }
         state.closed = true;
         if let Some(writer) = self.inner.writer.lock().unwrap().take() {
+            state.closed_cursor = writer.last_id();
             writer.changed().notify_waiters();
         }
         self.inner.lease.lock().unwrap().take();
@@ -723,6 +634,20 @@ fn ensure_open(state: &State) -> Result<()> {
         return Err(Error::InvalidArgument(
             "session resources are closing or closed".into(),
         ));
+    }
+    Ok(())
+}
+
+fn load_state(events_path: &Path) -> Result<(State, u64)> {
+    let mut state = State::default();
+    let cursor = EventStore::visit_path(events_path, |event| reduce_event(&mut state, event))?;
+    state.mark_interrupted();
+    Ok((state, cursor))
+}
+
+fn reduce_event(state: &mut State, event: StoredEvent) -> Result<()> {
+    if let Some(record) = Record::from_event(&event)? {
+        state.reduce(event.id, record)?;
     }
     Ok(())
 }

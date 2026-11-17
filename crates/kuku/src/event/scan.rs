@@ -29,7 +29,7 @@ pub(crate) fn scan_first_user_input(path: &Path) -> Option<String> {
     None
 }
 
-/// Read the first line of events.jsonl as JSON and return the `created_at` field.
+/// Read the session creation timestamp from the first committed line of the journal.
 pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -46,6 +46,13 @@ pub(crate) fn scan_session_meta(path: &Path) -> Option<String> {
                     .get("created_at")
                     .and_then(|t| t.as_str())
                     .map(|s| s.to_string());
+            }
+            if kind == Some("runtime.operation")
+                && value["record"]["operation"] == "session_claimed"
+            {
+                return value["record"]["claim"]["created_at"]
+                    .as_str()
+                    .map(str::to_string);
             }
         }
         break;

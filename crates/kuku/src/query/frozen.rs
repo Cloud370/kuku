@@ -36,6 +36,7 @@ pub(super) struct ContextCommit {
     reason: &'static str,
     context_prepare_us: u64,
     events_read: u64,
+    input_skills: Vec<String>,
 }
 
 pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
@@ -163,6 +164,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             }
         }
     }
+    let input_skills = append_input_skills(pending, &mut messages)?;
     append_dynamic(
         pending,
         &mut messages,
@@ -229,6 +231,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         },
         context_prepare_us: micros(started),
         events_read: cursor.events_read - read_before,
+        input_skills,
     };
     pending.context_cursor = Some(cursor);
     Ok(PreparedContext { request, commit })
@@ -281,7 +284,8 @@ pub(super) fn record_prepared(
         "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
         "max_output_tokens":prepared.body.get("max_output_tokens").or_else(|| prepared.body.get("max_tokens")).or_else(|| prepared.body.get("max_completion_tokens")),"temperature":prepared.body.get("temperature"),
         "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":serde_json::to_vec(&prepared.body)?.len(),
-        "body_hash":body_hash,"context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read})))?;
+        "body_hash":body_hash,"context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
+        "input_skills":context.input_skills})))?;
     cursor.commit(context.segment, context.messages, context.source_head)
 }
 
@@ -428,6 +432,55 @@ fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, keep: usize) 
         .take(keep)
         .collect::<BTreeSet<_>>();
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
+}
+
+fn append_input_skills(
+    pending: &mut PendingRun,
+    messages: &mut Vec<AdmittedMessage>,
+) -> Result<Vec<String>> {
+    let mut names = std::mem::take(&mut pending.query.input_skills);
+    if names.is_empty() {
+        return Ok(names);
+    }
+    if pending.query.disable_skills {
+        return Err(Error::InvalidArgument(
+            "selected input skill cannot load while skills are disabled".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    let discovered = names
+        .iter()
+        .any(|name| {
+            pending
+                .skill_registry
+                .as_ref()
+                .is_none_or(|registry| registry.get(name).is_none())
+        })
+        .then(|| {
+            crate::skill::session::build_registry_snapshot_for_host(
+                &pending.kuku_home,
+                &pending.workspace,
+                &pending.config,
+            )
+        })
+        .transpose()?;
+    for name in &names {
+        let definition = pending
+            .skill_registry
+            .as_ref()
+            .and_then(|registry| registry.get(name))
+            .or_else(|| discovered.as_ref().and_then(|registry| registry.get(name)))
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!("selected input skill '{name}' was not found"))
+            })?;
+        messages.push(AdmittedMessage {
+            turn: pending.turn,
+            origin: MessageOrigin::Runtime,
+            message: CanonicalMessage::user_text(definition.instructions.clone()),
+        });
+    }
+    Ok(names)
 }
 
 fn append_dynamic(

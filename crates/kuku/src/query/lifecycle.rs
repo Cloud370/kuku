@@ -43,6 +43,7 @@ struct ToolLifecycle {
     permission_request: Option<PermissionRequest>,
     permission_allowed: bool,
     permission_denied: bool,
+    was_dispatched: bool,
     has_result: bool,
 }
 
@@ -84,6 +85,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                     permission_request: None,
                     permission_allowed: false,
                     permission_denied: false,
+                    was_dispatched: false,
                     has_result: false,
                 });
             }
@@ -138,6 +140,15 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             } => {
                 if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
                     lifecycle.has_result = true;
+                }
+            }
+            EventPayload::Unknown(value) if value["kind"] == "runtime.tool_dispatched" => {
+                if let (Some(id), Some(turn)) =
+                    (value["tool_call_id"].as_str(), value["turn"].as_u64())
+                {
+                    if let Some(lifecycle) = matching_tool_mut(&mut tools, id, Some(turn)) {
+                        lifecycle.was_dispatched = true;
+                    }
                 }
             }
             EventPayload::SessionCreated { .. }
@@ -204,7 +215,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 kind: OpenToolKind::DeniedWithoutResult,
                 turn: lifecycle.turn,
             });
-        } else if lifecycle.permission_allowed {
+        } else if lifecycle.permission_allowed || lifecycle.was_dispatched {
             open_tools.push(OpenToolLifecycle {
                 conversation: lifecycle
                     .conversation

@@ -16,6 +16,7 @@ use super::types::{EventPayload, StoredEvent};
 
 mod codec;
 mod reader;
+mod reverse;
 
 use codec::serialize_record;
 use reader::EventReader;
@@ -215,6 +216,34 @@ impl Writer {
         let file = file.take(self.committed_len - start);
         read_page_from(file, path, start, after, limit)
     }
+
+    fn read_before(
+        &mut self,
+        path: &Path,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>> {
+        self.ensure_healthy(path)?;
+        let checkpoint = before.and_then(|id| {
+            self.index
+                .get(self.index.partition_point(|entry| entry.id < id))
+        });
+        let end = checkpoint.map_or(self.committed_len, |entry| entry.offset);
+        reverse::read_before(
+            &mut self.journal.as_mut().unwrap().file,
+            path,
+            end,
+            before,
+            limit,
+        )
+    }
+
+    fn visit(&mut self, path: &Path, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
+        self.ensure_healthy(path)?;
+        let file = &mut self.journal.as_mut().unwrap().file;
+        file.seek(SeekFrom::Start(0))?;
+        visit_events(file.take(self.committed_len), path, visit)
+    }
 }
 
 /// Append-only event storage whose clones share one durable writer for a path.
@@ -315,6 +344,43 @@ impl EventStore {
         read_page_from(&journal.file, &path, 0, after, limit)
     }
 
+    /// Read a bounded chronological page before a cursor, or the latest page when omitted.
+    pub fn read_page_before(
+        path: impl AsRef<Path>,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(path) = existing_path(path.as_ref())? else {
+            return Ok(Vec::new());
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner
+                .writer
+                .lock()
+                .unwrap()
+                .read_before(&path, before, limit);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let mut journal = LockedJournal::reader(&path)?;
+        let mut end = journal.file.metadata()?.len();
+        if let Some(before) = before {
+            end = reverse::find_page_end(&mut journal.file, &path, end, before)?;
+        }
+        reverse::read_before(&mut journal.file, &path, end, before, limit)
+    }
+
+    /// Read the last committed event ID without opening or repairing the writer.
+    pub fn read_head(path: impl AsRef<Path>) -> Result<u64> {
+        Ok(Self::read_page_before(path, None, 1)?
+            .first()
+            .map_or(0, |event| event.id))
+    }
+
     /// Return the last durably committed event ID, or zero for an empty store.
     pub fn last_id(&self) -> u64 {
         self.inner.writer.lock().unwrap().last_id
@@ -335,6 +401,31 @@ impl EventStore {
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
         read_all(&journal.file, &path)
+    }
+
+    pub(crate) fn visit(&self, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
+        self.inner
+            .writer
+            .lock()
+            .unwrap()
+            .visit(&self.inner.path, visit)
+    }
+
+    pub(crate) fn visit_path(
+        path: &Path,
+        visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<u64> {
+        let Some(path) = existing_path(path)? else {
+            return Ok(0);
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner.writer.lock().unwrap().visit(&path, visit);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let journal = LockedJournal::reader(&path)?;
+        visit_events(&journal.file, &path, visit)
     }
 
     pub(crate) fn next_id(&self) -> u64 {
@@ -371,6 +462,14 @@ fn canonical_store_path(path: &Path) -> Result<PathBuf> {
             let parent = path.parent().unwrap();
             Ok(fs::canonicalize(parent)?.join(path.file_name().unwrap()))
         }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn existing_path(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -420,6 +519,20 @@ fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
         events.push(record.event);
     }
     Ok(events)
+}
+
+fn visit_events(
+    file: impl Read,
+    path: &Path,
+    mut visit: impl FnMut(StoredEvent) -> Result<()>,
+) -> Result<u64> {
+    let mut reader = EventReader::new(BufReader::new(file), path, 0);
+    let mut head = 0;
+    while let Some(record) = reader.next()? {
+        head = record.event.id;
+        visit(record.event)?;
+    }
+    Ok(head)
 }
 
 fn read_page_from(

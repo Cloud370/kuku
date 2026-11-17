@@ -1,12 +1,35 @@
 use std::collections::VecDeque;
+use std::path::Path;
 
 use tokio::sync::broadcast;
 
-use crate::event::StoredEvent;
+use crate::event::{EventStore, StoredEvent};
 use crate::query::UiEvent;
 use crate::Result;
 
-use super::Session;
+use super::record::validate_key;
+use super::{load_state, AgentSnapshot, AgentView, InputStatus, PendingInput, Receipt, Session};
+
+#[derive(Debug, Clone)]
+pub(super) struct LiveObservation {
+    agent: String,
+    execution_id: u64,
+    turn: u64,
+    after: u64,
+    event: UiEvent,
+}
+
+impl From<LiveObservation> for Observation {
+    fn from(live: LiveObservation) -> Self {
+        Self::Live {
+            agent: live.agent,
+            execution_id: live.execution_id,
+            turn: live.turn,
+            after: live.after,
+            event: Box::new(live.event),
+        }
+    }
+}
 
 /// A committed fact or a bounded transient update from the same runtime.
 #[derive(Debug, Clone)]
@@ -14,7 +37,18 @@ pub enum Observation {
     /// A durable event whose identity is a reconnectable cursor.
     Committed(Box<StoredEvent>),
     /// A transient streaming update that does not advance the durable cursor.
-    Live { agent: String, event: Box<UiEvent> },
+    Live {
+        /// Stable address that emitted this update.
+        agent: String,
+        /// Durable identity of the execution that emitted this update.
+        execution_id: u64,
+        /// Turn that emitted this update.
+        turn: u64,
+        /// Latest committed cursor when this update was published.
+        after: u64,
+        /// Non-durable runtime update.
+        event: Box<UiEvent>,
+    },
     /// Slow consumption dropped transient updates while durable facts remain available.
     Lagged { skipped: u64 },
 }
@@ -24,7 +58,99 @@ pub struct SessionObserver {
     session: Session,
     cursor: u64,
     page: VecDeque<StoredEvent>,
-    live: broadcast::Receiver<(String, UiEvent)>,
+    live: broadcast::Receiver<LiveObservation>,
+}
+
+impl Session {
+    /// Return a selected agent's state, queued deliveries, and the matching journal cursor.
+    pub fn agent_view(&self, address: &str) -> Result<AgentView> {
+        let state = self.inner.state.lock().unwrap();
+        let cursor = if state.closed {
+            state.closed_cursor
+        } else {
+            self.current_cursor()?
+        };
+        state.view(address, cursor)
+    }
+
+    /// Return a selected agent and the latest durable cursor in one observation.
+    pub fn agent_with_cursor(&self, address: &str) -> Result<(AgentSnapshot, u64)> {
+        let state = self.inner.state.lock().unwrap();
+        let cursor = if state.closed {
+            state.closed_cursor
+        } else {
+            self.current_cursor()?
+        };
+        Ok((state.agent(address)?.snapshot.clone(), cursor))
+    }
+
+    /// Read a closed session's selected snapshot and pending inputs without opening runtime resources.
+    pub fn read_view(events_path: &Path, address: &str) -> Result<AgentView> {
+        let (state, cursor) = load_state(events_path)?;
+        state.view(address, cursor)
+    }
+
+    /// Read an original command receipt and current input state from a closed session.
+    pub fn read_receipt(
+        events_path: &Path,
+        command_id: &str,
+    ) -> Result<Option<(Receipt, Option<InputStatus>)>> {
+        validate_key(command_id)?;
+        let (state, _) = load_state(events_path)?;
+        Ok(state
+            .commands
+            .get(command_id)
+            .map(|(_, receipt)| (receipt.clone(), state.deliveries.get(command_id).copied())))
+    }
+
+    /// List retractable deliveries awaiting acceptance in receipt order.
+    pub fn pending_inputs(&self, address: &str) -> Result<Vec<PendingInput>> {
+        self.inner.state.lock().unwrap().pending_inputs(address)
+    }
+
+    /// Return the current durable state of a particular input delivery.
+    pub fn input_status(&self, address: &str, command_id: &str) -> Result<InputStatus> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .input_status(address, command_id)
+    }
+
+    /// List executions with an owned worker, including those still in cleanup.
+    pub fn active_executions(&self) -> Vec<(String, u64)> {
+        let state = self.inner.state.lock().unwrap();
+        state
+            .agents
+            .values()
+            .filter_map(|agent| {
+                agent
+                    .active_epoch
+                    .and(agent.snapshot.execution_id)
+                    .map(|execution| (agent.snapshot.address.clone(), execution))
+            })
+            .collect()
+    }
+
+    pub(super) fn publish(&self, address: &str, execution_id: u64, turn: u64, event: UiEvent) {
+        if let Ok(after) = self.current_cursor() {
+            let _ = self.inner.live.send(LiveObservation {
+                agent: address.into(),
+                execution_id,
+                turn,
+                after,
+                event,
+            });
+        }
+    }
+
+    fn current_cursor(&self) -> Result<u64> {
+        let writer = self.inner.writer.lock().unwrap();
+        match writer.as_ref() {
+            Some(writer) => Ok(writer.last_id()),
+            None => EventStore::read_head(self.events_path()),
+        }
+    }
 }
 
 impl SessionObserver {
@@ -43,10 +169,7 @@ impl SessionObserver {
             return Ok(Some(Observation::Committed(Box::new(event))));
         }
         match self.live.try_recv() {
-            Ok((agent, event)) => Ok(Some(Observation::Live {
-                agent,
-                event: Box::new(event),
-            })),
+            Ok(live) => Ok(Some(live.into())),
             Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                 Ok(Some(Observation::Lagged { skipped }))
             }
@@ -86,7 +209,7 @@ impl SessionObserver {
             tokio::select! {
                 _ = &mut notified => {}
                 result = self.live.recv() => match result {
-                    Ok((agent, event)) => return Ok(Some(Observation::Live { agent, event: Box::new(event) })),
+                    Ok(live) => return Ok(Some(live.into())),
                     Err(broadcast::error::RecvError::Lagged(skipped)) => return Ok(Some(Observation::Lagged { skipped })),
                     Err(broadcast::error::RecvError::Closed) => return Ok(None),
                 }

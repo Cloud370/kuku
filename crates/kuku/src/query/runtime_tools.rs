@@ -192,10 +192,10 @@ pub(super) async fn dispatch(
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
     }
-    mark_dispatched(&pending, &queued)?;
     if super::helpers::is_inline_skill_tool(&queued.tool_call.name)
         || is_inline(&queued.tool_call.name)
     {
+        mark_dispatched(&pending, &queued)?;
         pending.record_tool_call(&queued.tool_call.name);
         let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
         return finish_inline_event(pending, queued, result);
@@ -206,6 +206,7 @@ pub(super) async fn dispatch(
         .get(&queued.tool_call.name)
         .cloned()
     {
+        mark_dispatched(&pending, &queued)?;
         let definition = find_tool_definition(&pending, &queued.tool_call.name)
             .expect("authorized tool definition exists");
         let action = crate::permission::ToolAuthorization {
@@ -241,6 +242,7 @@ pub(super) async fn dispatch(
         pending.conversation.as_str(),
         pending.query.runtime_limits.max_request_bytes,
     )?;
+    mark_dispatched(&pending, &queued)?;
     let (slot, kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         output: Some(output_spec(&pending, &queued.tool_call.id)),
         tool_name: queued.tool_call.name.clone(),
@@ -422,16 +424,24 @@ pub(super) fn execute(
                     crate::Activation::Wake
                 },
                 correlation: Some(call.id.clone()),
+                timing: crate::InputTiming::NextStep,
+                bootstrap_skill: None,
             };
             serde_json::to_value(session.send(input)?)?
         }
         "list_agents" => serde_json::to_value(session.agents())?,
-        "ask_user" => serde_json::to_value(session.request_question(
-            pending.conversation.as_str(),
-            pending.turn,
-            &call.id,
-            required(&call.args, "question")?,
-        )?)?,
+        "ask_user" => serde_json::to_value(
+            session.request_question(
+                pending.conversation.as_str(),
+                pending
+                    .query
+                    .runtime_execution
+                    .expect("session runtime owns this execution"),
+                pending.turn,
+                &call.id,
+                required(&call.args, "question")?,
+            )?,
+        )?,
         _ => {
             return Err(Error::InvalidArgument(format!(
                 "unknown session operation {}",
@@ -516,8 +526,16 @@ fn prepared_record(pending: &PendingRun, id: &str) -> Result<Option<serde_json::
 }
 
 fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {
-    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.tool_dispatched","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"tool_call_id":queued.tool_call.id})))?;
-    Ok(())
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("session runtime owns this execution");
+    super::provider::runtime_session(pending, execution)?.mark_tool_dispatch(
+        pending.conversation.as_str(),
+        execution,
+        pending.turn,
+        &queued.tool_call.id,
+    )
 }
 
 fn finish_inline(

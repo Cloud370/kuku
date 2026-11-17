@@ -1,0 +1,337 @@
+use std::collections::BTreeSet;
+
+use crate::event::{EventPayload, EventStore};
+use crate::{Error, Result};
+
+use super::record::{
+    fingerprint, timestamp, validate_address, validate_key, Command, Record, State,
+};
+use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
+
+impl Session {
+    /// Explicitly authorize advancement of pending or interrupted work.
+    pub fn advance(&self, address: &str) -> Result<()> {
+        self.advance_with_command(address, None).map(|_| ())
+    }
+
+    /// Authorize advancement once for a caller-selected command identity.
+    pub fn advance_command(&self, command_id: &str, address: &str) -> Result<Receipt> {
+        let command = command(command_id, address, &("advance", address))?;
+        let receipt = self.advance_with_command(address, Some(command))?;
+        Ok(receipt.expect("advancement commits its caller-selected command"))
+    }
+
+    /// Stop the selected agent, clean up its active work, and retain pending inputs.
+    pub async fn cancel(&self, address: &str) -> Result<()> {
+        self.stop(address, None).await.map(|_| ())
+    }
+
+    /// Stop only the observed execution and await cleanup of its owned work.
+    pub async fn cancel_execution(
+        &self,
+        command_id: &str,
+        address: &str,
+        execution_id: u64,
+    ) -> Result<Receipt> {
+        let command = command(
+            command_id,
+            address,
+            &("cancel_execution", address, execution_id),
+        )?;
+        let receipt = self.stop(address, Some((command, execution_id))).await?;
+        Ok(receipt.expect("execution cancellation commits its caller-selected command"))
+    }
+
+    /// Withdraw a still-queued input or return its durable state at the time of the command.
+    pub fn withdraw_input(
+        &self,
+        command_id: &str,
+        address: &str,
+        input_command_id: &str,
+    ) -> Result<Withdrawal> {
+        validate_key(input_command_id)?;
+        let command = command(
+            command_id,
+            address,
+            &("withdraw_input", address, input_command_id),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &command.fingerprint)? {
+            return Ok(Withdrawal {
+                receipt,
+                status: state.withdrawals[command_id],
+            });
+        }
+        let status = match state.input_status(address, input_command_id)? {
+            InputStatus::Queued | InputStatus::Withdrawn => InputStatus::Withdrawn,
+            InputStatus::Accepted => InputStatus::Accepted,
+        };
+        self.commit(
+            &mut state,
+            Record::InputWithdrawal {
+                command,
+                address: address.into(),
+                input_command_id: input_command_id.into(),
+                status,
+            },
+        )?;
+        Ok(Withdrawal {
+            receipt: state.commands[command_id].1.clone(),
+            status,
+        })
+    }
+
+    pub(super) fn resume(
+        &self,
+        state: &mut State,
+        address: &str,
+        command: Option<Command>,
+    ) -> Result<()> {
+        let agent = state.agent(address)?;
+        let paused = matches!(
+            agent.snapshot.status,
+            AgentStatus::Stopped | AgentStatus::Interrupted
+        );
+        if paused && agent.active_epoch.is_some() {
+            return Err(Error::InvalidArgument(format!(
+                "agent '{address}' cleanup is still in progress"
+            )));
+        }
+        if paused || command.is_some() {
+            self.commit(
+                state,
+                Record::AgentResumed {
+                    address: address.into(),
+                    command,
+                    restore: paused,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn settle_cancelled_turn(&self, address: &str, turn: u64) -> Result<()> {
+        let mut cursor = turn;
+        let mut open = BTreeSet::new();
+        let mut dispatched = BTreeSet::new();
+        let mut started = false;
+        let mut terminal = false;
+        loop {
+            let page = EventStore::read_page(self.events_path(), cursor, 128)?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                cursor = event.id;
+                match event.payload {
+                    EventPayload::ToolCall {
+                        turn: target,
+                        conversation,
+                        tool_call_id,
+                        ..
+                    } if target == turn
+                        && conversation.as_deref().is_none_or(|agent| agent == address) =>
+                    {
+                        open.insert(tool_call_id);
+                    }
+                    EventPayload::ToolResult {
+                        turn: target,
+                        conversation,
+                        tool_call_id,
+                        ..
+                    } if target == turn
+                        && conversation.as_deref().is_none_or(|agent| agent == address) =>
+                    {
+                        open.remove(&tool_call_id);
+                    }
+                    EventPayload::Unknown(value)
+                        if value["kind"] == "runtime.tool_dispatched"
+                            && value["turn"] == turn
+                            && value["agent"] == address =>
+                    {
+                        if let Some(id) = value["tool_call_id"].as_str() {
+                            dispatched.insert(id.to_owned());
+                        }
+                    }
+                    EventPayload::TurnStarted {
+                        conversation,
+                        turn: target,
+                        ..
+                    } if conversation == address && target == turn => started = true,
+                    EventPayload::TurnCompleted {
+                        conversation,
+                        turn: target,
+                        ..
+                    }
+                    | EventPayload::TurnCancelled {
+                        conversation,
+                        turn: target,
+                        ..
+                    }
+                    | EventPayload::TurnInterrupted {
+                        conversation,
+                        turn: target,
+                        ..
+                    } if conversation == address && target == turn => terminal = true,
+                    _ => {}
+                }
+            }
+        }
+        let mut writer = EventStore::open(self.events_path())?;
+        for id in open.difference(&dispatched) {
+            writer.append(cancelled_tool_result(address, turn, id)?)?;
+        }
+        if let Some(id) = open.intersection(&dispatched).next() {
+            return Err(Error::InterruptedOpenTool(format!("agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation")));
+        }
+        if started && !terminal {
+            writer.append(EventPayload::TurnCancelled {
+                turn,
+                ts: timestamp()?,
+                conversation: address.into(),
+                reason: "user_cancelled".into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn advance_with_command(
+        &self,
+        address: &str,
+        command: Option<Command>,
+    ) -> Result<Option<Receipt>> {
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(command) = &command {
+            if let Some(receipt) = state.retry(&command.command_id, &command.fingerprint)? {
+                return Ok(Some(receipt));
+            }
+        }
+        let key = command.as_ref().map(|command| command.command_id.clone());
+        self.resume(&mut state, address, command)?;
+        self.schedule_locked(&mut state, address)?;
+        Ok(key.map(|key| state.commands[&key].1.clone()))
+    }
+
+    async fn stop(
+        &self,
+        address: &str,
+        expected: Option<(Command, u64)>,
+    ) -> Result<Option<Receipt>> {
+        let (done, failure, receipt) = {
+            let mut state = self.inner.state.lock().unwrap();
+            ensure_open(&state)?;
+            if let Some((command, execution)) = &expected {
+                if let Some(receipt) = state.retry(&command.command_id, &command.fingerprint)? {
+                    return Ok(Some(receipt));
+                }
+                let agent = state.agent(address)?;
+                if agent.snapshot.execution_id != Some(*execution)
+                    || agent.snapshot.status == AgentStatus::Stopped
+                {
+                    return Err(Error::ExecutionNotActive(*execution));
+                }
+            }
+            let agent = state.agent(address)?;
+            let epoch = agent.active_epoch;
+            let mut failure = if epoch.is_none() {
+                agent
+                    .snapshot
+                    .permission
+                    .as_ref()
+                    .and_then(|request| self.settle_cancelled_turn(address, request.turn).err())
+            } else {
+                None
+            };
+            let command = expected.map(|(command, _)| command);
+            let key = command.as_ref().map(|command| command.command_id.clone());
+            if let Err(error) = self.commit(
+                &mut state,
+                Record::AgentStopped {
+                    address: address.into(),
+                    command,
+                    cleanup_pending: epoch.is_some(),
+                },
+            ) {
+                failure.get_or_insert(error);
+                state.agent_mut(address)?.snapshot.status = AgentStatus::Stopped;
+            }
+            let workers = self.inner.workers.lock().unwrap();
+            let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
+                let _ = worker.cancel.send(true);
+                worker.done.clone()
+            });
+            let receipt = key
+                .and_then(|key| state.commands.get(&key))
+                .map(|(_, receipt)| receipt.clone());
+            (done, failure, receipt)
+        };
+        let cleanup = self.await_cleanup(address, done).await;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        cleanup?;
+        Ok(receipt)
+    }
+
+    async fn await_cleanup(
+        &self,
+        address: &str,
+        done: Option<tokio::sync::watch::Receiver<super::CleanupOutcome>>,
+    ) -> Result<()> {
+        if let Some(mut done) = done {
+            loop {
+                if let Some(result) = done.borrow().clone() {
+                    result.map_err(Error::InvalidEventStream)?;
+                    break;
+                }
+                done.changed().await.map_err(|_| {
+                    Error::InvalidEventStream(format!(
+                        "agent '{address}' cleanup task ended without a result"
+                    ))
+                })?;
+            }
+        }
+        if let Some(message) = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .cleanup_failures
+            .get(address)
+        {
+            return Err(Error::InvalidEventStream(message.clone()));
+        }
+        Ok(())
+    }
+}
+
+fn cancelled_tool_result(address: &str, turn: u64, id: &str) -> Result<EventPayload> {
+    let result =
+        crate::tool::ToolResultEnvelope::cancelled("pending action cancelled before dispatch");
+    Ok(EventPayload::ToolResult {
+        turn,
+        ts: timestamp()?,
+        conversation: Some(address.into()),
+        tool_call_id: id.into(),
+        status: result.status,
+        summary: result.summary,
+        model_content: result.model_content,
+        truncated: result.truncated,
+        files_read: Vec::new(),
+        files_changed: Vec::new(),
+        commands_run: Vec::new(),
+        memory_changed: None,
+        structured: result.structured,
+    })
+}
+
+fn command(command_id: &str, address: &str, intent: &impl serde::Serialize) -> Result<Command> {
+    validate_key(command_id)?;
+    validate_address(address)?;
+    Ok(Command {
+        command_id: command_id.into(),
+        fingerprint: fingerprint(intent)?,
+    })
+}

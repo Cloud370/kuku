@@ -34,6 +34,7 @@ impl StreamMetrics {
             Observation::Live {
                 agent: source,
                 event,
+                ..
             } if source == agent => match *event {
                 UiEvent::TextDelta { text } => {
                     self.model_text_chunks += 1;
@@ -104,6 +105,7 @@ async fn execute() -> Result<bool, AnyError> {
     options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
     options.limits.max_steps_per_turn = max_steps;
     options.limits.max_requests_per_open = Some(max_requests);
+    options.limits.retry_transient_provider_errors = false;
     options.limits.max_output_tokens_per_request = Some(max_output_tokens);
     options.limits.max_agents = max_agents;
     options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;

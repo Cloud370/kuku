@@ -92,6 +92,16 @@ pub struct OutputSegment {
     pub bytes: usize,
     /// The segment decoded as UTF-8 with replacement for invalid bytes.
     pub text: String,
+    /// Original bytes when a segment could not be decoded as intact UTF-8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_bytes: Option<Vec<u8>>,
+}
+
+impl OutputSegment {
+    /// Return the original bytes represented by this segment.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.raw_bytes.as_deref().unwrap_or(self.text.as_bytes())
+    }
 }
 
 /// Returns a bounded output view with continuation and capture status.
@@ -465,12 +475,15 @@ fn render_chunk(
         }
         if ranges.peek().is_some_and(|range| range.start < end) {
             let bytes = &window.bytes[start..end];
-            lossy_utf8 |= std::str::from_utf8(bytes).is_err();
+            let text = String::from_utf8_lossy(bytes);
+            let raw_bytes = matches!(&text, std::borrow::Cow::Owned(_)).then(|| bytes.to_vec());
+            lossy_utf8 |= raw_bytes.is_some();
             segments.push(OutputSegment {
                 stream,
                 offset,
                 bytes: bytes.len(),
-                text: String::from_utf8_lossy(bytes).into_owned(),
+                text: text.into_owned(),
+                raw_bytes,
             });
         }
     }
@@ -674,13 +687,26 @@ mod tests {
             .write(OutputStream::Stdout, &bytes[2..])
             .await
             .unwrap();
+        let invalid = b"\xff\0\r";
+        writer.write(OutputStream::Stderr, invalid).await.unwrap();
         writer.finish(false).await.unwrap();
-        let chunk = read_output(dir.path(), "unicode", request(0, 100)).unwrap();
+        let chunk = read_output(dir.path(), "unicode", request(0, bytes.len())).unwrap();
         assert_eq!("你好", text(&chunk));
         assert!(!chunk.lossy_utf8);
+        assert!(chunk.segments[0].raw_bytes.is_none());
         let partial = read_output(dir.path(), "unicode", request(1, 2)).unwrap();
         assert!(partial.lossy_utf8);
         assert_eq!(3, partial.next_offset);
+        assert_eq!(&bytes[1..3], partial.segments[0].as_bytes());
+        let rest = read_output(dir.path(), "unicode", request(partial.next_offset, 100)).unwrap();
+        assert_eq!(&bytes[3..], rest.segments[0].as_bytes());
+        assert_eq!(invalid.as_slice(), rest.segments[1].as_bytes());
+        let wire = serde_json::to_value(&rest).unwrap();
+        assert!(wire["segments"][0].get("raw_bytes").is_none());
+        assert_eq!(
+            serde_json::json!([255, 0, 13]),
+            wire["segments"][1]["raw_bytes"]
+        );
     }
 
     #[tokio::test]

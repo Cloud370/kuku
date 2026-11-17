@@ -5,16 +5,14 @@ use tokio::sync::watch;
 use crate::query::{PermissionChoice, UiEvent};
 use crate::{Error, Result};
 
-use super::record::Record;
-use super::{
-    ensure_open, Activation, AgentConfig, AgentStatus, InputSource, Session, UsageTotals, Worker,
-};
+use super::boundary::TurnWork;
+use super::record::{Record, State};
+use super::{ensure_open, Activation, AgentStatus, InputSource, Session, UsageTotals, Worker};
 
 impl Session {
-    pub(super) fn schedule(&self, address: &str) -> Result<()> {
-        let mut state = self.inner.state.lock().unwrap();
-        ensure_open(&state)?;
-        let agent = state.agent_mut(address)?;
+    pub(super) fn schedule_locked(&self, state: &mut State, address: &str) -> Result<()> {
+        ensure_open(state)?;
+        let agent = state.agent(address)?;
         if matches!(
             agent.snapshot.status,
             AgentStatus::Stopped | AgentStatus::Interrupted | AgentStatus::Waiting
@@ -27,21 +25,24 @@ impl Session {
         if agent.inbox.is_empty() && agent.permission_reply.is_none() {
             return Ok(());
         }
-        state.next_epoch = state
-            .next_epoch
-            .checked_add(1)
-            .ok_or_else(|| Error::InvalidEventStream("execution epoch overflow".into()))?;
-        let epoch = state.next_epoch;
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            Error::InvalidArgument("activating a session requires a Tokio runtime".into())
+        })?;
+        let epoch = self.commit(
+            state,
+            Record::ExecutionStarted {
+                address: address.into(),
+            },
+        )?;
         let agent = state.agent_mut(address)?;
         agent.active_epoch = Some(epoch);
-        agent.snapshot.status = AgentStatus::Running;
         let mut workers = self.inner.workers.lock().unwrap();
         workers.retain(|_, worker| !worker.join.is_finished());
         let (cancel, receive_cancel) = watch::channel(false);
         let (complete, done) = watch::channel(None);
         let session = self.clone();
         let target = address.to_string();
-        let join = tokio::spawn(async move {
+        let join = runtime.spawn(async move {
             let mut result = session.drive_agent(&target, epoch, receive_cancel).await;
             if let Err(error) = &result {
                 if let Err(commit_error) = session.settle_failure(&target, epoch, error) {
@@ -76,62 +77,18 @@ impl Session {
                 self.settle_cancelled(address, epoch)?;
                 return Ok(());
             }
-            let (config, inputs, reply) = {
-                let mut state = self.inner.state.lock().unwrap();
-                let agent = state.agent_mut(address)?;
-                if agent.active_epoch != Some(epoch) {
-                    return Ok(());
-                }
-                let reply = agent.permission_reply.clone();
-                let config = agent.snapshot.config.clone();
-                let inputs = if reply.is_some() {
-                    agent.accepted.clone()
-                } else {
-                    let mut bytes = 0;
-                    let source = agent.inbox.front().map(|input| &input.source);
-                    agent
-                        .inbox
-                        .iter()
-                        .take_while(|input| {
-                            bytes += input.text.len() + 2;
-                            Some(&input.source) == source
-                                && bytes <= self.inner.options.limits.max_input_bytes + 2
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                };
-                if inputs.is_empty() && reply.is_none() {
-                    agent.snapshot.status = AgentStatus::Idle;
-                    agent.active_epoch = None;
-                    return Ok(());
-                }
-                if reply.is_none() {
-                    self.commit(
-                        &mut state,
-                        Record::InputsAccepted {
-                            address: address.into(),
-                            input_ids: inputs
-                                .iter()
-                                .map(|input| input.command_id.clone())
-                                .collect(),
-                        },
-                    )?;
-                }
-                (config, inputs, reply)
+            let Some(mut work) = self.accept_turn(address, epoch)? else {
+                self.settle_cancelled(address, epoch)?;
+                return Ok(());
             };
-            let prompt = inputs
-                .iter()
-                .map(|input| input.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let source = inputs
-                .first()
-                .map(|input| input.source.clone())
-                .unwrap_or_else(|| InputSource::Host("local".into()));
-            let query = self.build_query(address, &config, prompt, source)?;
+            let execution = work.execution;
+            let turn = work.turn;
+            let reply = work.reply.take();
+            let query = self.build_query(address, work)?;
             let mut run = query.start_nested().await?;
             if *cancel.borrow() || self.inner.state.lock().unwrap().closing {
-                self.cleanup_failed_run(address, &mut run).await;
+                self.cleanup_failed_run(address, execution, turn, &mut run)
+                    .await;
                 self.settle_cancelled(address, epoch)?;
                 return Ok(());
             }
@@ -167,7 +124,11 @@ impl Session {
                 let event = match event {
                     Ok(event) => event,
                     Err(error) => {
-                        self.cleanup_failed_run(address, &mut run).await;
+                        self.cleanup_failed_run(address, execution, turn, &mut run)
+                            .await;
+                        if matches!(error, Error::ExecutionNotActive(id) if id == execution) {
+                            return self.settle_cancelled(address, epoch);
+                        }
                         return Err(error);
                     }
                 };
@@ -187,7 +148,7 @@ impl Session {
                     event,
                     UiEvent::Done { .. } | UiEvent::PermissionRequested { .. }
                 ) {
-                    let _ = self.inner.live.send((address.into(), event.clone()));
+                    self.publish(address, execution, turn, event.clone());
                 }
                 let output_failure = faults
                     .output_persistence_failed
@@ -209,7 +170,8 @@ impl Session {
                     continue;
                 }
                 if let Some(error) = output_failure {
-                    self.cleanup_failed_run(address, &mut run).await;
+                    self.cleanup_failed_run(address, execution, turn, &mut run)
+                        .await;
                     return Err(error);
                 }
                 match event {
@@ -219,14 +181,17 @@ impl Session {
                         if state.agent_mut(address)?.active_epoch != Some(epoch) {
                             return Ok(());
                         }
+                        cancelling |= state.agents[address].snapshot.status == AgentStatus::Stopped;
+                        if cancelling || state.closing {
+                            drop(state);
+                            return self.settle_cancelled(address, epoch);
+                        }
                         let waiting = state.agents[address].snapshot.question.is_some();
                         self.commit(
                             &mut state,
                             Record::TurnSettled {
                                 address: address.into(),
-                                status: if cancelling {
-                                    AgentStatus::Stopped
-                                } else if waiting {
+                                status: if waiting {
                                     AgentStatus::Waiting
                                 } else {
                                     AgentStatus::Idle
@@ -237,26 +202,31 @@ impl Session {
                                 usage,
                             },
                         )?;
-                        let _ = self.inner.live.send((
-                            address.into(),
+                        self.publish(
+                            address,
+                            execution,
+                            turn,
                             UiEvent::Done {
                                 output,
                                 usage: None,
-                                turn: state.agents[address].snapshot.turn.unwrap_or(0),
+                                turn,
                             },
-                        ));
-                        if cancelling || state.closing || waiting {
-                            state.agent_mut(address)?.active_epoch = None;
-                            return Ok(());
-                        }
+                        );
                         let pending = &state.agents[address].inbox;
-                        if !pending
-                            .iter()
-                            .any(|input| input.activation == Activation::Wake)
+                        if waiting
+                            || !pending
+                                .iter()
+                                .any(|entry| entry.input.activation == Activation::Wake)
                         {
                             state.agent_mut(address)?.active_epoch = None;
                             return Ok(());
                         }
+                        self.commit(
+                            &mut state,
+                            Record::ExecutionStarted {
+                                address: address.into(),
+                            },
+                        )?;
                         break;
                     }
                     UiEvent::Cancelled { .. } => {
@@ -267,23 +237,16 @@ impl Session {
                         };
                     }
                     UiEvent::PermissionRequested { mut request } => {
-                        let mut state = self.inner.state.lock().unwrap();
-                        if state.agent_mut(address)?.active_epoch != Some(epoch) {
-                            return Ok(());
-                        }
                         request.id = format!(
                             "permission:{address}:{}:{}",
                             request.turn, request.tool_call_id
                         );
-                        self.commit(
-                            &mut state,
-                            Record::PermissionWaiting {
-                                address: address.into(),
-                                request,
-                            },
-                        )?;
-                        state.agent_mut(address)?.active_epoch = None;
-                        return Ok(());
+                        if self.wait_for_permission(address, epoch, request)? {
+                            return Ok(());
+                        }
+                        self.cleanup_failed_run(address, execution, turn, &mut run)
+                            .await;
+                        return self.settle_cancelled(address, epoch);
                     }
                     UiEvent::TextDelta { .. }
                     | UiEvent::ThinkingDelta { .. }
@@ -300,15 +263,34 @@ impl Session {
         }
     }
 
-    fn build_query(
+    fn wait_for_permission(
         &self,
         address: &str,
-        config: &AgentConfig,
-        prompt: String,
-        source: InputSource,
-    ) -> Result<crate::Query> {
-        let config = self.resolve_defaults(address, config.clone())?;
-        let mut query = crate::query(prompt)
+        epoch: u64,
+        request: crate::query::PermissionRequest,
+    ) -> Result<bool> {
+        let mut state = self.inner.state.lock().unwrap();
+        let agent = state.agent(address)?;
+        if state.closing
+            || agent.active_epoch != Some(epoch)
+            || agent.snapshot.status != AgentStatus::Running
+        {
+            return Ok(false);
+        }
+        self.commit(
+            &mut state,
+            Record::PermissionWaiting {
+                address: address.into(),
+                request,
+            },
+        )?;
+        state.agent_mut(address)?.active_epoch = None;
+        Ok(true)
+    }
+
+    fn build_query(&self, address: &str, work: TurnWork) -> Result<crate::Query> {
+        let config = self.resolve_defaults(address, work.config)?;
+        let mut query = crate::query(work.text)
             .session(&self.inner.id)
             .conversation(address)
             .workspace(
@@ -325,12 +307,14 @@ impl Session {
         query.authorizer = Some(self.inner.options.authorizer.clone());
         query.model_adapter = self.inner.options.model_adapter.clone();
         query.tool_adapters = self.inner.tool_adapters.clone();
-        query.input_source = source;
+        query.input_source = work.source;
+        query.input_skills = work.skills;
         query.runtime_limits = self.inner.options.limits.clone();
         query.model_capacity = Some(self.inner.model_capacity.clone());
         query.model_request_budget = self.inner.model_request_budget.clone();
         query.runtime = Some(Arc::downgrade(&self.inner));
-        query.turn_override = self.agent(address)?.turn;
+        query.runtime_execution = Some(work.execution);
+        query.turn_override = Some(work.turn);
         query.events_path_override = Some(self.inner.events_path.clone());
         if let Some(model) = &config.model {
             query = query.model(model);
@@ -372,8 +356,21 @@ impl Session {
         if state.agent_mut(address)?.active_epoch != Some(epoch) {
             return Ok(());
         }
-        let cleanup = state.cleanup_failures.get(address).cloned();
-        let usage = self.pending_usage(&state.agents[address])?;
+        let agent = state.agent(address)?;
+        let cancellation_error = if agent.accepted.is_empty() {
+            None
+        } else {
+            agent
+                .snapshot
+                .turn
+                .and_then(|turn| self.settle_cancelled_turn(address, turn).err())
+        };
+        let cleanup = state
+            .cleanup_failures
+            .get(address)
+            .cloned()
+            .or_else(|| cancellation_error.as_ref().map(ToString::to_string));
+        let usage = self.pending_usage(agent)?;
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -390,12 +387,27 @@ impl Session {
             },
         )?;
         state.agent_mut(address)?.active_epoch = None;
-        Ok(())
+        let agent = state.agent(address)?;
+        if !state.closing
+            && agent.snapshot.status == AgentStatus::Stopped
+            && agent.stopped_at.is_some_and(|stopped| {
+                agent.inbox.iter().any(|entry| {
+                    entry.receipt.event_id > stopped
+                        && entry.input.activation == Activation::Wake
+                        && matches!(entry.input.source, InputSource::Host(_))
+                })
+            })
+        {
+            self.resume(&mut state, address, None)?;
+            self.schedule_locked(&mut state, address)?;
+        }
+        cancellation_error.map_or(Ok(()), Err)
     }
 
     fn turn_usage(&self, address: &str, turn: u64) -> Result<UsageTotals> {
         let mut totals = UsageTotals::default();
         let mut requests = std::collections::BTreeMap::<String, Option<serde_json::Value>>::new();
+        let mut retries = 0;
         let mut cursor = turn;
         loop {
             let page = crate::event::EventStore::read_page(&self.inner.events_path, cursor, 128)?;
@@ -417,10 +429,13 @@ impl Session {
                     requests.entry(request_id.into()).or_default();
                 } else if value["kind"] == "runtime.model_usage" {
                     requests.insert(request_id.into(), Some(value["usage"].clone()));
+                } else if value["kind"] == "runtime.model_retry" {
+                    retries += 1;
                 }
             }
         }
-        totals.model_requests = requests.len() as u64;
+        totals.model_requests = requests.len() as u64 + retries;
+        totals.unreported_requests = retries;
         for usage in requests.into_values() {
             let Some(usage) = usage else {
                 totals.unreported_requests += 1;
@@ -478,7 +493,13 @@ impl Session {
         )))
     }
 
-    async fn cleanup_failed_run(&self, address: &str, run: &mut crate::Run) {
+    async fn cleanup_failed_run(
+        &self,
+        address: &str,
+        execution: u64,
+        turn: u64,
+        run: &mut crate::Run,
+    ) {
         run.cancel();
         while !run.slots.is_empty() {
             match run.next_with_tool_faults().await {
@@ -492,7 +513,7 @@ impl Session {
                             self.remember_settlement_failure(error);
                         }
                     }
-                    let _ = self.inner.live.send((address.into(), event));
+                    self.publish(address, execution, turn, event);
                 }
                 Ok(None) => break,
                 Err(_) => {}

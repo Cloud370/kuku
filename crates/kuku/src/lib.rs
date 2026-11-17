@@ -39,9 +39,10 @@ pub use query::{
 };
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 pub use session::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, InputSource, Observation,
-    OutputChunk, OutputRead, OutputSegment, OutputStream, QuestionRequest, Receipt, RuntimeLimits,
-    Session, SessionObserver, SessionOptions, UsageTotals,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
+    InputStatus, InputTiming, Observation, OutputChunk, OutputRead, OutputSegment, OutputStream,
+    PendingInput, QuestionRequest, Receipt, RuntimeLimits, Session, SessionObserver,
+    SessionOptions, UsageTotals, Withdrawal,
 };
 
 #[cfg(test)]

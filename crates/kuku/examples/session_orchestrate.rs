@@ -51,6 +51,7 @@ impl Settings {
         options.limits.max_agents = 2;
         options.limits.max_steps_per_turn = number(args, "max-steps", 8_u64)?;
         options.limits.max_requests_per_open = Some(number(args, "max-requests", 16_u64)?);
+        options.limits.retry_transient_provider_errors = false;
         options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
         let mut reviewer = selection(args, REVIEWER, max_output_tokens);
         reviewer.instructions = Some(std::fs::read_to_string(required(

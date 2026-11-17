@@ -108,7 +108,7 @@ fn parse_skill(content: &str, skill_dir: &Path, source: &SkillSource) -> Result<
     Ok(def)
 }
 
-fn is_valid_skill_name(name: &str) -> bool {
+pub(crate) fn is_valid_skill_name(name: &str) -> bool {
     if name.len() > 64 || name.is_empty() {
         return false;
     }

@@ -29,10 +29,11 @@ use super::request::OwnedRequestBase;
 use super::types::{PendingRun, PendingStep, UiEvent};
 
 pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
-    ensure_resolved(&mut pending)?;
     pending.request_num += 1;
     check_loop_limit(&pending)?;
 
+    apply_runtime_boundary(&mut pending)?;
+    ensure_resolved(&mut pending)?;
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
@@ -451,6 +452,47 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     pending.request_base = Some(request_base);
 
     dispatch_provider_step(pending, resolved_config, existing_events, None).await
+}
+
+pub(super) fn require_runtime_execution(pending: &PendingRun) -> Result<()> {
+    if let Some(execution) = pending.query.runtime_execution {
+        runtime_session(pending, execution)?
+            .require_execution(pending.conversation.as_str(), execution)?;
+    }
+    Ok(())
+}
+
+fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
+    let Some(execution) = pending.query.runtime_execution else {
+        return Ok(());
+    };
+    let session = runtime_session(pending, execution)?;
+    let boundary =
+        session.prepare_step_boundary(pending.conversation.as_str(), execution, pending.turn)?;
+    pending.query.input_skills.extend(boundary.skills);
+    if let Some(source) = boundary.source {
+        pending.query.input_source = source;
+    }
+    if let Some(config) = boundary.config {
+        pending.query.connection = config.connection;
+        pending.query.tier = config.tier;
+        pending.query.model = config.model;
+        pending.query.reasoning_effort = config.reasoning_effort;
+        pending.query.service_tier = config.service_tier;
+        pending.query.max_output_tokens = config.max_output_tokens;
+        pending.resolved = None;
+    }
+    Ok(())
+}
+
+pub(super) fn runtime_session(pending: &PendingRun, execution: u64) -> Result<crate::Session> {
+    pending
+        .query
+        .runtime
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .map(|inner| crate::Session { inner })
+        .ok_or(crate::Error::ExecutionNotActive(execution))
 }
 
 pub(super) fn pending_failure_step(

@@ -54,7 +54,10 @@ fn model_failure(error: crate::Error) -> ProviderFailure {
         message: error.to_string(),
         status: None,
         provider_request_id: None,
-        retryable: false,
+        retryable: matches!(
+            kind,
+            ProviderFailureKind::Transport | ProviderFailureKind::ProviderUnavailable
+        ),
     }
 }
 
