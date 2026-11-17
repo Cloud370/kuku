@@ -15,7 +15,7 @@ use crate::display::OutputLine;
 
 mod render;
 
-use render::RunRenderer;
+use render::{write_json, RunRenderer};
 
 /// Execute one script command, then render the settled Agent state.
 pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
@@ -43,11 +43,10 @@ pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
     }
     let target = &command.target;
     if args.stream_json {
-        println!(
-            "{}",
-            json!({"type":"session","event":"started","session_id":target.session_id,
-            "agent":target.agent,"receipt":acknowledgement.receipt})
-        );
+        write_json(
+            &json!({"type":"session","event":"started","session_id":target.session_id,
+            "agent":target.agent,"receipt":acknowledgement.receipt}),
+        )?;
     } else if !args.json {
         eprintln!("session {} agent {}", target.session_id, target.agent);
     }
@@ -60,7 +59,7 @@ pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
         args.stream_json,
     )
     .await?;
-    renderer.finish(&target.session_id, &snapshot, start.elapsed());
+    renderer.finish(&target.session_id, &snapshot, start.elapsed())?;
     check_outcome(snapshot)
 }
 
@@ -116,13 +115,14 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     }
     if let Some(request) = request {
         let decision = if args.allow { "allow" } else { "deny" };
-        println!(
-            "{}",
-            permission_decision_line(&request, decision.into(), "host".into()).to_json_line()
-        );
+        write_json(&permission_decision_line(
+            &request,
+            decision.into(),
+            "host".into(),
+        ))?;
     }
     let snapshot = settle(&connection, &command.target, acknowledgement, None, false).await?;
-    println!("{}", serde_json::to_string(&snapshot)?);
+    write_json(&snapshot)?;
     check_outcome(snapshot)
 }
 
@@ -339,12 +339,12 @@ async fn settle(
             }
             Observation::Live { agent, event, .. } if agent == target.agent => {
                 if let Some(renderer) = renderer.as_mut() {
-                    renderer.event(event);
+                    renderer.event(event)?;
                 }
             }
             Observation::Lagged { skipped } => {
                 if stream_json {
-                    println!("{}", json!({"type":"lagged","skipped":skipped}));
+                    write_json(&json!({"type":"lagged","skipped":skipped}))?;
                 }
                 settled = connection.client.snapshot(target).await?;
             }
@@ -356,14 +356,17 @@ async fn settle(
             for _ in 0..256 {
                 match observer.next().await {
                     Ok(Observation::Live { agent, event, .. }) if agent == target.agent => {
-                        renderer.event(event)
+                        renderer.event(event)?;
                     }
                     Ok(_) => {}
                     Err(_) => break,
                 }
             }
+            CliResult::Ok(())
         };
-        let _ = tokio::time::timeout(Duration::from_millis(20), drain).await;
+        if let Ok(result) = tokio::time::timeout(Duration::from_millis(20), drain).await {
+            result?;
+        }
     }
     Ok(settled.agent)
 }
@@ -402,11 +405,10 @@ async fn render_acknowledgement(
     let snapshot = connection.client.snapshot(target).await?.agent;
     let receipt = acknowledgement.receipt;
     if json_output {
-        println!(
-            "{}",
-            json!({"type":"session","event":"acknowledged","session_id":target.session_id,
-            "agent":target.agent,"replayed":true,"receipt":receipt,"state":snapshot})
-        );
+        write_json(
+            &json!({"type":"session","event":"acknowledged","session_id":target.session_id,
+            "agent":target.agent,"replayed":true,"receipt":receipt,"state":snapshot}),
+        )?;
     } else {
         eprintln!(
             "command {} already committed at event {}. Session {} agent {}: {:?}",

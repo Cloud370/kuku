@@ -3,10 +3,11 @@ use std::time::Instant;
 
 use kuku::{ModelRecoveryInfo, ToolKind};
 use kuku_client::{AgentSnapshot, AgentStatus};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::cli_args::RunArgs;
+use crate::commands::CliResult;
 use crate::display::{Display, OutputLine};
 
 use super::permission_ask_line;
@@ -86,19 +87,19 @@ impl RunRenderer {
         !self.json
     }
 
-    pub(super) fn event(&mut self, event: Value) {
+    pub(super) fn event(&mut self, event: Value) -> CliResult {
         if self.json {
-            return;
+            return Ok(());
         }
         let Ok(preview) = serde_json::from_value(event.clone()) else {
-            return;
+            return Ok(());
         };
         match preview {
             Preview::Text { content: text } => {
                 self.close_thinking();
                 self.rendered_text.push_str(&text);
                 if self.stream_json {
-                    println!("{}", OutputLine::text_delta(text).to_json_line());
+                    write_json(&OutputLine::text_delta(text))?;
                 } else {
                     print!("{text}");
                     let _ = io::stdout().flush();
@@ -129,10 +130,7 @@ impl RunRenderer {
                     self.tool_conversations.insert(id.clone(), conversation);
                 }
                 if self.stream_json {
-                    println!(
-                        "{}",
-                        tool_call_line(tool, id, summary, &kind).to_json_line()
-                    );
+                    write_json(&tool_call_line(tool, id, summary, &kind))?;
                 } else {
                     println!("\n{}", self.display.tool_call(&tool, &summary, &id));
                 }
@@ -144,20 +142,17 @@ impl RunRenderer {
             } => {
                 if self.stream_json {
                     let conversation = self.tool_conversations.remove(&id);
-                    println!(
-                        "{}",
-                        tool_result_line(id, status, summary, conversation).to_json_line()
-                    );
+                    write_json(&tool_result_line(id, status, summary, conversation))?;
                 } else {
                     println!("{}", self.display.tool_result(&status, &summary, &id));
                 }
             }
-            Preview::ModelRecovery { info } => self.recovery(info),
+            Preview::ModelRecovery { info } => self.recovery(info)?,
             Preview::ToolOutput { event: nested } => {
                 if let Some(info) = nested_model_recovery(&nested) {
-                    self.recovery(info);
+                    self.recovery(info)?;
                 } else if self.stream_json && nested.get("permission").is_none() {
-                    println!("{event}");
+                    write_json(&event)?;
                 }
             }
             Preview::Error { code, message } => eprintln!("{code}: {message}"),
@@ -168,10 +163,11 @@ impl RunRenderer {
             | Preview::ModelRequest => {}
             Preview::Other => {
                 if self.stream_json {
-                    println!("{event}");
+                    write_json(&event)?;
                 }
             }
         }
+        Ok(())
     }
 
     pub(super) fn finish(
@@ -179,7 +175,7 @@ impl RunRenderer {
         session_id: &str,
         agent: &AgentSnapshot,
         elapsed: std::time::Duration,
-    ) {
+    ) -> CliResult {
         self.close_thinking();
         let event = match agent.status {
             AgentStatus::Idle => "completed",
@@ -190,19 +186,16 @@ impl RunRenderer {
         if self.json || self.stream_json {
             if let Some(request) = &agent.permission {
                 if self.stream_json {
-                    println!("{}", permission_ask_line(request).to_json_line());
+                    write_json(&permission_ask_line(request))?;
                 }
             }
-            println!(
-                "{}",
-                json!({
-                    "type": "session", "event": event, "session_id": session_id,
-                    "agent": agent.address, "status": agent.status, "turns": agent.turn,
-                    "response": agent.last_output, "error": agent.last_error,
-                    "config": agent.config, "usage": agent.usage,
-                    "permission": agent.permission, "question": agent.question, "duration_ms": elapsed.as_millis(),
-                })
-            );
+            write_json(&json!({
+                "type": "session", "event": event, "session_id": session_id,
+                "agent": agent.address, "status": agent.status, "turns": agent.turn,
+                "response": agent.last_output, "error": agent.last_error,
+                "config": agent.config, "usage": agent.usage,
+                "permission": agent.permission, "question": agent.question, "duration_ms": elapsed.as_millis(),
+            }))?;
         } else {
             if let Some(output) = &agent.last_output {
                 if let Some(suffix) = output.strip_prefix(&self.rendered_text) {
@@ -226,6 +219,7 @@ impl RunRenderer {
                 );
             }
         }
+        Ok(())
     }
     fn close_thinking(&mut self) {
         if self.in_thinking {
@@ -241,15 +235,25 @@ impl RunRenderer {
         }
     }
 
-    fn recovery(&mut self, info: kuku::query::ModelRecoveryInfo) {
+    fn recovery(&mut self, info: kuku::query::ModelRecoveryInfo) -> CliResult {
         self.close_thinking();
         self.rendered_text.clear();
         if self.stream_json {
-            println!("{}", OutputLine::model_recovery(info).to_json_line());
+            write_json(&OutputLine::model_recovery(info))?;
         } else {
             println!("{}", self.display.model_recovery(&info));
         }
+        Ok(())
     }
+}
+
+pub(super) fn write_json(record: &impl Serialize) -> CliResult {
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(&line)?;
+    stdout.flush()?;
+    Ok(())
 }
 
 pub(super) fn conversation_for_tool_kind(kind: &ToolKind) -> Option<String> {

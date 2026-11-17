@@ -133,6 +133,20 @@ fn result(output: &Output) -> Value {
     })
 }
 
+fn json_lines(output: &Output) -> Vec<Value> {
+    output
+        .stdout
+        .strip_suffix(b"\n")
+        .expect("stream must end with a line terminator")
+        .split(|byte| *byte == b'\n')
+        .map(|line| {
+            serde_json::from_slice(line).unwrap_or_else(|error| {
+                panic!("invalid JSON line {line:?}: {error}");
+            })
+        })
+        .collect()
+}
+
 async fn stop_managed(home: &Path) {
     let service = LocalService::resolve(home, None).unwrap();
     if let Some(connection) = service.status().await.unwrap() {
@@ -154,6 +168,82 @@ async fn stop_managed(home: &Path) {
         .await
         .expect("fixture should release its local service");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_model_failure() {
+    let primary = MockServer::start_async().await;
+    let secondary = MockServer::start_async().await;
+    let delay = std::time::Duration::from_millis(600);
+    mock_round_delayed(
+        &primary,
+        0,
+        json!([{"type":"tool_use","id":"read","name":"read_file","input":{"path":"fixture.txt"}}]),
+        "tool_use",
+        delay,
+    );
+    mock_round_delayed(
+        &primary,
+        1,
+        json!([{"type":"text","text":"First line.\nSecond line."}]),
+        "end_turn",
+        delay,
+    );
+    secondary.mock(|when, then| {
+        when.method(Method::POST).path("/v1/messages");
+        then.status(400)
+            .header("content-type", "application/json")
+            .json_body(json!({"type":"error","error":{"type":"invalid_request_error","message":"fixture model failure"}}));
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("fixture.txt"), "fixture data\n").unwrap();
+    let config = config_file(home.path(), primary.port(), secondary.port());
+    let success = invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &["--stream-json", "read fixture"],
+    );
+    let failure = invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--connection",
+            "secondary",
+            "--stream-json",
+            "fail at the model",
+        ],
+    );
+    stop_managed(home.path()).await;
+
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let records = json_lines(&success);
+    assert_eq!("started", records[0]["event"]);
+    for kind in ["tool_call", "tool_result"] {
+        assert!(
+            records.iter().any(|record| record["type"] == kind),
+            "missing {kind} record in {records:?}"
+        );
+    }
+    let final_result = records.last().unwrap();
+    assert_eq!("completed", final_result["event"]);
+    assert_eq!("First line.\nSecond line.", final_result["response"]);
+
+    assert_eq!(Some(1), failure.status.code());
+    let failed_records = json_lines(&failure);
+    assert_eq!("started", failed_records[0]["event"]);
+    let final_result = failed_records.last().unwrap();
+    assert_eq!("session", final_result["type"]);
+    assert!(final_result["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("fixture model failure")));
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("fixture model failure"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
