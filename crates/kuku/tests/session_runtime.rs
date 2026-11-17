@@ -637,7 +637,11 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
             snapshot.status,
             "{operation}: {snapshot:?}"
         );
-        assert!(session.close().await.is_err());
+        let error = session.close().await.unwrap_err().to_string();
+        assert!(
+            error.contains("tool output could not be durably captured"),
+            "{error}"
+        );
         first.assert_hits_async(1).await;
         next.assert_hits_async(0).await;
         assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload,
@@ -757,8 +761,8 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
     assert_eq!(AgentStatus::Interrupted, interrupted.status);
     assert!(interrupted
         .last_error
-        .unwrap()
-        .contains("model request limit exhausted"));
+        .as_deref()
+        .is_some_and(|error| error.contains("model request limit exhausted")));
     assert_eq!(1, interrupted.usage.model_requests);
     let steps = session.events(0, 256).unwrap().into_iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count();
     assert_eq!(
@@ -767,8 +771,9 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
     );
     model.assert_hits_async(2).await;
     original.session_id = Some(session.id().into());
-    let _ = session.close().await;
+    session.close().await.unwrap();
     let reopened = Session::open(original).await.unwrap();
+    assert_eq!(interrupted, reopened.agent("main").unwrap());
     reopened.advance("main").unwrap();
     assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
     assert_eq!(2, reopened.agent("main").unwrap().usage.model_requests);

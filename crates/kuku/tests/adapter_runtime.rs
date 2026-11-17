@@ -379,7 +379,13 @@ async fn custom_tool_cancellation_waits_for_cleanup_and_known_failure_is_visible
         assert_eq!(1, model.requests.lock().unwrap().len());
         let events = session.events(0, 256).unwrap();
         assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { status, structured:Some(value), .. } if status == "cancelled" && value["cleanup_incomplete"] == incomplete)));
-        assert_eq!(!incomplete, session.close().await.is_ok());
+        let close = session.close().await;
+        if incomplete {
+            let error = close.unwrap_err().to_string();
+            assert!(error.contains("tool cleanup did not finish"), "{error}");
+        } else {
+            close.unwrap();
+        }
     }
 }
 

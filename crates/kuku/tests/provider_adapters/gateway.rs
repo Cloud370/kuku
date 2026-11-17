@@ -192,6 +192,21 @@ fn assert_tools(events: &[StoredEvent], expected: &[(&str, &str)]) {
     );
 }
 
+fn assert_interrupted_without_tools(events: &[StoredEvent], turn: u64, reason: &str) {
+    assert!(
+        events.iter().any(|event| matches!(&event.payload,
+            EventPayload::TurnInterrupted { conversation, turn: interrupted, reason: actual, .. }
+                if conversation == "main" && *interrupted == turn && actual == reason
+        )),
+        "missing interruption {reason} for turn {turn}"
+    );
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCall { .. } | EventPayload::ToolResult { .. }
+    )));
+    assert!(!events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.tool_dispatched")));
+}
+
 #[tokio::test]
 async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues() {
     let server = MockServer::start_async().await;
@@ -319,21 +334,23 @@ async fn responses_done_without_terminal_event_does_not_dispatch_tools() {
         .unwrap();
     let snapshot = settle(&session).await;
     assert_eq!(AgentStatus::Interrupted, snapshot.status);
+    let expected_error = "[DONE] before a terminal response event";
     assert!(
         snapshot
             .last_error
             .as_deref()
-            .is_some_and(|error| error.contains("[DONE] before a terminal response event")),
+            .is_some_and(|error| error.contains(expected_error)),
         "unexpected provider error: {:?}",
         snapshot.last_error
     );
-    assert!(session.close().await.is_err());
+    session.close().await.unwrap();
     let events = EventStore::replay(session.events_path()).unwrap();
-    assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolCall { .. } | EventPayload::ToolResult { .. }
+    let turn = snapshot.turn.unwrap();
+    assert_interrupted_without_tools(&events, turn, "invalid_request");
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelError { conversation: Some(agent), turn: requested, kind, message, .. }
+            if agent == "main" && *requested == turn && kind == "invalid_request" && message.contains(expected_error)
     )));
-    assert!(!events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.tool_dispatched")));
     first.assert_hits_async(1).await;
 }
 
@@ -363,13 +380,21 @@ async fn chat_conflicting_finish_reason_does_not_dispatch_tools() {
         .unwrap();
     let snapshot = settle(&session).await;
     assert_eq!(AgentStatus::Interrupted, snapshot.status);
-    assert!(snapshot.last_error.is_some());
-    assert!(session.close().await.is_err());
+    assert!(
+        snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid_response")),
+        "unexpected provider error: {:?}",
+        snapshot.last_error
+    );
+    session.close().await.unwrap();
     let events = EventStore::replay(session.events_path()).unwrap();
-    assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolCall { .. } | EventPayload::ToolResult { .. }
+    let turn = snapshot.turn.unwrap();
+    assert_interrupted_without_tools(&events, turn, "invalid_response");
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelResponse { conversation: Some(agent), turn: requested, stop_reason: Some(ModelStopReason::InvalidResponse), .. }
+            if agent == "main" && *requested == turn
     )));
-    assert!(!events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.tool_dispatched")));
     first.assert_hits_async(1).await;
 }
