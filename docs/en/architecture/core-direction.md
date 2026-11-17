@@ -44,6 +44,8 @@ Record creation relationships separately. A default main Agent has no intrinsic 
 
 ## Model choice and independent context
 
+Support **OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages** as distinct wire protocols through the same runtime. Each must support the core streaming, tool-use, and multi-turn execution path. Resolve capabilities for the actual configured endpoint/model; sharing a protocol does not imply identical reasoning, caching, service options, or server-side state.
+
 Use one resolver for the SDK, user interfaces, main Agents, and subagents. Presets define behavior/tools/initial defaults; Tiers are reusable model-route/settings defaults. Select an exact configured connection and model, never the first connection matching a protocol. Explicit Agent choices override defaults and never mutate other Agents or process-wide defaults.
 
 Adapters describe and validate available reasoning and service options. These are independent choices: enabling supported acceleration does not implicitly change the model or reasoning. Do not impose a universal `fast/ultrafast` ladder. Unsupported explicit choices fail visibly. Record requested settings, resolved settings sent, and provider-reported settings when available; unavailable confirmation stays unknown.

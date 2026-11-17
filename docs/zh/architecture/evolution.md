@@ -17,7 +17,7 @@
 | 阶段 | 交付物 | 证据 |
 |---|---|---|
 | 1. 可用单 Agent | 公开调用程序和薄 CLI；明确模型连接、真实文件／命令工具、多调用 Step、持久接纳／结果、查询／观察、取消、有界输出和重开 | 一个有用的真实任务及其判定器；针对持久化、授权、输出和清理的检查 |
-| 2. 独立 Agent 与 provider | 同一 Session 内两个独立初始化、使用不同 provider 的 Agent；直接通信和续派；共用配置解析，不修改全局配置 | 真实委派任务；不 fork 父历史；同协议连接选择；保留支持的思考／服务设置，或拒绝不支持的显式值 |
+| 2. 独立 Agent 与 provider | 同一 Session 内两个独立初始化、使用不同 provider 的 Agent；直接通信和续派；共用配置解析，不修改全局配置 | 真实委派任务；三种要求的线路协议均有验证；不 fork 父历史；同协议连接选择；保留支持的思考／服务设置，或拒绝不支持的显式值 |
 | 3. 持久等待与编排 | 提问／延后授权可持久化，并在重开后匹配续接；小型 SDK 调用程序验证受控讨论和定时器／外部输入 | 等待时不推理；重复输入不重复开工；过期回复／回调不能推进替代执行；示例复用已有执行器 |
 
 阶段是交付边界，不是不同运行时。从一开始按这些场景设计身份、输入语义和所有权，但只实现当前阶段需要的路径。首个有用执行之后尽早推进阶段 2，暴露单模型、单上下文和仅根 Agent 可运行等假设。阶段 3 的示例不要求生产级调度器、Team 平台、server 或新 UI。
@@ -38,6 +38,26 @@
 Rust 名称／签名、事件封装／schema、队列／输出数值限额、解析器和检查点布局，仍是核心方向约束下的工程选择。宣称有界运行前，记录具体限制和超限行为。改变身份作用域、强制 Task 对象、默认 fork、全局模型联动或削弱持久化，均需明确修改基线。
 
 真实验收在付费调用前仍需确定可用 provider／模型和已有凭据配置。不从编码 Agent 自己使用的模型推断 SDK 凭据，不在文档中放密钥或私有任务正文。这是环境前提，不是未决产品方向。
+
+### 协议验收与全新会话交接
+
+用户希望由一个全新对话上下文的 Codex 会话实施重构。该会话从上方指定的集成工作树开始，读取其中的 `AGENTS.md`、核心方向和本页相关部分，沿用现有交付阶段。不能改用 main 工作树中的旧基线，也不能依赖读取本次聊天。用户向新会话明确下达实现指令后再开工。
+
+用户提出使用 `deepseek-flash` 进行低成本真实测试。按 2026-11-17 查阅的文档，一份 DeepSeek key 可以覆盖下表三条协议路线。这些是测试连接输入，不是新冻结的 SDK 配置名称；本次尚未用付费请求验证端点可用性。
+
+| 线路协议 | DeepSeek 基础 URL | 请求后缀 | 来源 |
+|---|---|---|---|
+| Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [首次调用](https://api-docs.deepseek.com/) |
+| Responses | `https://api.deepseek.com` | `/responses` | [Responses 兼容说明](https://api-docs.deepseek.com/guides/responses_api/) |
+| Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/) |
+
+阶段 1 从低成本路线开始，最迟在阶段 2 交付时完成三种协议验证。每种都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。罕见或不确定出现的错误／批次场景用针对性固定输入验证。同一服务的三条路线只证明该服务上的协议覆盖，不证明独立供应商兼容性。委派任务增加一个独立供应商；条件允许时，直接接入 OpenAI Responses 和 Anthropic Messages 可提供额外检查。准确记录运行过的供应商／网关，缺少的真实覆盖标记为未验证。
+
+DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages 兼容层会忽略 `service_tier`、`cache_control` 等选项。HTTP 成功不能证明这些设置已生效。显式不支持的选择必须可见，并区分端点能力和线路协议本身。
+
+已在 Git 之外的 `/code/.secrets/kuku-acceptance.env` 准备本地凭据模板，目录权限为 `700`，文件权限为 `600`，由用户在编辑器中填写。`KUKU_TEST_DEEPSEEK_API_KEY` 提供共用的 DeepSeek key。可选独立路线使用 `KUKU_TEST_RESPONSES_BASE_URL`、`KUKU_TEST_RESPONSES_MODEL`、`KUKU_TEST_RESPONSES_API_KEY`，以及对应的 `KUKU_TEST_MESSAGES_BASE_URL`、`KUKU_TEST_MESSAGES_MODEL`、`KUKU_TEST_MESSAGES_API_KEY` 字段。这些是测试输入环境变量名，不是 Codex 内建设置或新的 SDK API。现有[配置参考](../reference/config.md)说明了如何引用环境变量凭据。
+
+测试调用程序明确加载该文件，不回显内容或启用 shell 跟踪；不能假定另一终端的导出变量会延续到新会话。key 不进入提示词、提交文件、命令参数或测试报告，只报告脱敏的连接状态、用量和错误。文件权限不能向使用同一用户身份运行的 Agent 隐藏凭据。这种交接需要相同文件系统与适当访问权；其他主机／云环境需要另行配置凭据。真实调用前取得用户的测试费用预算，再随验收证据记录估算开销和限制。本模板创建时为空，本次文档更新未运行真实 API 测试。
 
 ## 现有实现证据
 

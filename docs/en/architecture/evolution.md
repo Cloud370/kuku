@@ -17,7 +17,7 @@ The first result is a normal Rust caller using only public SDK APIs, plus a thin
 | Stage | Deliverable | Evidence |
 |---|---|---|
 | 1. Usable single Agent | Public caller and thin CLI; exact model connection, real file/command tools, multi-call Steps, durable acceptance/results, query/observation, cancellation, bounded output, and reopen | One useful real task with its verifier; focused persistence, authorization, output, and cleanup checks |
-| 2. Independent Agents and providers | Two independently initialized Agents in one Session using different providers; direct communication and continuation; shared configuration resolution without global mutation | A real delegated task; no parent-transcript fork; same-protocol connection selection; supported reasoning/service settings preserved or unsupported explicit values rejected |
+| 2. Independent Agents and providers | Two independently initialized Agents in one Session using different providers; direct communication and continuation; shared configuration resolution without global mutation | A real delegated task; all three required wire protocols exercised; no parent-transcript fork; same-protocol connection selection; supported reasoning/service settings preserved or unsupported explicit values rejected |
 | 3. Durable waiting and orchestration | Persisted question/deferred authorization and matching continuation across reopen; small SDK callers exercising controlled discussion and a timer/external input | No inference while waiting; duplicate input creates no duplicate work; stale replies/callbacks cannot advance replacement work; examples reuse the existing executor |
 
 Stages are delivery boundaries, not separate runtimes. Design identifiers, input semantics, and ownership for these cases from the start, but implement only paths the current stage needs. Stage 2 follows the first useful execution early enough to expose single-model, single-context, and root-only assumptions. Stage 3 examples do not require a production scheduler, Team platform, server, or new UI.
@@ -38,6 +38,26 @@ The next implementation action, after authorization, is to use the evidence belo
 Rust names/signatures, event framing/schema, numeric queue/output limits, parser choices, and checkpoint layout remain engineering choices under Core Direction. Record concrete limits and overflow behavior before claiming bounded operation. A different identity scope, mandatory Task object, fork default, global model mutation, or weaker durability requires an explicit baseline change.
 
 Live acceptance still needs an available provider/model and existing credential configuration before paid calls. Do not infer SDK credentials from the coding agent's own model, and do not put secrets or private task payloads into documentation. This is an environment prerequisite, not an unresolved product direction.
+
+### Protocol acceptance and fresh-session handoff
+
+The user wants a new Codex session with fresh conversation context to perform the implementation. That session starts in the integration worktree identified above, reads its `AGENTS.md`, Core Direction, and the relevant parts of this page, and follows the existing delivery stages. It must not substitute the main worktree's older baseline or depend on this conversation being available. Implementation begins with the user's explicit instruction to that new session.
+
+The user offered `deepseek-flash` for inexpensive live testing. As documented on 2026-11-17, one DeepSeek key can exercise all three protocol routes below. These are test connection inputs, not newly frozen SDK configuration names; endpoint availability has not been verified with a paid request here.
+
+| Wire protocol | DeepSeek base URL | Request suffix | Source |
+|---|---|---|---|
+| Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [First call](https://api-docs.deepseek.com/) |
+| Responses | `https://api.deepseek.com` | `/responses` | [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api/) |
+| Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages compatibility](https://api-docs.deepseek.com/guides/anthropic_api/) |
+
+Start with the inexpensive route in stage 1 and exercise all three before declaring stage 2 complete. Each needs streaming output, a real tool-call/result continuation, multi-turn context, and available usage/settings reporting. Use focused fixtures for rare or nondeterministic error/batch cases. Three routes to one service establish protocol coverage for that service, not independent-provider compatibility. Add an independent provider for the delegated task; direct OpenAI Responses and Anthropic Messages routes are useful additional checks when available. Record exactly which providers/gateways ran, and mark missing live coverage as unverified.
+
+DeepSeek Responses is stateless and does not support `previous_response_id`; its Messages compatibility layer ignores options including `service_tier` and `cache_control`. A successful HTTP response cannot prove those settings took effect. Keep unsupported explicit choices visible and distinguish these endpoint capabilities from the wire protocol itself.
+
+A local credential template has been prepared outside Git at `/code/.secrets/kuku-acceptance.env`, with directory mode `700` and file mode `600`. The user fills it in an editor. `KUKU_TEST_DEEPSEEK_API_KEY` supplies the common DeepSeek key. Optional independent routes use `KUKU_TEST_RESPONSES_BASE_URL`, `KUKU_TEST_RESPONSES_MODEL`, `KUKU_TEST_RESPONSES_API_KEY`, and the matching `KUKU_TEST_MESSAGES_BASE_URL`, `KUKU_TEST_MESSAGES_MODEL`, `KUKU_TEST_MESSAGES_API_KEY` fields. These are test-input environment names, not built-in Codex settings or a new SDK API. The existing [config reference](../reference/config.md) explains environment-backed credentials.
+
+The test caller explicitly loads the file without echoing it or enabling shell tracing; do not assume another shell's exports survive into a new session. Keep keys out of prompts, committed files, command arguments, and test reports; report only sanitized connection status, usage, and failures. File permissions do not hide credentials from an Agent running as the owning user. This handoff requires the same filesystem and appropriate access; another host/cloud environment needs its own secret provisioning. Obtain the user's paid-test budget before live calls, then record spend estimates and limits with the acceptance evidence. The template was created empty, and no live API tests were run during this documentation update.
 
 ## Existing implementation evidence
 
