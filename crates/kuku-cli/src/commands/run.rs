@@ -343,12 +343,12 @@ fn merge_agent_config(mut current: AgentConfig, update: AgentConfig) -> AgentCon
     if update.connection.is_some() {
         current.connection = update.connection;
     }
-    if update.model.is_some() {
-        current.model = update.model;
-    }
     if update.tier.is_some() {
         current.tier = update.tier;
         current.model = None;
+    }
+    if update.model.is_some() {
+        current.model = update.model;
     }
     if update.reasoning_effort.is_some() {
         current.reasoning_effort = update.reasoning_effort;

@@ -193,7 +193,10 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     let events = kuku::event::EventStore::replay(&path).unwrap();
     assert!(events.iter().any(|event| matches!(&event.payload, kuku::event::EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == "verify" && status == "ok")));
     let continued = mock.mock(|when, then| {
-        when.method(Method::POST).path("/v1/messages").body_contains("Verified on disk.").body_contains("continue inspection");
+        when.method(Method::POST).path("/v1/messages").body_contains("Verified on disk.").body_contains("continue inspection").matches(|request| {
+            let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+            body["model"] == "fixture-model"
+        });
         then.status(200).body(kuku::test_support::anthropic_sse_response(json!({"id":"continue","type":"message","role":"assistant","content":[{"type":"text","text":"Same context."}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":4}})));
     });
     let next = result(&invoke(
@@ -204,7 +207,35 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     ));
     assert_eq!("Same context.", next["response"]);
     assert_eq!("primary", next["config"]["connection"]);
+    assert_eq!("fixture-model", next["config"]["model"]);
     continued.assert_hits(1);
+    let explicit_model = mock.mock(|when, then| {
+        when.method(Method::POST).path("/v1/messages").body_contains("Same context.").body_contains("verify model selection").matches(|request| {
+            let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+            body["model"] == "reopened-exact-model"
+        });
+        then.status(200).body(kuku::test_support::anthropic_sse_response(json!({"id":"explicit-model","type":"message","role":"assistant","content":[{"type":"text","text":"Explicit model."}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":4}})));
+    });
+    let overridden = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--session",
+            session_id,
+            "--tier",
+            "balanced",
+            "--model",
+            "reopened-exact-model",
+            "--json",
+            "verify model selection",
+        ],
+    ));
+    assert_eq!("Explicit model.", overridden["response"]);
+    assert_eq!("primary", overridden["config"]["connection"]);
+    assert_eq!("balanced", overridden["config"]["tier"]);
+    assert_eq!("reopened-exact-model", overridden["config"]["model"]);
+    explicit_model.assert_hits(1);
     let show = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace.path())
         .env("KUKU_HOME", home.path())
@@ -213,7 +244,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         .unwrap();
     assert!(show.status.success());
     assert_eq!(
-        "Same context.",
+        "Explicit model.",
         String::from_utf8(show.stdout).unwrap().trim()
     );
 }

@@ -78,7 +78,7 @@ pub struct RunArgs {
     #[arg(short = 'y', long = "yes")]
     pub auto_yes: bool,
 
-    /// Exact model identifier (existing tier names remain accepted)
+    /// Exact model identifier (overrides the tier's model)
     #[arg(long = "model")]
     pub model: Option<String>,
 
@@ -153,7 +153,7 @@ pub struct RunArgs {
     #[arg(long = "prompts-dir")]
     pub prompts_dir: Option<String>,
 
-    /// Disable the agent tool (agent delegation)
+    /// Disable create_agent, send_message, and list_agents; keep ask_user
     #[arg(long = "no-agents")]
     pub no_agents: bool,
 
