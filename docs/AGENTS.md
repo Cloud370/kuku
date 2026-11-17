@@ -17,5 +17,6 @@
   - `Agent` or `Skill` format: update the matching `reference/` page, then check related guides and `how-it-works/agents-and-skills.md`
   - server endpoint or streaming changes: update `reference/server-api.md`, then check `guides/run-the-server.md`
   - internal-only refactors with no public behavior change: update `architecture/` only
+- Keep long-lived architecture and contributor docs free of dated checkpoints, running progress tables, and per-run narratives. Update current decisions in place; task state belongs to the selected work tracker, history to Git/PRs, and execution details to verification artifacts. Dates or versions that identify an external contract or artifact may remain.
 - One fact, one home. Keep each fact fully defined in one canonical page and link from other pages instead of duplicating it.
 - Homepage sync rule: when positioning, primary entry links, key stats/comparisons, or quickstart paths change, re-check `README.md`, `docs/index.md`, `docs/en/index.md`, and `docs/zh/index.md` together so they stay aligned.

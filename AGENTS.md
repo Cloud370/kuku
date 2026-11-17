@@ -8,7 +8,7 @@ kuku — a Rust SDK for file-native agent execution. SDK (`crates/kuku/`), CLI (
 
 ## Core work: read this first
 
-Read [Core Direction](docs/en/architecture/core-direction.md) ([中文](docs/zh/architecture/core-direction.md)) before core design or implementation. It is the concise target baseline, not a claim of shipped behavior. Read one language, then only task-relevant code and sections of [Evolution](docs/en/architecture/evolution.md); do not require full-history or full-docs onboarding. Keep settled decisions in that baseline and detailed evidence in the owning page, not in parallel handoff reports. Preserve the external Prompt assets and explicit Prompt/context/provider boundaries; a core rewrite is not permission to discard them. Branch/worktree creation and implementation remain separate actions from documentation planning.
+Read [Core Direction](docs/en/architecture/core-direction.md) ([中文](docs/zh/architecture/core-direction.md)) before core design or implementation. It is the concise target baseline, not a claim of shipped behavior. Read one language, then only task-relevant code and sections of [Evolution](docs/en/architecture/evolution.md); do not require full-history or full-docs onboarding. Keep settled decisions in that baseline and design rationale in the owning page. Follow [Development](docs/en/contributing/development.md) for task tracking and fresh-session handoff, and [Testing](docs/en/contributing/testing.md) for acceptance evidence; do not append progress history to architecture docs. Preserve the external Prompt assets and explicit Prompt/context/provider boundaries; a core rewrite is not permission to discard them. Branch/worktree creation and implementation remain separate actions from documentation planning.
 
 ## Project map
 
@@ -42,13 +42,13 @@ Release builds use `x86_64-unknown-linux-musl` via `cross` (fully static, no gli
 - **Don't run `cargo fmt` mid-edit.** It shifts line numbers and invalidates previously read files, wasting context on re-reads. Run it once at the end.
 - **`cargo check` is fine mid-edit.** It validates without modifying files. Never `cargo fix`.
 - **Pipe long output through `head` or `tail`.** `cargo test | tail -30` shows failures without burning context on passing tests. Same for `grep -rn` in large repos.
-- **Verify once at the end.** `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server`, then commit.
+- **Verify the changed behavior.** Follow [Testing](docs/en/contributing/testing.md) for required Rust integration checks, explicit feature/live-test selection, and documentation-only checks. Reuse valid results instead of rerunning solely for commit or push.
 
 ## Workflow
 
 1. Read relevant docs and code to understand the change.
 2. Edit. Run `cargo check` as needed. Do not `cargo fmt`.
-3. Verify: `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server`.
+3. Verify: follow [Testing](docs/en/contributing/testing.md), formatting the changed Rust scope once after editing has stopped.
 4. Commit: conventional commits, one per logical chunk. No amend on pushed commits.
 
 ## Cross-platform

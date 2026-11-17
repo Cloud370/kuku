@@ -5,7 +5,7 @@ Use this section for maintainer-facing design: crate boundaries, host structure,
 ## Pages
 
 - [Core Direction — Read First](core-direction.md) — concise target decisions, retained strengths, non-goals, and next usable result
-- [Core Evolution](evolution.md) — optional implementation questions and evidence, not another decision baseline
+- [Core Evolution](evolution.md) — delivery stages, implementation rationale, and acceptance conditions; progress belongs to the development workflow
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [Prompt Assembly](prompt-assembly.md)

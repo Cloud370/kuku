@@ -5,7 +5,7 @@
 ## 页面
 
 - [核心方向 — 先读这一页](core-direction.md) — 精简目标决策、保留的优点、非目标与下一可用结果
-- [核心演进](evolution.md) — 按需读取的实现问题与证据，不是另一套决策基线
+- [核心演进](evolution.md) — 交付阶段、实现依据与验收条件；进度按开发工作流跟踪
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [Prompt Assembly](prompt-assembly.md)

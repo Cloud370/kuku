@@ -1,14 +1,12 @@
-# 核心演进 — 实现说明
+# 核心演进 — 交付计划
 
 ## 用途
 
-[核心方向](core-direction.md)维护产品与架构承诺。本页维护分阶段交付、实现证据和验证细节。现有 [Sessions](../how-it-works/sessions.md)、[Prompt Assembly](prompt-assembly.md) 和 [Module Contracts](module-contracts.md) 描述当前版本，不要求保留耦合的运行时所有权。
+[核心方向](core-direction.md)维护产品与架构承诺。本页维护分阶段交付、实现依据和验收条件。现有 [Sessions](../how-it-works/sessions.md)、[Prompt Assembly](prompt-assembly.md) 和 [Module Contracts](module-contracts.md) 描述当前版本，不要求保留耦合的运行时所有权。
 
-## 当前批次：公开 SDK 执行闭环
+## 交付计划：公开 SDK 执行闭环
 
-2026-11-17 检查点：仅规划／文档。已有集成分支为 `rewrite/core`，工作树在 `/code/kuku-rewrite`，基于 `bacfb7a`；`/code/kuku` 的 main 保留作参照。尚未交付重写运行时、真实模型验收或性能结果。更新本计划不授权启动实现。后续状态与证据维护在本节，不另建平行交接文档。
-
-文档验证：`git diff --check` 以及本地链接／锚点、基线长度、双语结构和技术字面值的只读检查通过。未运行运行时测试。
+本页定义交付目标和验收条件。工作状态与运行结果按[开发工作流](../contributing/development.md)跟踪，不在这里追加日期检查点或进度表。修改规划不等于启动实现。
 
 ### 可观察结果与阶段
 
@@ -31,46 +29,17 @@
 3. 获准并行实现后，以稳定共享接口为前提，最多开启一条存储／恢复线和一条 Step／provider／工具／输出线，明确文件归属，各自使用从同一集成提交创建的工作树。接口仍高度耦合时保持单作者。
 4. 集成负责人整合前检查实际 diff 和验证证据。除非出现新改动或具体失败，否则复用已有通过证据。行为变化时同步更新已有归属文档。
 
-获得实现授权后的下一步，是依据下方证据分配首批接口与文件范围。本次规划更新没有启动开发 Agent。
+首批实现任务依据下方证据确定接口、文件范围及可观察的验收结果。
 
 ### 实现时可决定的事项
 
 Rust 名称／签名、事件封装／schema、队列／输出数值限额、解析器和检查点布局，仍是核心方向约束下的工程选择。宣称有界运行前，记录具体限制和超限行为。改变身份作用域、强制 Task 对象、默认 fork、全局模型联动或削弱持久化，均需明确修改基线。
 
-真实验收在付费调用前仍需确定可用 provider／模型和已有凭据配置。不从编码 Agent 自己使用的模型推断 SDK 凭据，不在文档中放密钥或私有任务正文。这是环境前提，不是未决产品方向。
+### 开发工作流交付
 
-### 协议验收与全新会话交接
+[工作流交付要求](../contributing/development.md#重构中的工作流交付要求)属于同一次重构。阶段 1 包含全新会话交接和可重复的公开 SDK／CLI 验收入口；阶段 2、3 沿用该入口，扩展协议、独立 Agent 和恢复验证。任务报告、测试入口、PR 指引与 CI 应随交付行为一起调整。不等运行时全部完成后才补工作流，也不另建自动化平台。
 
-用户希望由一个全新对话上下文的 Codex 会话实施重构。该会话从上方指定的集成工作树开始，读取其中的 `AGENTS.md`、核心方向和本页相关部分，沿用现有交付阶段。不能改用 main 工作树中的旧基线，也不能依赖读取本次聊天。用户向新会话明确下达实现指令后再开工。
-
-用户选定直连 DeepSeek 的 `deepseek-flash` 作为低成本 benchmark 主力，第二个网关使用 OpenRouter 的 [`deepseek/deepseek-v4.1-flash-1017`](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017)。按 2026-11-17 查阅的文档，两家服务均提供下表中的三条协议路线。这些是测试连接输入，不是新冻结的 SDK 配置名称；本次尚未用付费请求验证端点可用性。
-
-| 服务 | 线路协议 | 基础 URL | 请求后缀 | 来源 |
-|---|---|---|---|---|
-| DeepSeek | Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [首次调用](https://api-docs.deepseek.com/) |
-| DeepSeek | Responses | `https://api.deepseek.com` | `/responses` | [Responses 兼容说明](https://api-docs.deepseek.com/guides/responses_api/) |
-| DeepSeek | Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/) |
-| OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | `/chat/completions` | [快速开始](https://openrouter.ai/docs/quickstart) |
-| OpenRouter | Responses | `https://openrouter.ai/api/v1` | `/responses` | [Responses 参考](https://openrouter.ai/docs/api/api-reference/responses/create-a-response) |
-| OpenRouter | Messages | `https://openrouter.ai/api/v1` | `/messages` | [Messages 参考](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
-
-阶段 1 从 DeepSeek 开始，最迟在阶段 2 交付时完成两家服务上的三种协议验证。每种都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。反复运行的 benchmark 主要使用 DeepSeek；OpenRouter 使用一个固定小任务检查兼容性，不把每个 benchmark 在所有模型／协议组合上重跑。选定组合覆盖同一模型家族的两条接入路径，不代表已覆盖不同模型家族。其他模型家族保留为后续可选验证，不要求首批交付前另购或另选两个模型。委派任务包含直连 DeepSeek 和经 OpenRouter 调用的 Agent，保持独立上下文。
-
-仅验证协议时使用实际支持的最低已开启思考档。DeepSeek 当前的[思考指南](https://api-docs.deepseek.com/guides/thinking_mode/)将该档定义为 `low`；OpenRouter 则核对所选上游支持的设置，按所选 API 编码，不假定所有端点接受同一字段和值。benchmark 的思考档按 case 和预算选择，明确记录，同一对比中保持固定；修改档位另记一轮运行，不在失败后静默升档。这些设置只针对被测模型，不改变执行重构的 Codex 会话及其开发 Agent 的模型策略。
-
-为使 OpenRouter 检查可重复，通过 `provider.order` 选择一个准确的上游端点，设置 `provider.allow_fallbacks = false`、`provider.require_parameters = true`，不使用自动选模或模型回退。其[路由文档](https://openrouter.ai/docs/guides/routing/provider-selection)说明，默认路由可能回退，也可能把不支持的参数传给会忽略它的供应商。记录请求模型、网关、指定路线及可获得的实际上游回报；无法确认时保持未知。这些是测试连接选项，不是全局运行时调度规则。手工指定供应商顺序会覆盖 OpenRouter 的自动粘性路由；固定端点仍可复用自己的缓存。
-
-日常多轮使用建议采用稳定的 `session_id` 或 `x-session-id`、参数支持过滤，以及候选供应商的成本约束，保留自动粘性路由。传输关联由已有 Session／Agent／连接身份派生，跨 Turn、重试和重开保持稳定；不同 Agent 使用不同关联。不新增核心身份，也不在每个 Step 生成新关联。这属于 provider 适配行为，不另建调度器或共享 Agent 对话历史。遵循[提示缓存契约](https://openrouter.ai/docs/guides/best-practices/prompt-caching)：明确会话关联可从首次成功请求建立亲和，供应商失败可能改变路线。文档所述空闲 60 分钟过期指路由亲和，不保证上游缓存存活同样长。稳定路由不能替代不可变的 provider 可见前缀。
-
-OpenRouter 当前默认路由综合考虑有效价格，包括观察到的缓存使用和输入／输出比例，以及性能与可靠性，不承诺单次请求绝对最低价。选择供应商白名单或价格上限前，应按实际工作负载比较未缓存输入、缓存读／写及输出费用。`provider.max_price` 限制可选单价，不是会话总费用上限，运行预算仍需单独约束。可选的 `provider.only` 可缩小候选范围而不手工排序。多轮检查可获得的缓存 token 用量、最终费用和实际路线。这些是需要用所选端点验证的配置建议，不是 kuku 已测得的费用收益。
-
-罕见或不确定出现的错误、批次，以及可能被网关规范化的供应商特有重放数据，使用针对性的原生协议固定输入补充验证。OpenRouter 覆盖属于网关覆盖，不证明同样请求可直连 OpenAI 或 Anthropic 官方端点。具备凭据时增加官方直连检查，但不把开通新账号作为启动重构的前提。准确记录跑过的路径，缺少的真实覆盖标记为未验证。
-
-DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages 兼容层会忽略 `service_tier`、`cache_control` 等选项。HTTP 成功不能证明这些设置已生效。显式不支持的选择必须可见，并区分端点能力和线路协议本身。
-
-已在 Git 之外的 `/code/.secrets/kuku-acceptance.env` 准备本地凭据模板，目录权限为 `700`，文件权限为 `600`，由用户在编辑器中填写。`KUKU_TEST_DEEPSEEK_API_KEY` 保存直连 DeepSeek 的 key，`KUKU_TEST_OPENROUTER_API_KEY` 保存 OpenRouter 单独签发的 key。选定组合只需这两个变量：每家服务的 key 共用于其三个协议，不按协议或模型另设 key。额外独立路线可使用 `KUKU_TEST_RESPONSES_BASE_URL`、`KUKU_TEST_RESPONSES_MODEL`、`KUKU_TEST_RESPONSES_API_KEY`，以及对应的 `KUKU_TEST_MESSAGES_BASE_URL`、`KUKU_TEST_MESSAGES_MODEL`、`KUKU_TEST_MESSAGES_API_KEY` 字段，这些可选字段可以留空。这些是测试输入环境变量名，不是 Codex 内建设置或新的 SDK API。现有[配置参考](../reference/config.md)说明了如何引用环境变量凭据。
-
-测试调用程序明确加载该文件，不回显内容或启用 shell 跟踪；不能假定另一终端的导出变量会延续到新会话。key 不进入提示词、提交文件、命令参数或测试报告，只报告脱敏的连接状态、用量和错误。文件权限不能向使用同一用户身份运行的 Agent 隐藏凭据。这种交接需要相同文件系统与适当访问权；其他主机／云环境需要另行配置凭据。真实调用前取得用户的测试费用预算，再随验收证据记录估算开销和限制。本模板创建时为空，本次文档更新未运行真实 API 测试。
+所选模型、连接输入、凭据及付费测试限额见[真实协议验收](../contributing/testing.md#真实协议验收)。运行记录保存在验收产物中，不写入本设计计划。
 
 ## 现有实现证据
 
@@ -145,7 +114,7 @@ stdout／stderr 经有界缓冲、解析器状态、诊断和视图流式处理�
 
 ## 验证与测量
 
-从成熟 benchmark 选择三到五个 case，不另造评测框架。先做一个成本低的真实 case，再扩展。保留原任务／环境／判定器，记录必要适配。小型清单或适配器属于开发工具，不进入 SDK 运行依赖。[Harbor 任务格式](https://docs.harborframework.com/tasks/overview)可作为候选；目前未选择或运行具体 case。
+从成熟 benchmark 选择三到五个 case，不另造评测框架。先做一个成本低的真实 case，再扩展。保留原任务／环境／判定器，记录必要适配。小型清单或适配器属于开发工具，不进入 SDK 运行依赖。[Harbor 任务格式](https://docs.harborframework.com/tasks/overview)可作为候选。
 
 记录 provider／连接、模型、思考、服务、预算和环境，使比较有意义。检查输出产物、原判定器结果、进程退出状态、已提交执行事实和模型已接纳输入，不断言模型措辞或偶然工具顺序。区分环境／基础设施失败、运行时失败和 Agent 未完成任务。少量 case 用于诊断，不构成排行榜结论。
 
@@ -163,12 +132,12 @@ stdout／stderr 经有界缓冲、解析器状态、诊断和视图流式处理�
 
 测量空闲和活跃内存／CPU、冷打开／恢复、追加与上下文准备延迟、大输出和并发 Agent。区分 SDK 进程、工具和 benchmark 容器的资源。记录未缓存输入、缓存读／写、输出、实际／估算费用和用户可见延迟，区分首次探索与连续工作。不用命中率或累计 token 替代这些成本，不承诺固定 provider 缓存命中率。
 
-仅文档变化运行文档检查。运行时变化执行受影响检查及必要 Rust 集成检查；将受 feature 控制的测试作为验收证据时，必须实际启用它们。命令／结果跟随归属阶段维护，不放密钥或私有日志。本次规划更新没有产生性能测量或运行时验收。
+所需检查、显式 feature 选择和证据报告遵循[测试工作流](../contributing/testing.md)。直接 API 探测不代表 SDK 验收通过。
 
 ## 参考证据与边界
 
 只按相关契约阅读这些材料。它们不定义 kuku 的包结构、SDK 词汇、安全模型或默认调度。
 
 - DSH 本地源码修订 `39163dd30f703a79079e2d2446545cff3c453738`：[Agent loop](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/core/agent-loop/README.md)、[Team](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/team/agent-team/README.md)和[模型能力](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/llm/llm/src/types.ts)。借鉴准备好的请求、生命周期归属、Team 复用普通子 Agent。其展示路径与底层 Session ID 共存；kuku 不照搬双重身份或一切皆插件的装配方式。
-- Anthropic，[Building always-on agents](https://claude.com/resources/articles/building-always-on-agents)，2026-11-13：事件驱动工作与持久等待可以支持长期服务，无需持续推理。其数据库／worker 部署示例不要求 kuku 增加数据库、daemon 或第二套执行器。
+- Anthropic，[Building always-on agents](https://claude.com/resources/articles/building-always-on-agents)：事件驱动工作与持久等待可以支持长期服务，无需持续推理。其数据库／worker 部署示例不要求 kuku 增加数据库、daemon 或第二套执行器。
 - Superagent 原型修订 `8c32a9dc5d72c033816c6a8110b37f40cf94fba4`：[领域模型](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/docs/001-domain.md)、[副作用队列](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/effects.ts)和[设计原则](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/docs/000-philosophy.md)。借鉴工作／执行分离、持久副作用意图、向已有负责人路由和节约注意力的报告方式。其 Ticket／Mandate／Subscription 平台及 GitHub 特有行为留在内核之外。公开仓库是研究代码，不是 kuku 的性能或可靠性结果。

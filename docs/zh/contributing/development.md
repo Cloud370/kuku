@@ -1,49 +1,72 @@
 # Development
 
-本页用于说明这个仓库里贡献者应遵循的工作流。
+本页维护贡献者工作流、任务交接及本次重构的开发工作流要求。[核心方向](../architecture/core-direction.md)维护产品决策，[演进说明](../architecture/evolution.md)维护交付阶段。
 
-## Before editing
+## 编辑前
 
-1. 先阅读相关代码和文档。
-2. 如果任务涉及 `docs/**`、`README.md`、翻译页面、文档主页或文档导航，先阅读 `docs/AGENTS.md`。
-3. 把 `docs/en/**` 下的英文文档视为规范来源。中文页面稍后按相同路径镜像。
+1. 确认目标 checkout、分支、当前提交、工作树改动和活动任务，保留在途工作。
+2. 先读任务目标、范围、依赖和验收条件，再读相关代码及归属文档。核心工作从核心方向开始，不要求通读全部历史或文档。
+3. 修改文档前阅读 `docs/AGENTS.md`。`docs/en/**` 下的英文是规范源，同一次修改同步对应中文页面。
 
-## Working loop
+## 任务记录与进度
 
-1. 做最小且正确的改动。
-2. 编辑过程中按需运行 `cargo check`。
-3. 不要在编辑中途运行 `cargo fmt`。
-4. 在最后统一验证一次。
+选定一个工作跟踪入口，作为当前任务状态的唯一来源。一个任务对应可审阅的结果，不对应每次工具调用或每个源文件。从已有交付阶段开始，仅为可独立验证的工作、依赖关系或独立负责人拆分任务。
 
-## Main commands
+每个活动任务记录预期结果、范围与负责人、依赖、验收条件、当前状态、代码引用、证据位置、存在的阻碍和下一步。省略不适用的字段，已有上下文用链接引用，不重复抄写。区分待做、进行中、受阻和已验证；写出代码本身不等于验证交付。
+
+开工、重要阻碍或决定变化、验证结果以及交接时，更新同一条任务。不逐条上传命令，不持续轮询，不估算缺乏依据的完成百分比。历史细节留在提交、PR 和运行产物中。架构页面不保存进度表或日期流水账。
+
+用户偏好 GitHub 界面。本次重构的建议方案是一个私有 Project 加少量草稿任务；创建该资源与本规划分开。[草稿任务](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project)存在于 Project 内，而非仓库内。私有 Project 不会让关联的公开 Issue 或 PR 变私有，发布前核对[可见性规则](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects)。内部讨论和私有证据保存在访问范围适当的位置。
+
+跟踪入口用于异步协作，不成为构建、测试或 SDK 的依赖。通过已有工具在有意义的节点合并更新。更新失败时说明尚未同步，不宣称已发布。在出现具体需求前，不建立跟踪服务、重复的本地状态看板或 Project 自动化。
+
+## 全新会话交接
+
+重构实现工作树为 `/code/kuku-rewrite`，分支为 `rewrite/core`；`/code/kuku` 的 main 是参照工作树。用户向新会话明确下达实现指令后再开工。读取该工作树的 `AGENTS.md`、选定任务、核心方向和演进说明的相关章节。
+
+任务入口与交接信息应让全新会话找到当前分支／提交、未提交改动、活动进程或负责人、已验证结果及其限制、未完成工作和下一步。续做前核对实际工作树与产物。不依赖旧聊天或旧 Agent 存活，也不重复启动写入者。
+
+凭据加载和本地证据位置由[测试指南](testing.md#凭据与运行产物)维护。交接引用配置，不复制 key 或私有请求正文。
+
+## 工作循环
+
+1. 实现前写清可观察结果和最小验收检查。改变已定承诺时先更新归属设计；普通工程选择不要求另建决策文档。
+2. 实现一个内聚的闭环，复用现有工具与 helper。运行 `cargo check` 或针对性行为检查，解决具体不确定性。
+3. 相关 Rust 文件停止修改后，集中格式化修改范围一次，再按[测试指南](testing.md)完成所需集成检查。没有改动使已有证据失效时，复用通过结果。
+4. 对照任务和证据审阅实际 diff。修复失败，或准确记录缺失验证；跳过真实模型测试不算真实测试通过。
+5. 提交逻辑完整的结果并更新任务。PR 说明问题、最终行为、实际执行的相关检查和重要限制。引用尚未完成的上级任务，不宣称整次重构已经完成。
+
+## 重构中的工作流交付要求
+
+这些要求与[运行时阶段](../architecture/evolution.md#交付计划公开-sdk-执行闭环)一起交付，不表示新工具已经存在。
+
+| 交付边界 | 工作流验收 |
+|---|---|
+| 首个可用 SDK／CLI 闭环 | 全新会话能够找到一个任务，并通过公开入口复现有用结果；一个持续维护的测试入口或小型 case 清单选择相关检查，产出有界、可检查的证据 |
+| 独立 Agent 与协议 | 同一验证路径支持确定性协议固定输入和有预算的真实调用；明确所选模型、能力、用量和缺失覆盖 |
+| 等待与恢复 | 故障／重开检查及资源测量可以重复；全新会话能根据任务、工作树和证据继续未完成的开发，不必重建聊天历史 |
+
+随行为变化调整已有测试 helper、脚本、PR 指引和 CI。移除过时检查，补上 feature 测试被静默漏选等缺口，不仅修改文档中的命令清单。CI 承担支持平台的矩阵检查，本地开发使用针对性反馈和所需集成检查。
+
+实现保持精简：不要求服务、通用工作流框架、一串强制 Skill、每任务新报告文件或每条编辑规则对应一个检查。重要不变量在自动检查能够捕获具体错误时落实为检查。长期理由保留在归属设计中，任务历史留在任务记录中。
+
+## 主要命令
 
 ```bash
 cargo check
 cargo test -p kuku -p kuku-cli -p kuku-server
 cargo clippy -- -D warnings
-cargo fmt --all
+cargo fmt --all -- --check
 make build
 make release-linux
 ```
 
-日常开发使用默认的 glibc target。仅在发布打包时使用 musl 发布路径。
+这些是已有入口，不证明已覆盖全部重构验收路径。feature 选择和真实调用前提由测试指南维护。日常开发使用默认 glibc target，musl 路径仅用于发布打包。
 
-## Documentation workflow
+## Git 与平台规则
 
-- 面向公开运行时行为的内容放在 `how-it-works/`。
-- 精确命令、格式和配置事实放在 `reference/`。
-- 内部结构和边界放在 `architecture/`。
-- 贡献者工作流和仓库规则放在 `contributing/`。
-- 一条事实只在一个规范页面里完整定义，其他页面用链接引用。
+使用 conventional commits，每个提交对应一个逻辑变更。不 amend 已推送提交。集成规则遵循[代码风格](code-style.md)，发布遵循[发布指南](release.md)。
 
-## Git expectations
+默认面向 Linux、Windows 10+ 和 macOS。产品代码避免 shell 特定行为，使用 `std::path::Component` 而非字符串切片规范化路径。
 
-- 使用 conventional commit message。
-- 每个 commit 只包含一个逻辑变更。
-- 不要 amend 已经 push 的 commit。
-
-## Cross-platform rule
-
-默认面向 Linux、Windows 10+ 和 macOS。在产品代码中避免 shell 特定行为。使用 `std::path::Component` 规范化路径，而不是字符串切片。
-
-把 [Code Style](code-style.md)、[Testing](testing.md) 和 [Release](release.md) 作为具体工作规则。
+本工作流借鉴 [DSH 文档规则](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/docs/AGENTS.md)与[测试策略](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/docs/testing.md)对当前规范、任务状态和证据的区分。其庞大的笔记生命周期和 Project 自动化不是 kuku 的前提。

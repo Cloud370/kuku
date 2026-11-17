@@ -2,7 +2,7 @@
 
 ## Status and reading contract
 
-Design baseline: 2026-11-17. This is the canonical target for the rewrite, not shipped behavior. It supersedes hierarchical `/root/...` identities, a mandatory root-owned execution tree, CLI adaptation deferred beyond the first usable result, and blanket bans on small rebuildable indexes. Existing guides and code describe the current release.
+This is the canonical target for the rewrite, not shipped behavior. Existing guides and code describe the current release.
 
 Read this page first, then only task-relevant code and [Evolution](evolution.md). Keep this page under 100 lines and replace superseded decisions instead of appending discussion history. English is canonical; keep the Chinese structure aligned. Documentation approval does not start implementation.
 
@@ -78,8 +78,10 @@ Do not start with all-plugin composition, hot-swappable loops, generic event mid
 
 ## Delivery and engineering choices
 
-The existing release has one user and no continued-maintenance obligation. **No old-API, old-address, or old-Session-format compatibility layer is required.** Preserve useful code and data; this does not authorize deleting user files. Branch/worktree status, staged scope, and evidence live in [Evolution](evolution.md#active-batch-public-sdk-execution-slice).
+The existing release has one user and no continued-maintenance obligation. **No old-API, old-address, or old-Session-format compatibility layer is required.** Preserve useful code and data; this does not authorize deleting user files. Staged scope and acceptance conditions live in [Evolution](evolution.md#delivery-plan-public-sdk-execution-slice).
 
 Deliver real single-Agent work through the public SDK and a thin CLI first, then early independent Agents using different providers, then durable waiting and small external-orchestration examples. Choose a few mature benchmark cases with their original verifiers, plus focused contract tests. Do not build a benchmark platform or demand an architecture-proof phase before useful execution.
+
+**Rebuild the development workflow alongside the runtime.** A fresh coding session must be able to pick up scoped work, reproduce validation, report evidence, and leave a reliable handoff without prior chat history. Keep progress out of architecture prose, preserve private work records, and keep tracking and test tooling lightweight. [Development](../contributing/development.md) owns this workflow; it is not a runtime dependency.
 
 Ownership, identity, admission, configuration scope, durable effects, and resource limits are the target commitments. Exact Rust signatures, event schemas, numeric limits, parsers, selected cases, and checkpoint choices are engineering decisions within them. Change this baseline explicitly if evidence requires a different commitment; do not infer a new direction from one reference implementation.

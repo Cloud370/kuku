@@ -1,14 +1,12 @@
-# Core Evolution — Implementation Notes
+# Core Evolution — Delivery Plan
 
 ## Purpose
 
-[Core Direction](core-direction.md) owns product and architecture commitments. This page owns staged delivery, implementation evidence, and validation details. Existing [Sessions](../how-it-works/sessions.md), [Prompt Assembly](prompt-assembly.md), and [Module Contracts](module-contracts.md) describe the current release; they are not a requirement to retain coupled runtime ownership.
+[Core Direction](core-direction.md) owns product and architecture commitments. This page owns staged delivery, implementation rationale, and acceptance conditions. Existing [Sessions](../how-it-works/sessions.md), [Prompt Assembly](prompt-assembly.md), and [Module Contracts](module-contracts.md) describe the current release; they are not a requirement to retain coupled runtime ownership.
 
-## Active batch: public-SDK execution slice
+## Delivery plan: public-SDK execution slice
 
-Checkpoint 2026-11-17: planning/documentation only. The existing integration branch is `rewrite/core` in `/code/kuku-rewrite`, based on `bacfb7a`; `/code/kuku` on main remains a reference. No rewrite runtime, real-model acceptance, or performance result has been delivered. Updating this plan does not authorize implementation. Keep subsequent status and evidence here, not in parallel handoff documents.
-
-Documentation validation: `git diff --check` and read-only checks of local links/anchors, baseline length, bilingual structure, and technical literals passed. No runtime tests were run.
+This page defines delivery targets and their acceptance conditions. Track work state and run results through the [development workflow](../contributing/development.md), without adding dated checkpoints or progress tables here. Planning changes do not start implementation.
 
 ### Observable result and stages
 
@@ -31,46 +29,17 @@ The first stage includes a minimal local CLI; full interactive polish and other 
 3. Parallel implementation, when authorized, follows a stable shared interface: at most one storage/recovery line and one Step/provider/tool/output line, with explicit file ownership. Each uses its own worktree from the same integration commit. If the interface is still tightly coupled, keep one author.
 4. The integration owner reviews actual diffs and verification evidence before integration. Reuse passing evidence unless new changes or specific failures justify more checks. Update the existing owning documents alongside changed behavior.
 
-The next implementation action, after authorization, is to use the evidence below to assign the first interface and file scope. No development agents were started by this planning update.
+The first implementation task uses the evidence below to define the interface and file scope, together with its observable acceptance result.
 
 ### What may be decided during implementation
 
 Rust names/signatures, event framing/schema, numeric queue/output limits, parser choices, and checkpoint layout remain engineering choices under Core Direction. Record concrete limits and overflow behavior before claiming bounded operation. A different identity scope, mandatory Task object, fork default, global model mutation, or weaker durability requires an explicit baseline change.
 
-Live acceptance still needs an available provider/model and existing credential configuration before paid calls. Do not infer SDK credentials from the coding agent's own model, and do not put secrets or private task payloads into documentation. This is an environment prerequisite, not an unresolved product direction.
+### Development workflow delivery
 
-### Protocol acceptance and fresh-session handoff
+The [workflow deliverables](../contributing/development.md#workflow-deliverables-for-the-rewrite) are part of the same rewrite. Stage 1 includes fresh-session handoff and a repeatable public-SDK/CLI acceptance path; stages 2 and 3 extend that path for protocols, independent Agents, and recovery. Align task reporting, test entrypoints, PR guidance, and CI with the delivered behavior. Do not defer the workflow until the runtime is complete or create a separate automation platform.
 
-The user wants a new Codex session with fresh conversation context to perform the implementation. That session starts in the integration worktree identified above, reads its `AGENTS.md`, Core Direction, and the relevant parts of this page, and follows the existing delivery stages. It must not substitute the main worktree's older baseline or depend on this conversation being available. Implementation begins with the user's explicit instruction to that new session.
-
-The user selected direct DeepSeek `deepseek-flash` as the main low-cost benchmark model and OpenRouter's [`deepseek/deepseek-v4.1-flash-1017`](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017) for the second gateway. As documented on 2026-11-17, each service exposes the three protocol routes below. These are test connection inputs, not newly frozen SDK configuration names; endpoint availability has not been verified with a paid request here.
-
-| Service | Wire protocol | Base URL | Request suffix | Source |
-|---|---|---|---|---|
-| DeepSeek | Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [First call](https://api-docs.deepseek.com/) |
-| DeepSeek | Responses | `https://api.deepseek.com` | `/responses` | [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api/) |
-| DeepSeek | Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages compatibility](https://api-docs.deepseek.com/guides/anthropic_api/) |
-| OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | `/chat/completions` | [Quickstart](https://openrouter.ai/docs/quickstart) |
-| OpenRouter | Responses | `https://openrouter.ai/api/v1` | `/responses` | [Responses reference](https://openrouter.ai/docs/api/api-reference/responses/create-a-response) |
-| OpenRouter | Messages | `https://openrouter.ai/api/v1` | `/messages` | [Messages reference](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
-
-Start with DeepSeek in stage 1 and exercise the three protocols on both services before declaring stage 2 complete. Each needs streaming output, a real tool-call/result continuation, multi-turn context, and available usage/settings reporting. Keep repeated benchmark runs primarily on DeepSeek; use a small fixed task for OpenRouter compatibility checks rather than rerunning every benchmark on every model/protocol combination. The selected pair covers two access paths within the same model family; it does not establish cross-family model coverage. Additional model families remain optional follow-up validation, not a requirement to buy or select two other models before the initial delivery. Include a delegated task using direct DeepSeek and an OpenRouter-backed Agent with independent contexts.
-
-For protocol-only checks, use the lowest supported enabled reasoning effort. DeepSeek currently documents `low` as that effort in its [thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/); validate the chosen OpenRouter upstream's supported settings and encode them for the selected API rather than assuming all endpoints accept the same fields or values. Benchmark effort is chosen for the case and budget, recorded explicitly, and kept fixed within a comparison. Changes require a separately identified run, not silent escalation after failure. These settings apply to models under test, not to the implementing Codex session's or its development agents' model policies.
-
-For repeatable OpenRouter checks, select one exact upstream endpoint through `provider.order`, set `provider.allow_fallbacks = false` and `provider.require_parameters = true`, and avoid automatic model selection or model fallback. Its [routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) explains that default routing can otherwise fall back or pass unsupported parameters to a provider that ignores them. Record requested model, gateway, selected route, and reported upstream when available; an unavailable confirmation remains unknown. These are test connection options, not global runtime scheduling rules. Manual provider ordering overrides OpenRouter's automatic sticky routing; a fixed endpoint can still reuse its cache.
-
-For ordinary multi-turn use, the recommended OpenRouter configuration is a stable `session_id` or `x-session-id`, supported-parameter filtering, and cost constraints on the eligible providers, leaving automatic sticky routing active. Derive the transport correlation from existing Session/Agent/connection identity and preserve it across Turns, retries, and reopen; separate Agents keep separate correlations. Do not create a new core identity or generate a fresh correlation on each Step. This is provider-adapter behavior, not a new scheduler or shared Agent transcript. Follow the [prompt-caching contract](https://openrouter.ai/docs/guides/best-practices/prompt-caching): explicit session correlation enables affinity from the first successful request; provider failure can change the route. The documented 60-minute inactivity expiry concerns routing affinity, not a guarantee of the upstream cache's lifetime. Stable routing does not replace immutable provider-visible prefixes.
-
-OpenRouter's current default routing weighs effective price, including observed cache usage and input/output mix, alongside performance and reliability. It does not promise the cheapest request. Before choosing a provider allowlist or price caps, compare uncached input, cache-read/write, and output charges for the actual workload. `provider.max_price` limits eligible unit prices, not total session spend; maintain a separate run budget. Optional `provider.only` can restrict candidates without manually ordering them. Check available cached-token usage, final cost, and actual route over multiple turns. These are configuration recommendations to validate with the selected endpoints, not measured cost savings for kuku.
-
-Use focused native-protocol fixtures for rare or nondeterministic errors, batching, and provider-specific replay data that a gateway may normalize. OpenRouter coverage is gateway coverage; it is not evidence that the same requests work against official OpenAI or Anthropic endpoints. Direct official routes remain useful additional checks when credentials are available, without making new accounts a prerequisite for starting the rewrite. Record exactly which paths ran, and mark missing live coverage as unverified.
-
-DeepSeek Responses is stateless and does not support `previous_response_id`; its Messages compatibility layer ignores options including `service_tier` and `cache_control`. A successful HTTP response cannot prove those settings took effect. Keep unsupported explicit choices visible and distinguish these endpoint capabilities from the wire protocol itself.
-
-A local credential template has been prepared outside Git at `/code/.secrets/kuku-acceptance.env`, with directory mode `700` and file mode `600`. The user fills it in an editor. `KUKU_TEST_DEEPSEEK_API_KEY` holds the direct DeepSeek key; `KUKU_TEST_OPENROUTER_API_KEY` holds a separate key issued by OpenRouter. These two variables are sufficient for the selected pair: each service's key is reused across its three protocols, with no extra key per protocol or model. Additional independent routes can use `KUKU_TEST_RESPONSES_BASE_URL`, `KUKU_TEST_RESPONSES_MODEL`, `KUKU_TEST_RESPONSES_API_KEY`, and the matching `KUKU_TEST_MESSAGES_BASE_URL`, `KUKU_TEST_MESSAGES_MODEL`, `KUKU_TEST_MESSAGES_API_KEY` fields; those optional fields may remain empty. These are test-input environment names, not built-in Codex settings or a new SDK API. The existing [config reference](../reference/config.md) explains environment-backed credentials.
-
-The test caller explicitly loads the file without echoing it or enabling shell tracing; do not assume another shell's exports survive into a new session. Keep keys out of prompts, committed files, command arguments, and test reports; report only sanitized connection status, usage, and failures. File permissions do not hide credentials from an Agent running as the owning user. This handoff requires the same filesystem and appropriate access; another host/cloud environment needs its own secret provisioning. Obtain the user's paid-test budget before live calls, then record spend estimates and limits with the acceptance evidence. The template was created empty, and no live API tests were run during this documentation update.
+Use the [live protocol acceptance](../contributing/testing.md#live-protocol-acceptance) for selected models, connection inputs, credentials, and paid-test limits. Run records belong to verification artifacts, not this design plan.
 
 ## Existing implementation evidence
 
@@ -145,7 +114,7 @@ The local default entry selects the trusted-local policy described in Core Direc
 
 ## Validation and measurements
 
-Pick three to five cases from a mature benchmark rather than building a new evaluation framework. Start with one inexpensive real case, then expand. Keep the original task/environment/verifier and record any adaptation. A small manifest or adapter belongs to development tooling, not the SDK runtime dependency graph. The [Harbor task format](https://docs.harborframework.com/tasks/overview) is one candidate format; no particular case has been selected or run.
+Pick three to five cases from a mature benchmark rather than building a new evaluation framework. Start with one inexpensive real case, then expand. Keep the original task/environment/verifier and record any adaptation. A small manifest or adapter belongs to development tooling, not the SDK runtime dependency graph. The [Harbor task format](https://docs.harborframework.com/tasks/overview) is one candidate format.
 
 Record provider/connection, model, reasoning, service, budgets, and environment so comparisons are meaningful. Inspect output artifacts, original verifier results, process exit status, committed execution facts, and admitted model input. Do not assert model wording or incidental tool order. Separate setup/infra failure, runtime failure, and an agent failing the task. A tiny case set is diagnostic, not a leaderboard claim.
 
@@ -163,12 +132,12 @@ Use the real storage, authorization, and execution path where possible; replace 
 
 Measure idle and active memory/CPU, cold open/recovery, append and context preparation latency, large-output behavior, and concurrent Agents. Separate SDK process use from tools and benchmark containers. Record uncached input, cache reads/writes, output, actual/estimated cost, and user-visible latency; distinguish first exploration from continued work. Do not substitute a cache-hit percentage or cumulative token count for these costs, and never promise a fixed provider cache hit rate.
 
-Run documentation checks for documentation-only changes. For runtime changes, run affected checks plus the required Rust integration checks; feature-gated tests must actually be enabled when they are the acceptance evidence. Keep commands/results with the owning stage, without secrets or private logs. No measurements or runtime acceptance have been produced by this planning update.
+Follow the [testing workflow](../contributing/testing.md) for required checks, explicit feature selection, and evidence reporting. A direct API probe does not establish SDK acceptance.
 
 ## Reference evidence and limits
 
 Read these only for the relevant contract. They do not define kuku's package layout, SDK vocabulary, security model, or default scheduling.
 
 - DSH local source revision `39163dd30f703a79079e2d2446545cff3c453738`: [Agent loop](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/core/agent-loop/README.md), [Team](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/team/agent-team/README.md), and [model capabilities](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/llm/llm/src/types.ts). Borrow prepared requests, lifecycle ownership, and Team reuse of ordinary subagents. Its display paths coexist with underlying Session IDs; kuku does not copy that dual identity or all-plugin assembly.
-- Anthropic, [Building always-on agents](https://claude.com/resources/articles/building-always-on-agents), 2026-11-13: event-driven work and durable waits support long-lived service without continuous inference. Its database/worker deployment examples do not require kuku to add a database, daemon, or second executor.
+- Anthropic, [Building always-on agents](https://claude.com/resources/articles/building-always-on-agents): event-driven work and durable waits support long-lived service without continuous inference. Its database/worker deployment examples do not require kuku to add a database, daemon, or second executor.
 - Superagent prototype revision `8c32a9dc5d72c033816c6a8110b37f40cf94fba4`: [domain](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/docs/001-domain.md), [effects](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/effects.ts), and [philosophy](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/docs/000-philosophy.md). Borrow work/execution separation, durable side-effect intent, routing to existing owners, and attention-aware reporting. Keep its Ticket/Mandate/Subscription platform and GitHub-specific behavior outside the kernel. The public repository is research code, not a performance or reliability result for kuku.
