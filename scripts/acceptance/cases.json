@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "source": {
+    "name": "Terminal-Bench 2.0",
+    "repository": "https://github.com/harbor-framework/terminal-bench-2.git",
+    "revision": "2fd12b88aafdd04a52c298e3940bcb189f9766d6",
+    "format": "https://docs.harborframework.com/tasks/overview"
+  },
+  "cases": [
+    {
+      "id": "cancel-async-tasks",
+      "role": "first live programming case: bounded async concurrency and cancellation cleanup",
+      "workspace": "/app",
+      "artifacts": ["/app/run.py"],
+      "timeout_sec": 900
+    },
+    {
+      "id": "log-summary-date-ranges",
+      "role": "extension: inspect real input files and produce a checked CSV",
+      "workspace": "/app",
+      "artifacts": ["/app/summary.csv"],
+      "timeout_sec": 900
+    },
+    {
+      "id": "openssl-selfsigned-cert",
+      "role": "extension: command execution, file permissions and a Python checker",
+      "workspace": "/app",
+      "artifacts": ["/app/ssl", "/app/check_cert.py"],
+      "timeout_sec": 900
+    },
+    {
+      "id": "regex-log",
+      "role": "extension: produce a checked regular expression for adversarial log inputs",
+      "workspace": "/app",
+      "artifacts": ["/app/regex.txt"],
+      "timeout_sec": 900
+    }
+  ]
+}

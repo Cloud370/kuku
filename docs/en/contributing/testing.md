@@ -4,17 +4,27 @@ This page owns verification entrypoints, live-test configuration, and evidence r
 
 ## Verification selection
 
-Match checks to the changed behavior. Use focused checks while editing, then run the required Rust integration checks once for a runtime integration batch:
+Match checks to the changed behavior. The maintained selector uses Python 3.10+ and writes bounded evidence under the ignored `benchmarks/acceptance/` directory:
+
+```bash
+python3 scripts/acceptance/run.py contract
+python3 scripts/acceptance/run.py protocol
+python3 scripts/acceptance/run.py integration
+```
+
+`contract` runs SDK, CLI, and server tests with `kuku/test_support` enabled, including the gated runtime suites. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. CI runs the same contract selection on Linux, macOS, and Windows and retains its bounded evidence. The legacy embedded-host compilation check remains separate; live models and Linux benchmark containers are explicitly selected local checks.
+
+Use focused checks while editing, then run the required Rust integration checks once for a runtime integration batch. Equivalent direct commands are:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy -- -D warnings
-cargo test -p kuku -p kuku-cli -p kuku-server
+cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
+cargo test -p kuku -p kuku-cli -p kuku-server --features kuku/test_support
 ```
 
 Format the edited Rust scope after its writers have stopped, before the read-only format check. Use `cargo check` for fast feedback during editing. Do not repeat a passing check solely because commit or push follows; rerun when changed code, configuration, or integration invalidates its evidence. Documentation-only work uses the documentation checks below.
 
-The default test command does not select every suite. The current feature-gated integration suites require:
+The old default test command without `test_support` does not select every suite. To focus just the gated runtime integrations:
 
 ```bash
 cargo test -p kuku --features test_support --test provider_integration --test query_runtime --test cache_runtime_notices
@@ -36,9 +46,28 @@ Check changed files, command exit status, durable facts, and resource cleanup in
 
 Unit tests remain in `#[cfg(test)] mod tests`; integration tests stay under `tests/` by domain, with shared helpers in `tests/common/mod.rs`. Reuse existing callers and fixtures. The rewrite should provide one maintained entrypoint or small case manifest for selecting contract, replay, live, and benchmark checks, without building an evaluation platform.
 
-A run record identifies the code/tree state, case and verifier, command, enabled features, environment, effective model/settings, approved budget, result, and artifact locations. Report selected/passed/failed/skipped coverage and distinguish infrastructure failure, runtime failure, and failure of the Agent to solve the task. Detailed output stays in bounded artifacts; the task or PR carries the concise conclusion and evidence reference. Never print keys or private request bodies.
+A selector run produces one `result.json` with the commit, dirty state and tracked-diff hash, selected commands/features, exit statuses, duration, and evidence paths. Each command retains at most 64 KiB of redacted output, its original byte count and hash, and an explicit truncation flag. Timeouts terminate the owned process group on POSIX or request process-tree termination on Windows; incomplete capture is a failure. Windows descendant cleanup after an already exited parent remains unverified locally. Add the caller's effective model/settings, usage and durable Session references when reporting live work; command success alone does not establish those facts.
+
+Report selected/passed/failed/skipped coverage and distinguish infrastructure failure, runtime failure, and failure of the Agent to solve the task. Detailed output stays in bounded artifacts; the task or PR carries the concise conclusion and evidence reference. Never print keys or private request bodies. Test the selector itself without credentials using `python3 -m unittest discover -s scripts/acceptance -p 'test_*.py'`.
 
 For routing comparisons, hold the model, reasoning, workload, and budget fixed. Separate cold requests from continued conversations, preserve a stable per-conversation correlation, and compare reported cost, cached/uncached input, output, actual route, time to first output, and completion latency. Provider names alone do not prove endpoint identity or cache retention; a few synthetic turns do not establish a globally optimal route.
+
+## Original benchmark tasks
+
+[`scripts/acceptance/cases.json`](../../../scripts/acceptance/cases.json) owns the small case selection and full upstream commit. It selects Terminal-Bench 2.0's `cancel-async-tasks` first, followed by `log-summary-date-ranges`, `openssl-selfsigned-cert`, and `regex-log`. The original instruction, Docker build context, solution and verifier remain unchanged. [Harbor's task contract](https://docs.harborframework.com/tasks/overview) permits using these self-contained tasks without installing another evaluation framework.
+
+List the selection, then check one environment before spending model budget:
+
+```bash
+python3 scripts/acceptance/run.py list
+python3 scripts/acceptance/run.py --run-id cancel-environment benchmark --case cancel-async-tasks --mode preflight
+```
+
+The Linux/Docker preflight checks out the fixed source into ignored `benchmarks/sources/`, records task-file/verifier SHA-256 hashes and the built image ID, and creates two fresh containers. The untouched environment must execute collected tests and fail; the original oracle must execute the same original `tests/test.sh` and pass. A zero reward without a collected test report is an infrastructure failure. The verifier still installs its original pinned dependencies; download failures are not task failures and require a separately identified retry. The runner uses the task's original one-CPU/2 GiB limits and working directory and removes its own containers, reporting cleanup failures.
+
+For a live attempt, build the public `session_task` example, then select `benchmark --mode live` with `--sdk-binary`, `--config`, `--connection` and the budget arguments below. Additional bounded caller arguments follow `--`. The binary and its resolved Linux shared libraries are copied into a separate runtime mount; this necessary host adaptation is hashed in the evidence. Only the original instruction and task environment are available during Agent execution. The solution is never supplied, and hidden tests are copied in only after execution. Session data remains in the attempt's `session-data/`; expected task artifacts are listed in the manifest.
+
+The original reward, collected/passed/failed test counts, SDK exit status, and cleanup result are recorded separately. Expected task artifacts are retained before grading, up to 32 MiB each; missing or oversized evidence cannot pass the live acceptance record. Independently inspect the SDK result and durable tool/model facts before accepting a live result. While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; these samples do not establish idle-Agent footprint, cold-open/recovery, append/context preparation, or concurrent-Agent measurements. Record those from the relevant SDK checks rather than attributing whole-container measurements to the SDK.
 
 ## Live protocol acceptance
 
@@ -75,6 +104,17 @@ The caller explicitly loads the file without echoing it or enabling shell tracin
 
 Record the user-authorized request/spend scope, model/settings, output limits, timeout, and retry policy before paid tests. Enforce the applicable limits, including retries. Configuration limits are not fresh authorization to repeat a completed test allowance. Do not infer credentials from the coding Agent's model or silently increase reasoning/budget after a failure.
 
+`benchmarks/acceptance/budget.json` is the single local cost ledger for this rewrite. Initialize it once against the user's task authorization; do not recreate it to reset spending:
+
+```bash
+python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show
+```
+
+Both `live` and `benchmark --mode live` require `--reserve-usd` and `--reservation-reason`. Before launching a paid process the selector locks the ledger and reserves a conservative upper bound covering maximum requests, input/output tokens, provider prices, and all retries. Its `live` command runs the supplied public SDK/CLI caller after `--`, with credentials loaded explicitly from `--secrets`; it is not an HTTP connectivity probe. The caller must enforce the request/token/retry bounds used in the reservation. A price cap or ledger reservation alone does not bound a model loop.
+
+Unfinished, failed or missing-usage runs keep their full reservation charged, including across interruption and restart. The selector does not automatically rerun paid commands. Release unused reservation only after inspecting evidence, using `budget settle --entry RUN_ID --cost-usd AMOUNT --basis provider_reported|token_estimate --evidence PATH`. Keep provider-reported cost, token-based estimates and conservative upper bounds distinct. Use `budget show` before another request; insufficient remaining authorization prevents launch. A repeated run needs a new run ID and another reservation within the same authorization.
+
 The sanitized local preflight and routing report is `benchmarks/provider-preflight.json` in the existing ignored development-output directory. Inspect its scope and coverage before repeating calls. It is not committed or guaranteed to exist in another checkout, and direct API results are not rewrite-runtime acceptance. Keep run timestamps and per-request details in such artifacts, not architecture or contributor prose.
 
 ## Documentation checks
@@ -83,4 +123,4 @@ Read back the changed pages and check local links/anchors, bilingual structure a
 
 ## Zero warnings
 
-`cargo clippy -- -D warnings` remains required for the Rust integration checks. Explain necessary lint allowances at the owning code location. See [Code Style](code-style.md) for code-level rules.
+The workspace/all-target Clippy command above requires zero warnings. Explain necessary lint allowances at the owning code location. See [Code Style](code-style.md) for code-level rules.

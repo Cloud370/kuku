@@ -4,17 +4,27 @@
 
 ## 选择验证范围
 
-按改动行为选择检查。编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查：
+按改动行为选择检查。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
+
+```bash
+python3 scripts/acceptance/run.py contract
+python3 scripts/acceptance/run.py protocol
+python3 scripts/acceptance/run.py integration
+```
+
+`contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。旧有嵌入宿主编译检查单独保留；真实模型和 Linux benchmark 容器是需明确选择的本地检查。
+
+编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查。等价的直接命令为：
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy -- -D warnings
-cargo test -p kuku -p kuku-cli -p kuku-server
+cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
+cargo test -p kuku -p kuku-cli -p kuku-server --features kuku/test_support
 ```
 
 相关写入者停止修改后，先格式化修改的 Rust 范围，再运行只读格式检查。编辑中可用 `cargo check` 快速反馈。不因随后要提交或推送就重复通过的检查；代码、配置或集成变化使证据失效时再补测。纯文档改动使用下方的文档检查。
 
-默认测试命令不会选择所有套件。当前受 feature 控制的集成套件需要：
+不带 `test_support` 的旧默认测试命令不会选择所有套件。只检查受 feature 控制的运行时集成时使用：
 
 ```bash
 cargo test -p kuku --features test_support --test provider_integration --test query_runtime --test cache_runtime_notices
@@ -36,9 +46,28 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
 
-运行记录标识代码／工作树状态、case 与判定器、命令、启用的 feature、环境、有效模型／设置、获准预算、结果和产物位置。报告已选择／通过／失败／跳过的覆盖，区分基础设施失败、运行时失败和 Agent 未完成任务。详细输出保存在有界产物中，任务或 PR 只携带简明结论与证据引用。不打印 key 或私有请求正文。
+每次选择运行生成一个 `result.json`，包含提交、未提交状态及已跟踪差异的 hash、所选命令／feature、退出状态、耗时和证据位置。每个命令最多保留 64 KiB 脱敏输出，同时记录原始字节数、hash 和明确的截断标记。超时会在 POSIX 清理所属进程组，在 Windows 请求终止进程树；未完整采集视为失败。父进程已经退出后的 Windows 后代清理尚未经本机验证。报告真实任务时补充调用程序的有效模型／设置、用量和持久 Session 引用；仅命令成功不能证明这些事实。
+
+报告已选择／通过／失败／跳过的覆盖，区分基础设施失败、运行时失败和 Agent 未完成任务。详细输出保存在有界产物中，任务或 PR 只携带简明结论与证据引用。不打印 key 或私有请求正文。无需凭据即可检查选择入口自身：`python3 -m unittest discover -s scripts/acceptance -p 'test_*.py'`。
 
 路由对比保持模型、思考档、工作负载和预算固定。区分冷请求与连续会话，保持每个会话关联稳定，比较回报费用、缓存／未缓存输入、输出、实际路线、首段输出时间及完成延迟。供应商名称本身不能证明端点身份或缓存保留；少量合成对话不证明全局最优路线。
+
+## 原始 benchmark 任务
+
+[`scripts/acceptance/cases.json`](../../../scripts/acceptance/cases.json)维护少量 case 的选择和上游完整提交。先选择 Terminal-Bench 2.0 的 `cancel-async-tasks`，再扩展到 `log-summary-date-ranges`、`openssl-selfsigned-cert` 和 `regex-log`。原任务、Docker 构建上下文、solution 和判定器保持不变。[Harbor 任务契约](https://docs.harborframework.com/tasks/overview)允许直接使用这些独立任务，无需安装另一套评测框架。
+
+列出所选任务，在花费模型预算前先检查一个环境：
+
+```bash
+python3 scripts/acceptance/run.py list
+python3 scripts/acceptance/run.py --run-id cancel-environment benchmark --case cancel-async-tasks --mode preflight
+```
+
+Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`，记录任务文件／判定器 SHA-256 hash 和构建镜像 ID，并创建两个全新容器。未修改环境必须实际收集并运行测试且失败；原 oracle 必须使用同一个原始 `tests/test.sh` 并通过。没有已收集测试报告的零 reward 属于基础设施失败。判定器仍安装原有的固定版本依赖；下载失败不算任务失败，重试要使用独立运行标识。入口沿用任务原有的单 CPU／2 GiB 限额和工作目录，移除自己创建的容器并报告清理失败。
+
+真实尝试先构建公开 `session_task` 示例，再选择 `benchmark --mode live`，提供 `--sdk-binary`、`--config`、`--connection` 及下方的预算参数。调用程序的其他有界参数放在 `--` 后。二进制及其解析出的 Linux 动态库复制到独立运行时挂载；证据记录这一必要宿主适配的 hash。Agent 执行时只能访问原任务指令和环境，不提供 solution，隐藏测试在执行结束后才复制进容器。Session 数据保留在该次尝试的 `session-data/`；预期任务产物列于清单。
+
+原 reward、收集／通过／失败测试数、SDK 退出状态与清理结果分别记录。预期任务产物在判定前保存，每个上限 32 MiB；证据缺失或过大不能通过真实验收记录。接纳真实结果前独立检查 SDK 结果及持久工具／模型事实。SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`。这些样本不能证明空闲 Agent 占用、冷打开／恢复、追加／上下文准备或并发 Agent 测量。后者从相关 SDK 检查记录，不把整容器数据归因于 SDK。
 
 ## 真实协议验收
 
@@ -75,6 +104,17 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 
 付费测试前记录用户授权的请求／费用范围、模型／设置、输出限制、超时和重试策略。执行包括重试在内的适用限额。配置中的上限不构成再次使用已完成测试额度的新授权。不要从编码 Agent 的模型推断凭据，也不要失败后静默增加思考档或预算。
 
+`benchmarks/acceptance/budget.json` 是本次重构唯一的本地费用台账。按用户的任务授权初始化一次，不通过重建台账清零费用：
+
+```bash
+python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show
+```
+
+`live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环。
+
+未完成、失败或缺失用量的运行按完整预留记账，中断及重启后仍然保留。入口不会自动重跑付费命令。检查证据后，才能通过 `budget settle --entry RUN_ID --cost-usd AMOUNT --basis provider_reported|token_estimate --evidence PATH` 释放多余预留。区分 provider 回报费用、按 token 估算和保守上界。再次请求前运行 `budget show`；授权余额不足会阻止启动。重复尝试需要新运行标识，并在同一授权内另作预留。
+
 脱敏的本地预检与路由报告位于已有忽略开发输出目录中的 `benchmarks/provider-preflight.json`。重复调用前先检查其范围和覆盖。该文件未提交，不保证其他 checkout 中存在，直接 API 结果不代表重写运行时已验收。运行时间和逐请求细节保存在此类产物中，不写入架构或贡献者规范正文。
 
 ## 文档检查
@@ -83,4 +123,4 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 
 ## 零警告
 
-Rust 集成检查仍要求 `cargo clippy -- -D warnings`。必要的 lint 放行在对应代码位置解释。代码级规则见[代码风格](code-style.md)。
+上述 workspace／all-target Clippy 命令要求零警告。必要的 lint 放行在对应代码位置解释。代码级规则见[代码风格](code-style.md)。

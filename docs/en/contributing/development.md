@@ -26,6 +26,8 @@ The rewrite implementation checkout is `/code/kuku-rewrite` on `rewrite/core`; `
 
 The task locator and handoff must let a fresh session identify the current branch/commit, any uncommitted work, active processes or owners, verified results and their limits, unresolved work, and next action. Confirm the actual checkout and artifacts before continuing. Do not require the previous chat or an old Agent to remain available, and do not start duplicate writers.
 
+The local locator for this rewrite is ignored `benchmarks/rewrite-state.json`. It points to the selected private Project and task identifiers; task status stays in that Project. Preserve the locator and follow its references rather than creating a second board. It may be absent in another checkout, so carry the tracker reference in the assigned task. Keep reproducible commands in the maintained [acceptance selector](testing.md#verification-selection), and link to bounded run records from the selected task instead of writing parallel handoff pages.
+
 Credential loading and local evidence locations belong to [Testing](testing.md#credentials-and-run-artifacts). Handoff references the configuration; it never copies keys or private request payloads.
 
 ## Working loop
@@ -54,14 +56,15 @@ Keep the implementation small: no service requirement, broad workflow framework,
 
 ```bash
 cargo check
-cargo test -p kuku -p kuku-cli -p kuku-server
-cargo clippy -- -D warnings
+python3 scripts/acceptance/run.py contract
+python3 scripts/acceptance/run.py protocol
+python3 scripts/acceptance/run.py integration
 cargo fmt --all -- --check
 make build
 make release-linux
 ```
 
-These are existing entrypoints, not proof that all rewrite acceptance paths are covered. Testing owns feature selection and live-call prerequisites. Use the default glibc target for normal development and the musl release path only for release packaging.
+The selector records what actually ran; a selected check is not proof of unselected live or platform coverage. [Testing](testing.md) owns feature selection, original benchmark environments/verifiers, cost reservations, and live-call prerequisites. Use the default glibc target for normal development and the musl release path only for release packaging.
 
 ## Git and platform rules
 

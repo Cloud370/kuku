@@ -26,6 +26,8 @@
 
 任务入口与交接信息应让全新会话找到当前分支／提交、未提交改动、活动进程或负责人、已验证结果及其限制、未完成工作和下一步。续做前核对实际工作树与产物。不依赖旧聊天或旧 Agent 存活，也不重复启动写入者。
 
+本次重构的本地入口为已忽略的 `benchmarks/rewrite-state.json`，它指向选定的私有 Project 和任务标识；任务状态仅在该 Project 维护。保留此入口并沿引用继续，不创建第二看板。其他 checkout 可能没有该文件，因此分派任务时附上跟踪入口。可复现命令维护在[验收选择入口](testing.md#选择验证范围)，从选定任务引用有界运行记录，不写平行交接页。
+
 凭据加载和本地证据位置由[测试指南](testing.md#凭据与运行产物)维护。交接引用配置，不复制 key 或私有请求正文。
 
 ## 工作循环
@@ -54,14 +56,15 @@
 
 ```bash
 cargo check
-cargo test -p kuku -p kuku-cli -p kuku-server
-cargo clippy -- -D warnings
+python3 scripts/acceptance/run.py contract
+python3 scripts/acceptance/run.py protocol
+python3 scripts/acceptance/run.py integration
 cargo fmt --all -- --check
 make build
 make release-linux
 ```
 
-这些是已有入口，不证明已覆盖全部重构验收路径。feature 选择和真实调用前提由测试指南维护。日常开发使用默认 glibc target，musl 路径仅用于发布打包。
+选择入口记录实际执行的内容；选择过某项检查不证明未选择的真实或平台覆盖。[测试指南](testing.md)维护 feature 选择、原始 benchmark 环境／判定器、费用预留和真实调用前提。日常开发使用默认 glibc target，musl 路径仅用于发布打包。
 
 ## Git 与平台规则
 

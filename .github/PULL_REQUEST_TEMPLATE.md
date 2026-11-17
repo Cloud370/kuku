@@ -1,6 +1,6 @@
-### Linked issue
+### Task
 
-Closes #
+<!-- Link the selected task/issue. Private Project drafts may be referenced without copying private discussion. -->
 
 ### What changed
 
@@ -14,17 +14,20 @@ Closes #
 - [ ] Documentation
 - [ ] CI / tooling
 
-### Test plan
+### Verification
 
-<!-- How did you verify? Commands run, edge cases checked, manual testing. -->
+<!-- State checks actually selected and run, their result, and evidence references. Distinguish failed, skipped, and unverified coverage. Reuse passing evidence unless the change invalidates it. -->
 
-- [ ] `cargo fmt --all -- --check` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo test -p kuku -p kuku-cli -p kuku-server` passes
-- [ ] `npm run typecheck` passes (WebUI)
-- [ ] `npm run lint` passes (WebUI)
-- [ ] `npm run test` passes (WebUI)
-- [ ] `npm run build` succeeds (WebUI)
+<!-- Rust integration: python3 scripts/acceptance/run.py integration
+     Focused checks: run.py contract | protocol
+     Documentation-only: links, bilingual consistency, git diff --check.
+     Live/benchmark: public SDK/CLI command, original verifier, durable facts, resource/cost evidence.
+     Include model/settings, selected feature suites, and missing live/platform coverage when relevant.
+     No credentials or private request bodies. UI checks apply only to UI changes. -->
+
+Checks and results:
+
+Evidence and limitations:
 
 ### Breaking changes
 
