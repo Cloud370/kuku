@@ -588,8 +588,10 @@ fn openai_chat_completions_url_appends_path() {
 
 #[test]
 fn responses_url_appends_path() {
+    let config: kuku::config::ConfigFile =
+        toml::from_str(kuku::config::generate_default()).unwrap();
     assert_eq!(
-        responses_url("https://api.openai.com/v1"),
+        responses_url(&config.provider["openai"].base_url),
         "https://api.openai.com/v1/responses"
     );
     assert_eq!(
