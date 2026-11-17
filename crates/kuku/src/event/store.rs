@@ -1,7 +1,8 @@
 //! Durable append-only session event storage.
+//! Use a stable log path without hard-link aliases or external modification.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
@@ -9,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
+use crate::util::fs_sync;
 
 use super::types::{EventPayload, StoredEvent};
 
@@ -112,6 +114,8 @@ impl Writer {
             file.set_len(committed_len)?;
             file.sync_data()?;
         }
+        file.sync_all()?;
+        fs_sync::sync_parent(path)?;
         Ok(Self {
             file,
             file_lock: Some(file_lock),
@@ -138,7 +142,7 @@ impl Writer {
         if let Err(error) = self
             .file
             .write_all(record)
-            .and_then(|()| self.file.sync_data())
+            .and_then(|()| fs_sync::sync_file(&self.file))
         {
             self.poison = Some(error.to_string());
             return Err(io::Error::new(
@@ -195,15 +199,20 @@ impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let absolute = std::env::current_dir()?.join(path);
-        if let Some(parent) = absolute.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let mut stores = registry().lock().unwrap();
+        if let Ok(key) = fs::canonicalize(&absolute) {
+            if let Some(inner) = find_active_store(&stores, &key) {
+                return Ok(Self { inner });
+            }
+        }
+        if let Some(parent) = absolute.parent() {
+            fs_sync::create_dir_all(parent)?;
+        }
         let key = canonical_store_path(&absolute)?;
         if let Some(inner) = find_active_store(&stores, &key) {
             return Ok(Self { inner });
         }
-        let file = OpenOptions::new()
+        let file = fs_sync::write_options()
             .read(true)
             .append(true)
             .create(true)
