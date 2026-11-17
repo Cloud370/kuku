@@ -24,51 +24,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  macos-process-probe:
-    name: Darwin process group probe
-    runs-on: macos-latest
-    steps:
-      - name: Observe the group before reaping its leader
-        run: |
-          cat > "$RUNNER_TEMP/kuku-group.c" <<'EOF'
-          #include <errno.h>
-          #include <signal.h>
-          #include <stdio.h>
-          #include <string.h>
-          #include <sys/types.h>
-          #include <sys/wait.h>
-          #include <unistd.h>
-          int main(void) {
-              pid_t child = fork();
-              if (child < 0) return 1;
-              if (!child) _exit(setpgid(0, 0) ? 3 : 0);
-              siginfo_t info = {0};
-              errno = 0;
-              int observed = waitid(P_PID, child, &info, WEXITED | WNOWAIT);
-              printf("waitid exited result=%d errno=%d pid=%d code=%d status=%d\n",
-                     observed, errno, info.si_pid, info.si_code, info.si_status);
-              if (!observed && info.si_pid == child && !info.si_status) {
-                  memset(&info, 0, sizeof(info));
-                  errno = 0;
-                  int again = waitid(P_PID, child, &info, WEXITED | WNOHANG | WNOWAIT);
-                  printf("waitid peek result=%d errno=%d pid=%d\n", again, errno, info.si_pid);
-                  errno = 0;
-                  int exists = kill(-child, 0);
-                  printf("kill group zero result=%d errno=%d\n", exists, errno);
-                  errno = 0;
-                  int stop = kill(-child, SIGKILL);
-                  printf("kill group SIGKILL result=%d errno=%d\n", stop, errno);
-              }
-              int status = 0;
-              errno = 0;
-              int reaped = waitpid(child, &status, 0);
-              printf("waitpid result=%d errno=%d status=%d\n", reaped, errno, status);
-              return reaped == child ? 0 : 1;
-          }
-          EOF
-          cc -Wall -Wextra -o "$RUNNER_TEMP/kuku-group" "$RUNNER_TEMP/kuku-group.c"
-          "$RUNNER_TEMP/kuku-group"
-
   fmt:
     runs-on: ubuntu-latest
     steps:
