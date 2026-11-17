@@ -11,7 +11,7 @@ const MAX_RESULT_BYTES: usize = 16_384;
 pub(super) fn definition() -> ToolDefinition {
     ToolDefinition {
         name: "read_output".into(),
-        description: "Read retained command output by its Session output ID. Select a byte offset and bounded scan limit, with an optional literal search. Returns JSON with next_offset and capture status.".into(),
+        description: "Read retained tool output by its Session output ID. Select a byte offset and bounded scan limit, with an optional literal search. Returns JSON with next_offset and capture status.".into(),
         input_schema: json!({
             "type":"object",
             "properties":{

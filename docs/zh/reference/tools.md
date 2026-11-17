@@ -55,9 +55,9 @@
 
 `query_session` 用于历史回忆，不应用来重复读取当前消息中已经存在的数据。
 
-## 保留的命令输出
+## 保留的工具输出
 
-`read_output` 读取 `run_command` 返回、由 Session 持有的输出 ID。它与 `Session::read_output` 共用同一个有界读取器，不接受文件系统路径。即使该工具只读，仍须经过宿主授权。
+`read_output` 读取由 Session 持有、由 `run_command` 等工具返回的输出 ID。它与 `Session::read_output` 共用同一个有界读取器，不接受文件系统路径。即使该工具只读，仍须经过宿主授权。
 
 | Argument | Contract |
 |---|---|

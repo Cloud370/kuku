@@ -55,9 +55,9 @@ Important filters:
 
 `query_session` is for historical recall, not for data already present in the current messages.
 
-## Retained Command Output
+## Retained Tool Output
 
-`read_output` reads a Session-owned output ID returned by `run_command`. It uses the same bounded reader as `Session::read_output`; it accepts no filesystem path. The tool remains subject to host authorization even though it is read-only.
+`read_output` reads a Session-owned output ID returned by a tool such as `run_command`. It uses the same bounded reader as `Session::read_output`; it accepts no filesystem path. The tool remains subject to host authorization even though it is read-only.
 
 | Argument | Contract |
 |---|---|

@@ -132,7 +132,7 @@ async fn captured(
     config.plugin.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);
     options.authorizer = policy;
-    options.limits.max_preview_bytes = 256;
+    options.limits.max_preview_bytes = 1024;
     options.limits.max_steps_per_turn = 8;
     let session = Session::open(options).await.unwrap();
     session
