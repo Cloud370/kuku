@@ -45,7 +45,7 @@ impl Session {
             let mut result = session.drive_agent(&target, epoch, receive_cancel).await;
             if let Err(error) = &result {
                 if let Err(commit_error) = session.settle_failure(&target, epoch, error) {
-                    result = Err(commit_error);
+                    result = Err(session.remember_settlement_failure(commit_error));
                 }
             }
             let _ = complete.send(Some(
@@ -189,6 +189,9 @@ impl Session {
                 ) {
                     let _ = self.inner.live.send((address.into(), event.clone()));
                 }
+                let output_failure = faults
+                    .output_persistence_failed
+                    .then(|| self.remember_output_failure(address));
                 if faults.cleanup_incomplete {
                     let message = format!(
                         "agent '{address}' tool cleanup did not finish; owned resources may remain"
@@ -205,9 +208,9 @@ impl Session {
                     cancelling = true;
                     continue;
                 }
-                if faults.output_persistence_failed {
+                if let Some(error) = output_failure {
                     self.cleanup_failed_run(address, &mut run).await;
-                    return Err(Error::InvalidEventStream("tool output could not be durably captured; execution stopped before the next model request".into()));
+                    return Err(error);
                 }
                 match event {
                     UiEvent::Done { output, .. } => {
@@ -469,14 +472,25 @@ impl Session {
         Ok(())
     }
 
+    fn remember_output_failure(&self, address: &str) -> Error {
+        self.remember_settlement_failure(Error::InvalidEventStream(format!(
+            "agent '{address}': tool output could not be durably captured; execution stopped before the next model request"
+        )))
+    }
+
     async fn cleanup_failed_run(&self, address: &str, run: &mut crate::Run) {
         run.cancel();
         while !run.slots.is_empty() {
             match run.next_with_tool_faults().await {
                 Ok(Some((event, faults))) => {
+                    if faults.output_persistence_failed {
+                        self.remember_output_failure(address);
+                    }
                     if faults.cleanup_incomplete {
                         let mut state = self.inner.state.lock().unwrap();
-                        let _ = self.commit(&mut state, Record::CleanupFailed { address: address.into(), message: format!("agent '{address}' cleanup after an execution error was incomplete") });
+                        if let Err(error) = self.commit(&mut state, Record::CleanupFailed { address: address.into(), message: format!("agent '{address}' cleanup after an execution error was incomplete") }) {
+                            self.remember_settlement_failure(error);
+                        }
                     }
                     let _ = self.inner.live.send((address.into(), event));
                 }

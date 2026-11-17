@@ -464,13 +464,22 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
 
 #[tokio::test]
 async fn explicit_advance_retries_an_interrupted_input_after_reopen() {
+    retry_interrupted_input(true, 400).await;
+}
+
+#[tokio::test]
+async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
+    retry_interrupted_input(false, 429).await;
+}
+
+async fn retry_interrupted_input(reopen: bool, status: u16) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let failure = server
         .mock_async(|when, then| {
             when.method(POST).path("/chat/completions");
-            then.status(400).body("invalid fixture request");
+            then.status(status).body("provider fixture failure");
         })
         .await;
     let original = options(&server, workspace.path(), data.path());
@@ -486,9 +495,15 @@ async fn explicit_advance_retries_an_interrupted_input_after_reopen() {
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(1, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
-    let mut reopen = original;
-    reopen.session_id = Some(session.id().into());
-    assert!(session.close().await.is_err());
+    failure.assert_hits_async(1).await;
+    let session = if reopen {
+        let mut options = original;
+        options.session_id = Some(session.id().into());
+        assert!(session.close().await.is_err());
+        Session::open(options).await.unwrap()
+    } else {
+        session
+    };
     failure.delete_async().await;
     let success = fixture(
         &server,
@@ -500,7 +515,6 @@ async fn explicit_advance_retries_an_interrupted_input_after_reopen() {
         "stop",
     )
     .await;
-    let session = Session::open(reopen).await.unwrap();
     session.advance("main").unwrap();
     let done = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);

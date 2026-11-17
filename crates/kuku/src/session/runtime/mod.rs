@@ -38,6 +38,7 @@ pub(crate) struct SessionInner {
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
     workers: Mutex<HashMap<u64, Worker>>,
+    settlement_failure: OnceLock<String>,
     live: broadcast::Sender<(String, UiEvent)>,
     model_capacity: Arc<Semaphore>,
     tool_adapters: Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
@@ -155,6 +156,7 @@ impl Session {
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
                 workers: Mutex::new(HashMap::new()),
+                settlement_failure: OnceLock::new(),
                 live,
                 model_capacity,
                 tool_adapters,
@@ -636,10 +638,7 @@ impl Session {
                     *close = Some(result.clone());
                     let session = self.clone();
                     tokio::spawn(async move {
-                        let outcome = session
-                            .finish_close()
-                            .await
-                            .map_err(|error| error.to_string());
+                        let outcome = session.finish_close().await;
                         let _ = complete.send(Some(outcome));
                     });
                     result
@@ -656,7 +655,7 @@ impl Session {
         }
     }
 
-    async fn finish_close(&self) -> Result<()> {
+    async fn finish_close(&self) -> std::result::Result<(), String> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);
@@ -688,10 +687,24 @@ impl Session {
             writer.changed().notify_waiters();
         }
         self.inner.lease.lock().unwrap().take();
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
+        match (
+            self.inner.settlement_failure.get(),
+            failure.map(|error| error.to_string()),
+        ) {
+            (Some(settlement), Some(other)) if settlement != &other => {
+                Err(format!("{settlement}\n{other}"))
+            }
+            (Some(settlement), _) => Err(settlement.clone()),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(()),
         }
+    }
+
+    fn remember_settlement_failure(&self, error: Error) -> Error {
+        self.inner
+            .settlement_failure
+            .get_or_init(|| error.to_string());
+        error
     }
 
     fn commit(&self, state: &mut State, record: Record) -> Result<u64> {

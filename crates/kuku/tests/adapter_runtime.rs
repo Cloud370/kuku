@@ -179,10 +179,10 @@ fn options(
     options
 }
 
-async fn settled(session: &Session) -> kuku::AgentSnapshot {
+async fn settled(session: &Session, address: &str) -> kuku::AgentSnapshot {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let snapshot = session.agent("main").unwrap();
+            let snapshot = session.agent(address).unwrap();
             if snapshot.status != AgentStatus::Running {
                 return snapshot;
             }
@@ -240,7 +240,7 @@ async fn external_model_and_tool_use_final_selection_authority_and_durable_bound
     assert!(model.requests.lock().unwrap().is_empty());
     assert_eq!(0, tool.calls.load(Ordering::SeqCst));
     session.send(input()).unwrap();
-    let state = settled(&session).await;
+    let state = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
     assert_eq!(2, state.usage.model_requests);
     assert!(!workspace.path().join("denied.txt").exists());
@@ -416,7 +416,18 @@ impl ToolAdapter for CaptureFaultTool {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn successful_host_tool_output_commit_failure_stops_next_model_dispatch() {
+async fn host_tool_output_commit_failure_stops_dispatch_and_survives_another_agent_on_close() {
+    verify_output_failure_on_close(false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn close_reports_both_the_reaped_output_failure_and_another_worker_error() {
+    verify_output_failure_on_close(true).await;
+}
+
+#[cfg(unix)]
+async fn verify_output_failure_on_close(exhaust_request_budget: bool) {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let session_id = "output-capture-failure";
@@ -436,11 +447,30 @@ async fn successful_host_tool_output_commit_failure_stops_next_model_dispatch() 
         Arc::new(Gate::default()),
     );
     options.session_id = Some(session_id.into());
-    let session = Session::open(options).await.unwrap();
+    options.limits.max_requests_per_open = Some(2);
+    let session = Session::open(options.clone()).await.unwrap();
     session.create_agent("create", "main", agent()).unwrap();
     session.send(input()).unwrap();
-    let snapshot = settled(&session).await;
-    let closed = session.close().await;
+    let snapshot = settled(&session, "main").await;
+    assert_eq!(AgentStatus::Interrupted, snapshot.status, "{snapshot:?}");
+    session
+        .create_agent("create-child", "child", agent())
+        .unwrap();
+    session
+        .send(Input::new("child-input", "child", "finish independently"))
+        .unwrap();
+    let child = settled(&session, "child").await;
+    assert_eq!(AgentStatus::Idle, child.status, "{child:?}");
+    assert_eq!(1, child.usage.model_requests);
+    if exhaust_request_budget {
+        session
+            .send(Input::new("over-budget", "child", "one more turn"))
+            .unwrap();
+        assert_eq!(
+            AgentStatus::Interrupted,
+            settled(&session, "child").await.status
+        );
+    }
     assert!(
         tool.succeeded.load(Ordering::SeqCst),
         "the host tool did not return success after creating its real effect"
@@ -450,16 +480,26 @@ async fn successful_host_tool_output_commit_failure_stops_next_model_dispatch() 
         "actual host tool output",
         std::fs::read_to_string(workspace.path().join("allowed.txt")).unwrap()
     );
-    assert_eq!(AgentStatus::Interrupted, snapshot.status, "{snapshot:?}");
-    assert!(
-        closed.is_err(),
-        "close hid the SDK output persistence failure"
-    );
     assert_eq!(
         1,
-        model.requests.lock().unwrap().len(),
+        model
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.agent == "main")
+            .count(),
         "the SDK dispatched another model request after output persistence failed"
     );
+    let error = session.close().await.unwrap_err().to_string();
+    assert!(
+        error.contains("tool output could not be durably captured"),
+        "{error}"
+    );
+    if exhaust_request_budget {
+        assert!(error.contains("model request limit exhausted"), "{error}");
+    }
+    assert_eq!(error, session.close().await.unwrap_err().to_string());
     assert!(
         session
             .events(0, 256)
@@ -472,4 +512,10 @@ async fn successful_host_tool_output_commit_failure_stops_next_model_dispatch() 
                 && value["cleanup_incomplete"] == false)),
         "SDK output persistence failure had no durable terminal fact"
     );
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(
+        AgentStatus::Interrupted,
+        reopened.agent("main").unwrap().status
+    );
+    reopened.close().await.unwrap();
 }
