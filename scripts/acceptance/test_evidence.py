@@ -229,6 +229,27 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("first view", result["error"])
 
+    def test_model_view_ignores_diagnostic_structure_but_still_validates_raw_output_references(self):
+        admitted = next(event for event in self.fixture.records if event["kind"] == "runtime.context_admitted"
+                        and event["ordinal"] == 2)
+        admitted["message"]["blocks"][0]["ToolResult"]["structured"] = None
+        result = self.fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["output_references"][0]["stored_bytes"], 5)
+        self.fixture.output.unlink()
+        self.assertFalse(self.fixture.inspect()["passed"])
+
+    def test_all_canonical_result_view_fields_remain_strict(self):
+        admitted = next(event for event in self.fixture.records if event["kind"] == "runtime.context_admitted"
+                        and event["ordinal"] == 2)
+        original = copy.deepcopy(admitted["message"]["blocks"][0]["ToolResult"])
+        for field, value in (("tool_call_id", "other"), ("status", "error"), ("summary", "changed"),
+                             ("model_content", "changed"), ("truncated", True)):
+            with self.subTest(field=field):
+                changed = dict(original, **{field: value, "structured": None})
+                admitted["message"]["blocks"][0]["ToolResult"] = changed
+                self.assertFalse(self.fixture.inspect()["passed"])
+
     def test_missing_retained_output_cannot_pass(self):
         self.fixture.output.unlink()
         self.assertFalse(self.fixture.inspect()["passed"])

@@ -9,7 +9,7 @@ import re
 
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-RESULT_FIELDS = ("tool_call_id", "status", "summary", "model_content", "structured", "truncated")
+RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "truncated")
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 
@@ -265,7 +265,7 @@ class SessionFacts:
             self.dispatched.add(key)
         elif kind == "tool.result":
             require(key in self.calls and key not in self.results, "tool result has no unique matching call")
-            self.results[key] = fingerprint({field: event.get(field) for field in RESULT_FIELDS})
+            self.results[key] = fingerprint({field: event.get(field) for field in RESULT_VIEW_FIELDS})
             self.counts["tool_results"] += 1
             structured = event.get("structured") or {}
             require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
@@ -303,7 +303,7 @@ class SessionFacts:
                 pending[use["id"]] = candidates
             if "ToolResult" in block:
                 result = block["ToolResult"]
-                digest = fingerprint({field: result.get(field) for field in RESULT_FIELDS})
+                digest = fingerprint({field: result.get(field) for field in RESULT_VIEW_FIELDS})
                 matches = [key for key in pending.get(result.get("tool_call_id"), []) if self.results.get(key) == digest]
                 require(matches, "admitted tool result differs from its exact durable first view")
                 used.add(matches[0])
