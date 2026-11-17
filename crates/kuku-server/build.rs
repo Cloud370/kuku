@@ -9,10 +9,23 @@ fn main() {
         return;
     };
     watch_git_path("HEAD");
+    watch_git_path("refs/tags");
+    watch_git_path("packed-refs");
     if let Some(reference) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
         watch_git_path(&reference);
-        watch_git_path("packed-refs");
     }
+    let tag = git(&[
+        "describe",
+        "--tags",
+        "--exact-match",
+        "--match",
+        "v[0-9]*",
+        "HEAD",
+    ]);
+    let version = tag
+        .as_deref()
+        .and_then(|tag| tag.strip_prefix('v'))
+        .unwrap_or(version);
     println!("cargo:rustc-env=KUKU_VERSION={version} ({revision})");
 }
 
