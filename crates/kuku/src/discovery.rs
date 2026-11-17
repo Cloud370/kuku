@@ -48,8 +48,10 @@ pub fn discover(workspace: &Path, config: &DiscoveryConfig) -> DiscoveryResult {
     let mut result = DiscoveryResult::default();
 
     if config.auto_discover {
-        scan_xdg_user(&mut result);
-        scan_dotfile_user(&mut result);
+        if let Some(home) = home::home_dir() {
+            scan_xdg_user(&home, &mut result);
+            scan_dotfile_user(&home, &mut result);
+        }
         scan_project(workspace, &mut result);
     }
 
@@ -63,14 +65,7 @@ pub fn discover(workspace: &Path, config: &DiscoveryConfig) -> DiscoveryResult {
     result
 }
 
-fn home_dir() -> Option<PathBuf> {
-    home::home_dir()
-}
-
-fn scan_xdg_user(result: &mut DiscoveryResult) {
-    let Some(home) = home_dir() else {
-        return;
-    };
+fn scan_xdg_user(home: &Path, result: &mut DiscoveryResult) {
     let config_dir = home.join(".config");
     let Ok(entries) = std::fs::read_dir(&config_dir) else {
         return;
@@ -82,11 +77,8 @@ fn scan_xdg_user(result: &mut DiscoveryResult) {
     }
 }
 
-fn scan_dotfile_user(result: &mut DiscoveryResult) {
-    let Some(home) = home_dir() else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(&home) else {
+fn scan_dotfile_user(home: &Path, result: &mut DiscoveryResult) {
+    let Ok(entries) = std::fs::read_dir(home) else {
         return;
     };
     for entry in entries.flatten() {
@@ -239,35 +231,18 @@ mod tests {
 
     #[test]
     fn skip_dirs_are_excluded_in_dotfile_scan() {
-        let _guard = crate::env_lock().lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let prev_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", tmp.path());
-        setup_dir(tmp.path(), &[".cache/skills", ".cargo/agents"]);
-
-        let config = DiscoveryConfig {
-            auto_discover: true,
-            extra_user_paths: vec![],
-            extra_project_paths: vec![],
-        };
-        let result = discover(tmp.path(), &config);
-
-        if let Some(prev) = prev_home {
-            std::env::set_var("HOME", prev);
-        }
-
-        let user_skills: Vec<_> = result
-            .skills
-            .iter()
-            .filter(|e| e.scope == Scope::User)
-            .collect();
-        let user_agents: Vec<_> = result
-            .agents
-            .iter()
-            .filter(|e| e.scope == Scope::User)
-            .collect();
-
-        assert!(user_skills.is_empty());
-        assert!(user_agents.is_empty());
+        setup_dir(
+            tmp.path(),
+            &[".cache/skills", ".cargo/agents", ".fixture/skills"],
+        );
+        let mut result = DiscoveryResult::default();
+        scan_dotfile_user(tmp.path(), &mut result);
+        assert_eq!(1, result.skills.len());
+        assert_eq!(
+            tmp.path().join(".fixture").join("skills"),
+            result.skills[0].path
+        );
+        assert!(result.agents.is_empty());
     }
 }
