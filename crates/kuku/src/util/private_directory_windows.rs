@@ -1,0 +1,203 @@
+use std::ffi::{c_void, CStr};
+use std::fs;
+use std::io;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::MetadataExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::Path;
+use std::ptr::{self, addr_of};
+
+use windows_sys::Win32::Foundation::{LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+};
+use windows_sys::Win32::Security::{
+    EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, TokenUser,
+    ACCESS_ALLOWED_ACE, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+    OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
+    TOKEN_USER,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
+};
+use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+use super::insecure_directory;
+
+struct LocalAllocation(*mut c_void);
+
+impl Drop for LocalAllocation {
+    fn drop(&mut self) {
+        // NOTE: Windows returned this allocation for LocalFree. Its associated data is no longer used.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+struct AccountSid(Vec<usize>);
+
+impl AccountSid {
+    fn current() -> io::Result<Self> {
+        let mut handle = ptr::null_mut();
+        // NOTE: The process pseudo-handle and writable output slot meet OpenProcessToken's contract.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // NOTE: OpenProcessToken succeeded and transferred an owned token handle.
+        let token = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let mut size = 0;
+        // NOTE: A null buffer and zero length tell Windows to return the required allocation size.
+        let success = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut size,
+            )
+        };
+        if success == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+                return Err(error);
+            }
+        }
+        let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
+        // NOTE: The buffer is aligned for TOKEN_USER and has at least the requested byte length.
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(buffer))
+    }
+
+    fn sid(&self) -> PSID {
+        // NOTE: GetTokenInformation initialized TOKEN_USER and its SID in this live buffer.
+        unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+    }
+
+    fn security_descriptor(&self) -> io::Result<LocalAllocation> {
+        let mut ascii_sid = ptr::null_mut();
+        // NOTE: The SID lives in AccountSid's token buffer and the output is writable.
+        if unsafe { ConvertSidToStringSidA(self.sid(), &mut ascii_sid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ascii_sid = LocalAllocation(ascii_sid.cast());
+        // NOTE: ConvertSidToStringSidA returns a NUL-terminated ASCII SID in this allocation.
+        let sid = unsafe { CStr::from_ptr(ascii_sid.0.cast()) }.to_string_lossy();
+        let descriptor = format!("O:{sid}D:P(A;OICI;FA;;;{sid})");
+        let utf16: Vec<u16> = descriptor.encode_utf16().chain([0]).collect();
+        let mut result = ptr::null_mut();
+        // NOTE: The descriptor is NUL-terminated and the result slot remains valid during the call.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                utf16.as_ptr(),
+                SDDL_REVISION_1,
+                &mut result,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(LocalAllocation(result))
+    }
+}
+
+pub(super) fn private_directory(path: &Path) -> io::Result<()> {
+    let account = AccountSid::current()?;
+    let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if name.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path contains NUL",
+        ));
+    }
+    name.push(0);
+    let descriptor = account.security_descriptor()?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    // NOTE: The path and explicit, protected security descriptor live through CreateDirectoryW.
+    if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
+            return Err(error);
+        }
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(insecure_directory(path));
+    }
+    if !is_private(&name, &account)? {
+        return Err(insecure_directory(path));
+    }
+    Ok(())
+}
+
+fn is_private(name: &[u16], account: &AccountSid) -> io::Result<bool> {
+    let mut owner = ptr::null_mut();
+    let mut dacl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // NOTE: The path is NUL-terminated and the output slots receive pointers into one allocation.
+    let error = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    let descriptor = LocalAllocation(descriptor);
+    let mut control = 0;
+    let mut revision = 0;
+    // NOTE: Both descriptors and the queried owner SID live through these native checks.
+    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(control & SE_DACL_PROTECTED != 0
+        && !owner.is_null()
+        && unsafe { EqualSid(owner, account.sid()) } != 0
+        && only_user_access(dacl, account))
+}
+
+fn only_user_access(dacl: *const ACL, account: &AccountSid) -> bool {
+    let mut ace = ptr::null_mut();
+    // NOTE: GetNamedSecurityInfoW returned a native ACL in a live allocation.
+    if dacl.is_null() || unsafe { (*dacl).AceCount != 1 || GetAce(dacl, 0, &mut ace) == 0 } {
+        return false;
+    }
+    // NOTE: GetAce returned an aligned ACE header. Its type and size establish the allow form.
+    unsafe {
+        let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+        let header = ace
+            .cast::<windows_sys::Win32::Security::ACE_HEADER>()
+            .read();
+        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+        {
+            return false;
+        }
+        u32::from(header.AceFlags) == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)
+            && (*ace).Mask == FILE_ALL_ACCESS
+            && EqualSid(addr_of!((*ace).SidStart).cast_mut().cast(), account.sid()) != 0
+    }
+}

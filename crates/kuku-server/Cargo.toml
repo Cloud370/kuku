@@ -28,10 +28,12 @@ serde_json = { workspace = true }
 arc-swap = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }
-home = { workspace = true }
+getrandom = "0.4"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
 
 [dev-dependencies]
 kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
-wreq = { version = "6.0.0-rc.28", features = ["json", "stream"] }
-tempfile = "3"
+wreq = { version = "6.0.0-rc.28", features = ["json", "query", "stream"] }
