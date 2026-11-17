@@ -43,19 +43,26 @@ Rust 名称／签名、事件封装／schema、队列／输出数值限额、解
 
 用户希望由一个全新对话上下文的 Codex 会话实施重构。该会话从上方指定的集成工作树开始，读取其中的 `AGENTS.md`、核心方向和本页相关部分，沿用现有交付阶段。不能改用 main 工作树中的旧基线，也不能依赖读取本次聊天。用户向新会话明确下达实现指令后再开工。
 
-用户提出使用 `deepseek-flash` 进行低成本真实测试。按 2026-11-17 查阅的文档，一份 DeepSeek key 可以覆盖下表三条协议路线。这些是测试连接输入，不是新冻结的 SDK 配置名称；本次尚未用付费请求验证端点可用性。
+用户提出以 `deepseek-flash` 作为低成本 benchmark 主力，并提供 OpenRouter 作为第二个兼容性验证网关。按 2026-11-17 查阅的文档，两家服务均提供下表中的三条协议路线。这些是测试连接输入，不是新冻结的 SDK 配置名称；本次尚未用付费请求验证端点可用性。
 
-| 线路协议 | DeepSeek 基础 URL | 请求后缀 | 来源 |
-|---|---|---|---|
-| Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [首次调用](https://api-docs.deepseek.com/) |
-| Responses | `https://api.deepseek.com` | `/responses` | [Responses 兼容说明](https://api-docs.deepseek.com/guides/responses_api/) |
-| Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/) |
+| 服务 | 线路协议 | 基础 URL | 请求后缀 | 来源 |
+|---|---|---|---|---|
+| DeepSeek | Chat Completions | `https://api.deepseek.com` | `/chat/completions` | [首次调用](https://api-docs.deepseek.com/) |
+| DeepSeek | Responses | `https://api.deepseek.com` | `/responses` | [Responses 兼容说明](https://api-docs.deepseek.com/guides/responses_api/) |
+| DeepSeek | Messages | `https://api.deepseek.com/anthropic` | `/v1/messages` | [Messages 兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/) |
+| OpenRouter | Chat Completions | `https://openrouter.ai/api/v1` | `/chat/completions` | [快速开始](https://openrouter.ai/docs/quickstart) |
+| OpenRouter | Responses | `https://openrouter.ai/api/v1` | `/responses` | [Responses 参考](https://openrouter.ai/docs/api/api-reference/responses/create-a-response) |
+| OpenRouter | Messages | `https://openrouter.ai/api/v1` | `/messages` | [Messages 参考](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message) |
 
-阶段 1 从低成本路线开始，最迟在阶段 2 交付时完成三种协议验证。每种都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。罕见或不确定出现的错误／批次场景用针对性固定输入验证。同一服务的三条路线只证明该服务上的协议覆盖，不证明独立供应商兼容性。委派任务增加一个独立供应商；条件允许时，直接接入 OpenAI Responses 和 Anthropic Messages 可提供额外检查。准确记录运行过的供应商／网关，缺少的真实覆盖标记为未验证。
+阶段 1 从 DeepSeek 开始，最迟在阶段 2 交付时完成两家服务上的三种协议验证。每种都要覆盖流式输出、真实工具调用及结果续接、多轮上下文和可获得的用量／设置报告。反复运行的 benchmark 主要使用 DeepSeek；OpenRouter 使用一个固定小任务检查兼容性，不把每个 benchmark 在所有模型／协议组合上重跑。通过 OpenRouter 选择两个可用的非 DeepSeek 模型家族，优先各选一个 OpenAI 和 Anthropic 模型，在验收时核实准确 ID 与支持的设置。仅经 OpenRouter 转发 DeepSeek 模型不足以证明模型多样性。委派任务包含直连 DeepSeek 和经 OpenRouter 调用的 Agent，保持独立上下文。
+
+为使 OpenRouter 检查可重复，通过 `provider.order` 选择一个准确的上游端点，设置 `provider.allow_fallbacks = false`、`provider.require_parameters = true`，不使用自动选模或模型回退。其[路由文档](https://openrouter.ai/docs/guides/routing/provider-selection)说明，默认路由可能回退，也可能把不支持的参数传给会忽略它的供应商。记录请求模型、网关、指定路线及可获得的实际上游回报；无法确认时保持未知。这些是测试连接选项，不是全局运行时调度规则。
+
+罕见或不确定出现的错误、批次，以及可能被网关规范化的供应商特有重放数据，使用针对性的原生协议固定输入补充验证。OpenRouter 覆盖属于网关覆盖，不证明同样请求可直连 OpenAI 或 Anthropic 官方端点。具备凭据时增加官方直连检查，但不把开通新账号作为启动重构的前提。准确记录跑过的路径，缺少的真实覆盖标记为未验证。
 
 DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages 兼容层会忽略 `service_tier`、`cache_control` 等选项。HTTP 成功不能证明这些设置已生效。显式不支持的选择必须可见，并区分端点能力和线路协议本身。
 
-已在 Git 之外的 `/code/.secrets/kuku-acceptance.env` 准备本地凭据模板，目录权限为 `700`，文件权限为 `600`，由用户在编辑器中填写。`KUKU_TEST_DEEPSEEK_API_KEY` 提供共用的 DeepSeek key。可选独立路线使用 `KUKU_TEST_RESPONSES_BASE_URL`、`KUKU_TEST_RESPONSES_MODEL`、`KUKU_TEST_RESPONSES_API_KEY`，以及对应的 `KUKU_TEST_MESSAGES_BASE_URL`、`KUKU_TEST_MESSAGES_MODEL`、`KUKU_TEST_MESSAGES_API_KEY` 字段。这些是测试输入环境变量名，不是 Codex 内建设置或新的 SDK API。现有[配置参考](../reference/config.md)说明了如何引用环境变量凭据。
+已在 Git 之外的 `/code/.secrets/kuku-acceptance.env` 准备本地凭据模板，目录权限为 `700`，文件权限为 `600`，由用户在编辑器中填写。`KUKU_TEST_DEEPSEEK_API_KEY` 提供共用的 DeepSeek key，`KUKU_TEST_OPENROUTER_API_KEY` 提供共用的 OpenRouter key。额外独立路线可使用 `KUKU_TEST_RESPONSES_BASE_URL`、`KUKU_TEST_RESPONSES_MODEL`、`KUKU_TEST_RESPONSES_API_KEY`，以及对应的 `KUKU_TEST_MESSAGES_BASE_URL`、`KUKU_TEST_MESSAGES_MODEL`、`KUKU_TEST_MESSAGES_API_KEY` 字段。这些是测试输入环境变量名，不是 Codex 内建设置或新的 SDK API。现有[配置参考](../reference/config.md)说明了如何引用环境变量凭据。
 
 测试调用程序明确加载该文件，不回显内容或启用 shell 跟踪；不能假定另一终端的导出变量会延续到新会话。key 不进入提示词、提交文件、命令参数或测试报告，只报告脱敏的连接状态、用量和错误。文件权限不能向使用同一用户身份运行的 Agent 隐藏凭据。这种交接需要相同文件系统与适当访问权；其他主机／云环境需要另行配置凭据。真实调用前取得用户的测试费用预算，再随验收证据记录估算开销和限制。本模板创建时为空，本次文档更新未运行真实 API 测试。
 
@@ -69,6 +76,7 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 | [事件存储](../../../crates/kuku/src/event/store.rs) | 追加会重扫历史，每条记录打开／刷新文件 | 一个 writer 增量提交并明确持久化边界；观察者不能成为 writer |
 | [命令输出](../../../crates/kuku/src/tool/builtin/run_command.rs) | 管道读取先积累完整输出，最终渲染才限制大小 | 从第一个字节约束采集和视图，流式写入 Session 所属输出文件 |
 | [Provider 配置](../../../crates/kuku/src/provider/config.rs) | builder 覆盖 provider 时按协议寻找匹配连接 | 按名称选择目标连接，独立于协议，支持同协议的多个网关 |
+| [Messages 认证](../../../crates/kuku/src/provider/anthropic.rs) | 当前 Messages 适配器构造 `x-api-key` 认证，OpenRouter 文档则为其 Messages 路线指定 Bearer 认证 | 连接认证独立于 Messages 消息格式配置；切换网关不应另建 Agent loop |
 | [待决授权恢复](../../../crates/kuku/src/query/start.rs) | 重开会恢复待决授权，并拒绝直接续跑中断的开放工具调用 | 保留有效等待／恢复行为；仅有内存中的授权 future 不足以承担持久等待 |
 | [SDK 导出](../../../crates/kuku/src/lib.rs) | 现有导出及私有 provider／工具模块围绕 Query／Run API 组织 | 明确开放模型／工具／宿主适配和运行时操作，不暴露全部内部模块，也不保留过时 API |
 
