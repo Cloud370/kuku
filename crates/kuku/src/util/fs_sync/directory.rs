@@ -64,20 +64,31 @@ fn publish_directory(
 }
 
 fn acquire_intent(directory: &Path, marker: &Path) -> io::Result<Option<File>> {
-    acquire_with(directory, marker, &mut |_| Ok(()))
+    acquire_with(directory, marker, &mut |_| Ok(()), &mut || Ok(()))
 }
 
 fn acquire_with(
     directory: &Path,
     marker: &Path,
     opened: &mut impl FnMut(&File) -> io::Result<()>,
+    missing: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<Option<File>> {
     loop {
         let intent = match OpenOptions::new().read(true).write(true).open(marker) {
             Ok(intent) => intent,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing()?;
                 match fs::metadata(directory) {
-                    Ok(metadata) if metadata.is_dir() => return Ok(None),
+                    Ok(metadata) if metadata.is_dir() => {
+                        // NOTE: Another creator may have installed an intent before this directory appeared.
+                        match OpenOptions::new().read(true).write(true).open(marker) {
+                            Ok(_) => continue,
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                                return Ok(None)
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
                     Ok(_) => return Err(not_directory(directory)),
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
@@ -324,14 +335,19 @@ mod tests {
         let waiter = std::thread::spawn(move || {
             let marker = intent_path(&waiting_target);
             let mut attempts = 0;
-            let intent = acquire_with(&waiting_target, &marker, &mut |file| {
-                attempts += 1;
-                opened_tx.send(file.metadata()?.ino()).unwrap();
-                if attempts == 1 {
-                    resume_rx.recv().unwrap();
-                }
-                Ok(())
-            })
+            let intent = acquire_with(
+                &waiting_target,
+                &marker,
+                &mut |file| {
+                    attempts += 1;
+                    opened_tx.send(file.metadata()?.ino()).unwrap();
+                    if attempts == 1 {
+                        resume_rx.recv().unwrap();
+                    }
+                    Ok(())
+                },
+                &mut || Ok(()),
+            )
             .unwrap()
             .unwrap();
             assert_eq!(2, attempts);
@@ -379,5 +395,72 @@ mod tests {
             io::ErrorKind::NotADirectory,
             create_dir_all(&blocker.join("child")).unwrap_err().kind()
         );
+    }
+
+    #[test]
+    fn missing_probe_waits_for_an_intent_inserted_before_the_directory_appears() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Event {
+            Missing,
+            Opened,
+            Returned,
+        }
+
+        let root = root();
+        let target = Arc::new(root.path().join("directory"));
+        let (event_tx, event_rx) = mpsc::channel();
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let observer_target = Arc::clone(&target);
+        let observer = std::thread::spawn(move || {
+            let mut first_missing = true;
+            let result = acquire_with(
+                &observer_target,
+                &intent_path(&observer_target),
+                &mut |_| {
+                    event_tx.send(Event::Opened).unwrap();
+                    Ok(())
+                },
+                &mut || {
+                    if first_missing {
+                        first_missing = false;
+                        event_tx.send(Event::Missing).unwrap();
+                        probe_rx.recv().unwrap();
+                    }
+                    Ok(())
+                },
+            )
+            .map(drop);
+            event_tx.send(Event::Returned).unwrap();
+            done_tx.send(result.is_ok()).unwrap();
+            result
+        });
+        assert_eq!(Event::Missing, event_rx.recv().unwrap());
+        let (created_tx, created_rx) = mpsc::channel();
+        let (publish_tx, publish_rx) = mpsc::channel();
+        let publisher_target = Arc::clone(&target);
+        let publisher = std::thread::spawn(move || {
+            publish_directory(&publisher_target, &mut |path| {
+                if path == &*publisher_target {
+                    created_tx.send(()).unwrap();
+                    publish_rx.recv().unwrap();
+                }
+                sync_directory(path)
+            })
+        });
+        created_rx.recv().unwrap();
+        assert!(intent_path(&target).exists());
+        probe_tx.send(()).unwrap();
+        let first_event = event_rx.recv().unwrap();
+        let premature = done_rx.recv_timeout(std::time::Duration::from_millis(30));
+        publish_tx.send(()).unwrap();
+        publisher.join().unwrap().unwrap();
+        observer.join().unwrap().unwrap();
+        assert_eq!(Event::Opened, first_event);
+        assert!(
+            matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)),
+            "observer returned before directory publication: {premature:?}"
+        );
+        assert!(!intent_path(&target).exists());
     }
 }
