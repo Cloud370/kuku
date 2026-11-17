@@ -11,6 +11,25 @@ fn maps_unix_workspace_path_under_kuku_home() {
     assert_eq!(path, kuku_home.join("p").join("code/kuku/example"));
 }
 
+#[cfg(unix)]
+#[test]
+fn existing_workspace_alias_resolves_to_the_same_session_and_policy() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("project");
+    let alias = root.path().join("alias");
+    let home = root.path().join("data");
+    std::fs::create_dir(&workspace).unwrap();
+    std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+    assert_eq!(
+        session_events_path(&home, &workspace, "s_001").unwrap(),
+        session_events_path(&home, &alias, "s_001").unwrap()
+    );
+    assert_eq!(
+        project_policy_path(&home, &workspace).unwrap(),
+        project_policy_path(&home, &alias).unwrap()
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn maps_windows_drive_path_with_drive_letter() {

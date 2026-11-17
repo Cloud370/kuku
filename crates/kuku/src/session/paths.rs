@@ -30,20 +30,22 @@ fn kuku_home_with_env(env: &dyn Env) -> Result<PathBuf> {
         .ok_or(Error::MissingHomeDirectory)
 }
 
-/// Compute the project-scoped home directory for a workspace.
+/// Locate project data by resolved workspace path, using the supplied path for offline lookup.
 pub fn project_home(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
-    let mut path = PathBuf::from(kuku_home);
-    path.push("p");
+    if workspace
+        .components()
+        .any(|part| part == Component::ParentDir)
+    {
+        return Err(Error::InvalidWorkspacePath(workspace.display().to_string()));
+    }
+    let resolved = workspace.canonicalize().ok();
+    let mut path = kuku_home.join("p");
 
-    for component in workspace.components() {
+    for component in resolved.as_deref().unwrap_or(workspace).components() {
         match component {
-            Component::RootDir => {}
             Component::Prefix(prefix) => push_prefix(&mut path, &prefix),
             Component::Normal(part) => path.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(Error::InvalidWorkspacePath(workspace.display().to_string()));
-            }
+            Component::RootDir | Component::CurDir | Component::ParentDir => {}
         }
     }
 

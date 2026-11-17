@@ -37,7 +37,7 @@ $KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
 
 ## Project-Scoped Layout
 
-For workspace `/code/my-app`, the project home is:
+kuku uses the resolved path of an existing workspace for its Sessions, project Memory and policy. Opening the same directory through a symbolic link addresses the same data. For `/code/my-app` the project home is shown below.
 
 ```text
 $KUKU_HOME/p/code/my-app/

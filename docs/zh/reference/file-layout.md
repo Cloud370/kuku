@@ -37,7 +37,7 @@ $KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
 
 ## Project-Scoped Layout
 
-对于工作区 `/code/my-app`，项目 home 是：
+kuku 按已有工作目录的实际路径定位 Session、项目 Memory 和权限策略。通过符号链接打开同一目录时，可以读取同一份数据。工作区 `/code/my-app` 对应下面的项目数据目录。
 
 ```text
 $KUKU_HOME/p/code/my-app/
