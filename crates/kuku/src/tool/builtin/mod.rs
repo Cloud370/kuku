@@ -11,7 +11,7 @@ mod search_text;
 mod write_file;
 
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;
 
 pub(crate) use edit_file::edit_file;
 pub(crate) use fetch_url::fetch_url;

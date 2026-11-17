@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Notify};
 #[cfg(unix)]
 use tokio::time::{timeout, Duration};
 
-use super::super::test_helpers::workspace;
+use super::super::test_helpers::{noisy_timeout_command, workspace};
 use super::{blocked_command_reason, run_command, RUN_COMMAND_MAX_CHARS};
 #[cfg(unix)]
 use super::{
@@ -45,22 +45,6 @@ fn read_marker_command() -> &'static str {
 #[cfg(windows)]
 fn read_marker_command() -> &'static str {
     "type cwd-marker.txt"
-}
-
-#[cfg(unix)]
-fn noisy_timeout_command() -> String {
-    format!(
-        "printf '{}'; sleep 2",
-        "x".repeat(RUN_COMMAND_MAX_CHARS + 100)
-    )
-}
-
-#[cfg(windows)]
-fn noisy_timeout_command() -> String {
-    // Pre-encoded: `'x' * 80100; Start-Sleep -Seconds 3` as UTF-16LE base64.
-    // Using -EncodedCommand avoids cmd.exe mangling special characters (|, >, etc.).
-    let b64 = "JwB4ACcAIAAqACAAOAAwADEAMAAwADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAzAA==";
-    format!("powershell -EncodedCommand {b64}")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -110,7 +94,7 @@ async fn run_command_treats_nonzero_exit_as_command_evidence() {
 async fn run_command_reports_timeout_as_tool_error() {
     let dir = workspace();
     let result = run_command(
-        &serde_json::json!({"command": noisy_timeout_command(), "timeout": 1, "brief": "test timeout"}),
+        &serde_json::json!({"command": noisy_timeout_command(dir.path()), "timeout": 1, "brief": "test timeout"}),
         dir.path(),
         None,
         None,

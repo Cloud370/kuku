@@ -1,7 +1,8 @@
 use super::{
-    make_waiting_run, noisy_timeout_command, EventPayload, EventStore, ExecSlot, Run, RunState,
-    SlotEvent, ToolKind, UiEvent,
+    make_waiting_run, EventPayload, EventStore, ExecSlot, Run, RunState, SlotEvent, ToolKind,
+    UiEvent,
 };
+use crate::tool::builtin::test_helpers::noisy_timeout_command;
 
 #[tokio::test]
 async fn cancelled_tool_result_envelope_has_correct_fields() {
@@ -24,7 +25,7 @@ async fn command_slot_preserves_timeout_truncation() {
         "tool_timeout".to_string(),
         None,
         serde_json::json!({
-            "command": noisy_timeout_command(),
+            "command": noisy_timeout_command(dir.path()),
             "timeout": 1,
             "brief": "produce bounded timeout output",
         }),

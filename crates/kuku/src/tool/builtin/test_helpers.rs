@@ -16,6 +16,15 @@ pub(crate) fn workspace() -> tempfile::TempDir {
     dir
 }
 
+pub(crate) fn noisy_timeout_command(workspace: &Path) -> &'static str {
+    std::fs::write(workspace.join("timeout-output.txt"), vec![b'x'; 100_000]).unwrap();
+    if cfg!(windows) {
+        "type timeout-output.txt && ping -n 11 127.0.0.1 >nul"
+    } else {
+        "cat timeout-output.txt && sleep 10"
+    }
+}
+
 pub(crate) fn stored_read_event(
     id: u64,
     model_content: &str,

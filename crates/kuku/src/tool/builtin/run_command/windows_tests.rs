@@ -1,6 +1,7 @@
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::Arc;
 
@@ -19,16 +20,27 @@ use crate::tool::ToolResultEnvelope;
 use super::super::test_helpers::workspace;
 use super::{read_output, run_command_with_output, CommandEvent, OutputLimits, OutputRead};
 
-const CHILD_COMMAND: &str =
-    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tree.ps1";
-const TREE_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
-$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/D', '/C', 'ping -n 31 127.0.0.1 >nul' -NoNewWindow -PassThru
-[IO.File]::WriteAllText((Join-Path $PWD 'grandchild.pid'), [string]$child.Id)
-[IO.File]::WriteAllText((Join-Path $PWD 'child.pid'), [string]$PID)
-while (-not (Test-Path -LiteralPath 'release')) { Start-Sleep -Milliseconds 20 }
-"#;
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[test]
+#[ignore = "subprocess fixture for the Windows process tree tests"]
+fn command_tree_fixture() {
+    if !Path::new("tree-fixture.exe").is_file() {
+        return;
+    }
+    let mut grandchild = Command::new("ping.exe")
+        .args(["-n", "61", "127.0.0.1"])
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::fs::write("grandchild.pid", grandchild.id().to_string()).unwrap();
+    std::fs::write("child.pid", std::process::id().to_string()).unwrap();
+    while !Path::new("release").exists() {
+        assert!(grandchild.try_wait().unwrap().is_none());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 struct ObservedProcess {
     pid: u32,
@@ -120,13 +132,18 @@ struct RunningTree {
 impl RunningTree {
     async fn start(timeout_seconds: u64) -> Self {
         let dir = workspace();
-        std::fs::write(dir.path().join("tree.ps1"), TREE_SCRIPT).unwrap();
+        let test_exe = std::env::current_exe().unwrap();
+        let local_exe = dir.path().join("tree-fixture.exe");
+        if std::fs::hard_link(&test_exe, &local_exe).is_err() {
+            std::fs::copy(test_exe, local_exe).unwrap();
+        }
+        let command = "tree-fixture.exe --ignored --exact tool::builtin::run_command::windows_tests::command_tree_fixture";
         let workspace = dir.path().to_path_buf();
         let cancel = Arc::new(Notify::new());
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {
             run_command_with_output(
-                &serde_json::json!({"command": CHILD_COMMAND, "timeout": timeout_seconds, "brief": "verify Windows Job cleanup"}),
+                &serde_json::json!({"command": command, "timeout": timeout_seconds, "brief": "verify Windows Job cleanup"}),
                 &workspace, None, Some(worker_cancel), &workspace.join("outputs"), "windows-tree", OutputLimits::default(),
             ).await
         });
@@ -177,7 +194,7 @@ async fn wait_for_pid(path: &Path, worker: &JoinHandle<ToolResultEnvelope>) -> u
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|_| panic!("command did not write {} in time", path.display()))
 }
 
 #[tokio::test]

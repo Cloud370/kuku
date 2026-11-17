@@ -113,6 +113,8 @@ fn write_failure_stops_all_shared_handles() {
     assert!(error
         .to_string()
         .contains("stopped after a durability failure"));
+    drop(shared);
+    drop(store);
     assert!(std::fs::read(&path).unwrap().is_empty());
 }
 

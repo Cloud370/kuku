@@ -13,23 +13,6 @@ use crate::query::types::{
     CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
 };
 
-#[cfg(unix)]
-const TRUNCATION_TEST_OUTPUT_CHARS: usize = 100_000;
-
-#[cfg(unix)]
-fn noisy_timeout_command() -> String {
-    format!(
-        "printf '{}'; sleep 2",
-        "x".repeat(TRUNCATION_TEST_OUTPUT_CHARS)
-    )
-}
-
-#[cfg(windows)]
-fn noisy_timeout_command() -> String {
-    let encoded = "JwB4ACcAIAAqACAAOAAwADEAMAAwADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAzAA==";
-    format!("powershell -EncodedCommand {encoded}")
-}
-
 fn test_config() -> crate::config::Config {
     crate::config::Config {
         tiers: std::collections::BTreeMap::new(),
