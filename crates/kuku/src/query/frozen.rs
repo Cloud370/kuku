@@ -13,6 +13,7 @@ pub(super) fn freeze(
     assembly: &mut ContextAssembly,
     resolved: &ResolvedProvider,
     events: &[StoredEvent],
+    catalog: &crate::prompt::PromptCatalog,
 ) -> Result<(u64, usize)> {
     let agent = pending.conversation.as_str();
     let configuration = events
@@ -62,7 +63,7 @@ pub(super) fn freeze(
         assembly.tools = serde_json::from_value(value["tools"].clone())?;
         id
     } else {
-        writer.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":agent,"signature":signature,"predecessor":previous.map(|(id,_)|id),"configuration":configuration,"handoff":handoff,"system_prompt":assembly.system_prompt,"prelude":assembly.prelude_messages,"tools":assembly.tools})))?.id
+        writer.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":agent,"signature":signature,"predecessor":previous.map(|(id,_)|id),"configuration":configuration,"handoff":handoff,"system_prompt":assembly.system_prompt,"prelude":assembly.prelude_messages,"tools":assembly.tools,"catalog":catalog})))?.id
     };
     let frozen = events
         .iter()

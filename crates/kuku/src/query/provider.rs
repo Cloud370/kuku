@@ -44,7 +44,17 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let current_date = current_date_string();
     let model_tiers = pending.config.tier_infos();
 
-    let catalog = if let Some(dir) = &pending.prompts_dir {
+    let restored_catalog = if pending.query.runtime.is_some() {
+        crate::context::runtime::read_frozen_catalog(
+            &pending.events_path,
+            pending.conversation.as_str(),
+        )?
+    } else {
+        None
+    };
+    let catalog = if let Some(catalog) = restored_catalog {
+        catalog
+    } else if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
             crate::error::Error::PromptRender(format!(
                 "failed to load prompts from {}: {e}",
@@ -454,6 +464,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             &mut assembly,
             &resolved_config,
             &existing_events,
+            &catalog,
         )?)
     } else {
         None

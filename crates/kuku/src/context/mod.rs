@@ -3,6 +3,7 @@ pub mod message;
 pub mod provenance;
 pub mod replay;
 pub mod revert;
+pub(crate) mod runtime;
 
 pub use assembly::{
     assemble_context, restore_prompt_snapshot, ContextAssembly, ContextInput, EnvironmentSource,
