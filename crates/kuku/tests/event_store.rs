@@ -153,6 +153,7 @@ fn truncates_partial_tail_before_appending_after_reopen() {
         .unwrap();
 
     assert_eq!(appended.id, 2);
+    drop(store);
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(!contents.ends_with("{\"id\":"));
@@ -227,6 +228,7 @@ fn append_writes_newline_terminated_jsonl() {
     let mut store = EventStore::open(&path).unwrap();
 
     store.append(session_created()).unwrap();
+    drop(store);
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.ends_with('\n'));
@@ -687,8 +689,8 @@ fn paged_reads_resume_by_id_across_sparse_checkpoints_and_reopen() {
     let contents: String = (1..=600)
         .map(|index| format!("{{\"id\":{},\"kind\":\"runtime.test\"}}\n", index * 2))
         .collect();
-    std::fs::write(&path, contents).unwrap();
-    let store = EventStore::open(&path).unwrap();
+    std::fs::write(&path, &contents).unwrap();
+    let mut store = EventStore::open(&path).unwrap();
     assert_eq!(1200, store.last_id());
     assert!(store.read_after(0, 0).unwrap().is_empty());
     assert!(store.read_after(1200, 1).unwrap().is_empty());
@@ -711,10 +713,15 @@ fn paged_reads_resume_by_id_across_sparse_checkpoints_and_reopen() {
         (1..=600).map(|index| index * 2).collect::<Vec<_>>(),
         all_ids
     );
+    assert_eq!(2, store.read_after(0, 1).unwrap()[0].id);
+    assert_eq!(1201, store.append(session_created()).unwrap().id);
     drop(store);
+    assert!(std::fs::read(&path)
+        .unwrap()
+        .starts_with(contents.as_bytes()));
     let reopened = EventStore::open(&path).unwrap();
     assert_eq!(
-        vec![1198, 1200],
+        vec![1198, 1200, 1201],
         reopened
             .read_after(1196, 10)
             .unwrap()
@@ -784,8 +791,8 @@ fn repairs_large_incomplete_tail_but_rejects_complete_corruption() {
     assert_eq!(1, EventStore::replay(&path).unwrap().len());
     assert!(std::fs::metadata(&path).unwrap().len() > first.len() as u64);
     let store = EventStore::open(&path).unwrap();
-    assert_eq!(first.as_bytes(), std::fs::read(&path).unwrap());
     drop(store);
+    assert_eq!(first.as_bytes(), std::fs::read(&path).unwrap());
 
     for tail in [
         "{\"id\":\n".to_string(),

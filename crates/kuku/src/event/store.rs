@@ -143,7 +143,8 @@ impl Writer {
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
         let file = self.file.as_mut().unwrap();
         if let Err(error) = file
-            .write_all(record)
+            .seek(SeekFrom::Start(self.committed_len))
+            .and_then(|_| file.write_all(record))
             .and_then(|()| fs_sync::sync_file(file))
         {
             self.poison = Some(error.to_string());
@@ -218,8 +219,8 @@ impl EventStore {
         }
         let file = fs_sync::write_options()
             .read(true)
-            .append(true)
             .create(true)
+            .truncate(false)
             .open(&key)?;
         let path = fs::canonicalize(key)?;
         if let Some(inner) = find_active_store(&stores, &path) {
