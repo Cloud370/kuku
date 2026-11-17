@@ -131,7 +131,15 @@ impl Query {
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
         };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
-        let existing_events = EventStore::replay(&events_path)?;
+        let existing_events = if self.runtime.is_some() {
+            crate::context::runtime::read_agent_events(
+                &events_path,
+                self.conversation.as_str(),
+                self.runtime_limits.max_request_bytes,
+            )?
+        } else {
+            EventStore::replay(&events_path)?
+        };
         validate_existing_session(&existing_events)?;
         let is_new_session = existing_events.is_empty();
         let lifecycle = if is_new_session {
@@ -381,6 +389,7 @@ impl Query {
 
         let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
+            context_cursor: None,
             session_id: session_id.clone(),
             conversation: conversation.clone(),
             query: self,

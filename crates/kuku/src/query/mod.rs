@@ -1,3 +1,4 @@
+mod budget;
 mod frozen;
 mod handoff;
 mod helpers;
@@ -13,6 +14,8 @@ mod step;
 mod tool_exec;
 mod tool_response;
 mod types;
+
+pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
 
 pub use types::{
     ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent,

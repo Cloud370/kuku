@@ -57,6 +57,8 @@ pub struct RuntimeLimits {
     pub max_request_bytes: usize,
     /// Maximum simultaneous model streams across the session.
     pub max_model_requests: usize,
+    /// Optional total model attempts shared by all agents and turns until this runtime closes.
+    pub max_requests_per_open: Option<u64>,
     /// Maximum logical model requests in one turn, including recovery requests.
     pub max_steps_per_turn: u64,
     /// Maximum simultaneous tools within one agent's step.
@@ -77,6 +79,7 @@ impl Default for RuntimeLimits {
             max_input_bytes: 65_536,
             max_request_bytes: 512 * 1024,
             max_model_requests: 4,
+            max_requests_per_open: None,
             max_steps_per_turn: 20,
             max_tools_per_agent: 8,
             max_output_bytes: 8 * 1024 * 1024,
@@ -113,6 +116,8 @@ pub struct AgentConfig {
     pub no_agents: bool,
     /// Optional native skill loaded at this agent's first accepted turn.
     pub bootstrap_skill: Option<String>,
+    /// Optional final tool selection overriding preset defaults.
+    pub tools: Option<Vec<String>>,
 }
 
 /// Trusted origin of an input or tool invocation.

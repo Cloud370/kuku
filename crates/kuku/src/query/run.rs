@@ -740,7 +740,6 @@ impl Run {
             source,
             &rule,
         )?;
-        let prior_events = EventStore::replay(&pending.events_path)?;
         if pending.query.runtime.is_some() {
             let queued = QueuedToolCall {
                 tool_call,
@@ -759,6 +758,7 @@ impl Run {
             };
             return self.apply_pending_step(step).await;
         }
+        let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
             let result = execute_tool_call(&mut pending, &tool_call).await?;

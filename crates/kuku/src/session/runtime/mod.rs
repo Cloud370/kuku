@@ -39,6 +39,7 @@ pub(crate) struct SessionInner {
     workers: Mutex<HashMap<u64, Worker>>,
     live: broadcast::Sender<(String, UiEvent)>,
     model_capacity: Arc<Semaphore>,
+    model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
     lease: Mutex<Option<SessionLease>>,
     close_result: Mutex<Option<watch::Receiver<CleanupOutcome>>>,
 }
@@ -139,6 +140,10 @@ impl Session {
         }
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));
+        let model_request_budget = options
+            .limits
+            .max_requests_per_open
+            .map(|limit| Arc::new(std::sync::atomic::AtomicU64::new(limit)));
         Ok(Self {
             inner: Arc::new(SessionInner {
                 id,
@@ -149,6 +154,7 @@ impl Session {
                 workers: Mutex::new(HashMap::new()),
                 live,
                 model_capacity,
+                model_request_budget,
                 lease: Mutex::new(Some(lease)),
                 close_result: Mutex::new(None),
             }),
@@ -713,6 +719,13 @@ impl Session {
                 "agent instructions or model selection exceeds its byte limit".into(),
             ));
         }
+        if config.tools.as_ref().is_some_and(|tools| {
+            tools.len() > 128 || tools.iter().any(|name| name.is_empty() || name.len() > 128)
+        }) {
+            return Err(Error::InvalidArgument(
+                "tool selection exceeds its supported bounds".into(),
+            ));
+        }
         if config.max_output_tokens == Some(0) {
             return Err(Error::InvalidArgument(
                 "max_output_tokens must be positive".into(),
@@ -746,6 +759,11 @@ fn ensure_open(state: &State) -> Result<()> {
 }
 
 fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
+    if limits.max_requests_per_open == Some(0) {
+        return Err(Error::InvalidArgument(
+            "max_requests_per_open must be positive when configured".into(),
+        ));
+    }
     if limits.max_request_bytes < 4096
         || limits.max_request_bytes > 16 * 1024 * 1024
         || limits.max_preview_bytes < 1024

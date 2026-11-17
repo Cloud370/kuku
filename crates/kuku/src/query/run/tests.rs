@@ -60,6 +60,7 @@ pub(super) fn make_test_pending(
     cancel_token: std::sync::Arc<tokio::sync::Notify>,
 ) -> PendingRun {
     PendingRun {
+        context_cursor: None,
         session_id: "test".to_string(),
         query: crate::query::types::Query::new("test"),
         conversation: crate::conversation::address::ConversationAddress::MAIN,

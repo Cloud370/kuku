@@ -68,14 +68,13 @@ pub(super) async fn advance(
         &queued.tool_call.name,
         &queued.tool_call.args,
     );
-    let prior = EventStore::replay(&pending.events_path)?;
     let policy = crate::permission::load_project_policy(&pending.policy_path)?;
     let guard = crate::permission::decide_tool_call(
         &queued.tool_call.name,
         &definition.risk,
         &candidate,
         &policy,
-        &crate::permission::recover_session_grants(&prior),
+        &[],
     );
     let decision = if guard.kind == GateDecisionKind::Deny {
         AuthorizationDecision::Deny
@@ -199,7 +198,11 @@ pub(super) async fn dispatch(
         let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
         return finish_inline_event(pending, queued, result);
     }
-    let prior_events = EventStore::replay(&pending.events_path)?;
+    let prior_events = crate::context::runtime::read_agent_events(
+        &pending.events_path,
+        pending.conversation.as_str(),
+        pending.query.runtime_limits.max_request_bytes,
+    )?;
     let (slot, kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         output: Some(output_spec(&pending, &queued.tool_call.id)),
         tool_name: queued.tool_call.name.clone(),
@@ -230,7 +233,20 @@ pub(super) async fn dispatch(
 }
 
 pub(super) fn should_yield(pending: &PendingRun) -> Result<bool> {
-    Ok(EventStore::replay(&pending.events_path)?.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.operation" && value["record"]["operation"] == "question_requested" && value["record"]["address"] == pending.conversation.as_str() && value["record"]["request"]["turn"] == pending.turn)))
+    let mut after = pending.turn.saturating_sub(1);
+    loop {
+        let events = EventStore::read_page(&pending.events_path, after, 64)?;
+        if events.is_empty() {
+            return Ok(false);
+        }
+        for event in events {
+            after = event.id;
+            if matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.operation" && value["record"]["operation"] == "question_requested" && value["record"]["address"] == pending.conversation.as_str() && value["record"]["request"]["turn"] == pending.turn)
+            {
+                return Ok(true);
+            }
+        }
+    }
 }
 
 pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
@@ -308,7 +324,7 @@ pub(super) fn output_spec(pending: &PendingRun, id: &str) -> super::slots::Comma
     }
 }
 
-pub(super) fn definitions() -> Vec<ToolDefinition> {
+pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
         definition("create_agent", "Create a stable agent with independent context. Select an explicit connection or tier and supply the complete instructions it needs.", serde_json::json!({"type":"object","properties":{"address":{"type":"string"},"connection":{"type":"string"},"tier":{"type":"string"},"model":{"type":"string"},"preset":{"type":"string"},"instructions":{"type":"string"}},"required":["address"]})),
@@ -390,8 +406,7 @@ pub(super) fn validate_prepared(
     let definition = find_tool_definition(pending, &call.name).ok_or_else(|| {
         Error::InvalidArgument(format!("tool '{}' is no longer available", call.name))
     })?;
-    let prior = EventStore::replay(&pending.events_path)?;
-    let prepared = prepared_record(&prior, pending, &call.id).ok_or_else(|| {
+    let prepared = prepared_record(pending, &call.id)?.ok_or_else(|| {
         Error::InvalidEventStream("pending action has no durable prepared arguments".into())
     })?;
     if prepared["args"] != call.args || prepared["definition"] != schema_value(definition) {
@@ -407,8 +422,7 @@ async fn prepare(
     queued: &mut QueuedToolCall,
     definition: &ToolDefinition,
 ) -> Result<Option<String>> {
-    let prior = EventStore::replay(&pending.events_path)?;
-    if let Some(prepared) = prepared_record(&prior, pending, &queued.tool_call.id) {
+    if let Some(prepared) = prepared_record(pending, &queued.tool_call.id)? {
         if prepared["definition"] != schema_value(definition) {
             return Err(Error::InvalidArgument(
                 "prepared tool definition changed before dispatch".into(),
@@ -432,22 +446,26 @@ async fn prepare(
     Ok(None)
 }
 
-fn prepared_record<'a>(
-    events: &'a [crate::event::StoredEvent],
-    pending: &PendingRun,
-    id: &str,
-) -> Option<&'a serde_json::Value> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::Unknown(value)
-            if value["kind"] == "runtime.tool_prepared"
-                && value["agent"] == pending.conversation.as_str()
-                && value["turn"] == pending.turn
-                && value["tool_call_id"] == id =>
-        {
-            Some(value)
+fn prepared_record(pending: &PendingRun, id: &str) -> Result<Option<serde_json::Value>> {
+    let mut after = pending.turn.saturating_sub(1);
+    loop {
+        let events = EventStore::read_page(&pending.events_path, after, 64)?;
+        if events.is_empty() {
+            return Ok(None);
         }
-        _ => None,
-    })
+        for event in events {
+            after = event.id;
+            if let EventPayload::Unknown(value) = event.payload {
+                if value["kind"] == "runtime.tool_prepared"
+                    && value["agent"] == pending.conversation.as_str()
+                    && value["turn"] == pending.turn
+                    && value["tool_call_id"] == id
+                {
+                    return Ok(Some(value));
+                }
+            }
+        }
+    }
 }
 
 fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {

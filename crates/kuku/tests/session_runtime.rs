@@ -633,3 +633,122 @@ async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
     let reopened = Session::open(reopen).await.unwrap();
     reopened.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = fixture(&server, |_| true, json!({"content":"accepted"}), "stop").await;
+    let mut original = options(&server, workspace.path(), data.path());
+    original.limits.max_requests_per_open = Some(2);
+    let session = Session::open(original.clone()).await.unwrap();
+    for address in ["main", "reviewer"] {
+        session
+            .create_agent(
+                &format!("create:{address}"),
+                address,
+                AgentConfig::default(),
+            )
+            .unwrap();
+        session
+            .send(Input::new(
+                format!("input:{address}"),
+                address,
+                "first turn",
+            ))
+            .unwrap();
+        assert_eq!(AgentStatus::Idle, settled(&session, address).await.status);
+    }
+    session
+        .send(Input::new("third", "main", "next turn"))
+        .unwrap();
+    let interrupted = settled(&session, "main").await;
+    assert_eq!(AgentStatus::Interrupted, interrupted.status);
+    assert!(interrupted
+        .last_error
+        .unwrap()
+        .contains("model request limit exhausted"));
+    assert_eq!(1, interrupted.usage.model_requests);
+    let steps = session.events(0, 256).unwrap().into_iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count();
+    assert_eq!(
+        2, steps,
+        "capacity rejection is not a dispatched model attempt"
+    );
+    model.assert_hits_async(2).await;
+    original.session_id = Some(session.id().into());
+    let _ = session.close().await;
+    let reopened = Session::open(original).await.unwrap();
+    reopened.advance("main").unwrap();
+    assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
+    assert_eq!(2, reopened.agent("main").unwrap().usage.model_requests);
+    reopened.close().await.unwrap();
+    model.assert_hits_async(3).await;
+}
+
+#[tokio::test]
+async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaults() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut config = options(&server, workspace.path(), data.path());
+    config.config.providers.get_mut("openai").unwrap().base_url = server.url("/selection");
+    config.config.discovery.auto_discover = false;
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/selection/chat/completions")
+                .matches(common::capture_http_request);
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response(json!({"content":"read only"}), "stop"));
+        })
+        .await;
+    let session = Session::open(config).await.unwrap();
+    for (address, tools) in [
+        ("explore", None),
+        ("explicit", Some(vec!["ask_user".into()])),
+    ] {
+        session
+            .create_agent(
+                &format!("create:{address}"),
+                address,
+                AgentConfig {
+                    preset: Some("explore".into()),
+                    tier: Some("balanced".into()),
+                    model: Some(address.into()),
+                    tools,
+                    no_skills: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        session
+            .send(Input::new(format!("input:{address}"), address, "inspect"))
+            .unwrap();
+        let state = settled(&session, address).await;
+        assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
+    }
+    session.close().await.unwrap();
+    model.assert_hits_async(2).await;
+    let bodies = common::take_http_requests("/selection/chat/completions");
+    assert_eq!(2, bodies.len());
+    for body in bodies {
+        let names = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        if body["model"] == "explore" {
+            assert!(names.contains(&"read_file"));
+            assert!(names.iter().all(|name| matches!(
+                *name,
+                "read_file" | "find_files" | "search_text" | "fetch_url"
+            )));
+        } else {
+            assert_eq!("explicit", body["model"]);
+            assert_eq!(vec!["ask_user"], names);
+        }
+    }
+}

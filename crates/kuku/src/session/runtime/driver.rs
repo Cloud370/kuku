@@ -319,6 +319,7 @@ impl Session {
         query.input_source = source;
         query.runtime_limits = self.inner.options.limits.clone();
         query.model_capacity = Some(self.inner.model_capacity.clone());
+        query.model_request_budget = self.inner.model_request_budget.clone();
         query.runtime = Some(Arc::downgrade(&self.inner));
         query.turn_override = self.agent(address)?.turn;
         query.events_path_override = Some(self.inner.events_path.clone());
@@ -395,6 +396,26 @@ impl Session {
             });
             query.tool_registry_override = Some(
                 crate::tool::builtin_registry(false, !config.no_skills)
+                    .into_iter()
+                    .chain(crate::query::runtime_tool_definitions())
+                    .filter(|tool| allowed.contains(&tool.name))
+                    .collect(),
+            );
+        }
+        if let Some(allowed) = &config.tools {
+            let available = crate::tool::builtin_registry(false, !config.no_skills)
+                .into_iter()
+                .chain(crate::query::runtime_tool_definitions())
+                .collect::<Vec<_>>();
+            for name in allowed {
+                if !available.iter().any(|tool| tool.name == *name) {
+                    return Err(Error::InvalidArgument(format!(
+                        "selected tool '{name}' is not available"
+                    )));
+                }
+            }
+            query.tool_registry_override = Some(
+                available
                     .into_iter()
                     .filter(|tool| allowed.contains(&tool.name))
                     .collect(),

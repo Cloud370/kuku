@@ -26,7 +26,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
         Err(error) => {
             let request_id = format!(
                 "req_{}",
-                EventStore::replay(&pending.events_path)?.len() + 1
+                EventStore::open(&pending.events_path)?.last_id() + 1
             );
             append_model_error(
                 &pending.events_path,
@@ -53,11 +53,21 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
     };
     if pending.query.runtime.is_some() {
         registry.retain(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"));
-        registry.extend(
-            crate::query::runtime_tools::definitions()
-                .into_iter()
-                .filter(|tool| !pending.query.disable_agents || tool.name == "ask_user"),
-        );
+        if pending.query.tool_registry_override.is_none() {
+            registry.extend(
+                crate::query::runtime_tools::definitions()
+                    .into_iter()
+                    .filter(|tool| !pending.query.disable_agents || tool.name == "ask_user"),
+            );
+        }
+        if pending.query.disable_agents {
+            registry.retain(|tool| {
+                !matches!(
+                    tool.name.as_str(),
+                    "create_agent" | "send_message" | "list_agents"
+                )
+            });
+        }
     }
     pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())

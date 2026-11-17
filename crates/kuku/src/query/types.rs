@@ -54,6 +54,7 @@ pub struct Query {
     pub(crate) runtime: Option<std::sync::Weak<crate::session::runtime::SessionInner>>,
     pub(crate) turn_override: Option<u64>,
     pub(crate) events_path_override: Option<PathBuf>,
+    pub(crate) model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,6 +387,7 @@ pub(super) struct PendingRun {
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
     pub(super) request_base: Option<super::request::OwnedRequestBase>,
     pub(super) recovery_count: u8,
+    pub(super) context_cursor: Option<crate::context::runtime::ContextCursor>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -590,6 +592,7 @@ impl Query {
             runtime: None,
             turn_override: None,
             events_path_override: None,
+            model_request_budget: None,
         }
     }
 
@@ -743,7 +746,7 @@ impl Query {
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        if self.tier.is_some() && self.model.is_some() {
+        if self.tier.is_some() && self.model.is_some() && self.runtime.is_none() {
             return Err(Error::InvalidArgument(
                 ".tier() and .model() are mutually exclusive".to_string(),
             ));

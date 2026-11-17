@@ -494,6 +494,7 @@ mod tests {
             query = query.no_skills();
         }
         PendingRun {
+            context_cursor: None,
             session_id: "test".to_string(),
             query,
             conversation: crate::conversation::address::ConversationAddress::MAIN,

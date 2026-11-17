@@ -81,7 +81,7 @@ async fn main() {
 async fn execute() -> Result<bool, AnyError> {
     let args = arguments()?;
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY]");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -91,6 +91,8 @@ async fn execute() -> Result<bool, AnyError> {
     let mut config =
         kuku::config::load_config(&PathBuf::from(required(&args, "config")?))?.resolve()?;
     let max_steps = number(&args, "max-steps", 12_u64)?;
+    let max_requests = number(&args, "max-requests", max_steps)?;
+    let max_agents = number(&args, "max-agents", 64_usize)?;
     let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
     let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
     let timeout = number(&args, "timeout", 300_u64)?;
@@ -101,6 +103,8 @@ async fn execute() -> Result<bool, AnyError> {
     options.session_id = args.get("session-id").cloned();
     options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
     options.limits.max_steps_per_turn = max_steps;
+    options.limits.max_requests_per_open = Some(max_requests);
+    options.limits.max_agents = max_agents;
     options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
     let limits = options.limits.clone();
     let session = Session::open(options).await?;
@@ -240,7 +244,7 @@ async fn execute() -> Result<bool, AnyError> {
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_output_tokens":max_output_tokens,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":max_output_tokens,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
     if let Some(parent) = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -278,6 +282,8 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "reasoning-effort"
                 | "service-tier"
                 | "max-steps"
+                | "max-requests"
+                | "max-agents"
                 | "max-output-tokens"
                 | "max-context-tokens"
                 | "timeout"
