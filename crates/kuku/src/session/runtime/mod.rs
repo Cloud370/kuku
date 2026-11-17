@@ -347,6 +347,38 @@ impl Session {
             .map(|(_, receipt)| receipt.clone()))
     }
 
+    /// Verify a delivered input's receipt without committing or activating work.
+    pub fn input_receipt(&self, input: &Input) -> Result<Option<Receipt>> {
+        validate_key(&input.command_id)?;
+        validate_address(&input.target)?;
+        if input.text.len() > 262_144 {
+            return Err(Error::InvalidArgument(
+                "input exceeds the supported byte limit".into(),
+            ));
+        }
+        let identity = match &input.source {
+            InputSource::Host(identity)
+            | InputSource::Agent(identity)
+            | InputSource::External(identity) => identity,
+        };
+        if identity.len() > 256
+            || input
+                .correlation
+                .as_ref()
+                .is_some_and(|value| value.len() > 256)
+        {
+            return Err(Error::InvalidArgument(
+                "input source or correlation exceeds 256 bytes".into(),
+            ));
+        }
+        let digest = fingerprint(&("send", input))?;
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .retry(&input.command_id, &digest)
+    }
+
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
         let mut state = State::default();

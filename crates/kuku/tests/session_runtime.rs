@@ -187,8 +187,13 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
     input.activation = Activation::Enqueue;
     let receipt = session.send(input.clone()).unwrap();
     assert_eq!(Some(receipt.clone()), session.receipt("input").unwrap());
+    assert_eq!(
+        Some(receipt.clone()),
+        session.input_receipt(&input).unwrap()
+    );
     assert_eq!(receipt, session.send(input.clone()).unwrap());
     input.text = "conflicting retry".into();
+    assert!(session.input_receipt(&input).is_err());
     assert!(session.send(input).is_err());
     assert_eq!(AgentStatus::Idle, session.agent("main").unwrap().status);
     model.assert_hits_async(0).await;
