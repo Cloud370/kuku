@@ -1,17 +1,25 @@
 //! Discovery and process control for the per-user managed HTTP service.
 
-use std::ffi::OsString;
+#[cfg(windows)]
+mod windows;
+
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, TryLockError};
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::process::{Child, Command};
 use url::Url;
 use wreq::{Method, Response, StatusCode};
+
+#[cfg(not(windows))]
+use tokio::process::Child as DetachedChild;
+
+#[cfg(windows)]
+use self::windows::{spawn_detached, DetachedChild};
 
 /// Revision of the Session protocol expected by the product client.
 pub const SESSION_PROTOCOL_VERSION: u32 = 1;
@@ -476,27 +484,39 @@ fn launch_child(
     data_dir: &Path,
     config: &Path,
     address: SocketAddr,
-) -> io::Result<Child> {
+) -> io::Result<DetachedChild> {
+    let listen = address.to_string();
+    let args = [
+        OsStr::new("__managed-server"),
+        OsStr::new("--data-dir"),
+        data_dir.as_os_str(),
+        OsStr::new("--config"),
+        config.as_os_str(),
+        OsStr::new("--listen"),
+        OsStr::new(&listen),
+    ];
+    spawn_detached(executable, &args, data_dir)
+}
+
+#[cfg(unix)]
+fn spawn_detached(
+    executable: &Path,
+    args: &[&OsStr],
+    data_dir: &Path,
+) -> io::Result<DetachedChild> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    use tokio::process::Command;
+
     let mut command = Command::new(executable);
     command
-        .arg("__managed-server")
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("--config")
-        .arg(config)
-        .arg("--listen")
-        .arg(address.to_string())
+        .args(args)
         .env("KUKU_HOME", data_dir)
         .current_dir(data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    spawn_detached(command)
-}
-
-#[cfg(unix)]
-fn spawn_detached(mut command: Command) -> io::Result<Child> {
-    use std::os::unix::process::CommandExt;
 
     // NOTE: setsid is async-signal-safe and only changes the child launched for this service.
     // Rust's process API cannot create a detached session on Unix.
@@ -512,26 +532,12 @@ fn spawn_detached(mut command: Command) -> io::Result<Child> {
     command.spawn()
 }
 
-#[cfg(windows)]
-fn spawn_detached(mut command: Command) -> io::Result<Child> {
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-
-    let detached = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    match command
-        .creation_flags(detached | CREATE_BREAKAWAY_FROM_JOB)
-        .spawn()
-    {
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            command.creation_flags(detached).spawn()
-        }
-        result => result,
-    }
-}
-
 #[cfg(not(any(unix, windows)))]
-fn spawn_detached(_command: Command) -> io::Result<Child> {
+fn spawn_detached(
+    _executable: &Path,
+    _args: &[&OsStr],
+    _data_dir: &Path,
+) -> io::Result<DetachedChild> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "managed server launch is unavailable on this platform",
