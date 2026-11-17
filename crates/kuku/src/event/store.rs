@@ -180,20 +180,7 @@ impl Writer {
         let start = self.index[checkpoint].offset;
         self.file.seek(SeekFrom::Start(start))?;
         let file = (&mut self.file).take(self.committed_len - start);
-        let mut reader = EventReader::new(BufReader::new(file), path, start);
-        let mut events = Vec::new();
-        let mut page_bytes = 0;
-        while let Some(record) = reader.next()? {
-            if record.event.id <= after {
-                continue;
-            }
-            page_bytes += record.bytes;
-            events.push(record.event);
-            if events.len() == limit.min(MAX_PAGE_RECORDS) || page_bytes >= MAX_PAGE_BYTES {
-                break;
-            }
-        }
-        Ok(events)
+        read_page_from(file, path, start, after, limit)
     }
 }
 
@@ -268,6 +255,28 @@ impl EventStore {
             .lock()
             .unwrap()
             .read_after(&self.inner.path, after, limit)
+    }
+
+    /// Read a bounded committed page without opening a writer or repairing the file.
+    pub fn read_page(path: impl AsRef<Path>, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let path = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner.writer.lock().unwrap().read_after(&path, after, limit);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let file = File::open(&path)?;
+        let result = read_page_from(file, &path, 0, after, limit);
+        drop(stores);
+        result
     }
 
     /// Return the last durably committed event ID, or zero for an empty store.
@@ -375,6 +384,29 @@ fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
     let mut events = Vec::new();
     while let Some(record) = reader.next()? {
         events.push(record.event);
+    }
+    Ok(events)
+}
+
+fn read_page_from(
+    file: impl Read,
+    path: &Path,
+    offset: u64,
+    after: u64,
+    limit: usize,
+) -> Result<Vec<StoredEvent>> {
+    let mut reader = EventReader::new(BufReader::new(file), path, offset);
+    let mut events = Vec::new();
+    let mut page_bytes = 0;
+    while let Some(record) = reader.next()? {
+        if record.event.id <= after {
+            continue;
+        }
+        page_bytes += record.bytes;
+        events.push(record.event);
+        if events.len() == limit.min(MAX_PAGE_RECORDS) || page_bytes >= MAX_PAGE_BYTES {
+            break;
+        }
     }
     Ok(events)
 }

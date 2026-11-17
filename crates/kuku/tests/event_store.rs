@@ -819,6 +819,9 @@ fn active_writer_rejects_another_process_until_the_last_clone_is_dropped() {
             assert!(
                 matches!(EventStore::replay(&path), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
             );
+            assert!(
+                matches!(EventStore::read_page(&path, 0, 256), Err(Error::Io(error)) if error.kind() == ErrorKind::WouldBlock)
+            );
         } else {
             let mut store = EventStore::open(&path).unwrap();
             assert_eq!(2, store.append(session_created()).unwrap().id);

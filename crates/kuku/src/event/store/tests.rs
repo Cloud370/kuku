@@ -209,3 +209,63 @@ fn nesting_probe_ignores_escaped_string_contents() {
     drop(store);
     assert_eq!(2, EventStore::replay(&path).unwrap().len());
 }
+
+#[test]
+fn static_pages_do_not_open_a_writer_or_repair_an_incomplete_tail() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let contents =
+        "{\"id\":1,\"kind\":\"runtime.test\"}\n{\"id\":2,\"kind\":\"runtime.test\"}\n{\"id\":";
+    std::fs::write(&path, contents).unwrap();
+
+    assert_eq!(1, EventStore::read_page(&path, 0, 1).unwrap()[0].id);
+    assert_eq!(2, EventStore::read_page(&path, 1, 256).unwrap()[0].id);
+    assert!(EventStore::read_page(&path, 2, 256).unwrap().is_empty());
+    assert_eq!(contents.as_bytes(), std::fs::read(&path).unwrap());
+    assert!(super::find_active_store(
+        &super::registry().lock().unwrap(),
+        &std::fs::canonicalize(&path).unwrap(),
+    )
+    .is_none());
+    let missing = temp.path().join("missing").join("events.jsonl");
+    assert!(EventStore::read_page(&missing, 0, 256).unwrap().is_empty());
+    assert!(!missing.parent().unwrap().exists());
+}
+
+#[test]
+fn static_pages_share_the_active_writer_and_keep_count_and_byte_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let contents: String = (1..=600)
+        .map(|id| format!("{{\"id\":{id},\"kind\":\"runtime.test\"}}\n"))
+        .collect();
+    std::fs::write(&path, contents).unwrap();
+    let store = EventStore::open(&path).unwrap();
+    assert_eq!(
+        store.read_after(257, 256).unwrap(),
+        EventStore::read_page(&path, 257, usize::MAX).unwrap()
+    );
+    drop(store);
+    assert_eq!(
+        256,
+        EventStore::read_page(&path, 0, usize::MAX).unwrap().len()
+    );
+    assert_eq!(600, EventStore::read_page(&path, 599, 256).unwrap()[0].id);
+    assert!(EventStore::read_page(&path, 0, 0).unwrap().is_empty());
+
+    let mut store = EventStore::open(&path).unwrap();
+    for _ in 0..3 {
+        store
+            .append(EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.test", "data": "x".repeat(600 * 1024),
+            })))
+            .unwrap();
+    }
+    drop(store);
+    let page = EventStore::read_page(&path, 600, 256).unwrap();
+    assert_eq!(
+        vec![601, 602],
+        page.into_iter().map(|event| event.id).collect::<Vec<_>>()
+    );
+    assert_eq!(603, EventStore::read_page(&path, 602, 256).unwrap()[0].id);
+}
