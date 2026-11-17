@@ -276,21 +276,20 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
                     .iter()
                     .any(|agent| agent.status == AgentStatus::Waiting)
             }) {
-                let reply = daemon
-                    .native(Method::POST, "/service/restart")
-                    .send()
-                    .await
-                    .unwrap();
-                if reply.status() == 202 {
-                    break;
-                }
-                assert_eq!(409, reply.status());
+                break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("a durable question can wait across a service restart");
+    let reply = daemon
+        .native(Method::POST, "/service/restart")
+        .send()
+        .await
+        .unwrap();
+    let status = reply.status();
+    assert_eq!(202, status, "{}", reply.text().await.unwrap());
     daemon.wait_for_stop().await;
 
     let mut options = SessionOptions::new(&canonical, &home, config);

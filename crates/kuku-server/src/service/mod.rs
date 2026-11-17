@@ -244,8 +244,6 @@ async fn admit(State(service): State<Arc<ServiceState>>, request: Request, next:
 }
 
 async fn status(State(service): State<Arc<ServiceState>>) -> Response {
-    let mut busy = service.run_manager().await.busy().await;
-    busy.sort();
     let status = ServiceStatus {
         version: BUILD_VERSION,
         protocol_version: SESSION_PROTOCOL_VERSION,
@@ -260,7 +258,7 @@ async fn status(State(service): State<Arc<ServiceState>>) -> Response {
             .config_path
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
-        busy,
+        busy: service.run_manager().await.active_run_ids(),
         draining: service.draining.load(Ordering::Acquire),
     };
     (
@@ -298,24 +296,24 @@ async fn restart(
 }
 
 async fn close_for_restart(service: Arc<ServiceState>) -> Response {
-    let _admission = service.admission.write().await;
+    let _admission = match service.admission.try_write() {
+        Ok(guard) => guard,
+        Err(_)
+            if service.admission.try_read().is_ok()
+                && !service.draining.load(Ordering::Acquire) =>
+        {
+            return restart_busy(service.run_manager().await.active_run_ids());
+        }
+        // NOTE: Wait for a concurrent service shutdown to finish releasing its writers.
+        Err(_) => service.admission.write().await,
+    };
     if service.draining.load(Ordering::Acquire) {
         return StatusCode::ACCEPTED.into_response();
     }
     let manager = service.run_manager().await;
-    let mut busy = manager.busy().await;
+    let busy = manager.active_run_ids();
     if !busy.is_empty() {
-        busy.sort();
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "ok": false,
-                "code": "service_busy",
-                "message": "restart waits for active execution and tool cleanup",
-                "busy": busy
-            })),
-        )
-            .into_response();
+        return restart_busy(busy);
     }
     service.draining.store(true, Ordering::Release);
     if let Err(error) = manager.close_all().await {
@@ -329,6 +327,22 @@ async fn close_for_restart(service: Arc<ServiceState>) -> Response {
     }
     service.stop.send_replace(true);
     StatusCode::ACCEPTED.into_response()
+}
+
+fn restart_busy(mut busy: Vec<String>) -> Response {
+    if busy.is_empty() {
+        busy.push("Session command in progress".into());
+    }
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "ok": false,
+            "code": "service_busy",
+            "message": "restart waits for Session commands, active execution, and tool cleanup",
+            "busy": busy
+        })),
+    )
+        .into_response()
 }
 
 fn failure(status: StatusCode, code: &str, message: &str) -> Response {
@@ -411,5 +425,55 @@ async fn wait_for_control_c() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::debug!(%error, "console shutdown signal is unavailable");
         std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{poll_fn, Future};
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::Poll;
+
+    use arc_swap::ArcSwap;
+    use kuku::config::Config;
+    use tokio::sync::Mutex;
+
+    use super::{close_for_restart, ServiceState};
+    use crate::run_manager::RunManager;
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn restart_defers_while_a_session_command_holds_admission() {
+        let config = Config {
+            tiers: Default::default(),
+            providers: Default::default(),
+            default_tier: String::new(),
+            discovery: Default::default(),
+            handoff: Default::default(),
+            logs: Default::default(),
+            plugin: Default::default(),
+            update: Default::default(),
+        };
+        let app = Arc::new(AppState {
+            run_manager: Mutex::new(RunManager::new(1)),
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            password: None,
+            kuku_home: Default::default(),
+            authorizer: Arc::new(kuku::permission::TrustedLocal),
+        });
+        let service = Arc::new(ServiceState::new(app, None, None, None));
+        let command = service.admission.read().await;
+        let mut restart = pin!(close_for_restart(service.clone()));
+
+        let Poll::Ready(response) =
+            poll_fn(|context| Poll::Ready(restart.as_mut().poll(context))).await
+        else {
+            panic!("restart must report the active Session command instead of waiting for it");
+        };
+        assert_eq!(409, response.status());
+
+        drop(command);
+        assert_eq!(202, close_for_restart(service).await.status());
     }
 }

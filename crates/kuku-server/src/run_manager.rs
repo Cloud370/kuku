@@ -6,6 +6,7 @@ pub(crate) use commands::{input_status, INTERNAL_CREATE_PREFIX};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,11 +36,27 @@ struct Slot {
     workspace: PathBuf,
     open: AsyncMutex<Option<OpenSession>>,
     session: Mutex<Option<Session>>,
+    active_operation: AtomicBool,
 }
 
 struct OpenSession {
     session: Session,
     permits: HashMap<String, OwnedSemaphorePermit>,
+}
+
+struct SessionOperation<'a>(&'a AtomicBool);
+
+impl<'a> SessionOperation<'a> {
+    fn begin(active: &'a AtomicBool) -> Self {
+        active.store(true, Ordering::Relaxed);
+        Self(active)
+    }
+}
+
+impl Drop for SessionOperation<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 impl RunManager {
@@ -54,7 +71,7 @@ impl RunManager {
         }
     }
 
-    /// Return identities of executions that still own work or cleanup.
+    /// Return identities of active Session commands, executions, and tool cleanup.
     pub fn active_run_ids(&self) -> Vec<String> {
         let slots = self.inner.slots.lock().unwrap();
         let mut ids = Vec::new();
@@ -69,7 +86,7 @@ impl RunManager {
                     )
                 }));
             }
-            if slot.open.try_lock().is_err() && ids.len() == seen {
+            if slot.active_operation.load(Ordering::Relaxed) && ids.len() == seen {
                 ids.push(format!("{} (Session operation)", slot.session_id));
             }
         }
@@ -101,10 +118,6 @@ impl RunManager {
         }
         self.inner.changed.send_replace(());
         failure.map_or(Ok(()), Err)
-    }
-
-    pub(crate) async fn busy(&self) -> Vec<String> {
-        self.active_run_ids()
     }
 
     pub(crate) fn changes(&self) -> watch::Receiver<()> {
@@ -141,6 +154,7 @@ impl RunManager {
         let input = command.input(command_id, address)?;
         let slot = self.slot(&path, &options.workspace, session_id);
         let mut open = slot.open.lock().await;
+        let _operation = SessionOperation::begin(&slot.active_operation);
         let result = self
             .execute(
                 &mut open,
@@ -171,6 +185,7 @@ impl RunManager {
         let path = kuku::session::session_events_path(home, workspace, session_id)?;
         let slot = self.slot(&path, workspace, session_id);
         let mut open = slot.open.lock().await;
+        let _operation = SessionOperation::begin(&slot.active_operation);
         let result = if let Some(entry) = open.as_ref() {
             if !entry.session.active_executions().is_empty() {
                 return Err(ApiError::new(
@@ -282,6 +297,7 @@ impl RunManager {
                     workspace: workspace.to_owned(),
                     open: AsyncMutex::new(None),
                     session: Mutex::new(None),
+                    active_operation: AtomicBool::new(false),
                 })
             })
             .clone()
@@ -335,4 +351,31 @@ struct CommandExecution<'a> {
     command: Command,
     input: Option<Input>,
     replay_only: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{poll_fn, Future};
+    use std::path::Path;
+    use std::pin::pin;
+    use std::task::Poll;
+
+    use super::{RunManager, SessionOperation};
+
+    #[tokio::test]
+    async fn an_idle_slot_release_blocks_close_but_is_not_active_work() {
+        let manager = RunManager::new(1);
+        let slot = manager.slot(Path::new("events.jsonl"), Path::new("workspace"), "idle");
+        let held = slot.open.lock().await;
+
+        assert!(manager.active_run_ids().is_empty());
+        let operation = SessionOperation::begin(&slot.active_operation);
+        assert_eq!(vec!["idle (Session operation)"], manager.active_run_ids());
+        drop(operation);
+        let mut close = pin!(manager.close_all());
+        assert!(poll_fn(|context| Poll::Ready(close.as_mut().poll(context).is_pending())).await);
+
+        drop(held);
+        close.await.unwrap();
+    }
 }
