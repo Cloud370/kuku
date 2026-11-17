@@ -178,12 +178,11 @@ async fn execute_command(
             format!("command could not start: {error}"),
         )
     })?;
-    let capture =
+    let mut capture =
         capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
-    let cleanup = tree.terminate();
     if child.id().is_some() {
-        let _ = child.start_kill();
-        timeout(CLEANUP_TIMEOUT, child.wait())
+        let stop = tree.request_stop(&mut child);
+        let status = timeout(CLEANUP_TIMEOUT, tree.wait(&mut child))
             .await
             .unwrap_or_else(|_| {
                 Err(io::Error::other(
@@ -191,8 +190,11 @@ async fn execute_command(
                 ))
             })
             .map_err(cleanup_error)?;
+        stop.map_err(cleanup_error)?;
+        if let Ok(outcome) = &mut capture {
+            outcome.exit_code = status.code();
+        }
     }
-    cleanup.map_err(cleanup_error)?;
     capture
 }
 
@@ -218,22 +220,19 @@ async fn capture_command(
             _ = cancelled.as_mut(), if !stopping && !exited => {
                 outcome.cancelled = true;
                 stopping = true;
-                tree.terminate().map_err(cleanup_error)?;
-                let _ = child.start_kill();
+                tree.request_stop(child).map_err(cleanup_error)?;
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             _ = sleep_until(deadline), if !stopping && !exited => {
                 outcome.timed_out = true;
                 stopping = true;
-                tree.terminate().map_err(cleanup_error)?;
-                let _ = child.start_kill();
+                tree.request_stop(child).map_err(cleanup_error)?;
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
-            status = child.wait(), if !exited => {
-                outcome.exit_code = status.map_err(capture_error)?.code();
+            status = tree.wait(child), if !exited => {
+                outcome.exit_code = status.map_err(cleanup_error)?.code();
                 exited = true;
-                tree.terminate().map_err(cleanup_error)?;
-                cleanup_deadline.get_or_insert(TokioInstant::now() + CLEANUP_TIMEOUT);
+                cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             read = read_stream(&mut stdout, &mut stdout_buf), if stdout.is_some() => {
                 let bytes = read.map_err(capture_error)?;
@@ -250,7 +249,15 @@ async fn capture_command(
                 }
             }
             _ = wait_cleanup(cleanup_deadline), if cleanup_deadline.is_some() => {
-                outcome.cleanup_incomplete = !exited || stdout.is_some() || stderr.is_some();
+                if !exited {
+                    if let Some(status) = tree.try_wait(child).map_err(cleanup_error)? {
+                        outcome.exit_code = status.code();
+                        exited = true;
+                        cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
+                        continue;
+                    }
+                }
+                outcome.cleanup_incomplete = stdout.is_some() || stderr.is_some();
                 break;
             }
         }

@@ -718,10 +718,28 @@ async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
         })
         .await;
     }
-    tokio::time::timeout(Duration::from_secs(3), session.close())
+    let closed = tokio::time::timeout(Duration::from_secs(3), session.close())
         .await
-        .unwrap()
         .unwrap();
+    let events = session.events(0, 256).unwrap();
+    let result = events.iter().find_map(|event| match &event.payload {
+        EventPayload::ToolResult {
+            tool_call_id,
+            status,
+            structured,
+            ..
+        } if tool_call_id == "command" => Some((status, structured)),
+        _ => None,
+    });
+    assert!(
+        closed.is_ok(),
+        "{closed:?}, durable command result: {result:?}"
+    );
+    let (status, facts) = result.expect("close must persist the command result");
+    assert_eq!("cancelled", status);
+    let facts = facts.as_ref().unwrap();
+    assert_eq!(false, facts["cleanup_incomplete"]);
+    assert_eq!(true, facts["capture_complete"]);
     assert!(!workspace.path().join("after-close.txt").exists());
     reopen.session_id = Some(session.id().into());
     let reopened = Session::open(reopen).await.unwrap();
