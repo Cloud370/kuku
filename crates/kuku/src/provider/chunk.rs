@@ -1,7 +1,7 @@
 /// Provider-neutral streaming chunk.
 /// Each adapter normalizes its native SSE into these variants.
 #[derive(Debug, Clone)]
-pub(crate) enum ProviderChunk {
+pub enum ProviderChunk {
     /// Stream established.
     StreamStart { request_id: String },
     /// A text content fragment.

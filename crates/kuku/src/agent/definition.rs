@@ -26,6 +26,7 @@ impl ToolProfile {
             Self::Read => &[
                 "find_files",
                 "read_file",
+                "read_output",
                 "search_text",
                 "fetch_url",
                 "fetch_web",
@@ -33,6 +34,7 @@ impl ToolProfile {
             Self::ReadWrite => &[
                 "find_files",
                 "read_file",
+                "read_output",
                 "search_text",
                 "fetch_url",
                 "fetch_web",

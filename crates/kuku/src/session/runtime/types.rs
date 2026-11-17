@@ -23,6 +23,10 @@ pub struct SessionOptions {
     pub limits: RuntimeLimits,
     /// Host authority consulted before every tool dispatch.
     pub authorizer: Arc<dyn ToolAuthorizer>,
+    /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
+    pub model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
+    /// Additional finite tool definitions captured when this runtime opens.
+    pub tools: Vec<Arc<dyn crate::ToolAdapter>>,
 }
 
 impl SessionOptions {
@@ -40,6 +44,8 @@ impl SessionOptions {
             prompts_dir: None,
             limits: RuntimeLimits::default(),
             authorizer: Arc::new(TrustedLocal),
+            model_adapter: None,
+            tools: Vec::new(),
         }
     }
 }
@@ -59,13 +65,15 @@ pub struct RuntimeLimits {
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
     pub max_requests_per_open: Option<u64>,
+    /// Optional host output-token ceiling applied to every agent's resolved request.
+    pub max_output_tokens_per_request: Option<u32>,
     /// Maximum logical model requests in one turn, including recovery requests.
     pub max_steps_per_turn: u64,
     /// Maximum simultaneous tools within one agent's step.
     pub max_tools_per_agent: usize,
-    /// Maximum retained bytes for one command output.
+    /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
-    /// Maximum bytes in a command's first model-visible preview.
+    /// Maximum bytes in the first model-visible retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
     pub observation_capacity: usize,
@@ -80,6 +88,7 @@ impl Default for RuntimeLimits {
             max_request_bytes: 512 * 1024,
             max_model_requests: 4,
             max_requests_per_open: None,
+            max_output_tokens_per_request: None,
             max_steps_per_turn: 20,
             max_tools_per_agent: 8,
             max_output_bytes: 8 * 1024 * 1024,
@@ -91,6 +100,7 @@ impl Default for RuntimeLimits {
 
 /// Agent-local behavior and explicit model selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AgentConfig {
     /// Optional contact card supplying behavior and initial defaults.
     pub preset: Option<String>,

@@ -1,3 +1,5 @@
+mod output;
+
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{AuthorizationDecision, GateDecisionKind};
@@ -198,6 +200,42 @@ pub(super) async fn dispatch(
         let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
         return finish_inline_event(pending, queued, result);
     }
+    if let Some(registered) = pending
+        .query
+        .tool_adapters
+        .get(&queued.tool_call.name)
+        .cloned()
+    {
+        let definition = find_tool_definition(&pending, &queued.tool_call.name)
+            .expect("authorized tool definition exists");
+        let action = crate::permission::ToolAuthorization {
+            session_id: pending.session_id.clone(),
+            agent: pending.conversation.as_str().into(),
+            source: pending.query.input_source.clone(),
+            tool_call_id: queued.tool_call.id.clone(),
+            tool: schema(definition),
+            args: queued.tool_call.args.clone(),
+            workspace: pending.workspace.clone(),
+        };
+        let slot = super::adapters::spawn_tool(
+            registered,
+            action,
+            output_spec(&pending, &queued.tool_call.id),
+            event_tx,
+        );
+        pending.record_tool_call(&queued.tool_call.name);
+        let event = UiEvent::ToolStart {
+            id: queued.tool_call.id,
+            tool: queued.tool_call.name,
+            summary: queued.display_summary,
+            kind: ToolKind::Simple,
+        };
+        return Ok(PendingStep::Pending {
+            pending: Box::new(pending),
+            slot: Some(slot),
+            event: Some(event),
+        });
+    }
     let prior_events = crate::context::runtime::read_agent_events(
         &pending.events_path,
         pending.conversation.as_str(),
@@ -287,10 +325,19 @@ pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
     Ok(PendingStep::Done(output, usage, pending.turn))
 }
 
+pub(super) fn requires_workspace_ordering(pending: &PendingRun, name: &str) -> bool {
+    pending
+        .query
+        .tool_adapters
+        .get(name)
+        .is_some_and(|tool| tool.spec.access != crate::ToolAccess::Read)
+        || super::slots::requires_workspace_ordering(name)
+}
+
 pub(super) fn is_inline(name: &str) -> bool {
     matches!(
         name,
-        "create_agent" | "send_message" | "list_agents" | "ask_user"
+        "create_agent" | "send_message" | "list_agents" | "ask_user" | "read_output"
     )
 }
 
@@ -326,9 +373,10 @@ pub(super) fn output_spec(pending: &PendingRun, id: &str) -> super::slots::Comma
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
+        output::definition(),
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
-        definition("create_agent", "Create a stable agent with independent context. Select an explicit connection or tier and supply the complete instructions it needs.", serde_json::json!({"type":"object","properties":{"address":{"type":"string"},"connection":{"type":"string"},"tier":{"type":"string"},"model":{"type":"string"},"preset":{"type":"string"},"instructions":{"type":"string"}},"required":["address"]})),
-        definition("send_message", "Deliver selected material to an existing agent without sharing conversation history. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean"}},"required":["to","message"]})),
+        definition("create_agent", "Create a stable agent with independent context. Select an explicit connection or tier and supply the complete instructions it needs.", serde_json::json!({"type":"object","properties":{"address":{"type":"string"},"connection":{"type":"string"},"tier":{"type":"string"},"model":{"type":"string"},"preset":{"type":"string"},"instructions":{"type":"string"},"reasoning_effort":{"type":"string"},"service_tier":{"type":"string"},"max_output_tokens":{"type":"integer","minimum":1},"no_agents":{"type":"boolean"},"no_skills":{"type":"boolean"},"bootstrap_skill":{"type":"string"},"tools":{"type":"array","items":{"type":"string"}},"workspace":{"type":"string"}},"required":["address"]})),
+        definition("send_message", "Deliver selected material to an existing agent without sharing conversation history. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues: the recipient needs host advance or a later wake before it can act."}},"required":["to","message"]})),
         definition("list_agents", "Inspect retained agent addresses, state and latest durable outputs without consuming them.", serde_json::json!({"type":"object","properties":{}})),
     ]
 }
@@ -351,16 +399,15 @@ pub(super) fn execute(
         call.id
     );
     let value = match call.name.as_str() {
+        "read_output" => return output::execute(&session, &call.args),
         "create_agent" => {
             let address = required(&call.args, "address")?;
-            let config = crate::AgentConfig {
-                connection: optional(&call.args, "connection"),
-                tier: optional(&call.args, "tier"),
-                model: optional(&call.args, "model"),
-                preset: optional(&call.args, "preset"),
-                instructions: optional(&call.args, "instructions"),
-                ..Default::default()
-            };
+            let mut values = call.args.clone();
+            values
+                .as_object_mut()
+                .expect("tool arguments are an object")
+                .remove("address");
+            let config: crate::AgentConfig = serde_json::from_value(values)?;
             serde_json::to_value(session.create_agent(&key, address, config)?)?
         }
         "send_message" => {
@@ -546,7 +593,4 @@ fn required<'a>(args: &'a serde_json::Value, field: &str) -> Result<&'a str> {
     args[field]
         .as_str()
         .ok_or_else(|| Error::InvalidArgument(format!("missing tool argument '{field}'")))
-}
-fn optional(args: &serde_json::Value, field: &str) -> Option<String> {
-    args[field].as_str().map(str::to_string)
 }

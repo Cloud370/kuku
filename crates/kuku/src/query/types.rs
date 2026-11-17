@@ -48,6 +48,9 @@ pub struct Query {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) authorizer: Option<Arc<dyn crate::permission::ToolAuthorizer>>,
+    pub(crate) model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
+    pub(crate) tool_adapters:
+        Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     pub(crate) input_source: crate::session::InputSource,
     pub(crate) runtime_limits: crate::session::RuntimeLimits,
     pub(crate) model_capacity: Option<Arc<tokio::sync::Semaphore>>,
@@ -586,6 +589,8 @@ impl Query {
             reasoning_effort: None,
             service_tier: None,
             authorizer: None,
+            model_adapter: None,
+            tool_adapters: Arc::new(std::collections::BTreeMap::new()),
             input_source: crate::session::InputSource::Host("local".into()),
             runtime_limits: crate::session::RuntimeLimits::default(),
             model_capacity: None,

@@ -4,6 +4,7 @@ mod driver;
 mod observe;
 mod receipts;
 mod record;
+mod selection;
 mod types;
 
 use std::collections::{HashMap, HashSet};
@@ -39,6 +40,7 @@ pub(crate) struct SessionInner {
     workers: Mutex<HashMap<u64, Worker>>,
     live: broadcast::Sender<(String, UiEvent)>,
     model_capacity: Arc<Semaphore>,
+    tool_adapters: Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
     lease: Mutex<Option<SessionLease>>,
     close_result: Mutex<Option<watch::Receiver<CleanupOutcome>>>,
@@ -96,6 +98,7 @@ impl Session {
     /// Acquire the session writer and reconstruct committed facts without automatically running agents.
     pub async fn open(mut options: SessionOptions) -> Result<Self> {
         validate_limits(&options.limits)?;
+        let tool_adapters = Arc::new(selection::register_tools(&options)?);
         options.workspace = std::fs::canonicalize(&options.workspace)
             .map_err(|_| Error::InvalidWorkspacePath(options.workspace.display().to_string()))?;
         crate::util::fs_sync::create_dir_all(&options.data_dir)?;
@@ -154,6 +157,7 @@ impl Session {
                 workers: Mutex::new(HashMap::new()),
                 live,
                 model_capacity,
+                tool_adapters,
                 model_request_budget,
                 lease: Mutex::new(Some(lease)),
                 close_result: Mutex::new(None),
@@ -194,6 +198,7 @@ impl Session {
         if state.agents.len() >= self.inner.options.limits.max_agents {
             return Err(Error::InvalidArgument("session agent limit reached".into()));
         }
+        let config = self.resolve_defaults(address, config)?;
         self.validate_config(&config)?;
         self.commit(
             &mut state,
@@ -222,6 +227,7 @@ impl Session {
             return Ok(receipt);
         }
         state.agent_mut(address)?;
+        let config = self.resolve_defaults(address, config)?;
         self.validate_config(&config)?;
         self.commit(
             &mut state,
@@ -697,56 +703,6 @@ impl Session {
         state.reduce(event.id, record)?;
         Ok(event.id)
     }
-
-    fn validate_config(&self, config: &AgentConfig) -> Result<()> {
-        if config
-            .instructions
-            .as_ref()
-            .is_some_and(|value| value.len() > 65_536)
-            || [
-                &config.preset,
-                &config.connection,
-                &config.tier,
-                &config.model,
-                &config.reasoning_effort,
-                &config.service_tier,
-                &config.bootstrap_skill,
-            ]
-            .iter()
-            .any(|value| value.as_ref().is_some_and(|value| value.len() > 512))
-        {
-            return Err(Error::InvalidArgument(
-                "agent instructions or model selection exceeds its byte limit".into(),
-            ));
-        }
-        if config.tools.as_ref().is_some_and(|tools| {
-            tools.len() > 128 || tools.iter().any(|name| name.is_empty() || name.len() > 128)
-        }) {
-            return Err(Error::InvalidArgument(
-                "tool selection exceeds its supported bounds".into(),
-            ));
-        }
-        if config.max_output_tokens == Some(0) {
-            return Err(Error::InvalidArgument(
-                "max_output_tokens must be positive".into(),
-            ));
-        }
-        if let Some(workspace) = &config.workspace {
-            std::fs::canonicalize(workspace)
-                .map_err(|_| Error::InvalidWorkspacePath(workspace.display().to_string()))?;
-        }
-        crate::provider::config::resolve_config(crate::provider::config::ResolveConfigInput {
-            connection: config.connection.clone(),
-            model: config.model.clone(),
-            tier: config.tier.clone(),
-            reasoning_effort: config.reasoning_effort.clone(),
-            service_tier: config.service_tier.clone(),
-            max_output_tokens: config.max_output_tokens,
-            config: Some(self.inner.options.config.clone()),
-            ..Default::default()
-        })?;
-        Ok(())
-    }
 }
 
 fn ensure_open(state: &State) -> Result<()> {
@@ -759,9 +715,9 @@ fn ensure_open(state: &State) -> Result<()> {
 }
 
 fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
-    if limits.max_requests_per_open == Some(0) {
+    if limits.max_requests_per_open == Some(0) || limits.max_output_tokens_per_request == Some(0) {
         return Err(Error::InvalidArgument(
-            "max_requests_per_open must be positive when configured".into(),
+            "optional model request and output-token limits must be positive".into(),
         ));
     }
     if limits.max_request_bytes < 4096

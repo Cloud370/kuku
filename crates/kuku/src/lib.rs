@@ -1,6 +1,7 @@
 #[doc(hidden)]
 pub mod context;
 
+pub mod adapter;
 pub mod agent;
 pub mod config;
 pub mod conversation;
@@ -23,6 +24,10 @@ pub(crate) mod tool;
 pub mod util;
 pub mod wire;
 
+pub use adapter::{
+    AdapterFuture, AgentSelection, ModelAdapter, ModelEvent, ModelRequest, ModelStream, ToolAccess,
+    ToolAdapter, ToolCancellation, ToolOutput, ToolSpec, ToolStatus,
+};
 pub use error::{Error, Result};
 pub use provider::types::ProviderFailureKind;
 pub use provider::{

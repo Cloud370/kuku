@@ -57,7 +57,13 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
             registry.extend(
                 crate::query::runtime_tools::definitions()
                     .into_iter()
-                    .filter(|tool| !pending.query.disable_agents || tool.name == "ask_user"),
+                    .filter(|tool| {
+                        !pending.query.disable_agents
+                            || !matches!(
+                                tool.name.as_str(),
+                                "create_agent" | "send_message" | "list_agents"
+                            )
+                    }),
             );
         }
         if pending.query.disable_agents {

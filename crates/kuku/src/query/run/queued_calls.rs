@@ -19,7 +19,10 @@ impl Run {
             if pending.query.runtime.is_some() {
                 let index = pending.queued_tool_calls.iter().position(|queued| {
                     !has_active_workspace_ordered_slot
-                        || !requires_workspace_ordering(&queued.tool_call.name)
+                        || !crate::query::runtime_tools::requires_workspace_ordering(
+                            pending,
+                            &queued.tool_call.name,
+                        )
                 });
                 let Some(index) = index else { return Ok(None) };
                 if self.slots.len() >= pending.query.runtime_limits.max_tools_per_agent {

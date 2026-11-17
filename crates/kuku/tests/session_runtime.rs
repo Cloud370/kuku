@@ -744,7 +744,7 @@ async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaul
             assert!(names.contains(&"read_file"));
             assert!(names.iter().all(|name| matches!(
                 *name,
-                "read_file" | "find_files" | "search_text" | "fetch_url"
+                "read_file" | "find_files" | "search_text" | "fetch_url" | "read_output"
             )));
         } else {
             assert_eq!("explicit", body["model"]);

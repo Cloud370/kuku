@@ -94,8 +94,13 @@ pub(super) async fn dispatch_provider_step(
             request_prepare_us,
         )?;
     }
-    match crate::provider::stream_prepared_provider(&resolved_config, &prepared, provider_trace)
-        .await
+    match crate::query::adapters::model_stream(
+        &mut pending,
+        &resolved_config,
+        &prepared,
+        provider_trace,
+    )
+    .await
     {
         Ok(stream) => {
             let conversation = pending.conversation.clone();

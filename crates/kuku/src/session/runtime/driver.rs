@@ -247,7 +247,7 @@ impl Session {
                         result: Some(result),
                         ..
                     } if result["cleanup_incomplete"] == true => {
-                        let message = format!("agent '{address}' command cleanup reached its deadline; an inherited pipe or escaped process may remain");
+                        let message = format!("agent '{address}' tool cleanup did not finish; owned resources may remain");
                         let mut state = self.inner.state.lock().unwrap();
                         self.commit(
                             &mut state,
@@ -259,6 +259,13 @@ impl Session {
                         cleanup_failure = Some(Error::InvalidEventStream(message));
                         cancelling = true;
                         run.cancel();
+                    }
+                    UiEvent::ToolEnd {
+                        result: Some(result),
+                        ..
+                    } if result["output_persistence_failed"] == true => {
+                        self.cleanup_failed_run(address, &mut run).await;
+                        return Err(Error::InvalidEventStream("tool output could not be durably captured; execution stopped before the next model request".into()));
                     }
                     UiEvent::PermissionRequested { mut request } => {
                         let mut state = self.inner.state.lock().unwrap();
@@ -301,6 +308,7 @@ impl Session {
         prompt: String,
         source: InputSource,
     ) -> Result<crate::Query> {
+        let config = self.resolve_defaults(address, config.clone())?;
         let mut query = crate::query(prompt)
             .session(&self.inner.id)
             .conversation(address)
@@ -316,6 +324,8 @@ impl Session {
         query.reasoning_effort = config.reasoning_effort.clone();
         query.service_tier = config.service_tier.clone();
         query.authorizer = Some(self.inner.options.authorizer.clone());
+        query.model_adapter = self.inner.options.model_adapter.clone();
+        query.tool_adapters = self.inner.tool_adapters.clone();
         query.input_source = source;
         query.runtime_limits = self.inner.options.limits.clone();
         query.model_capacity = Some(self.inner.model_capacity.clone());
@@ -329,9 +339,7 @@ impl Session {
         if let Some(tier) = &config.tier {
             query = query.tier(tier);
         }
-        if let Some(tokens) = config.max_output_tokens {
-            query = query.max_output_tokens(tokens);
-        }
+        query = query.max_output_tokens(self.resolve_model(&config)?.max_output_tokens);
         if let Some(prompts_dir) = &self.inner.options.prompts_dir {
             query = query.prompts_dir(prompts_dir);
         }
@@ -356,71 +364,7 @@ impl Session {
             query = query.bootstrap_skill(name, definition.instructions.clone());
         }
         query.agent_instructions = config.instructions.clone();
-        if let Some(preset) = &config.preset {
-            let catalog = match crate::context::runtime::read_frozen_catalog(
-                &self.inner.events_path,
-                address,
-            )? {
-                Some(catalog) => catalog,
-                None => match &self.inner.options.prompts_dir {
-                    Some(dir) => crate::PromptCatalog::load_from_dir(dir)?,
-                    None => crate::builtin_prompt_catalog(),
-                },
-            };
-            let registry = crate::agent::registry::AgentRegistry::builder()
-                .builtins(&catalog)
-                .build_with_discovery(
-                    config
-                        .workspace
-                        .as_ref()
-                        .unwrap_or(&self.inner.options.workspace),
-                    &self.inner.options.config.discovery,
-                )?
-                .build();
-            let definition = registry.get(preset).ok_or_else(|| {
-                Error::InvalidArgument(format!("preset '{preset}' was not found"))
-            })?;
-            if query.agent_instructions.is_none() {
-                query.agent_instructions = Some(definition.instructions.clone());
-            }
-            if config.tier.is_none() {
-                query = query.tier(&definition.tier);
-            }
-            let allowed = definition.tools.clone().unwrap_or_else(|| {
-                definition
-                    .tool_profile
-                    .allowed_tools()
-                    .iter()
-                    .map(|tool| (*tool).to_string())
-                    .collect()
-            });
-            query.tool_registry_override = Some(
-                crate::tool::builtin_registry(false, !config.no_skills)
-                    .into_iter()
-                    .chain(crate::query::runtime_tool_definitions())
-                    .filter(|tool| allowed.contains(&tool.name))
-                    .collect(),
-            );
-        }
-        if let Some(allowed) = &config.tools {
-            let available = crate::tool::builtin_registry(false, !config.no_skills)
-                .into_iter()
-                .chain(crate::query::runtime_tool_definitions())
-                .collect::<Vec<_>>();
-            for name in allowed {
-                if !available.iter().any(|tool| tool.name == *name) {
-                    return Err(Error::InvalidArgument(format!(
-                        "selected tool '{name}' is not available"
-                    )));
-                }
-            }
-            query.tool_registry_override = Some(
-                available
-                    .into_iter()
-                    .filter(|tool| allowed.contains(&tool.name))
-                    .collect(),
-            );
-        }
+        query.tool_registry_override = Some(self.selected_tools(&config)?);
         Ok(query)
     }
 

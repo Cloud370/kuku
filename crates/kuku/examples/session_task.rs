@@ -104,6 +104,7 @@ async fn execute() -> Result<bool, AnyError> {
     options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
     options.limits.max_steps_per_turn = max_steps;
     options.limits.max_requests_per_open = Some(max_requests);
+    options.limits.max_output_tokens_per_request = Some(max_output_tokens);
     options.limits.max_agents = max_agents;
     options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
     let limits = options.limits.clone();
@@ -146,9 +147,7 @@ async fn execute() -> Result<bool, AnyError> {
                 .iter()
                 .any(|state| state.status == AgentStatus::Running && state.address != agent);
             match snapshot.status {
-                AgentStatus::Idle if snapshot.pending_inputs == 0 && !others_running => {
-                    return Ok::<_, kuku::Error>(snapshot)
-                }
+                AgentStatus::Idle if !others_running => return Ok::<_, kuku::Error>(snapshot),
                 AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted
                     if !others_running =>
                 {
@@ -244,7 +243,7 @@ async fn execute() -> Result<bool, AnyError> {
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":max_output_tokens,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
     if let Some(parent) = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())

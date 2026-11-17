@@ -8,7 +8,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
 const FRAME_HEADER_BYTES: usize = 5;
-const MAX_FRAME_BYTES: usize = 8192;
+pub(crate) const MAX_FRAME_BYTES: usize = 8192;
 const MAX_READ_BYTES: usize = super::RUN_COMMAND_MAX_CHARS;
 const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_READ_SEGMENTS: usize = 4096;
@@ -124,7 +124,7 @@ pub struct OutputChunk {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(super) struct CaptureMetadata {
+pub(crate) struct CaptureMetadata {
     pub complete: bool,
     pub stored_bytes: u64,
     pub stdout_bytes: u64,
@@ -136,7 +136,7 @@ pub(super) struct CaptureMetadata {
     pub summary: Vec<String>,
 }
 
-pub(super) struct OutputWriter {
+pub(crate) struct OutputWriter {
     file: tokio::fs::File,
     path: PathBuf,
     file_bytes: u64,
@@ -147,7 +147,7 @@ pub(super) struct OutputWriter {
 }
 
 impl OutputWriter {
-    pub(super) async fn create(
+    pub(crate) async fn create(
         output_dir: &Path,
         output_id: &str,
         limits: OutputLimits,
@@ -181,7 +181,7 @@ impl OutputWriter {
         })
     }
 
-    pub(super) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
+    pub(crate) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
         let summary = match stream {
             OutputStream::Stdout => &mut self.stdout,
             OutputStream::Stderr => &mut self.stderr,
@@ -205,7 +205,7 @@ impl OutputWriter {
         Ok(())
     }
 
-    pub(super) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
+    pub(crate) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
         self.stdout.finish(&mut self.metadata.summary);
         self.stderr.finish(&mut self.metadata.summary);
         self.metadata.stdout_bytes = self.stdout.bytes;
