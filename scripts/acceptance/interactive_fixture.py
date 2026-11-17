@@ -70,7 +70,7 @@ def http_fixture(dispatch):
             if response is None:
                 self.close_connection = True
                 return
-            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            with contextlib.suppress(ConnectionError):
                 self.send_response(response.status)
                 self.send_header("Content-Type", response.content_type)
                 self.send_header("Content-Length", str(len(response.body)))
@@ -304,14 +304,20 @@ class InstalledClient:
             [self.binary, *args], cwd=workspace, env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         )
+        timed_out = False
         try:
             yield process
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            raise
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
-            process.stdout.close()
-            process.stderr.close()
+            # Windows communicate readers can still own the pipes until the test service is stopped.
+            if not timed_out:
+                process.stdout.close()
+                process.stderr.close()
 
     def cli(self, workspace, *args, success=True, token=None):
         with self.command(workspace, *args, token=token) as process:
