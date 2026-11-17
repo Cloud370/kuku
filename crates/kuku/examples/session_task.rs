@@ -3,10 +3,68 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kuku::event::EventPayload;
-use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
+use kuku::{
+    AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions, ToolEvent, UiEvent,
+};
 use serde_json::json;
 
 type AnyError = Box<dyn std::error::Error>;
+
+#[derive(Default, serde::Serialize)]
+struct StreamMetrics {
+    model_text_chunks: u64,
+    model_thinking_chunks: u64,
+    tool_output_chunks: u64,
+    model_text_bytes: usize,
+    model_thinking_bytes: usize,
+    tool_output_bytes: usize,
+    first_model_text_ms: Option<u128>,
+    first_model_thinking_ms: Option<u128>,
+    first_tool_output_ms: Option<u128>,
+    first_model_request_ms: Option<u128>,
+    model_request_events: u64,
+    committed_events: u64,
+    lagged_updates: u64,
+}
+
+impl StreamMetrics {
+    fn observe(&mut self, observation: Observation, agent: &str, started: Instant) {
+        let elapsed = started.elapsed().as_millis();
+        match observation {
+            Observation::Live {
+                agent: source,
+                event,
+            } if source == agent => match *event {
+                UiEvent::TextDelta { text } => {
+                    self.model_text_chunks += 1;
+                    self.model_text_bytes += text.len();
+                    self.first_model_text_ms.get_or_insert(elapsed);
+                }
+                UiEvent::ThinkingDelta { text } => {
+                    self.model_thinking_chunks += 1;
+                    self.model_thinking_bytes += text.len();
+                    self.first_model_thinking_ms.get_or_insert(elapsed);
+                }
+                UiEvent::ToolOutput {
+                    event: ToolEvent::Stdout { text } | ToolEvent::Stderr { text },
+                    ..
+                } => {
+                    self.tool_output_chunks += 1;
+                    self.tool_output_bytes += text.len();
+                    self.first_tool_output_ms.get_or_insert(elapsed);
+                }
+                UiEvent::ModelRequest { .. } => {
+                    self.model_request_events += 1;
+                    self.first_model_request_ms.get_or_insert(elapsed);
+                }
+                _ => {}
+            },
+            Observation::Committed(_) => self.committed_events += 1,
+            Observation::Lagged { skipped } => self.lagged_updates += skipped,
+            Observation::Live { .. } => {}
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -23,7 +81,7 @@ async fn main() {
 async fn execute() -> Result<bool, AnyError> {
     let args = arguments()?;
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-output-tokens 2048 --max-context-tokens 65536 --timeout 300 --command-id KEY]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY]");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -33,8 +91,8 @@ async fn execute() -> Result<bool, AnyError> {
     let mut config =
         kuku::config::load_config(&PathBuf::from(required(&args, "config")?))?.resolve()?;
     let max_steps = number(&args, "max-steps", 12_u64)?;
-    let max_output_tokens = number(&args, "max-output-tokens", 2048_u32)?;
-    let max_context_tokens = number(&args, "max-context-tokens", 65_536_u32)?;
+    let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
+    let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
     let timeout = number(&args, "timeout", 300_u64)?;
     for tier in config.tiers.values_mut() {
         tier.context_window = tier.context_window.min(max_context_tokens);
@@ -63,6 +121,8 @@ async fn execute() -> Result<bool, AnyError> {
         .cloned()
         .unwrap_or_else(kuku::session::new_session_id);
     let started = Instant::now();
+    let mut streaming = StreamMetrics::default();
+    let mut observer = session.observe(0);
     let task = async {
         match session.agent(agent) {
             Ok(existing) if existing.config != selection => {
@@ -73,21 +133,32 @@ async fn execute() -> Result<bool, AnyError> {
                 session.create_agent(&format!("create:{agent}"), agent, selection)?;
             }
         }
-        let receipt = session.send(Input::new(command_id, agent, prompt))?;
+        session.send(Input::new(command_id, agent, prompt))?;
         session.advance(agent)?;
-        let mut observer = session.observe(receipt.event_id);
         loop {
             let snapshot = session.agent(agent)?;
+            let others_running = session
+                .agents()
+                .iter()
+                .any(|state| state.status == AgentStatus::Running && state.address != agent);
             match snapshot.status {
-                AgentStatus::Idle if snapshot.pending_inputs == 0 => {
+                AgentStatus::Idle if snapshot.pending_inputs == 0 && !others_running => {
                     return Ok::<_, kuku::Error>(snapshot)
                 }
-                AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted => {
+                AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted
+                    if !others_running =>
+                {
                     return Ok(snapshot)
                 }
-                AgentStatus::Idle | AgentStatus::Running => {}
+                AgentStatus::Idle
+                | AgentStatus::Running
+                | AgentStatus::Waiting
+                | AgentStatus::Stopped
+                | AgentStatus::Interrupted => {}
             }
-            if observer.next().await?.is_none() {
+            if let Some(observation) = observer.next().await? {
+                streaming.observe(observation, agent, started);
+            } else {
                 return Err(kuku::Error::InvalidEventStream(
                     "session closed before execution settled".into(),
                 ));
@@ -109,6 +180,9 @@ async fn execute() -> Result<bool, AnyError> {
             session.agent(agent).ok()
         }
     };
+    while let Some(observation) = observer.try_next()? {
+        streaming.observe(observation, agent, started);
+    }
     let close = session.close().await;
     if let Err(failure) = &close {
         error = Some(failure.to_string());
@@ -166,7 +240,7 @@ async fn execute() -> Result<bool, AnyError> {
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let result = json!({"session_id":session.id(),"agent":snapshot,"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"limits":{"max_steps":limits.max_steps_per_turn,"max_output_tokens":max_output_tokens,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_output_tokens":max_output_tokens,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
     if let Some(parent) = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())

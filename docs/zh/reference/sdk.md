@@ -27,7 +27,7 @@ cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
   --connection deepseek --reasoning-effort low \
-  --max-steps 12 --max-output-tokens 2048 --max-context-tokens 65536 \
+  --max-steps 12 --max-output-tokens 32768 --max-context-tokens 131072 \
   --output /path/to/result.json
 ```
 
