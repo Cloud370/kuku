@@ -2,6 +2,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
 
+#[cfg(unix)]
+mod directory;
+
 pub(crate) fn write_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.write(true);
@@ -25,13 +28,15 @@ pub(crate) fn lock_reader(file: &File, path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
-    // NOTE: Windows publication uses write-through file handles and flushes instead of directory fsync.
     #[cfg(unix)]
-    for directory in fs::canonicalize(path)?.ancestors() {
-        sync_directory(directory)?;
+    {
+        directory::create_dir_all(path)
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        // NOTE: Windows publication uses write-through file handles and flushes instead of directory fsync.
+        fs::create_dir_all(path)
+    }
 }
 
 pub(crate) fn sync_file(file: &File) -> io::Result<()> {

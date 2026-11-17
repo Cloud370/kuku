@@ -65,6 +65,14 @@ $KUKU_HOME/p/<workspace>/
 
 See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
 
+## Directory Creation Intents
+
+On Unix, SDK directory creation may temporarily place an empty, owner-only `.kuku-mkdir-v1-<sha256>.intent` file in a directory's direct parent. The digest is SHA-256 of the child directory's raw filename bytes. The file lock serializes creation and recovery of that child; it is not a PID lease.
+
+Before `mkdir`, the SDK syncs the intent file and its parent. It then syncs the created directory and its parent before removing the intent and syncing the parent again. Later creation or reopen checks the exact intent names along the requested path and completes interrupted transactions before descending. This also covers an interrupted first creation of a nested data directory. Existing directories without an intent need no directory sync, so unchanged ancestors need only traversal permission. A waiter whose locked intent was removed must re-open and lock the current inode before changing the directory.
+
+Failed publication leaves the intent for recovery. Do not remove these files while SDK resources may be opening. Successful creation removes them. Windows file publication uses write-through file handles, full file flushes, and write-through moves; the Unix intent protocol does not apply there. Contract tests cover process exit and reopen, concurrent creators, replaced intent inodes, and directory permissions. They do not establish power-loss behavior on a particular filesystem or device.
+
 ## User and Project Extensions
 
 Conventional user-level definitions:

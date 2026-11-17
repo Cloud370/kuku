@@ -1,5 +1,6 @@
 use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
 use super::{EventPayload, EventStore};
@@ -10,6 +11,19 @@ fn payload() -> EventPayload {
     EventPayload::Unknown(serde_json::json!({"kind": "runtime.test"}))
 }
 
+fn corrupt_committed_prefix(store: &EventStore, path: &Path) {
+    let writer = store.inner.writer.lock().unwrap();
+    let file = writer.file.as_ref().unwrap();
+    // NOTE: Windows locks also prevent the deliberate external corruption used by these probes.
+    file.unlock().unwrap();
+    let corrupted = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(b"!"));
+    super::fs_sync::lock_writer(file, path).unwrap();
+    corrupted.unwrap();
+}
+
 #[test]
 fn shared_open_and_append_do_not_rescan_committed_history() {
     let temp = tempfile::tempdir().unwrap();
@@ -17,12 +31,7 @@ fn shared_open_and_append_do_not_rescan_committed_history() {
     let mut first = EventStore::open(&path).unwrap();
     first.append(payload()).unwrap();
 
-    OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .write_all(b"!")
-        .unwrap();
+    corrupt_committed_prefix(&first, &path);
     let mut shared = EventStore::open(&path).unwrap();
     assert_eq!(2, shared.append(payload()).unwrap().id);
     assert_eq!(2, first.last_id());
@@ -41,9 +50,7 @@ fn paged_reads_seek_past_earlier_history() {
         .collect();
     std::fs::write(&path, contents).unwrap();
     let mut store = EventStore::open(&path).unwrap();
-    let mut file = OpenOptions::new().write(true).open(&path).unwrap();
-    file.seek(SeekFrom::Start(0)).unwrap();
-    file.write_all(b"!").unwrap();
+    corrupt_committed_prefix(&store, &path);
 
     let events = store.read_after(290, 20).unwrap();
     assert_eq!(
@@ -272,4 +279,33 @@ fn static_pages_share_the_active_writer_and_keep_count_and_byte_limits() {
         page.into_iter().map(|event| event.id).collect::<Vec<_>>()
     );
     assert_eq!(603, EventStore::read_page(&path, 602, 256).unwrap()[0].id);
+}
+
+#[cfg(unix)]
+#[test]
+fn stores_open_below_unmodified_unlistable_ancestors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let ancestor = temp.path().join("ancestor");
+    let durable_root = ancestor.join("data");
+    std::fs::create_dir_all(&durable_root).unwrap();
+    let direct = durable_root.join("direct.jsonl");
+    let managed = durable_root
+        .join("sessions")
+        .join("main")
+        .join("events.jsonl");
+    std::fs::set_permissions(&ancestor, std::fs::Permissions::from_mode(0o111)).unwrap();
+    let direct_result = EventStore::open(&direct);
+    let managed_result = EventStore::open(&managed);
+    std::fs::set_permissions(&ancestor, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let mut direct_store = direct_result.unwrap();
+    let mut managed_store = managed_result.unwrap();
+    assert_eq!(1, direct_store.append(payload()).unwrap().id);
+    assert_eq!(1, managed_store.append(payload()).unwrap().id);
+    drop(direct_store);
+    drop(managed_store);
+    assert_eq!(1, EventStore::replay(&direct).unwrap().len());
+    assert_eq!(1, EventStore::replay(&managed).unwrap().len());
 }
