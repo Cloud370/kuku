@@ -18,14 +18,25 @@ default = []
 embedded-web-assets = ["dep:rust-embed"]
 
 [dependencies]
-kuku = { workspace = true }
 kuku-cli = { path = "../../crates/kuku-cli", features = ["server"] }
 kuku-server = { path = "../../crates/kuku-server" }
+kuku-tui = { path = "../../crates/kuku-tui" }
 clap = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-arc-swap = { workspace = true }
-home = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum = { workspace = true }
 rust-embed = { version = "8", optional = true, features = [] }
+
+[[test]]
+name = "interactive_pty"
+harness = false
+test = false
+
+[dev-dependencies]
+kuku = { workspace = true, features = ["test_support"] }
+portable-pty = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+vt100 = "0.18"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

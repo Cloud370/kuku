@@ -47,24 +47,40 @@ jobs:
       - run: cargo check -p kuku-app --features embedded-web-assets
 
   test:
+    name: Contract and installed client (${{ matrix.terminal }})
     needs: fmt
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            terminal: Linux PTY
+          - os: macos-latest
+            terminal: macOS PTY
+          - os: windows-latest
+            terminal: Windows ConPTY
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - name: Check acceptance tooling
         run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
       - name: Contract tests, including feature-gated runtime suites
         run: python3 scripts/acceptance/run.py --run-id ci-contract contract
+      - name: Installed client on ${{ matrix.terminal }}
+        run: python3 scripts/acceptance/run.py --run-id ci-interactive interactive
       - name: Upload bounded acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: acceptance-${{ matrix.os }}
-          path: benchmarks/acceptance/ci-contract
+          path: |
+            benchmarks/acceptance/ci-contract
+            benchmarks/acceptance/ci-interactive
           if-no-files-found: ignore

@@ -16,9 +16,12 @@ import signal
 import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 
 from evidence import inspect_sdk
 from metrics import ProcessSampler
@@ -583,8 +586,7 @@ def run_benchmark(args, directory, record, secrets):
 
 
 def selected_commands(group):
-    contract = ["cargo", "test", "-p", "kuku", "-p", "kuku-cli", "-p", "kuku-server",
-                "--features", "kuku/test_support"]
+    contract = ["cargo", "test", "--workspace", "--features", "kuku/test_support"]
     if group == "contract":
         return [contract]
     if group == "protocol":
@@ -637,6 +639,113 @@ def run_metrics(args, directory, record):
     record["measurements_complete"] = not record["missing_measurements"]
 
 
+def extract_release_binary(archive, binary):
+    with contextlib.ExitStack() as stack:
+        if archive.name.endswith(".tar.gz"):
+            package = stack.enter_context(tarfile.open(archive, "r:gz"))
+            members = [member for member in package.getmembers() if member.name == binary.name and member.isfile()]
+            if len(members) != 1:
+                raise ValueError(f"Expected one regular {binary.name} at the release archive root")
+            source = stack.enter_context(package.extractfile(members[0]))
+        elif archive.suffix == ".zip":
+            package = stack.enter_context(zipfile.ZipFile(archive))
+            members = [entry for entry in package.infolist() if entry.filename == binary.name]
+            if len(members) != 1:
+                raise ValueError(f"Expected one {binary.name} at the release archive root")
+            source = stack.enter_context(package.open(members[0]))
+        else:
+            raise ValueError("Release archive must be a .tar.gz or .zip")
+        with binary.open("xb") as handle:
+            shutil.copyfileobj(source, handle)
+    binary.chmod(0o755)
+
+
+def pty_artifact(log):
+    for line in reversed(Path(log).read_text(encoding="utf-8").splitlines()):
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("reason") == "compiler-artifact" and message.get("executable"):
+            target = message["target"]
+            if target["name"] == "interactive_pty" and "test" in target["kind"]:
+                return Path(message["executable"])
+    raise ValueError("Cargo did not report the compiled native PTY test helper")
+
+
+def run_interactive(args, directory, record):
+    from interactive_fixture import EXE
+
+    if args.live and (not args.archive or not args.secrets):
+        raise ValueError("Live interactive acceptance requires --archive and --secrets")
+    scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
+    if scratch.is_relative_to(ROOT):
+        raise ValueError("Interactive acceptance needs a scratch directory outside the source tree")
+    scratch.mkdir(parents=True, exist_ok=True)
+    record["browser"] = args.browser or args.live
+    record["native_pty"] = "conpty" if os.name == "nt" else "unix-pty"
+    record["checks"] = []
+
+    def checked(command, label, *, timeout=1800, cwd=ROOT):
+        result = capture(command, directory, label, timeout=timeout, env=command_environment(), cwd=cwd)
+        record["checks"].append(result)
+        return require_success(result)
+
+    def build_bridge():
+        compiled = checked(["cargo", "test", "--locked", "-p", "kuku-app", "--test", "interactive_pty",
+                            "--no-run", "--message-format=json"], "native-pty-build")
+        return pty_artifact(compiled["log"])
+
+    with tempfile.TemporaryDirectory(prefix="kuku-interactive-", dir=scratch) as temporary:
+        scratch_dir = Path(temporary)
+        if args.live:
+            bridge = build_bridge()
+            record["input"] = {"type": "release_archive", **config_record(args.archive)}
+            command = [sys.executable, str(Path(__file__).with_name("interactive_live.py")),
+                       "--archive", str(args.archive.resolve()), "--bridge", str(bridge),
+                       "--directory", str(scratch_dir / "test"), "--evidence", str(directory),
+                       "--run-id", record["run_id"], "--ledger", str(args.ledger.resolve()),
+                       "--secrets", str(args.secrets.resolve())]
+            try:
+                checked(command, "installed-live", timeout=900, cwd=scratch_dir)
+            finally:
+                live_result = directory / "live-result.json"
+                if live_result.is_file():
+                    record["live_result"] = str(live_result)
+            record["passed"] = True
+            return
+        prefix = scratch_dir / "install"
+        binary = prefix / "bin" / f"kuku{EXE}"
+        if args.archive or args.binary:
+            binary.parent.mkdir(parents=True)
+            if args.archive:
+                record["input"] = {"type": "release_archive", **config_record(args.archive)}
+                extract_release_binary(args.archive, binary)
+            else:
+                record["input"] = {"type": "installed_binary", **config_record(args.binary)}
+                shutil.copy2(args.binary, binary)
+        else:
+            record["input"] = {"type": "source_install", "features": ["embedded-web-assets"],
+                               "profile": "release", "target_dir": str(ROOT / "target")}
+            web = ROOT / "apps" / "web"
+            npm = "npm.cmd" if os.name == "nt" else "npm"
+            checked([npm, "ci"], "web-dependencies", cwd=web)
+            checked([npm, "run", "build"], "web-assets", cwd=web)
+            checked(["cargo", "install", "--locked", "--path", "apps/kuku", "--features",
+                     "embedded-web-assets", "--root", str(prefix)], "source-install")
+        record["binary"] = config_record(binary)
+
+        version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
+        record["binary"]["version"] = Path(version["log"]).read_text(encoding="utf-8").strip()
+        bridge = build_bridge()
+        command = [sys.executable, str(Path(__file__).with_name("interactive.py")), "--binary", str(binary),
+                   "--bridge", str(bridge), "--directory", str(scratch_dir / "test")]
+        if args.browser:
+            command.append("--browser")
+        checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
+    record["passed"] = True
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--output", type=Path, default=OUTPUT, help="ignored local evidence directory")
@@ -644,6 +753,15 @@ def parser():
     sub = root.add_subparsers(dest="group", required=True)
     for group in ("contract", "protocol", "integration", "list"):
         sub.add_parser(group)
+    interactive = sub.add_parser("interactive", help="accept an installed kuku with a local provider and a native PTY")
+    product = interactive.add_mutually_exclusive_group()
+    product.add_argument("--binary", type=Path, help="copy a previously installed binary to the test prefix")
+    product.add_argument("--archive", type=Path, help="extract the platform release .tar.gz or .zip")
+    interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
+    interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
+    interactive.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    interactive.add_argument("--secrets", type=Path, help="explicit credentials file for --live")
+    interactive.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json", help="existing live-call budget ledger")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
     metrics.add_argument("--profile", choices=("debug", "release"), default="debug")
     metrics.add_argument("--idle-agents", type=int, default=32)
@@ -723,7 +841,7 @@ def main():
     directory = args.output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     record = {"schema_version": 1, "run_id": run_id, "group": args.group, "started_at": now(),
-              "tree": tree_state(), "paid": paid, "passed": False,
+              "tree": tree_state(), "paid": paid or (args.group == "interactive" and args.live), "passed": False,
               "selector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "manifest_sha256": hashlib.sha256(MANIFEST.read_bytes()).hexdigest()}
     reserved = False
@@ -742,6 +860,8 @@ def main():
             run_benchmark(args, directory, record, secrets)
         elif args.group == "metrics":
             run_metrics(args, directory, record)
+        elif args.group == "interactive":
+            run_interactive(args, directory, record)
         elif args.group == "inspect":
             record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
                                                   args.connection, args.container_data, require_streaming=args.require_streaming)
@@ -765,7 +885,7 @@ def main():
                 record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection,
                                                       require_streaming=args.require_streaming)
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
         record["error"] = redact(str(error), secrets.values())
         record["failure_kind"] = "infrastructure"
     finally:

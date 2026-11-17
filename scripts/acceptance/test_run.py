@@ -7,8 +7,10 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import tarfile
 import unittest
 from unittest import mock
+import zipfile
 
 
 SPEC = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("run.py"))
@@ -159,6 +161,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_contract_selects_feature_gated_tests(self):
         command = ACCEPTANCE.selected_commands("contract")[0]
+        self.assertIn("--workspace", command)
         self.assertIn("kuku/test_support", command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
@@ -168,6 +171,23 @@ class AcceptanceTests(unittest.TestCase):
             env = ACCEPTANCE.command_environment()
             self.assertEqual(env["CARGO_TARGET_DIR"], str(ACCEPTANCE.ROOT / "target"))
             self.assertEqual(os.environ["CARGO_TARGET_DIR"], "/shared-target")
+
+    def test_release_archives_only_extract_the_binary(self):
+        source = self.directory / "source"
+        source.write_bytes(b"installed executable")
+        tar = self.directory / "release.tar.gz"
+        zip_path = self.directory / "release.zip"
+        with tarfile.open(tar, "w:gz") as package:
+            package.add(source, arcname="kuku")
+            package.add(source, arcname="other")
+        with zipfile.ZipFile(zip_path, "w") as package:
+            package.write(source, arcname="kuku.exe")
+            package.write(source, arcname="other")
+        for archive, name in ((tar, "kuku"), (zip_path, "kuku.exe")):
+            binary = self.directory / name
+            ACCEPTANCE.extract_release_binary(archive, binary)
+            self.assertEqual(source.read_bytes(), binary.read_bytes())
+            self.assertFalse((self.directory / "other").exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc resource selector")
     def test_process_samples_keep_cpu_and_memory_when_io_counters_are_unavailable(self):
