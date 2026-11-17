@@ -71,6 +71,14 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - name: Check acceptance tooling
         run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
+      - name: Prepare isolated Windows Terminal desktop
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          python3 scripts/acceptance/desktop/windows_setup.py
+          --report benchmarks/acceptance/windows-terminal-preflight.json
+          --prepare "$env:RUNNER_TEMP/kuku-windows-terminal"
       - name: Contract tests, including feature-gated runtime suites
         run: python3 scripts/acceptance/run.py --run-id ci-contract contract
       - name: Installed client on ${{ matrix.terminal }}
@@ -83,4 +91,5 @@ jobs:
           path: |
             benchmarks/acceptance/ci-contract
             benchmarks/acceptance/ci-interactive
+            benchmarks/acceptance/windows-terminal-preflight.json
           if-no-files-found: ignore
