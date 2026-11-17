@@ -1,5 +1,6 @@
 import concurrent.futures
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -78,6 +79,15 @@ class AcceptanceTests(unittest.TestCase):
         path.write_text("OTHER_KEY=value\n")
         with self.assertRaises(ValueError):
             ACCEPTANCE.load_secrets(path)
+
+    def test_config_evidence_hashes_without_copying_inline_credentials(self):
+        path = self.directory / "config.toml"
+        payload = b'api_key="private-inline-fixture-key"\n'
+        path.write_bytes(payload)
+        metadata = ACCEPTANCE.config_record(path)
+        self.assertEqual(metadata["sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertNotIn("private-inline-fixture-key", json.dumps(metadata))
+        self.assertEqual(list(self.directory.iterdir()), [path])
 
     def test_log_is_bounded_and_redacts_secrets_across_the_retained_boundary(self):
         secret = "test-secret-" + "z" * 80

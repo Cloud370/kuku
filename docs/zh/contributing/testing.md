@@ -115,7 +115,7 @@ python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION
 python3 scripts/acceptance/run.py budget show
 ```
 
-`live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 要求 `--sdk-result` 和 `--session-data`，执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环。
+`live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口先计算 `--config` 的 hash，不复制其中可能存在的内联凭据，再锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 要求 `--sdk-result` 和 `--session-data`，执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环；输出上限由调用者显式选择，不为适应预留额度而降低。
 
 未完成、失败或缺失用量的运行按完整预留记账，中断及重启后仍然保留。null／缺失用量保持未知；非空请求的零输入不能证明没有费用。部分回报的计数／费用单独标识，不能作为完整总量。入口不会自动重跑付费命令或释放预留。检查证据后，才能通过 `budget settle --entry RUN_ID --cost-usd AMOUNT --basis provider_reported|token_estimate --evidence PATH` 释放多余预留。区分 provider 回报费用、按 token 估算和保守上界。再次请求前运行 `budget show`；授权余额不足会阻止启动。重复尝试需要新运行标识，并在同一授权内另作预留。
 

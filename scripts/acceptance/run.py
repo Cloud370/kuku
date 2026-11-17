@@ -261,6 +261,14 @@ def file_hashes(directory):
             for path in sorted(directory.rglob("*")) if path.is_file() and ".git" not in path.parts}
 
 
+def config_record(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(65536):
+            digest.update(chunk)
+    return {"path": str(path.resolve()), "sha256": digest.hexdigest()}
+
+
 def manifest_case(case_id):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     case = next((case for case in manifest["cases"] if case["id"] == case_id), None)
@@ -588,6 +596,7 @@ def parser():
         paid.add_argument("--reserve-usd", type=money)
         paid.add_argument("--reservation-reason", help="request/token/retry bounds and conservative rates")
         if group == "live":
+            paid.add_argument("--config", type=Path, required=True, help="hash the caller's config without copying possible inline credentials")
             paid.add_argument("--sdk-result", type=Path, required=True)
             paid.add_argument("--session-data", type=Path, required=True)
             paid.add_argument("--connection")
@@ -640,6 +649,7 @@ def main():
     reserved = False
     try:
         if paid:
+            record["config"] = config_record(args.config)
             if args.group == "benchmark":
                 if not args.sdk_binary or not args.config or not args.connection:
                     raise ValueError("live benchmark requires --sdk-binary, --config and --connection")
