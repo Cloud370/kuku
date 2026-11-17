@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -6,6 +7,34 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use kuku::session::session_events_path;
+
+fn captured_http_requests() -> &'static Mutex<BTreeMap<String, Vec<Value>>> {
+    static REQUESTS: OnceLock<Mutex<BTreeMap<String, Vec<Value>>>> = OnceLock::new();
+    REQUESTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Record model wire bodies for assertions against committed context views.
+#[allow(dead_code)]
+pub fn capture_http_request(request: &httpmock::prelude::HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default())
+        .expect("model request is JSON");
+    let mut requests = captured_http_requests().lock().unwrap();
+    let bodies = requests.entry(request.path.clone()).or_default();
+    if !bodies.contains(&body) {
+        bodies.push(body);
+    }
+    true
+}
+
+/// Take captured bodies for one test's unique model endpoint path.
+#[allow(dead_code)]
+pub fn take_http_requests(path: &str) -> Vec<Value> {
+    captured_http_requests()
+        .lock()
+        .unwrap()
+        .remove(path)
+        .unwrap_or_default()
+}
 
 // ---------- SSE response builders ----------
 

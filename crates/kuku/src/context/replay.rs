@@ -129,6 +129,25 @@ fn rebuild_history_internal(
         None => (None, filtered.as_slice()),
     };
 
+    let response_messages = effective
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelResponse {
+                turn,
+                conversation: source,
+                request_id,
+                text,
+                ..
+            } if source.as_ref().map_or_else(
+                || unscoped_turn_belongs_to_conversation(*turn, conversation, &turn_conversations),
+                |source| source == conversation.as_str(),
+            ) =>
+            {
+                Some((*turn, request_id.as_str(), text.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     let mut messages = Vec::new();
     let mut current_group = ResponseGroup::default();
     let mut seen_tool_call_keys = HashSet::new();
@@ -338,9 +357,13 @@ fn rebuild_history_internal(
             }
             EventPayload::MessageAssistant {
                 conversation: event_conversation,
+                turn,
+                message_id,
                 text,
                 ..
-            } if event_conversation == conversation.as_str() => {
+            } if event_conversation == conversation.as_str()
+                && !response_messages.contains(&(*turn, message_id.as_str(), text.as_str())) =>
+            {
                 flush_group(&mut messages, &mut current_group);
                 messages.push(CanonicalMessage::assistant(vec![MessageBlock::Text(
                     text.clone(),

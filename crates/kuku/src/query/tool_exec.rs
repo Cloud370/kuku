@@ -62,7 +62,15 @@ pub(crate) fn write_tool_result(
 }
 
 fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
-    EventStore::replay(&pending.events_path)
+    if pending.query.runtime.is_some() {
+        crate::context::runtime::read_agent_events(
+            &pending.events_path,
+            pending.conversation.as_str(),
+            pending.query.runtime_limits.max_request_bytes,
+        )
+    } else {
+        EventStore::replay(&pending.events_path)
+    }
 }
 
 fn current_skill_registry(pending: &PendingRun) -> crate::skill::registry::SkillRegistry {
@@ -149,7 +157,7 @@ fn handle_use_skill(
     let skill_dir = def.source_path.as_deref().unwrap_or("").to_string();
     let result = format!("<!-- loaded: {skill_dir} -->\n\n{}", def.instructions);
 
-    let events = EventStore::replay(&pending.events_path)?;
+    let events = current_skill_events(pending)?;
     let mut skill_names =
         crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
     if !skill_names.iter().any(|name| name == &def.name) {
@@ -292,7 +300,7 @@ pub(super) async fn execute_tool_call(
         return Ok(result);
     }
 
-    let prior_events = EventStore::replay(&pending.events_path)?;
+    let prior_events = current_skill_events(pending)?;
     let result_event_id = EventStore::open(&pending.events_path)?.next_id();
     let result = crate::tool::dispatch(
         &tool_call.name,
