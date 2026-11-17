@@ -1,5 +1,8 @@
 mod common;
 
+use std::env;
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use common::mock_provider::{self, text_response, tool_response};
@@ -7,6 +10,8 @@ use common::TestServer;
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
 use serde_json::{json, Value};
+
+const TOOL_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
@@ -104,6 +109,8 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let command = install_gate(server.workspace.path());
     let first = mock.mock(|when, then| {
         when.method(Method::POST)
             .path("/v1/messages")
@@ -112,7 +119,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             "run_command",
             "gated-tool",
             json!({
-                "command":gate_command(),"timeout":20,"brief":"wait for a file"
+                "command":command,"timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
             }),
         ));
     });
@@ -133,7 +140,6 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             .body_contains("next-turn-message");
         then.status(200).body(text_response("next turn ran"));
     });
-    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
     let id = "turn-boundary";
     server
         .submit(
@@ -141,13 +147,19 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             json!({"type":"send","command_id":"initial","text":"wait for test signal","create":{}}),
         )
         .await;
-    tokio::time::timeout(Duration::from_secs(6), async {
-        while !server.workspace.path().join("gate-started").is_file() {
+    let started = tokio::time::timeout(Duration::from_secs(6), async {
+        while !server.workspace.path().join("tool-attempts.txt").is_file() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("the actual command should reach the file gate");
+    .await;
+    if started.is_err() {
+        let snapshot = server.snapshot(id, "main").await;
+        panic!(
+            "the command fixture did not reach its file gate: {}",
+            snapshot["agent"]
+        );
+    }
     let queued = server.submit(id, json!({"type":"send","command_id":"later-turn","text":"next-turn-message","timing":"next_turn"})).await;
     let inserted = server.submit(id, json!({"type":"send","command_id":"steering","text":"steering-message","timing":"steer"})).await;
     assert_eq!("queued", queued["status"]);
@@ -158,7 +170,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
         queued["receipt"]["event_id"].as_u64().unwrap()
             < inserted["receipt"]["event_id"].as_u64().unwrap()
     );
-    std::fs::write(server.workspace.path().join("release-gate"), b"run").unwrap();
+    fs::write(server.workspace.path().join("release-tool"), b"run").unwrap();
     server
         .wait_for_snapshot(id, "main", |snapshot| {
             snapshot["agent"]["last_output"] == "next turn ran"
@@ -331,12 +343,28 @@ fn request_contains_tool_result(request: &httpmock::prelude::HttpMockRequest) ->
     String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("\"tool_result\"")
 }
 
-#[cfg(unix)]
-fn gate_command() -> &'static str {
-    "touch gate-started; while [ ! -f release-gate ]; do sleep 0.02; done; printf 'finished\\n'"
+fn gate_filename() -> String {
+    format!("tool-gate{}", env::consts::EXE_SUFFIX)
 }
 
-#[cfg(windows)]
-fn gate_command() -> &'static str {
-    "powershell -NoProfile -NonInteractive -Command \"Set-Content gate-started ready; while (-not (Test-Path release-gate)) { Start-Sleep -Milliseconds 20 }; Write-Output finished\""
+fn install_gate(workspace: &Path) -> String {
+    let executable = env::current_exe().unwrap();
+    let filename = gate_filename();
+    let installed = workspace.join(&filename);
+    if fs::hard_link(&executable, &installed).is_err() {
+        fs::copy(&executable, installed).unwrap();
+    }
+    let local = Path::new(".").join(filename);
+    format!(
+        "{} --ignored --exact gated_command_fixture --nocapture",
+        local.display()
+    )
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked by the tool boundary test"]
+fn gated_command_fixture() {
+    if Path::new(&gate_filename()).is_file() {
+        kuku::test_support::run_gated_tool(TOOL_TIMEOUT).unwrap();
+    }
 }

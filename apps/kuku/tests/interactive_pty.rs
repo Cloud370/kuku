@@ -1,13 +1,11 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
 use std::num::NonZeroU16;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
@@ -16,7 +14,6 @@ use serde_json::{json, Value};
 const ROWS: NonZeroU16 = NonZeroU16::new(32).unwrap();
 const COLS: NonZeroU16 = NonZeroU16::new(140).unwrap();
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
-const TOOL_OUTPUT: &str = "fixture-tool-output-42";
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -71,7 +68,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or("interactive acceptance requires an installed kuku binary")?;
     if binary == "--gated-tool" {
-        return gated_tool();
+        kuku::test_support::run_gated_tool(TOOL_TIMEOUT)?;
+        return Ok(());
     }
     if binary == "--anthropic-response" {
         let message = serde_json::from_reader(io::stdin().lock())?;
@@ -180,25 +178,6 @@ fn send(writer: &mut impl Write, message: &Value) -> Result<(), Box<dyn Error>> 
     serde_json::to_writer(&mut *writer, message)?;
     writeln!(writer)?;
     writer.flush()?;
-    Ok(())
-}
-
-fn gated_tool() -> Result<(), Box<dyn Error>> {
-    let mut attempts = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("tool-attempts.txt")?;
-    writeln!(attempts, "{}", env::current_dir()?.display())?;
-    attempts.flush()?;
-    let deadline = Instant::now() + TOOL_TIMEOUT;
-    while !Path::new("release-tool").exists() {
-        if Instant::now() >= deadline {
-            return Err("tool release deadline expired".into());
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    fs::write("tool-result.txt", TOOL_OUTPUT)?;
-    println!("{TOOL_OUTPUT}");
     Ok(())
 }
 

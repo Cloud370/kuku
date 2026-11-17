@@ -1,4 +1,35 @@
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
+
 use serde_json::Value;
+
+const TOOL_OUTPUT: &str = "fixture-tool-output-42";
+
+/// Run the native command fixture until its host creates the release file.
+pub fn run_gated_tool(timeout: Duration) -> io::Result<()> {
+    let mut attempts = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("tool-attempts.txt")?;
+    writeln!(attempts, "{}", env::current_dir()?.display())?;
+    attempts.flush()?;
+    let deadline = Instant::now() + timeout;
+    while !Path::new("release-tool").exists() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "tool release deadline expired",
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    fs::write("tool-result.txt", TOOL_OUTPUT)?;
+    writeln!(io::stdout().lock(), "{TOOL_OUTPUT}")
+}
 
 pub fn anthropic_sse_response(msg: Value) -> String {
     let id = msg
