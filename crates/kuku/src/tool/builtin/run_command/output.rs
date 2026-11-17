@@ -10,6 +10,7 @@ const MAGIC: &[u8; 8] = b"KUKUOUT1";
 const FRAME_HEADER_BYTES: usize = 5;
 const MAX_FRAME_BYTES: usize = 8192;
 const MAX_READ_BYTES: usize = super::RUN_COMMAND_MAX_CHARS;
+const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_READ_SEGMENTS: usize = 4096;
 const MAX_SEARCH_BYTES: usize = 4096;
 const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
@@ -32,17 +33,34 @@ impl Default for OutputLimits {
     }
 }
 
+/// Selects a bounded byte window from retained command output.
 #[derive(Debug, Clone)]
-pub(crate) struct OutputRead {
+pub struct OutputRead {
+    /// The starting byte offset across both captured streams.
     pub offset: u64,
+    /// The maximum raw bytes to scan, between 1 and 80000.
     pub limit: usize,
+    /// An optional literal filter of up to 4096 bytes that fits within the scan limit.
     pub search: Option<String>,
 }
 
+impl Default for OutputRead {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: DEFAULT_READ_BYTES,
+            search: None,
+        }
+    }
+}
+
+/// Identifies the command pipe that produced an output segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OutputStream {
+pub enum OutputStream {
+    /// The command's standard output pipe.
     Stdout,
+    /// The command's standard error pipe.
     Stderr,
 }
 
@@ -63,27 +81,45 @@ impl OutputStream {
     }
 }
 
+/// Contains one retained stream segment in capture order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OutputSegment {
+pub struct OutputSegment {
+    /// The pipe that produced this segment.
     pub stream: OutputStream,
+    /// The segment's starting byte offset across both captured streams.
     pub offset: u64,
+    /// The number of retained raw bytes represented by this segment.
     pub bytes: usize,
+    /// The segment decoded as UTF-8 with replacement for invalid bytes.
     pub text: String,
 }
 
+/// Returns a bounded output view with continuation and capture status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OutputChunk {
+pub struct OutputChunk {
+    /// The Session-owned output reference selected by the read.
     pub output_id: String,
+    /// The requested starting byte offset.
     pub offset: u64,
+    /// The next byte offset to read, including any overlap required by literal search.
     pub next_offset: u64,
+    /// The total retained payload bytes across both captured streams.
     pub total_bytes: u64,
+    /// The selected stream segments in capture order.
     pub segments: Vec<OutputSegment>,
+    /// A bounded set of selected build or test result lines.
     pub summary: Vec<String>,
+    /// Whether the writer finalized this output record.
     pub complete: bool,
+    /// Whether the storage quota caused output bytes to be discarded.
     pub capture_truncated: bool,
+    /// Whether pipe cleanup reached its deadline before capture ended.
     pub cleanup_incomplete: bool,
+    /// Whether literal search filtered the returned stream segments.
     pub filtered: bool,
+    /// Whether decoding the returned segments replaced invalid or split UTF-8 bytes.
     pub lossy_utf8: bool,
+    /// Whether more retained bytes remain after the continuation offset.
     pub has_more: bool,
 }
 
