@@ -5,25 +5,28 @@
 > A file-native Rust agent SDK. Sessions, Memory, Skills, and config stay on disk as readable files.
 
 > [!WARNING]
-> kuku is in active development. APIs and file formats may change.
+> kuku is in testing. APIs and file formats may change.
 
-kuku is the runtime behind a terminal coding agent and related host apps. It keeps runtime state in files instead of a database or hidden process state, so you can inspect what happened, diff it, and version it.
+Use the CLI to work through a task, the HTTP server to keep work running after a client disconnects, or the Rust SDK to embed the same runtime. The terminal currently accepts one prompt at a time. The full-screen Rust TUI is in design. [Interactive client plan](docs/en/architecture/interactive-clients.md)
 
 ## Why kuku
 
 - File-native runtime: sessions, Memory, config, permissions, and Skills live on disk.
 - Readable architecture: the SDK owns runtime facts; host apps own presentation and transport.
-- Low hidden state: every turn is rebuilt from files and persisted events.
-- Cache-first prompt design: small stable prelude, dynamic state added only where needed.
+- Each Agent has its own address, inbox and context within a Session.
+- Each model request extends a committed context prefix. Reopening an Agent preserves the instructions and tool results its model already saw.
 
 ## Quick Start
 
+For a fresh install, set `ANTHROPIC_API_KEY` in your shell for the default Anthropic route, then run from your project directory.
+
 ```bash
-cargo install --git https://github.com/Cloud370/kuku
-kuku run say hello
+cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
+kuku init
+kuku run "Inspect the files in this directory"
 ```
 
-Set a provider API key with `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or configure it in `~/.kuku/config.toml`.
+If you use OpenAI, set `OPENAI_API_KEY` and select the `openai` connection and a model available to your account. Existing installations can reuse their configuration. [Quickstart](docs/en/start/quickstart.md)
 
 ## Docs
 

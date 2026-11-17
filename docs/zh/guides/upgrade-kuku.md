@@ -1,42 +1,20 @@
-# Upgrade kuku
+# 升级 kuku
 
-当前公开的 CLI 命令面并没有文档化的 `kuku update` subcommand。
+## 更新可执行文件
 
-## Upgrade by Reinstalling
-
-如果你是用 Cargo 安装的：
+通过 Cargo 安装测试版时，重新安装仓库当前版本提供的统一二进制。
 
 ```bash
-cargo install --git https://github.com/Cloud370/kuku --force
+cargo install --locked --git https://github.com/Cloud370/kuku --force kuku-app
 ```
 
-如果你是通过 release script 安装的，就重新运行对应平台上的同一个脚本。
+使用带标签的发行版时，选择目标版本的清单，并使用对应平台的安装脚本。[安装已发布版本](../start/install.md#安装已发布版本)
 
-## Review Config After Upgrades
-
-升级后检查你的配置文件：
-
-```bash
-kuku config show
-kuku config validate
-```
-
-运行时在加载旧配置时，可以自动补齐缺失的 `[handoff]`、`[plugin]` 和 `[update]` 分区。
-
-## Update Channel Settings
-
-`config.toml` 仍然包含 update source 和 channel 设置：
-
-```toml
-[update]
-source = "github"
-channel = "stable"
-```
-
-参见 [Config](../reference/config.md) 和 [Update Manifest](../reference/update-manifest.md)。
-
-## Verify the New Binary
+## 核对配置
 
 ```bash
 kuku --help
+kuku config validate
 ```
+
+kuku 将配置保存在 `config.toml` 中。使用 `kuku config show` 查看当前模型档和连接。[配置指南](../start/configuration.md)

@@ -1,59 +1,18 @@
-# Agent Loop
+# Agent loop
 
-Nothing counts as a session fact until it is written to `events.jsonl`.
+A Turn starts when an Agent accepts work from its inbox. A Step is one logical model request and the tools its response asks to use. A Turn can have several Steps.
 
-## Turn flow
+## From input to result
 
-```text
-turn.started
-  -> message.user
-  -> model.response
-      stop_reason = tool_use ?
-        yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
-        length -> model.recovery -> model.response (at most once)
-        no  -> turn.completed
-```
+1. The Session commits the submitted input and returns a receipt. The running SDK admits eligible input at the start of a Turn.
+2. The SDK prepares the Agent's context and records the Step before sending the request. Clients can observe partial output while the response is in flight.
+3. A tool response starts a batch. The runtime binds each call to its arguments and definition, checks authorization, records dispatch and commits the result. Independent work can run concurrently, and conflicting workspace operations are ordered.
+4. The next Step receives the admitted tool-result views. A final response with no tool calls settles the Turn with a durable result. A response truncated by the model's output limit interrupts a public Session Turn. Tool calls in that incomplete response are never dispatched.
 
-## Per turn
+Read the Agent's settled result with `kuku show SESSION_ID --agent AGENT`. To verify that a task succeeded, inspect the changed files, command results or task-specific tests. [Events](../reference/events.md) · [Session SDK](../reference/sdk.md)
 
-1. kuku appends `turn.started` and `message.user`.
-2. It rebuilds the model context from files and persisted events.
-3. It streams the model response to the host and appends `model.response` when complete.
-4. If the response reaches its output limit, kuku persists `model.recovery`, discards the incomplete response and its tool calls, and retries once with a short runtime notice appended to the current user message.
-5. If the response ends the turn, kuku appends `turn.completed` for the active conversation.
-6. If the response asks for tools, kuku appends `tool.call`, records pending permission with `permission.requested`, records the permission decision, executes allowed tools, appends `tool.result`, and rebuilds context for the next model call.
+## Waiting, interruption and handoff
 
-The stable system protocol tells the model that a response without tool calls is
-the final answer for the turn. When more inspection or action is required, the
-model must call the relevant tools in the current response instead of promising
-future work. The host still classifies completion from the provider terminal state:
-`length`, invalid responses, and interrupted streams are not successful turns.
+An `ask_user` question or deferred tool authorization can yield execution until the host submits the matching reply. Canceling an Agent stops new dispatch and waits for its owned work to settle. Reopening restores confirmed history and pending requests. A tool with an unknown post-dispatch outcome requires reconciliation before any further attempt.
 
-## Tool execution
-
-Independent tool calls can run in parallel. kuku preserves the model's original `tool.call` order when it writes results back to the event log.
-
-Delegated agent conversations use the same loop inside the same session ledger. They do not create a second runtime model.
-
-## Permissions inside the loop
-
-The model can request a tool, but the runtime decides whether that tool may execute. Permission checks are runtime enforcement, not prompt advice.
-
-`permission.requested` is the durable pending state for an unresolved tool authorization request. It is not an allow or deny decision, and it is not read from observability logs.
-
-See [Permissions](permissions.md) for the policy model.
-
-## Handoff and rollback
-
-Two session behaviors change what the next model call sees:
-
-- handoff compresses earlier history into a structured summary when context gets large
-- rollback appends marker events that remove prior turns from future context rebuilds, and can also revert files
-
-See [Sessions](sessions.md) for both behaviors.
-
-Runtime streams and observability logs are separate from the session fact log. See [Events](../reference/events.md) and [Sessions](sessions.md#observability-logs).
-
-## Maintainer view
-
-This page describes observable runtime behavior. For crate boundaries and the exact assembly order, see [Architecture Overview](../architecture/overview.md), [Prompt Assembly](../architecture/prompt-assembly.md), and [Module Contracts](../architecture/module-contracts.md).
+When a handoff selects a summary and recent Turns, the SDK prepares a successor context segment. The previous segment remains explainable from its journal. [Sessions](sessions.md) · [Prompt assembly](../architecture/prompt-assembly.md)

@@ -1,67 +1,20 @@
 # Use Agents
 
-Agents are contact cards. When kuku calls one, it opens or continues a delegated conversation address inside the current session.
+## Give a task to a second Agent
 
-## Add an Agent
-
-Place agent files in one of these locations:
-
-- `~/.kuku/agents/`
-- `<workspace>/.kuku/agents/`
-
-These are the conventional locations. With auto-discovery enabled, kuku also scans other user and project dot-directories for both `agents/` and `agent/`, such as `.claude/agents` and `.opencode/agent`.
-
-Project agents override user agents with the same name.
-
-The file format is defined in [Agent Format](../reference/agent-format.md).
-
-## Check Discovery
+Start a Session and copy its ID from the output. Use the same workspace for the following commands and replace `SESSION_ID` with that ID.
 
 ```bash
-kuku agents list
-kuku agents show <name>
+kuku run "Inspect this project and summarize the test setup"
+kuku run --session SESSION_ID --agent reviewer "Read the test files and identify a missing case"
+kuku list SESSION_ID
+kuku show SESSION_ID --agent reviewer
 ```
 
-If an agent does not appear, review your `[discovery]` settings in [Config](../reference/config.md).
+The second command creates `reviewer` if needed. Another `kuku run` to the same Session and address continues its history. Supply the relevant files or findings when delegating work. A new Agent starts with its own context.
 
-## Use Agents in a Run
+## Reuse a preset
 
-When the agent tool is enabled, kuku can delegate part of the work to discovered agent contacts.
+Put a Markdown preset in `<workspace>/.kuku/agents/` for that project or `~/.kuku/agents/` for personal use. Project definitions take precedence over user definitions of the same name. Inspect the catalog with `kuku agents list` and `kuku agents show NAME`. [Agent format](../reference/agent-format.md)
 
-Think in addresses:
-
-- `review` means one ongoing review thread
-- `review/api` means a separate nested thread rooted at the `review` contact
-- reusing `review` means continuity
-
-The `main` address is reserved for the host conversation and cannot be used as an agent target.
-
-Passing a model tier only makes sense when first opening a new address. If you pass a tier while continuing an existing address, the runtime rejects the call.
-
-To disable agent delegation for one run:
-
-```bash
-kuku run --no-agents "task"
-```
-
-## Choose User vs Project Scope
-
-- Use `~/.kuku/agents/` for personal reusable contacts.
-- Use `<workspace>/.kuku/agents/` when the contact belongs to one repository.
-
-## Inspect Conversations
-
-```bash
-kuku list <session-id>
-kuku show <session-id> --conversation review
-kuku events <session-id> --conversation review
-```
-
-- `kuku list <session-id>` lists conversation addresses in one session.
-- `kuku show` shows the final transcript output for one conversation.
-- `kuku events` shows the underlying ledger facts, optionally filtered by conversation.
-
-## Related Pages
-
-- [Tools](../reference/tools.md)
-- [Manage Sessions](manage-sessions.md)
+During a run, a model can use `create_agent` with a new address and the selected `preset`, then `send_message` with the task. `list_agents` shows the recipient's state and latest settled output. Use `--no-agents` to disable those model-facing coordination tools for the run. [Tools](../reference/tools.md) · [Manage Sessions](manage-sessions.md)

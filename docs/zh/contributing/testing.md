@@ -12,7 +12,7 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。旧有嵌入宿主编译检查单独保留；真实模型和 Linux benchmark 容器是需明确选择的本地检查。
+`contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。CI 另外检查带内嵌 Web 资源的二进制能否编译。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
@@ -48,7 +48,7 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
 
-每次选择运行生成一个 `result.json`，包含提交、未提交状态及已跟踪差异的 hash、所选命令／feature、退出状态、耗时和证据位置。每个命令最多保留 64 KiB 脱敏输出，同时记录原始字节数、hash 和明确的截断标记。超时会在 POSIX 清理所属进程组，在 Windows 请求终止进程树；未完整采集视为失败。父进程已经退出后的 Windows 后代清理尚未经本机验证。真实 SDK 检查独立核对调用程序的持久事实、设置、用量与清理，仅命令成功不能通过。
+每次选择运行生成一个 `result.json`，包含提交、未提交状态及已跟踪差异的 hash、所选命令／feature、退出状态、耗时和证据位置。每个命令最多保留 64 KiB 脱敏输出，同时记录原始字节数、hash 和明确的截断标记。超时会在 POSIX 清理所属进程组，在 Windows 请求终止进程树；未完整采集视为失败。验收工具的[孤儿进程输出测试](../../../scripts/acceptance/test_run.py)覆盖 POSIX 进程组，在 Windows 上跳过。真实 SDK 检查独立核对调用程序的持久事实、设置、用量与清理，仅命令成功不能通过。
 
 报告已选择／通过／失败／跳过的覆盖，区分基础设施失败、运行时失败和 Agent 未完成任务。详细输出保存在有界产物中，任务或 PR 只携带简明结论与证据引用。不打印 key 或私有请求正文。无需凭据即可检查选择入口自身：`python3 -m unittest discover -s scripts/acceptance -p 'test_*.py'`。
 

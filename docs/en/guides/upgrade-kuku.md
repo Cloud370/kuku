@@ -1,42 +1,20 @@
 # Upgrade kuku
 
-The current public CLI surface does not expose a documented `kuku update` subcommand.
+## Replace the executable
 
-## Upgrade by Reinstalling
-
-If you installed with Cargo:
+For a development build installed with Cargo, install the current revision of the unified binary.
 
 ```bash
-cargo install --git https://github.com/Cloud370/kuku --force
+cargo install --locked --git https://github.com/Cloud370/kuku --force kuku-app
 ```
 
-If you installed with a release script, rerun the same script for your platform.
+For a tagged release, choose the new release’s manifest and use the installer for your platform. [Installation](../start/install.md#install-a-published-release)
 
-## Review Config After Upgrades
-
-Check your config file after upgrading:
-
-```bash
-kuku config show
-kuku config validate
-```
-
-The runtime can auto-patch missing `[handoff]`, `[plugin]`, and `[update]` sections when loading older configs.
-
-## Update Channel Settings
-
-`config.toml` still carries update source and channel settings:
-
-```toml
-[update]
-source = "github"
-channel = "stable"
-```
-
-See [Config](../reference/config.md) and [Update Manifest](../reference/update-manifest.md).
-
-## Verify the New Binary
+## Check your configuration
 
 ```bash
 kuku --help
+kuku config validate
 ```
+
+kuku keeps settings in `config.toml`. Use `kuku config show` to inspect the selected model tier and connection. [Configuration](../start/configuration.md)

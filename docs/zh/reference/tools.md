@@ -31,7 +31,7 @@
 | Tool | Required args | Optional args | Risk |
 |---|---|---|---|
 | `ask_user` | `question` | none | `session` |
-| `create_agent` | `address` | `connection`, `tier`, `model`, `preset`, `instructions` | `session` |
+| `create_agent` | `address` | `connection`, `tier`, `model`, `preset`, `instructions`, `reasoning_effort`, `service_tier`, `max_output_tokens`, `no_agents`, `no_skills`, `bootstrap_skill`, `tools`, `workspace` | `session` |
 | `send_message` | `to`, `message` | `wake` | `session` |
 | `list_agents` | none | none | `session` |
 

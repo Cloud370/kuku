@@ -1,35 +1,11 @@
-# Why kuku
+# 为什么使用 kuku
 
-kuku 是一个用于 Agent 执行的 Rust SDK，运行时状态保存在普通文件中。
+kuku 是一个 Rust SDK，用于需要多个模型请求、工具或 Agent 协作完成的工作。可以将它直接嵌入应用，也可以通过前台 CLI 或 HTTP server 使用。
 
-## Core idea
+## 检查结果
 
-- `Session` 是一个目录。
-- 事件日志只追加，不覆盖。
-- 项目指令、`Memory`、权限、Agent 和 Skill 都由文件承载。
-- Host 会在每次模型调用前，基于这些文件重建上下文。
+每个 Session 都保存输入、已准备的模型请求、工具动作和最终结果。Agent 编辑文件或执行命令后，可以把记录的动作和工作目录中的实际结果对照。通过 `kuku show SESSION_ID` 查看结果，通过 `kuku events SESSION_ID` 读取底层事实。[管理 Session](../guides/manage-sessions.md)
 
-这样得到的是一个可以用常规工具检查的运行时。你可以读取事件日志、比较一次运行的差异，或将周边状态提交到 git。
+## 继续任务
 
-## What kuku is
-
-- 一个供 Host 应用构建其上的 SDK。
-- 一个将 Agent 事实持久化到磁盘的运行时。
-- 一个供 CLI、server 和其他 Host 共享的执行模型。
-
-## What kuku is not
-
-| If you want | kuku is not that |
-|-------------|-------------------|
-| 一个隐藏的 Session 存储 | 状态是磁盘上的文件。 |
-| 一个单一的聊天应用产品 | Host 是基于 SDK 构建的独立应用。 |
-| 一个以插件为核心的系统 | 核心循环保持精简，扩展附着在其周围。 |
-
-## Why the file-native model matters
-
-- 无需专用工具也能检查状态。
-- 恢复依赖已持久化的事件，而不是内存中的假设。
-- 不同 Host 应用可以用不同方式呈现同一组运行时事实。
-- 运行规则靠近项目本身，而不是封装在某一个 Host 内部。
-
-接下来请阅读 [File-Native Model](file-native-model.md)，然后是 [Agent Loop](agent-loop.md)。如果想看面向维护者的结构，请参见 [Architecture Overview](../architecture/overview.md)。
+Session 可以重开。具名 Agent 保留自己的上下文、待决请求和工具输出。另一个 Agent 可以在该 Session 中独立处理相同的项目文件。通过 HTTP server 发起的任务在客户端断开后仍会继续。[文件原生执行](file-native-model.md) · [运行服务](../guides/run-the-server.md)

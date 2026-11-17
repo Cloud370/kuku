@@ -1,50 +1,11 @@
-# Permissions
+# Tool permissions
 
-Permissions are runtime enforcement.
+Before a tool runs, the Session binds the actual tool definition and final arguments to its call ID. Built-in guards and project policy can reject an action. For an eligible action, the host's `ToolAuthorizer` sees the Session, acting Agent, trusted input source, tool, arguments and workspace. The default CLI and HTTP server use `TrustedLocal` to allow eligible actions.
 
-Project instructions can suggest behavior, but they do not grant or deny tool access by themselves.
+| Decision | Observable result |
+|---|---|
+| Allow | The runtime records dispatch before invoking the tool and records the result afterwards. |
+| Deny | The call receives a blocked result. A host authorization error also prevents dispatch and is reported as an error. |
+| Defer | The Agent waits with a durable request ID. The host answers that exact request for that Agent, including after reopening the Session. |
 
-## Decision sources
-
-The runtime evaluates permissions in a fixed order:
-
-1. hard guard
-2. project policy deny
-3. session grants
-4. project policy allow
-5. default behavior
-
-The hard guard always wins.
-
-## What the model can and cannot do
-
-- The model may request a tool call.
-- The runtime decides whether that call is allowed.
-- A denied call still becomes an event in the session history.
-
-This keeps the permission system auditable and separate from prompt wording.
-
-## Common modes
-
-Hosts can expose permissions in different ways, but the runtime supports the same underlying choices:
-
-- one-time approval
-- session approval
-- project approval
-- deny
-
-Subagent permission requests are surfaced back through the parent run. Hard guards still apply there as well.
-
-## Policy files and runtime facts
-
-Project permission state is file-backed and evaluated by the runtime. It is not ordinary conversation context.
-
-## Failure shape
-
-If a tool call is denied, kuku records the permission decision and writes a blocked tool result. If a call is allowed, execution continues and the result is written normally.
-
-## Mental model
-
-Permissions are part of the execution boundary between model intent and actual side effects. That boundary is one of the main reasons kuku keeps the runtime separate from host UI and prompt instructions.
-
-For the maintainer-facing boundary, see [Module Contracts](../architecture/module-contracts.md).
+In an embedding host, use `SessionOptions.authorizer` to supply the caller's policy. In the CLI, use `kuku reply SESSION_ID REQUEST_ID --agent AGENT --allow` or `--deny`. A question from `ask_user` uses `--answer`. The runtime checks the prepared action and current tool definition before dispatching an approved deferred call. [Sessions](sessions.md#waiting-and-replies) · [Tool authorization](../../../crates/kuku/src/permission/runtime.rs)

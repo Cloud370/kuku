@@ -1,87 +1,35 @@
-# Agent Format
+# Agent preset format
 
-## Mental Model
+An Agent file supplies defaults used when creating a Session Agent. A preset name selects the definition. A Session-local address selects the Agent for later messages. Two Agents can use the same preset and retain independent contexts.
 
-An agent file defines a contact card. The runtime binds that contact card to one or more conversation addresses.
+## File and location
 
-- the contact card comes from the agent file
-- the conversation address comes from `agent(to, message, tier?)`
-- reusing the same address means continue the same thread
-
-## Locations
-
-- User scope: `~/.kuku/agents/<name>.md`
-- Project scope: `<workspace>/.kuku/agents/<name>.md`
-
-Project agents override user agents with the same name.
-
-## File Shape
-
-Agent files are Markdown with YAML frontmatter.
+Use `~/.kuku/agents/NAME.md` for a user preset or `<workspace>/.kuku/agents/NAME.md` for a project preset. Project definitions win on a name collision. Auto-discovery can add other locations. [Configuration](config.md)
 
 ```markdown
 ---
 name: my-reviewer
-description: Pre-commit code review with file and line evidence
-model: balanced
+description: Review tests and cite the relevant files
+tier: balanced
 tools: [find_files, read_file, search_text]
-max_turns: 10
 ---
 
-You are a thorough code reviewer.
+Identify one missing test case and explain the expected behavior.
 ```
 
 ## Fields
 
-| Field | Required | Default | Meaning |
-|---|---|---|---|
-| `name` | no | filename stem | Contact card identifier |
-| `description` | yes | none | When to use this agent |
-| `model` | no | `balanced` | Default tier for first bind |
-| `tools` | no | `tool_profile` default read profile | Allowed tools |
-| `max_turns` | no | `10` | Maximum turns for one delegated conversation |
+| Field | Meaning |
+|---|---|
+| Markdown body | Default Agent instructions. |
+| `name` | Preset name. Defaults to the filename stem. |
+| `description` | Optional catalog description. |
+| `tier` | Default configured tier. The loader also accepts `model` and defaults to `balanced`. |
+| `tools` | Explicit tool names. An empty list selects no tools. |
+| `tool_profile` | Tools to use when `tools` is omitted. Accepts `read`, `read_write` and `none`. The default is `read`. |
 
-Notes:
+The loader also parses `max_turns`, defaulting to 10. Public Session preset resolution applies instructions, tier and tools. Execution budgets come from the Session's runtime limits. [Preset resolution](../../../crates/kuku/src/session/runtime/selection.rs) · [SDK limits](sdk.md#limits-and-accounting)
 
-- Omitting `tools` uses the agent's `tool_profile`; the default read profile allows `find_files`, `read_file`, `search_text`, `fetch_url`, and `fetch_web`.
-- `tools: []` means no tools.
-- The runtime hashes the effective identity into a `binding_id`.
+## Select the preset
 
-## How Binding Works
-
-When the model calls `agent(to, message, tier?)`:
-
-- `to` must be a valid conversation address
-- `main` is reserved and rejected
-- the root segment of `to` must match a discovered agent name
-- `tier` overrides the agent file's `model` only on first bind
-- once a conversation address exists, passing `tier` again is rejected
-- once a conversation address has `max_turns` completed turns, continuing it is rejected before a new nested run starts
-- once a conversation address exists, the binding identity must still match
-
-Example:
-
-- `agent(to="review", message="check auth")` opens or continues `review`
-- `agent(to="review/api", message="focus on handlers")` opens or continues `review/api`
-
-Both addresses use the `review` contact card. They are different conversations.
-
-## Accepted Tool Names
-
-Current documented tool names include:
-
-- `find_files`
-- `read_file`
-- `search_text`
-- `edit_file`
-- `write_file`
-- `run_command`
-- `remember_memory`
-- `forget_memory`
-- `fetch_url`
-- `fetch_web`
-- `query_session`
-
-## Discovery Notes
-
-The loader accepts known field aliases such as `maxTurns` for `max_turns` and `allowedTools` for `tools`. Unknown frontmatter fields are preserved as metadata.
+The model can call `create_agent` with `{"address":"reviewer","preset":"my-reviewer"}` and then `send_message` with `{"to":"reviewer","message":"Review the new tests"}`. Direct SDK callers set `AgentConfig.preset`. Explicit instructions, tier and tool selection override the corresponding preset defaults. [Session coordination tools](tools.md#session-coordination-tools)

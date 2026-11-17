@@ -1,93 +1,15 @@
-# Prompt Assembly
+# Prompt 装配
 
-本页说明模型请求装配的现有实现。重写保留外置 Prompt 资源，以及渲染、上下文选择、provider 转换之间的分工；目标决策见[核心方向](core-direction.md)。下文的重放/快照算法是当前行为，不要求原样保留，更不允许据此重新渲染已提交历史。
+公开 Session SDK 为一个 Agent 准备一个模型 Step。输入包括稳定的系统提示、前置消息、该 Agent 已接纳的消息和可用工具。provider 适配器把这份规范请求转换成所选线路协议。
 
-## Goal
+## 创建上下文段
 
-Prompt 组装同时追求四件事：
+首次准备时，SDK 加载 Prompt 目录、Agent 指令、工作区指令文件、全局与项目 Memory，以及工具定义。使用选定的资源渲染系统提示和前置消息。日志在 `runtime.context_segment` 中记录 Prompt 目录、渲染结果和工具 schema。为不同工作目录准备上下文段时，会重新读取对应目录。[Step 准备与上下文段创建](../../../crates/kuku/src/query/frozen.rs) · [Prompt 资源](../../../crates/kuku/prompts)
 
-- 稳定的运行时契约
-- 静态上下文与动态上下文的清晰归属
-- 良好的缓存行为
-- 较低的格式噪音
+## 准备下一个 Step
 
-## Canonical Inputs
+1. 活跃游标读取该 Agent 新提交的事件，保留先前已接纳的前缀。
+2. 新选入的用户输入、模型消息、工具结果视图和运行时消息记入 `runtime.context_admitted`。大工具输出通过有界视图进入模型，调用者仍可读取保留下来的完整范围。
+3. 适配器编码请求。派发之前，`runtime.step_prepared` 记录上下文段、输入边界、源事件游标、有效设置和请求正文哈希。匹配的准备记录确认新增消息。重开 Session 后按这些记录恢复已确认的前缀。
 
-Prompt 组装是按 conversation 作用域进行的，而不是基于独立委派 Session 树。
-
-- Session 账本是全局历史存储
-- 活跃 conversation address 决定 replay 的切片
-- 绑定的 agent 身份决定该 conversation 的工具和 notices
-
-## Layers
-
-### System prompt (`catalog.system.text`)
-
-稳定的运行时契约。它承载身份、硬规则和工作风格，但不承载工作区特定状态。
-
-### Prelude messages（快照层 2–6）
-
-Prelude 是可复用上下文的冻结快照。每个 turn 捕获一次，后续 turn 从
-`PromptSnapshot` 事件恢复。各层：
-
-| 层 | 内容 | 模板 |
-|---|---|---|
-| 2 | project policy | `blocks/project-policy.md` + 渲染后的项目指令和 model tiers |
-| 3 | agent identity | `input.agent_instructions` |
-| 4 | tool guidance | `blocks/tool-guidance.md` |
-| 5 | memory | `blocks/memory.md` + `memory/global.md` + `memory/project.md`（由 `enable_memory` 控制） |
-| 6 | agent catalog + loaded skills | 在 memory 块之后由调用方追加 |
-
-### History
-
-conversation 历史从 `events.jsonl` 中按当前 conversation address 重建，
-过程中会先过滤 rolled-back 事件，再应用当前 handoff 边界。
-
-### Per-turn 内容
-
-当前 turn 的动态数据会注入到人类输入之前的最后一条 user message 中。
-这些内容**不在**冻结快照中：
-
-- runtime context（agent catalog、notices、skill catalog）包裹在 `runtime/context.md` 中
-- response contract（surface、locale、preferences）用于 main conversation
-
-出现在 runtime context 中的 notice 类型：agent directory、open conversations、
-inbox、loaded skills、context drift。
-
-## Assembly Order
-
-```text
-system prompt
-prelude[0]       project_policy
-prelude[1]       agent_identity
-prelude[2]       tool_guidance
-prelude[3..]     memory*
-prelude[4..]     agent catalog + skills（由调用方追加）
-messages[N..]    某个 conversation 的 replayed history
-last user turn   runtime_context + human input
-```
-
-## Cache Behavior
-
-稳定内容保留在 prelude 中，这样 provider 侧 prompt cache 可以跨 turns 和
-conversations 复用。动态 runtime 数据放在最后的 user message 中，
-这样变动时不会使整个前缀缓存失效。
-
-## Asset Ownership
-
-Prompt 文本位于 `crates/kuku/prompts/`，按类别组织：
-
-| 目录 | 内容 |
-|---|---|
-| `blocks/` | 可复用模板块（project-policy、tool-guidance、memory、notices） |
-| `agents/` | 带 YAML frontmatter 的 agent 定义 |
-| `memory/` | 全局和项目 memory 模板 |
-| `runtime/` | runtime context、handoff context 和 instruction 包装器 |
-| `tools/` | 工具专用 system prompt |
-
-`prompt/` 模块负责资源加载和渲染。`context/` 与 `conversation/` 模块
-负责把某个 conversation 的历史、rollback 状态和 notices 组装成请求。
-
-归属边界见 [Module Contracts](module-contracts.md)。面向读者的行为说明见
-[Sessions](../how-it-works/sessions.md) 和
-[Agents and Skills](../how-it-works/agents-and-skills.md)。
+之后编辑工作区指令或 Memory 文件，模型已经看过的文本保持原样。交接或不兼容的路线变更会建立后继上下文段。切换路线会移除不兼容的 provider 原生续接数据。模型服务的缓存命中取决于具体端点和它返回的用量。[模块契约](module-contracts.md) · [重开与工具输出测试](../../../crates/kuku/tests/context_runtime.rs)

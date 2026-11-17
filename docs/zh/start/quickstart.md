@@ -1,58 +1,37 @@
-# Quickstart
+# 快速开始
 
-## 1. Initialize kuku
+## 初始化 CLI
+
+进入希望 Agent 工作的目录。在新的 kuku 数据目录中，只需运行一次初始化命令。
 
 ```bash
 kuku init
 ```
 
-这会创建默认运行时目录，并生成一个起步用的 `config.toml`。
+已有安装可以继续使用现有的 `config.toml`。CLI 从 `KUKU_HOME` 读取这个文件，默认目录是 `~/.kuku`。
 
-## 2. Set a Provider API Key
+## 运行第一个任务
 
-默认配置期望以下环境变量中的一个：
-
-```bash
-export ANTHROPIC_API_KEY="..."
-```
-
-或者：
+生成的 `balanced` 档使用 `anthropic` 连接。在当前终端设置 `ANTHROPIC_API_KEY` 后运行下面的命令。
 
 ```bash
-export OPENAI_API_KEY="..."
+kuku run "Inspect the files in this directory"
 ```
 
-参见 [Environment Variables](../reference/environment-variables.md) 和 [Config](../reference/config.md)。
-
-## 3. Run a First Task
+使用 OpenAI 时，在当前终端设置 `OPENAI_API_KEY`，将 `YOUR_MODEL_ID` 换成账号可用的模型名称，并显式选择已配置的 Responses 连接。
 
 ```bash
-kuku run "inspect the files in this directory"
+kuku run --connection openai --model YOUR_MODEL_ID "Inspect the files in this directory"
 ```
 
-或者启动交互模式：
+要长期使用这条路线，可以把配置中的默认档指向该连接和模型。[配置指南](configuration.md)
 
-```bash
-kuku
-```
-
-不带 subcommand 时，会在当前工作区启动一个交互式 Session。默认本地策略允许工具，文件和命令结果保存在打印出的 Session 标识下。
-
-显式选择时，在 Prompt 前使用 `--tier <name>` 或 `--connection <name> --model <model-id>`。
-
-## 4. Inspect the Result
-
-一些常用的后续命令：
+## 继续或查看 Session
 
 ```bash
 kuku list
-kuku show <session-id>
-kuku events <session-id>
+kuku run --session SESSION_ID "Summarize what you found"
+kuku show SESSION_ID
 ```
 
-完整命令面请参见 [CLI](../reference/cli.md)。
-
-## Next
-
-- 如果是常规任务流程，前往 [Run a Task](../guides/run-a-task.md)。
-- 如果要看配置细节，前往 [Configuration](configuration.md)。
+将 `SESSION_ID` 换成打印出的标识，在同一工作目录运行。不带参数的 `kuku` 打开逐行输入界面，后续输入沿用同一个 Session，两轮之间可以输入 `exit` 或 `quit` 退出。需要关闭客户端后任务仍继续时，从 HTTP server 发起任务。[运行任务](../guides/run-a-task.md) · [运行服务](../guides/run-the-server.md)

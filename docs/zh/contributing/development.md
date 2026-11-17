@@ -16,13 +16,13 @@
 
 开工、重要阻碍或决定变化、验证结果以及交接时，更新同一条任务。不逐条上传命令，不持续轮询，不估算缺乏依据的完成百分比。历史细节留在提交、PR 和运行产物中。架构页面不保存进度表或日期流水账。
 
-用户偏好 GitHub 界面。本次重构的建议方案是一个私有 Project 加少量草稿任务；创建该资源与本规划分开。[草稿任务](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project)存在于 Project 内，而非仓库内。私有 Project 不会让关联的公开 Issue 或 PR 变私有，发布前核对[可见性规则](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects)。内部讨论和私有证据保存在访问范围适当的位置。
+维护者使用私有 GitHub Project 跟踪内部工作。[草稿任务](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project)存在于 Project 内，而非仓库内。私有 Project 不会让关联的公开 Issue 或 PR 变私有，发布前核对[可见性规则](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects)。内部讨论和私有证据保存在访问范围适当的位置。
 
 跟踪入口用于异步协作，不成为构建、测试或 SDK 的依赖。通过已有工具在有意义的节点合并更新。更新失败时说明尚未同步，不宣称已发布。在出现具体需求前，不建立跟踪服务、重复的本地状态看板或 Project 自动化。
 
 ## 全新会话交接
 
-重构实现工作树为 `/code/kuku-rewrite`，分支为 `rewrite/core`；`/code/kuku` 的 main 是参照工作树。用户向新会话明确下达实现指令后再开工。读取该工作树的 `AGENTS.md`、选定任务、核心方向和演进说明的相关章节。
+在任务交接中记录工作树、分支及提交。通过 `git worktree list`、`git status --short --branch` 和 `git rev-parse HEAD` 核对。开发前读该工作树的 `AGENTS.md`、任务和对应设计。交互客户端开发见[客户端计划](../architecture/interactive-clients.md)。
 
 任务入口与交接信息应让全新会话找到当前分支／提交、未提交改动、活动进程或负责人、已验证结果及其限制、未完成工作和下一步。续做前核对实际工作树与产物。不依赖旧聊天或旧 Agent 存活，也不重复启动写入者。
 
@@ -40,7 +40,7 @@
 
 ## 重构中的工作流交付要求
 
-这些要求与[运行时阶段](../architecture/evolution.md#交付计划公开-sdk-执行闭环)一起交付，不表示新工具已经存在。
+修改 SDK 或宿主时，用下表核对验收范围。[运行时阶段](../architecture/evolution.md#交付计划公开-sdk-执行闭环)解释这些检查对应的契约。
 
 | 交付边界 | 工作流验收 |
 |---|---|

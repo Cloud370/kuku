@@ -1,6 +1,6 @@
-# Configuration
+# 配置 kuku
 
-## Config File Location
+## 配置文件位置
 
 默认情况下，kuku 使用：
 
@@ -8,26 +8,26 @@
 ~/.kuku/config.toml
 ```
 
-如果设置了 `KUKU_HOME`，kuku 会使用：
+如果设置了 `KUKU_HOME`，CLI 会读取以下文件。
 
 ```text
 $KUKU_HOME/config.toml
 ```
 
-参见 [File Layout](../reference/file-layout.md)。
+启动 `kuku server` 或 `kuku web` 时，如果配置在 `~/.kuku` 以外，请通过 `--config` 指定文件。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
 
-## Provider Setup
+## 设置模型连接
 
 默认配置定义了两个 provider：
 
 - `provider.anthropic`，其中 `api_key = "$ANTHROPIC_API_KEY"`
 - `provider.openai`，其中 `api_key = "$OPENAI_API_KEY"`
 
-你可以把 secret 放在环境变量里，也可以在 `config.toml` 中直接写入字面量 `api_key`。
+可通过环境变量提供密钥，也可以在 `config.toml` 中直接设置 `api_key`。
 
 其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。
 
-## Model Tiers
+## 模型档
 
 默认安装定义了三个 tier：
 
@@ -35,9 +35,9 @@ $KUKU_HOME/config.toml
 - `balanced`
 - `light`
 
-每个 tier 都会映射到一个 provider、一个 model、一个 thinking level，以及 token limits。`default_model = "balanced"` 选择默认 Tier。使用 `--tier <name>` 选择其他 Tier，或 `--connection <name> --model <model-id>` 精确指定连接和模型。
+每个模型档指定连接、模型、思考等级和 token 限额。`default_model = "balanced"` 选择默认 Tier。使用 `--tier <name>` 选择其他 Tier，或 `--connection <name> --model <model-id>` 精确指定连接和模型。
 
-## Common Changes
+## 常用配置命令
 
 显示当前配置：
 
@@ -57,7 +57,7 @@ kuku config validate
 kuku config set model.balanced.think high
 ```
 
-## Discovery, Handoff, Logs, Plugins, and Updates
+## 资源发现、上下文交接、日志、插件与更新
 
 主要的非 provider 分区有：
 
@@ -71,7 +71,7 @@ kuku config set model.balanced.think high
 
 准确的键定义见 [Config](../reference/config.md)。
 
-## Update Channels
+## 更新渠道
 
 默认的 update 分区使用：
 

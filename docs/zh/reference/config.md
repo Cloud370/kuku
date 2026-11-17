@@ -8,11 +8,13 @@
 ~/.kuku/config.toml
 ```
 
-如果设置了 `KUKU_HOME`：
+如果设置了 `KUKU_HOME`，CLI 使用以下路径。
 
 ```text
 $KUKU_HOME/config.toml
 ```
+
+HTTP server 默认读取 `~/.kuku/config.toml`，也可通过 `--config` 显式指定路径。[运行服务](../guides/run-the-server.md)
 
 ## 顶层键
 
@@ -56,6 +58,8 @@ $KUKU_HOME/config.toml
 | `reasoning_efforts` | string[] | 覆盖该连接模型已声明的原生思考值 |
 | `service_tiers` | string[] | 覆盖该连接模型已声明的原生服务值 |
 | `routing` | table | OpenRouter 上游路由选项 |
+
+内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
 SDK 按配置名称选择连接。多个连接可以使用同一个 `format`；单独选择协议不会选择第一条匹配连接。显式模型设置覆盖选中的 tier。选择其他连接不会携带无关默认 tier 的原生设置；显式选择的 tier 仍提供默认值，不兼容的选择会失败。
 

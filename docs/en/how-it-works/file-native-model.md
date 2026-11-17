@@ -1,46 +1,13 @@
-# File-Native Model
+# File-native execution
 
-kuku treats files as the source of runtime truth.
+Each Session has an `events.jsonl` journal and a directory for retained command output. The workspace itself contains the project files that tools read or change. The CLI uses kuku home for Session storage by default. SDK callers and `kuku run --data-dir` can select another root. [File layout](../reference/file-layout.md)
 
-## The model
+## What an Agent remembers
 
-- A `Session` is a directory under `$KUKU_HOME`.
-- `events.jsonl` is the durable event log for that session.
-- Global and project `Memory` live in `memory.md` files.
-- Project instructions come from files such as `AGENTS.md` and `CLAUDE.md`.
-- Permission state and extension packages are file-backed.
+Initial context includes the selected Prompt assets, Agent instructions, project instructions and Memory. The SDK records what the model actually received. On later Steps it reuses the committed prefix and adds newly admitted input and tool results. Editing `AGENTS.md` or `memory.md` after a run leaves the earlier conversation reconstructible. Each Agent has its own context even when two Agents work in the same directory. [Prompt assembly](../architecture/prompt-assembly.md)
 
-There is no separate database that defines the run. If a fact matters, it must be recoverable from files.
+## Reading and recovery
 
-## What gets rebuilt
+A client can read committed events by cursor or inspect an Agent's latest settled output. Live text fragments help display work in progress. If an observer disconnects, committed results remain available in the Session. Reopening repairs an incomplete journal tail and restores pending questions or authorizations. Work interrupted after an external action may have an unknown outcome.
 
-Before each model call, kuku rebuilds the request context from:
-
-1. Prompt assets.
-2. Project instructions.
-3. Global and project `Memory`.
-4. Prior persisted events.
-5. Current runtime notices and catalogs.
-
-This keeps the execution model stable across hosts and across process restarts.
-
-## What stays derived
-
-Some views exist for convenience, but they are not separate state:
-
-- rendered transcripts
-- session summaries
-- inspection output
-- UI event streams
-
-Those views come from files that already exist, mainly `events.jsonl` and the current workspace files.
-
-## Recovery rule
-
-Only appended events are trusted. If a process stops mid-turn, kuku resumes from the last confirmed facts in the event log instead of guessing what happened.
-
-## Relationship to hosts
-
-The SDK owns the file-backed runtime model. Host apps own presentation, transport, and user interaction. The host can be a terminal app, a server, or another interface, but the persisted session model stays the same.
-
-See [Sessions](sessions.md) for the session directory model, [Agent Loop](agent-loop.md) for turn execution, and [Prompt Assembly](../architecture/prompt-assembly.md) for the maintainer view of context rebuild.
+The HTTP server owns execution for its clients, so closing a client leaves an active server task running. The current local CLI owns its own Session while it runs. [Sessions](sessions.md) · [Run the server](../guides/run-the-server.md)

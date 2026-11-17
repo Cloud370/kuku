@@ -7,7 +7,9 @@
 | `Workspace` | The project root directory used for one run |
 | `kuku home` | Runtime home directory, default `~/.kuku` |
 | `Session` | One persisted execution history stored as a directory |
-| `turn` | One user-input to model-response cycle |
+| `Agent` | Stable address, independent context and pending work inside one Session |
+| `Turn` | A round of work admitted by an Agent, possibly spanning several model requests |
+| `Step` | One logical model request and the tool calls its response produces |
 | `events.jsonl` | Append-only session fact log |
 | `Memory` | Long-lived context stored in `memory.md` files |
 
@@ -24,7 +26,7 @@
 
 | Term | Meaning |
 |---|---|
-| `Agent` | A contact card that owns delegated conversation threads |
+| Agent preset | A discoverable definition supplying the initial instructions, tier and tools for an Agent |
 | `Skill` | A packaged instruction set loaded into the current session |
 | `package` | A bundle of hooks, skills, and related assets |
 | `hook` | An external process triggered by runtime lifecycle events |
@@ -34,6 +36,6 @@
 | Term | Meaning |
 |---|---|
 | `tool` | A callable capability with a schema and risk level |
-| `risk` | Tool risk class: `read`, `edit`, or `command` |
+| `risk` | Tool risk class, such as `read`, `edit`, `command` or `session` |
 | `permission` | A runtime authorization decision before tool execution |
 | `wire event` | Client-facing NDJSON event emitted by the server |

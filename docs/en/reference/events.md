@@ -1,110 +1,30 @@
-# Events
+# Session events
 
-`events.jsonl` is the append-only ledger for one session. A session is one ledger. A conversation is one chat thread inside that ledger.
+Each Session writes one `events.jsonl` journal. Stored rows have a Session-local increasing `id`, a `kind` and a timestamp `ts`. A cursor identifies committed history. Use the Agent address, Turn and request or tool-call ID when correlating work across Agents.
 
-## Naming Rule
+## Reading a page
 
-```text
-<domain>.<action>
+```bash
+kuku events SESSION_ID --after 0 --limit 100 --json
 ```
 
-Lowercase and dot-separated.
+The CLI writes one JSON record per line to stdout and the next cursor to stderr. Pass that cursor to `--after` to read the next page. Add `--agent reviewer` to filter the current page. The cursor advances across all scanned records even if the filter produced an empty page. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
 
-## Mental Model
+## Facts recorded by the public Session SDK
 
-- `session`: the durable ledger for one run history
-- `conversation`: a chat thread within that ledger
-- `agent`: a contact card that can own one or more conversations
-- `address`: the conversation identity; reusing it means continuity
-
-## Canonical Event Kinds
-
-| Event | Meaning |
+| Kind or group | What it records |
 |---|---|
-| `session.created` | Ledger metadata. First canonical event in a new session. |
-| `conversation.opened` | A conversation address is first opened in the ledger. |
-| `conversation.bound` | A conversation is bound to one agent identity snapshot. |
-| `prompt.snapshot` | The rebuilt prompt inputs for one conversation turn. |
-| `message.user` | A user message inside one conversation. |
-| `message.assistant` | An assistant message inside one conversation. |
-| `turn.started` | Start of one conversation turn. |
-| `turn.completed` | Normal end of one conversation turn. |
-| `turn.cancelled` | Cancellation end of one conversation turn. |
-| `turn.interrupted` | Interrupted end of one conversation turn. |
-| `context.sources` | Instruction and memory source files used for one main-turn rebuild. |
-| `context.skills` | Skill registry snapshot and bootstrap-loaded skills for one conversation turn. |
-| `model.response` | Completed provider response for one model request. |
-| `model.error` | Provider failure for one model request. |
-| `model.recovery` | A bounded retry after a model response reached its output limit. The incomplete response and tool calls are discarded. |
-| `tool.call` | One requested tool call. |
-| `permission.requested` | Durable pending permission state for one tool call. |
-| `permission.allow` | Tool authorization allow decision. |
-| `permission.deny` | Tool authorization deny decision. |
-| `tool.result` | Result of one tool call. |
-| `handoff` | Summary boundary used for future replay. |
-| `conversation.rollback` | Conversation-scoped rollback marker. |
-| `conversation.rollback.undone` | Undo of a conversation rollback. |
+| `session.created`, `conversation.opened` | Session metadata and the opening of an Agent's conversation stream. |
+| `runtime.operation` | `record.operation` selects the state change. Examples include `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `turn_settled` and `session_closed`. Pending requests and their replies are also Session operations. |
+| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
+| `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
+| `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |
+| `tool.call`, `runtime.tool_prepared`, `runtime.tool_dispatched`, `tool.result` | The request, its final arguments and definition, dispatch before the side effect, and the recorded outcome. A denied action can have a result without a dispatch. |
+| `permission.requested`, `permission.allow`, `permission.deny` | A deferred authorization or a decision about a particular tool call. `runtime.operation` carries the resumable Agent wait and correlated reply. |
+| `handoff` | A summary boundary used to prepare a successor context segment. |
 
-## Common Fields
+Execution events may use `conversation` for the Agent address. Prepared Steps and provider reports use `agent`. Session operations carry the target inside `record`. Use the SDK's Agent snapshot when the needed result is current state. [Session records](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
 
-Every persisted event line includes at least:
+## Live output
 
-| Field | Meaning |
-|---|---|
-| `id` | Monotonic integer within the session ledger |
-| `kind` | Event kind |
-| `ts` | ISO 8601 timestamp |
-
-Conversation-scoped events also carry `conversation`. Turn-scoped events also carry `turn`.
-
-## Required Fields By Event
-
-| Event | Required fields |
-|---|---|
-| `session.created` | `ts`, `schema_version`, `session_id`, `created_at`, `kuku_version` |
-| `conversation.opened` | `ts`, `conversation` |
-| `conversation.bound` | `ts`, `conversation`, `binding_id` |
-| `prompt.snapshot` | `ts`, `conversation`, `binding_id`, `snapshot_id`, `turn`, `messages`, `project_instruction_sources`, `memory_sources`, `prompt_asset_sources`, `skills`, `bootstrap_loaded`, `provider`, `model`, `renderer`, `tool_registry`, `capabilities` |
-| `message.user` | `ts`, `conversation`, `turn`, `text` |
-| `message.assistant` | `ts`, `conversation`, `turn`, `message_id`, `text` |
-| `turn.started` | `ts`, `conversation`, `turn` |
-| `turn.completed` | `ts`, `conversation`, `turn` |
-| `turn.cancelled` | `ts`, `conversation`, `turn`, `reason` |
-| `turn.interrupted` | `ts`, `conversation`, `turn`, `reason` |
-| `context.sources` | `turn`, `ts`, `request_id`, `project_instruction_sources`, `memory_sources` |
-| `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
-| `model.response` | `turn`, `ts`, `request_id`, `text` |
-| `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
-| `model.recovery` | `conversation`, `turn`, `ts`, `from_request_id`, `to_request_id`, `reason`, `attempt`, `max_attempts`, `failed_max_output_tokens`, `retry_max_output_tokens`, `output_tokens_total`, `discarded_tool_calls`, `notice`, `prompt_path`, `prompt_hash` |
-| `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
-| `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
-| `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
-| `permission.deny` | `turn`, `ts`, `tool_call_id`, `tool`, `reason`, `source` |
-| `tool.result` | `turn`, `ts`, `tool_call_id`, `status`, `summary`, `model_content`, `truncated`, `files_read`, `files_changed`, `commands_run` |
-| `handoff` | `turn`, `ts`, `request_id`, `summary`, `keep_turns` |
-| `conversation.rollback` | `ts`, `conversation`, `to_turn`, `to_event_id`, `scope` |
-| `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
-
-`model.response`, `model.error`, `context.sources`, `handoff`, and permission events belong to the `main` conversation through their global `turn`. `tool.call` and `tool.result` optionally include `conversation`; when absent, they belong to `main`.
-
-When `model.response.stop_reason` is `length`, kuku may append one `model.recovery` event and issue one retry with the same request settings plus the immutable `runtime/recovery.md` notice. The incomplete response is excluded from replay and no tool call emitted by it is executed. If the retry is unavailable or also reaches the limit, the turn is interrupted.
-
-## Rollback Scope Values
-
-Rollback events record one of these scope values:
-
-- `messages`
-- `file_changes`
-- `both`
-
-`messages` removes later events from future replay for that conversation. `file_changes` reverts workspace files without hiding conversation history. `both` does both.
-
-## Permission State
-
-`permission.requested` is a durable pending state, not an observability record. When the host resolves the request, kuku appends either `permission.allow` or `permission.deny` before `tool.result`.
-
-## Session Facts vs Runtime Streams
-
-Not every runtime event is a session fact. Streaming deltas, live command output, tool progress, and host-visible log records are runtime stream events, not `events.jsonl` entries.
-
-For HTTP wire events, see [Server API](server-api.md).
+Text deltas and progress notifications can be transient. The journal records the settled response, tool results and retained output references. After reconnecting, read committed rows from the last cursor. A dispatched tool with no confirmed result may already have affected the workspace. [Sessions](../how-it-works/sessions.md) · [File layout](file-layout.md)

@@ -8,11 +8,13 @@ Default path:
 ~/.kuku/config.toml
 ```
 
-If `KUKU_HOME` is set:
+If `KUKU_HOME` is set, the CLI uses:
 
 ```text
 $KUKU_HOME/config.toml
 ```
+
+The HTTP server defaults to `~/.kuku/config.toml` and accepts an explicit `--config` path. [Run the server](../guides/run-the-server.md)
 
 ## Top-Level Keys
 
@@ -56,6 +58,8 @@ Default tiers are `strong`, `balanced`, and `light`.
 | `reasoning_efforts` | string[] | Override the declared native reasoning values for this connection's models |
 | `service_tiers` | string[] | Override the declared native service values for this connection's models |
 | `routing` | table | OpenRouter upstream routing options |
+
+For the built-in `openai` connection, `base_url` is `https://api.openai.com/v1`. The Responses adapter appends `/responses`. For a gateway, use the API base supplied by its operator. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
 The SDK selects a connection by its configured name. Multiple connections may use the same `format`; selecting a protocol alone never picks the first matching connection. Explicit model settings override the selected tier. Choosing another connection does not carry native settings from an unrelated default tier; an explicitly selected tier still supplies its defaults and incompatible choices fail.
 

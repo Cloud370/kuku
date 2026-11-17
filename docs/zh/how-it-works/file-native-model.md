@@ -1,46 +1,13 @@
-# File-Native Model
+# 文件原生执行
 
-kuku 将文件视为运行时事实的来源。
+每个 Session 都有自己的 `events.jsonl` 日志和命令输出保留目录。工具读写的项目文件就在工作目录中。CLI 默认使用 kuku 数据目录存放 Session。嵌入方和 `kuku run --data-dir` 可以指定其他位置。[文件布局](../reference/file-layout.md)
 
-## The model
+## Agent 记住什么
 
-- `Session` 是 `$KUKU_HOME` 下的一个目录。
-- `events.jsonl` 是该 Session 的持久事件日志。
-- 全局和项目级 `Memory` 保存在 `memory.md` 文件中。
-- 项目指令来自 `AGENTS.md` 和 `CLAUDE.md` 这样的文件。
-- 权限状态和扩展包由文件承载。
+初始上下文包括选定的 Prompt 资源、Agent 指令、项目指令和 Memory。SDK 记录模型实际收到的内容。后续 Step 复用已提交的前缀，加入新接纳的输入和工具结果。运行后编辑 `AGENTS.md` 或 `memory.md`，仍然可以还原之前的对话。两个 Agent 即使在同一目录工作，也各有自己的上下文。[Prompt 装配](../architecture/prompt-assembly.md)
 
-不存在一个单独定义这次运行的数据库。如果某个事实重要，它必须可以从文件中恢复出来。
+## 读取与恢复
 
-## What gets rebuilt
+客户端可以按游标读取已提交的事件，也可以查看 Agent 最近已落盘的结果。实时文本片段用来展示进度。观察者断开后，仍可从 Session 读取已提交结果。重开时修复未写完整的日志尾部，并恢复待回答的问题或授权请求。外部动作派发后发生中断，其结果可能仍未知。
 
-每次模型调用前，kuku 都会基于以下内容重建请求上下文：
-
-1. Prompt 资源。
-2. 项目指令。
-3. 全局和项目级 `Memory`。
-4. 先前已持久化的事件。
-5. 当前运行时通知和目录清单。
-
-这让执行模型在不同 Host 之间以及在进程重启后都保持稳定。
-
-## What stays derived
-
-有些视图只是为了方便存在，但它们不是独立状态：
-
-- 渲染后的转录内容
-- Session 摘要
-- 检查输出
-- UI 事件流
-
-这些视图都来自已经存在的文件，主要是 `events.jsonl` 和当前工作区文件。
-
-## Recovery rule
-
-只有追加写入的事件会被信任。如果进程在某一轮中途停止，kuku 会从事件日志中最后确认的事实继续，而不是猜测发生了什么。
-
-## Relationship to hosts
-
-SDK 拥有这个文件承载的运行时模型。Host 应用负责展示、传输和用户交互。Host 可以是终端应用、server 或其他界面，但持久化的 Session 模型保持不变。
-
-关于 Session 目录模型，请参见 [Sessions](sessions.md)；关于轮次执行，请参见 [Agent Loop](agent-loop.md)；关于面向维护者的上下文重建视图，请参见 [Prompt Assembly](../architecture/prompt-assembly.md)。
+HTTP server 为连接它的客户端持有执行，关闭客户端后服务端任务仍能继续。当前本地 CLI 在运行期间直接持有自己的 Session。[Session](sessions.md) · [运行服务](../guides/run-the-server.md)

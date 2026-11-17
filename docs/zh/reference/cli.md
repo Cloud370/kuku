@@ -2,7 +2,7 @@
 
 ## 入口模式
 
-- `kuku` 在当前工作区启动交互模式。
+- `kuku` 在当前工作目录打开前台逐行输入界面，两轮之间可输入 `exit` 或 `quit` 退出。
 - `kuku run ...` 执行非交互任务。
 
 ## 顶层命令
@@ -166,6 +166,12 @@ kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-conc
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
 
-`kuku web` 需要带内嵌 Web UI 资产的二进制。发布工作流和发布产物包含这些资产。本地源码构建需先准备 `apps/web/dist`，再使用 `--features embedded-web-assets` 构建 `kuku-app`。
+默认构建即可运行 `kuku server`。要运行 `kuku web`，先构建浏览器资源，再将它们嵌入统一二进制。安装 Node.js 24 和 npm 后，在仓库根目录运行以下命令，再在浏览器打开 `http://127.0.0.1:17777`。
+
+```bash
+npm --prefix apps/web ci
+npm --prefix apps/web run build
+cargo run --locked -p kuku-app --features embedded-web-assets -- web
+```
 
 请求及流格式见 [Server API](server-api.md)。

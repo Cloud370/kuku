@@ -1,110 +1,30 @@
-# Events
+# Session 事件
 
-`events.jsonl` 是单个 Session 的追加式账本。Session 是一份账本，conversation 是这份账本中的一个聊天线程。
+每个 Session 维护一份 `events.jsonl` 日志。每条记录都含有在 Session 内单调递增的 `id`、事件种类 `kind` 和时间戳 `ts`。游标标识已提交的历史位置。跨 Agent 对照执行时，同时使用 Agent 地址、Turn 编号及相应的请求或工具调用 ID。
 
-## Naming Rule
+## 读取一页
 
-```text
-<domain>.<action>
+```bash
+kuku events SESSION_ID --after 0 --limit 100 --json
 ```
 
-全部小写，使用点分隔。
+CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标。将该游标传给 `--after` 读取下一页。加上 `--agent reviewer` 可以过滤当前页。即使过滤后这一页为空，游标也按实际扫描过的日志前移。[CLI](cli.md#kuku-events) · [Server API](server-api.md)
 
-## Canonical Mental Model
+## 公开 Session SDK 记录的事实
 
-- `session`：一段运行历史的持久账本
-- `conversation`：账本中的一个聊天线程
-- `agent`：可拥有一个或多个 conversation 的联系人卡片
-- `address`：conversation 的连续性标识；重复使用同一个 address 就表示延续同一线程
-
-## Canonical Event Kinds
-
-| Event | Meaning |
+| 事件或事件组 | 记录内容 |
 |---|---|
-| `session.created` | 账本元数据。新 Session 的首个规范事件。 |
-| `conversation.opened` | 某个 conversation address 首次在账本中打开。 |
-| `conversation.bound` | 某个 conversation 绑定到一个 agent 身份快照。 |
-| `prompt.snapshot` | 某个 conversation turn 的 prompt 重建输入。 |
-| `message.user` | 某个 conversation 中的一条用户消息。 |
-| `message.assistant` | 某个 conversation 中的一条助手消息。 |
-| `turn.started` | 某个 conversation turn 开始。 |
-| `turn.completed` | 某个 conversation turn 正常结束。 |
-| `turn.cancelled` | 某个 conversation turn 被取消结束。 |
-| `turn.interrupted` | 某个 conversation turn 被中断结束。 |
-| `context.sources` | 一次主线程 turn 重建时使用的指令与 memory 来源文件。 |
-| `context.skills` | 某个 conversation turn 的 skill registry 快照和 bootstrap skill 列表。 |
-| `model.response` | 一次模型请求完成后的 Provider 响应。 |
-| `model.error` | 一次模型请求产生的 Provider 失败。 |
-| `model.recovery` | 模型响应达到输出上限后的有界重试；不完整响应和工具调用会被丢弃。 |
-| `tool.call` | 一次请求的 Tool 调用。 |
-| `permission.requested` | 某次 Tool 调用的持久待决权限状态。 |
-| `permission.allow` | Tool 授权允许决策。 |
-| `permission.deny` | Tool 授权拒绝决策。 |
-| `tool.result` | 一次 Tool 调用的结果。 |
-| `handoff` | 用于未来 replay 的摘要边界。 |
-| `conversation.rollback` | conversation 作用域回滚标记。 |
-| `conversation.rollback.undone` | 撤销一次 conversation rollback。 |
+| `session.created`、`conversation.opened` | Session 元数据，以及打开某个 Agent 的对话流。 |
+| `runtime.operation` | 状态变化由 `record.operation` 指定。例如 `agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`turn_settled` 和 `session_closed`。待决请求和关联回复也通过 Session 操作记录。 |
+| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
+| `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |
+| `tool.call`、`runtime.tool_prepared`、`runtime.tool_dispatched`、`tool.result` | 调用请求、最终参数和工具定义、副作用前的派发记录、已落盘的结果。被拒绝的动作可以有工具结果而没有派发记录。 |
+| `permission.requested`、`permission.allow`、`permission.deny` | 某次工具调用的延后授权或决定。可恢复的 Agent 等待和关联回复记录在 `runtime.operation`。 |
+| `handoff` | 用于准备后继上下文段的摘要边界。 |
 
-## Common Fields
+执行事件可能用 `conversation` 表示 Agent 地址。准备记录和供应商回报用 `agent`。Session 操作把目标存在 `record` 内。需要当前状态时可直接读取 SDK 的 Agent 快照。[Session 记录定义](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
 
-每条持久化事件至少都包含：
+## 实时输出
 
-| Field | Meaning |
-|---|---|
-| `id` | Session 账本内单调递增的整数 |
-| `kind` | 事件类型 |
-| `ts` | ISO 8601 时间戳 |
-
-conversation 作用域事件还会带上 `conversation`。turn 作用域事件还会带上 `turn`。
-
-## Required Fields By Event
-
-| Event | Required fields |
-|---|---|
-| `session.created` | `ts`, `schema_version`, `session_id`, `created_at`, `kuku_version` |
-| `conversation.opened` | `ts`, `conversation` |
-| `conversation.bound` | `ts`, `conversation`, `binding_id` |
-| `prompt.snapshot` | `ts`, `conversation`, `binding_id`, `snapshot_id`, `turn`, `messages`, `project_instruction_sources`, `memory_sources`, `prompt_asset_sources`, `skills`, `bootstrap_loaded`, `provider`, `model`, `renderer`, `tool_registry`, `capabilities` |
-| `message.user` | `ts`, `conversation`, `turn`, `text` |
-| `message.assistant` | `ts`, `conversation`, `turn`, `message_id`, `text` |
-| `turn.started` | `ts`, `conversation`, `turn` |
-| `turn.completed` | `ts`, `conversation`, `turn` |
-| `turn.cancelled` | `ts`, `conversation`, `turn`, `reason` |
-| `turn.interrupted` | `ts`, `conversation`, `turn`, `reason` |
-| `context.sources` | `turn`, `ts`, `request_id`, `project_instruction_sources`, `memory_sources` |
-| `context.skills` | `conversation`, `turn`, `ts`, `registry`, `bootstrap_loaded` |
-| `model.response` | `turn`, `ts`, `request_id`, `text` |
-| `model.error` | `turn`, `ts`, `request_id`, `error_kind`, `message` |
-| `model.recovery` | `conversation`, `turn`, `ts`, `from_request_id`, `to_request_id`, `reason`, `attempt`, `max_attempts`, `failed_max_output_tokens`, `retry_max_output_tokens`, `output_tokens_total`, `discarded_tool_calls`, `notice`, `prompt_path`, `prompt_hash` |
-| `tool.call` | `turn`, `ts`, `tool_call_id`, `request_id`, `index`, `tool`, `args` |
-| `permission.requested` | `turn`, `ts`, `tool_call_id`, `tool`, `risk`, `summary`, `candidate`, `source` |
-| `permission.allow` | `turn`, `ts`, `tool_call_id`, `tool`, `scope`, `matcher`, `source` |
-| `permission.deny` | `turn`, `ts`, `tool_call_id`, `tool`, `reason`, `source` |
-| `tool.result` | `turn`, `ts`, `tool_call_id`, `status`, `summary`, `model_content`, `truncated`, `files_read`, `files_changed`, `commands_run` |
-| `handoff` | `turn`, `ts`, `request_id`, `summary`, `keep_turns` |
-| `conversation.rollback` | `ts`, `conversation`, `to_turn`, `to_event_id`, `scope` |
-| `conversation.rollback.undone` | `ts`, `conversation`, `rollback_event_id` |
-
-`model.response`、`model.error`、`context.sources`、`handoff` 和 permission 事件通过全局 `turn` 归属到 `main` conversation。`tool.call` 和 `tool.result` 可以选择性包含 `conversation`；省略时表示属于 `main`。
-
-当 `model.response.stop_reason` 为 `length` 时，kuku 最多追加一个 `model.recovery` 事件，并在保持请求设置不变的情况下重试一次，同时附加不可变的 `runtime/recovery.md` 通知。不完整响应不会参与 replay，其中产生的工具调用也不会执行。如果重试不可用或再次达到上限，该 turn 会被中断。
-
-## Rollback Scope Values
-
-Rollback 事件会记录以下 scope 之一：
-
-- `messages`
-- `file_changes`
-- `both`
-
-`messages` 会让该 conversation 后续事件不再参与未来 replay。`file_changes` 只回退工作区文件，不隐藏 conversation 历史。`both` 同时执行这两件事。
-
-## Permission State
-
-`permission.requested` 是持久的待决状态，不是可观测性记录。Host 决定结果后，kuku 会在 `tool.result` 之前追加 `permission.allow` 或 `permission.deny`。
-
-## Session Facts vs Runtime Streams
-
-并非所有运行时事件都是 Session 事实。流式文本、实时命令输出、Tool 进度和 host 可见日志记录都属于 runtime stream 事件，不写入 `events.jsonl`。
-
-HTTP wire 事件见 [Server API](server-api.md)。
+文本增量和进度通知可以是临时的。日志保留最终响应、工具结果和输出引用。重连后从上次游标读取已提交的记录。已派发但结果尚未确认的工具可能已经改变了工作目录。[Session](../how-it-works/sessions.md) · [文件布局](file-layout.md)

@@ -1,58 +1,37 @@
 # Quickstart
 
-## 1. Initialize kuku
+## Initialize the CLI
+
+From the workspace where the Agent should work, run this once for a new kuku home.
 
 ```bash
 kuku init
 ```
 
-This creates the default runtime directories and a starter `config.toml`.
+An existing installation can use its current `config.toml`. The CLI reads it from `KUKU_HOME` or, by default, `~/.kuku`.
 
-## 2. Set a Provider API Key
+## Run a first task
 
-The default config expects one of these environment variables:
-
-```bash
-export ANTHROPIC_API_KEY="..."
-```
-
-or:
+The generated `balanced` tier uses the `anthropic` connection. Set `ANTHROPIC_API_KEY` in the calling shell and submit a task.
 
 ```bash
-export OPENAI_API_KEY="..."
+kuku run "Inspect the files in this directory"
 ```
 
-See [Environment Variables](../reference/environment-variables.md) and [Config](../reference/config.md).
-
-## 3. Run a First Task
+For OpenAI, set `OPENAI_API_KEY` in that shell. Replace `YOUR_MODEL_ID` with a model available on your account and select the configured Responses connection explicitly.
 
 ```bash
-kuku run "inspect the files in this directory"
+kuku run --connection openai --model YOUR_MODEL_ID "Inspect the files in this directory"
 ```
 
-Or start interactive mode:
+For repeated use of that route, point the default tier at the same connection and model in your config. [Configuration](configuration.md)
 
-```bash
-kuku
-```
-
-No subcommand starts an interactive Session in the current workspace. The default local policy permits tools; file and command results persist under the printed Session identity.
-
-For explicit selection, use `--tier <name>` or `--connection <name> --model <model-id>` before the prompt.
-
-## 4. Inspect the Result
-
-Useful follow-up commands:
+## Continue or inspect the Session
 
 ```bash
 kuku list
-kuku show <session-id>
-kuku events <session-id>
+kuku run --session SESSION_ID "Summarize what you found"
+kuku show SESSION_ID
 ```
 
-See [CLI](../reference/cli.md) for the full command surface.
-
-## Next
-
-- For a normal task flow, go to [Run a Task](../guides/run-a-task.md).
-- For config details, go to [Configuration](configuration.md).
+Replace `SESSION_ID` with the printed ID and run in the same workspace. Bare `kuku` starts a line-based prompt. It reuses the Session for subsequent inputs and accepts `exit` or `quit` between Turns. To leave work running after a client disconnects, start it through the HTTP server. [Run a task](../guides/run-a-task.md) · [Run the server](../guides/run-the-server.md)

@@ -38,13 +38,13 @@ crates/kuku/src/
 
 - Session 真相在磁盘上。
 - `events.jsonl` 只追加，不回写。
-- 每次 model 调用前都会重建上下文。
+- SDK 根据 Agent 已提交的上下文前缀准备 Step，并增量接纳新消息。
 - provider adapter 负责协议格式转换，但不拥有运行时状态。
 - 权限检查发生在运行时里，而不是 host UI 中。
 
 ## Data layout
 
-所有 kuku 状态都位于 `$KUKU_HOME` 下，包括配置、`Memory`、项目策略和 Session 目录。
+默认数据目录为 `$KUKU_HOME` 或 `~/.kuku`，用于存储配置、Memory、项目策略和 Session 日志。项目指令及工具修改的文件位于工作目录中。Session 也可以显式指定其他数据目录。[文件布局](../reference/file-layout.md)
 
 ## Reading path
 

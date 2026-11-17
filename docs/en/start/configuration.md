@@ -8,13 +8,13 @@ By default, kuku uses:
 ~/.kuku/config.toml
 ```
 
-If `KUKU_HOME` is set, kuku uses:
+If `KUKU_HOME` is set, the CLI reads:
 
 ```text
 $KUKU_HOME/config.toml
 ```
 
-See [File Layout](../reference/file-layout.md).
+For `kuku server` or `kuku web`, pass `--config` when using a config outside `~/.kuku`. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
 
 ## Provider Setup
 

@@ -22,14 +22,9 @@
 
 第一阶段包含最小本地 CLI，完整交互打磨和其他宿主后置。每阶段的必要正确性屏障完成后才能宣称交付。首次模型实验可以早于全部持久化工作完成，但不能代替缺失契约的验收。
 
-### 实现归属与顺序
+### 实现归属
 
-1. 开局使用三个子 Agent，分别负责核心实现、provider／协议准备、验收与开发工作流。核心实现者负责共享 SDK 边界和首条真实纵向路径，复用一个 provider 和少量工具。另两条线先推进协议行为／固定输入，以及 benchmark case／环境／验证入口，不争用共享运行时类型。全过程保留 Prompt 资源以及上下文／provider 分离，不为所有想象中的未来能力创建空接口。
-2. 收拢 Session 写入和运行时所有权，解除执行对观察者的依赖，再整合有界输出和清理。共享 SDK 类型、命令回执和 writer／执行器接口由一个作者负责。
-3. 按约定接口集成并行成果，明确文件归属；并发修改代码的执行者各自使用从同一集成提交创建的工作树。共享运行时接口仍高度耦合时，其改动保持单作者。只有依赖关系和可独立验收的工作支持时，才增减子 Agent 数量；在有意义的交付边界安排独立审查。模型、思考等级与速度偏好仍由用户级设置维护。
-4. 集成负责人整合前检查实际 diff 和验证证据。除非出现新改动或具体失败，否则复用已有通过证据。行为变化时同步更新已有归属文档。
-
-首批实现任务依据下方证据确定接口、文件范围及可观察的验收结果。
+Session SDK 持有执行和持久状态，provider 适配器负责协议转换，验收入口检查公开 SDK 和宿主边界。下一阶段的宿主改动见模块归属和客户端计划。[模块契约](module-contracts.md) · [交互客户端计划](interactive-clients.md)
 
 ### 实现时可决定的事项
 
@@ -41,21 +36,9 @@ Rust 名称／签名、事件封装／schema、队列／输出数值限额、解
 
 所选模型、连接输入、凭据及付费测试限额见[真实协议验收](../contributing/testing.md#真实协议验收)。运行记录保存在验收产物中，不写入本设计计划。
 
-## 现有实现证据
+## 实现证据
 
-以下是规划基线时的静态源码审阅，不是 benchmark 结果，也不证明替代实现已经可用。
-
-| 现有路径 | 观察 | 对重构的要求 |
-|---|---|---|
-| [Query 观察](../../../crates/kuku/src/query/run.rs) | `Run::next()` 返回 UI 事件时也推进执行；`Drop` 释放 Session 锁 | 运行时独立拥有推进与清理，不依赖消费观察事件；异步关闭报告完成／失败 |
-| [事件存储](../../../crates/kuku/src/event/store.rs) | 追加会重扫历史，每条记录打开／刷新文件 | 一个 writer 增量提交并明确持久化边界；观察者不能成为 writer |
-| [命令输出](../../../crates/kuku/src/tool/builtin/run_command.rs) | 管道读取先积累完整输出，最终渲染才限制大小 | 从第一个字节约束采集和视图，流式写入 Session 所属输出文件 |
-| [Provider 配置](../../../crates/kuku/src/provider/config.rs) | builder 覆盖 provider 时按协议寻找匹配连接 | 按名称选择目标连接，独立于协议，支持同协议的多个网关 |
-| [Messages 认证](../../../crates/kuku/src/provider/anthropic.rs) | 当前 Messages 适配器构造 `x-api-key` 认证，OpenRouter 文档则为其 Messages 路线指定 Bearer 认证 | 连接认证独立于 Messages 消息格式配置；切换网关不应另建 Agent loop |
-| [待决授权恢复](../../../crates/kuku/src/query/start.rs) | 重开会恢复待决授权，并拒绝直接续跑中断的开放工具调用 | 保留有效等待／恢复行为；仅有内存中的授权 future 不足以承担持久等待 |
-| [SDK 导出](../../../crates/kuku/src/lib.rs) | 现有导出及私有 provider／工具模块围绕 Query／Run API 组织 | 明确开放模型／工具／宿主适配和运行时操作，不暴露全部内部模块，也不保留过时 API |
-
-保留有效的文件编辑冲突检查、provider 协议行为、原生 Skill 和相关测试。实现改变依赖时更新模块归属文档，不把当前 `agent`／`query` 耦合复制成第二套执行器。
+公开 SDK 示例展示如何打开 Session 并完成任务。运行时测试覆盖多个 Agent 并发、延后授权和取消，上下文测试核对重开后模型已见输入保持一致。HTTP 集成测试验证观察者断开后执行仍能继续。[SDK 示例](../../../crates/kuku/examples/session_task.rs) · [Session 运行时测试](../../../crates/kuku/tests/session_runtime.rs) · [上下文测试](../../../crates/kuku/tests/context_runtime.rs) · [server 集成测试](../../../crates/kuku-server/tests/session_execution.rs)
 
 ## 运行时与 Harness 边界
 

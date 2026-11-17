@@ -1,35 +1,11 @@
 # Why kuku
 
-kuku is a Rust SDK for agent execution where the runtime state stays in ordinary files.
+kuku is a Rust SDK for work that can span several model requests, tools or Agents. Use it directly in an application, through the foreground CLI or over the HTTP server.
 
-## Core idea
+## Inspect a result
 
-- A `Session` is a directory.
-- The event log is append-only.
-- Project instructions, `Memory`, permissions, Agents, and Skills are file-backed.
-- Hosts rebuild context from those files before each model call.
+Every Session has a journal of submitted inputs, prepared model requests, tool actions and settled results. When an Agent edits a file or runs a command, you can compare the recorded action with the actual workspace. Use `kuku show SESSION_ID` to inspect a result and `kuku events SESSION_ID` to read the underlying facts. [Manage Sessions](../guides/manage-sessions.md)
 
-The result is a runtime you can inspect with normal tools. You can read the event log, diff a run, or commit the surrounding state to git.
+## Continue a task
 
-## What kuku is
-
-- An SDK that host apps build on.
-- A runtime that persists agent facts to disk.
-- A shared execution model for CLI, server, and other hosts.
-
-## What kuku is not
-
-| If you want | kuku is not that |
-|-------------|-------------------|
-| A hidden session store | State is files on disk. |
-| A single chat app product | Hosts are separate apps built on the SDK. |
-| A plugin-first core | The core loop stays small; extensions attach around it. |
-
-## Why the file-native model matters
-
-- State is inspectable without special tooling.
-- Recovery uses persisted events instead of in-memory assumptions.
-- Host apps can present the same runtime facts in different ways.
-- Operational rules live near the project instead of inside one host.
-
-Read [File-Native Model](file-native-model.md) next, then [Agent Loop](agent-loop.md). For maintainer-facing structure, see [Architecture Overview](../architecture/overview.md).
+A Session can be reopened. A named Agent keeps its own context, waiting requests and retained output. Another Agent in that Session can work independently on the same files. The server lets an HTTP client disconnect while execution continues. [File-native execution](file-native-model.md) · [Run the server](../guides/run-the-server.md)

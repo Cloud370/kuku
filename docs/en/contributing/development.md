@@ -16,13 +16,13 @@ Each active task records its intended result, scope and owner, dependencies, acc
 
 Update the same task when work starts, a meaningful blocker or decision changes it, a result is verified, or ownership is handed off. Do not post every command, poll continuously, or estimate an unsupported completion percentage. Keep historical detail in commits, PRs, and run artifacts. Architecture pages carry neither progress tables nor dated journals.
 
-GitHub is the user's preferred interface. The proposed setup for this rewrite is one private Project with a few draft items; its provisioning remains separate from this plan. [Draft items](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project) exist in the Project rather than in a repository. A private Project does not make a linked public Issue or PR private; check the [visibility rules](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects) before publication. Keep internal discussion and private evidence in an appropriately restricted location.
+Maintainers use a private GitHub Project for internal work. [Draft items](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project) exist in the Project rather than in a repository. A private Project does not make a linked public Issue or PR private; check the [visibility rules](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects) before publication. Keep internal discussion and private evidence in an appropriately restricted location.
 
 The tracker is an asynchronous coordination surface, not a dependency of builds, tests, or the SDK. Batch updates at meaningful boundaries through existing tools. If an update fails, disclose that it is unsynchronized rather than claiming it was published. Do not build a tracking service, duplicate local status board, or Project automation before a concrete need exists.
 
 ## Fresh-session handoff
 
-The rewrite implementation checkout is `/code/kuku-rewrite` on `rewrite/core`; `/code/kuku` on main is the reference checkout. Start implementation when the user explicitly instructs the new session to do so. Read that checkout's `AGENTS.md`, the selected task, Core Direction, and only the relevant Evolution sections.
+Record the worktree, branch and commit for the assigned task. Use `git worktree list`, `git status --short --branch` and `git rev-parse HEAD` to check them. Read the checkout's `AGENTS.md`, the task and the design it implements. For interactive client work, use the [client plan](../architecture/interactive-clients.md).
 
 The task locator and handoff must let a fresh session identify the current branch/commit, any uncommitted work, active processes or owners, verified results and their limits, unresolved work, and next action. Confirm the actual checkout and artifacts before continuing. Do not require the previous chat or an old Agent to remain available, and do not start duplicate writers.
 
@@ -40,7 +40,7 @@ Credential loading and local evidence locations belong to [Testing](testing.md#c
 
 ## Workflow deliverables for the rewrite
 
-These are required deliverables alongside the [runtime stages](../architecture/evolution.md#delivery-plan-public-sdk-execution-slice), not claims that new tooling already exists.
+Use these checks to verify changes to the SDK and its hosts. The [runtime stages](../architecture/evolution.md#delivery-plan-public-sdk-execution-slice) explain the contracts behind them.
 
 | Delivery boundary | Workflow acceptance |
 |---|---|

@@ -38,13 +38,13 @@ crates/kuku/src/
 
 - Session truth is on disk.
 - `events.jsonl` is append-only.
-- Context is rebuilt before every model call.
+- The SDK prepares each Step against the Agent's committed context prefix and admits new messages incrementally.
 - Provider adapters convert protocol formats but do not own runtime state.
 - Permission checks happen in the runtime, not in host UI.
 
 ## Data layout
 
-All kuku state lives under `$KUKU_HOME`, including config, `Memory`, project policy, and session directories.
+The default data root is `$KUKU_HOME` or `~/.kuku`. It stores configuration, Memory, project policy and Session journals. Project instruction files and the files modified by tools live in the workspace. A Session can also use an explicit data root. [File layout](../reference/file-layout.md)
 
 ## Reading path
 

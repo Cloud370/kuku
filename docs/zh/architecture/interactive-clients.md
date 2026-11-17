@@ -34,10 +34,9 @@
 
 ## 实现顺序
 
-1. **把已验收的 SDK 基线合入 `main`。** 从合并点开一条客户端分支，复用当前工作目录及其 Cargo 缓存。收回旧 worktree 前核对提交覆盖、在途进程和 Git 之外的验收证据。
-2. **打通共享执行路径。** 在 SDK 补齐 Step 和 Turn 边界的输入接纳，沿用 server 的 Session 管理、事件读取与待决回复。让 CLI 通过可复用 Rust 客户端运行。两个客户端能发任务、断开、找到同一个 Agent、插话并读到同一份持久结果。替换接口时在同一改动中更新调用方、清除旧路径。客户端用例跑通后，这一阶段即可独立合入。[核心方向](core-direction.md)
-3. **交付终端。** 用 Ratatui 排版、Crossterm 收键盘与终端事件，选择支持软换行的多行编辑器。server 契约实现期间可以先做小型界面原型。在交互终端，裸 `kuku` 进入 TUI。显式脚本命令保留机器可读输出。验证客户端命令与 Skill 调用都能正常使用。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui 多行编辑器](https://docs.rs/ratatui-textarea/latest/ratatui_textarea/)
-4. **接入现有 WebUI。** 更换 HTTP 路由时同步调整浏览器调用方。重连、插话、下一轮发送和打断使用相同的 Session／Agent 命令。验收从 TUI 发起的任务能在浏览器继续操作，再切回终端。浏览器布局可根据终端日常使用中的反馈继续设计。[现有 WebUI API](../../../apps/web/src/api)
+1. **打通共享执行路径。** 在 SDK 补齐 Step 和 Turn 边界的输入接纳，沿用 server 的 Session 管理、事件读取与待决回复。让 CLI 通过可复用 Rust 客户端运行。两个客户端能发任务、断开、找到同一个 Agent、插话并读到同一份持久结果。替换接口时在同一改动中更新调用方、清除旧路径。客户端用例跑通后，这一阶段即可独立合入。[核心方向](core-direction.md)
+2. **交付终端。** 用 Ratatui 排版、Crossterm 收键盘与终端事件，选择支持软换行的多行编辑器。server 契约实现期间可以先做小型界面原型。在交互终端，裸 `kuku` 进入 TUI。显式脚本命令保留机器可读输出。验证客户端命令与 Skill 调用都能正常使用。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui 多行编辑器](https://docs.rs/ratatui-textarea/latest/ratatui_textarea/)
+3. **接入现有 WebUI。** 更换 HTTP 路由时同步调整浏览器调用方。重连、插话、下一轮发送和打断使用相同的 Session／Agent 命令。验收从 TUI 发起的任务能在浏览器继续操作，再切回终端。浏览器布局可根据终端日常使用中的反馈继续设计。[现有 WebUI API](../../../apps/web/src/api)
 
 ## 开发时如何测试
 

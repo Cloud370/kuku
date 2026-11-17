@@ -1,64 +1,14 @@
-# Host Apps
+# 宿主应用
 
-host app 把 SDK 事实呈现给用户。它们不会替代 SDK 的运行时模型。
+Session SDK 负责 Agent 执行、日志和输出保留。宿主打开 Session，提供工具授权策略，并用适合调用方的方式呈现结果。
 
-## Repo layout
+| 入口 | 当前行为 |
+|---|---|
+| `kuku` 与 `kuku run` | CLI 在前台打开 SDK。裸 `kuku` 逐行读取输入，各次输入之间重开同一个 Session，输入 `exit`、`quit` 或收到 EOF 时退出。 |
+| `kuku server` | 长期运行的 HTTP 进程持有打开的 Session。观察客户端断开后继续执行。API 提供持久事件分页、关联回复和显式取消。 |
+| `kuku web` | 统一二进制启动 server，提供内嵌的浏览器应用。源码构建需要 `embedded-web-assets` 和构建好的 `apps/web/dist`。 |
+| Rust 嵌入 | 应用可直接调用公开 `Session` SDK，自行配置、授权和观察运行。 |
 
-```text
-crates/
-|- kuku/
-|- kuku-cli/
-`- kuku-server/
+CLI 实现在 `crates/kuku-cli`，server 在 `crates/kuku-server`，统一二进制在 `apps/kuku`，浏览器应用在 `apps/web`。[CLI 参考](../reference/cli.md) · [Server API](../reference/server-api.md) · [SDK 参考](../reference/sdk.md)
 
-apps/
-|- kuku/
-|- web/
-`- tauri/  planned
-```
-
-## Responsibilities
-
-### SDK
-
-SDK 负责：
-
-- Session 状态和事件持久化
-- 上下文重建
-- provider adapter
-- Tool 分发
-- 权限决策
-- wire 事件转换
-
-### Hosts
-
-host 负责：
-
-- 命令解析
-- UI 布局
-- 传输细节
-- 权限提示和其他交互界面
-- Session 历史和流式输出的展示
-
-## Current hosts
-
-### CLI
-
-`kuku-cli` 为运行、Session 检查、配置操作、Prompt 资源检查，以及 Agent 和 Skill 的目录视图实现命令行为。
-
-### Server
-
-`kuku-server` 运行一个长期存活的 HTTP 进程，并把 run 事件作为 NDJSON 流输出。它会把活动中的 run 保存在内存里，但持久状态仍然来自 SDK 写入的 Session 文件。
-
-### Web
-
-`apps/web` 是一个前端 SPA，通过 HTTP 与 `kuku-server` 通信。
-
-### Tauri
-
-`apps/tauri` 计划作为桌面壳层，通过嵌入 `kuku-server` 来工作，而不是直接调用 SDK。
-
-## 当前与规划中的连接方式
-
-当前 CLI 通过 SDK 打开 Session。WebUI 连接 HTTP server，由 server 持有打开的 Session。规划中的 CLI 和 TUI 都通过这个服务端边界接入。[交互客户端重构计划](interactive-clients.md)
-
-主分层见 [Architecture Overview](overview.md)，package 和 hook 如何围绕运行时挂接见 [Extension Runtime](extension-runtime.md)。
+规划中的 Rust TUI、CLI 和 WebUI 将共用 server 持有的 Session。本地服务发现、窗口焦点与输入时机见[交互客户端计划](interactive-clients.md)。

@@ -22,14 +22,9 @@ Stages are delivery boundaries, not separate runtimes. Design identifiers, input
 
 The first stage includes a minimal local CLI; full interactive polish and other hosts remain later work. Complete each stage's required correctness barriers before claiming delivery. A first model experiment may precede completion of all persistence work, but cannot serve as acceptance for missing contracts.
 
-### Implementation ownership and order
+### Implementation ownership
 
-1. Start with three subagents: core implementation, provider/protocol preparation, and acceptance/development workflow. The core author owns the shared SDK boundary and first real vertical path, reusing a provider and a small tool set. The other two begin with protocol behavior/fixtures and a benchmark case/environment/verification entrypoint, without competing over shared runtime types. Keep Prompt assets and context/provider separation throughout; do not create empty interfaces for every imagined future capability.
-2. Consolidate Session writing and runtime ownership; decouple execution from observation, then integrate bounded output and cleanup. Shared SDK types, command receipts, and the writer/runner interface have one owner.
-3. Integrate the parallel work against agreed interfaces, with explicit file ownership and separate worktrees from the same integration commit for concurrent code writers. Shared runtime changes keep one author while their interface is tightly coupled. Expand or reduce the number of subagents only when dependencies and independently verifiable work justify it; use independent review at meaningful delivery boundaries. Model, reasoning, and speed preferences remain user-level settings.
-4. The integration owner reviews actual diffs and verification evidence before integration. Reuse passing evidence unless new changes or specific failures justify more checks. Update the existing owning documents alongside changed behavior.
-
-The first implementation task uses the evidence below to define the interface and file scope, together with its observable acceptance result.
+The Session SDK owns execution and durable state. Provider adapters own protocol conversion. The acceptance entrypoint checks the public SDK and host boundaries. For the next host changes, see the ownership map and client plan. [Module contracts](module-contracts.md) · [Interactive clients](interactive-clients.md)
 
 ### What may be decided during implementation
 
@@ -41,21 +36,9 @@ The [workflow deliverables](../contributing/development.md#workflow-deliverables
 
 Use the [live protocol acceptance](../contributing/testing.md#live-protocol-acceptance) for selected models, connection inputs, credentials, and paid-test limits. Run records belong to verification artifacts, not this design plan.
 
-## Existing implementation evidence
+## Implementation evidence
 
-These observations are static source review at the planning baseline, not benchmark results or proof that the replacement works.
-
-| Existing path | Observation | Rewrite consequence |
-|---|---|---|
-| [Query observation](../../../crates/kuku/src/query/run.rs) | `Run::next()` advances execution while returning UI events; `Drop` releases the Session lock | A live runtime owns progress and cleanup independently of observer consumption; async close reports completion/failure |
-| [Event store](../../../crates/kuku/src/event/store.rs) | Append rescans historical events and opens/flushes the file per record | One owning writer commits incrementally with explicit durability boundaries; observers do not become writers |
-| [Command output](../../../crates/kuku/src/tool/builtin/run_command.rs) | Pipe reading accumulates full output before final rendering limits it | Bound capture and views from the first byte; stream to Session-owned output files |
-| [Provider configuration](../../../crates/kuku/src/provider/config.rs) | A builder provider override searches by protocol and takes a matching configured connection | Select the intended named connection independently of its protocol, including multiple gateways using the same protocol |
-| [Messages authentication](../../../crates/kuku/src/provider/anthropic.rs) | The current Messages adapter constructs `x-api-key` authentication; OpenRouter documents Bearer authentication for its Messages route | Keep connection authentication configurable independently of the Messages wire format; changing the gateway must not require another Agent loop |
-| [Pending authorization recovery](../../../crates/kuku/src/query/start.rs) | Reopening reconstructs pending permission requests and rejects interrupted open tool execution | Preserve useful waiting/recovery behavior; an in-memory authorization future alone is insufficient |
-| [SDK exports](../../../crates/kuku/src/lib.rs) | Existing exports and private provider/tool modules reflect the current Query/Run API | Expose deliberate model/tool/host adapters and runtime operations without exporting every internal module or preserving obsolete APIs |
-
-Preserve working file-edit conflict checks, provider protocol behavior, native Skills, and relevant tests. Update module ownership documentation when implementation changes dependencies; do not copy the current `agent`/`query` coupling into a second executor.
+The public caller demonstrates opening and completing a Session. Runtime tests cover concurrent Agents, deferred authorization and cancellation. Context tests verify exact model input across reopen. An HTTP integration test exercises execution after an observer disconnects. [SDK example](../../../crates/kuku/examples/session_task.rs) · [Session runtime tests](../../../crates/kuku/tests/session_runtime.rs) · [Context tests](../../../crates/kuku/tests/context_runtime.rs) · [Server integration](../../../crates/kuku-server/tests/session_execution.rs)
 
 ## Runtime and Harness boundary
 

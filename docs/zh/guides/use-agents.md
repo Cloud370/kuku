@@ -1,67 +1,20 @@
-# Use Agents
+# 使用 Agent
 
-Agent 是联系人卡片。kuku 调用它时，会在当前 Session 中打开或继续某个委派 conversation address。
+## 把任务交给第二个 Agent
 
-## Add an Agent
-
-把 agent 文件放在以下任一位置：
-
-- `~/.kuku/agents/`
-- `<workspace>/.kuku/agents/`
-
-这些是约定位置。启用 auto-discovery 后，kuku 也会扫描其他用户和项目 dot-directory 中的 `agents/` 和 `agent/`，例如 `.claude/agents` 和 `.opencode/agent`。
-
-同名时，项目级 agent 会覆盖用户级 agent。
-
-文件格式见 [Agent Format](../reference/agent-format.md)。
-
-## Check Discovery
+先启动一个 Session，从输出中复制它的 ID。以下命令都在同一工作目录运行，并把 `SESSION_ID` 换成该 ID。
 
 ```bash
-kuku agents list
-kuku agents show <name>
+kuku run "Inspect this project and summarize the test setup"
+kuku run --session SESSION_ID --agent reviewer "Read the test files and identify a missing case"
+kuku list SESSION_ID
+kuku show SESSION_ID --agent reviewer
 ```
 
-如果某个 agent 没有出现，请检查 [Config](../reference/config.md) 中的 `[discovery]` 设置。
+第二条命令在需要时创建 `reviewer`。之后向同一 Session 和地址再次执行 `kuku run`，会延续它自己的历史。新 Agent 有独立上下文，委派时应把相关文件或已有发现发给它。
 
-## Use Agents in a Run
+## 复用预设
 
-启用 agent Tool 时，kuku 可以把部分工作委派给已发现的 agent contacts。
+项目预设放在 `<workspace>/.kuku/agents/`，个人预设放在 `~/.kuku/agents/`。同名时优先使用项目定义。用 `kuku agents list` 查看目录，用 `kuku agents show NAME` 查看某个预设。[Agent 格式](../reference/agent-format.md)
 
-要用 address 来思考：
-
-- `review` 表示一条持续中的 review 线程
-- `review/api` 表示一个以 `review` contact 为根的独立嵌套线程
-- 复用 `review` 表示保持连续性
-
-`main` address 是 Host conversation 的保留名，不能作为 agent 目标。
-
-只有在首次打开新 address 时，传 model tier 才有意义。如果在继续已有 address 时传 tier，运行时会拒绝这次调用。
-
-要在单次运行中禁用 agent 委派：
-
-```bash
-kuku run --no-agents "task"
-```
-
-## Choose User vs Project Scope
-
-- `~/.kuku/agents/` 适合个人复用 contacts。
-- `<workspace>/.kuku/agents/` 适合属于某个仓库的 contacts。
-
-## Inspect Conversations
-
-```bash
-kuku list <session-id>
-kuku show <session-id> --conversation review
-kuku events <session-id> --conversation review
-```
-
-- `kuku list <session-id>` 列出一个 Session 内的 conversation addresses。
-- `kuku show` 显示某个 conversation 的最终 transcript 输出。
-- `kuku events` 显示底层账本事实，并可按 conversation 过滤。
-
-## Related Pages
-
-- [Tools](../reference/tools.md)
-- [Manage Sessions](manage-sessions.md)
+运行中，模型可以调用 `create_agent` 指定新地址和 `preset`，再用 `send_message` 发送任务。通过 `list_agents` 查看接收方状态和最近已落盘的结果。使用 `--no-agents` 可以关闭当前运行的模型协作工具。[工具参考](../reference/tools.md) · [管理 Session](manage-sessions.md)

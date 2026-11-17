@@ -1,64 +1,14 @@
-# Host Apps
+# Host applications
 
-Host apps present SDK facts to users. They do not replace the SDK runtime model.
+The Session SDK owns Agent execution, the journal and retained output. A host opens the Session, supplies its tool authorization policy and presents results in the form its callers need.
 
-## Repo layout
+| Entry | How it works today |
+|---|---|
+| `kuku` and `kuku run` | The CLI opens the SDK in the foreground. Bare `kuku` reads one line at a time, reopens the same Session between prompts and exits on `exit`, `quit` or EOF. |
+| `kuku server` | A long-lived HTTP process owns open Sessions. Disconnecting an HTTP observer leaves execution running. Its API supports durable event pages, correlated replies and explicit cancellation. |
+| `kuku web` | The unified binary starts the server and serves the browser app from bundled assets. Source builds need `embedded-web-assets` and a built `apps/web/dist`. |
+| Rust embedding | Applications can use the public `Session` SDK directly with their own configuration, authorization and observation strategy. |
 
-```text
-crates/
-|- kuku/
-|- kuku-cli/
-`- kuku-server/
+The CLI implementation lives in `crates/kuku-cli`, the server in `crates/kuku-server`, the unified executable in `apps/kuku` and the browser app in `apps/web`. [CLI reference](../reference/cli.md) · [Server API](../reference/server-api.md) · [SDK reference](../reference/sdk.md)
 
-apps/
-|- kuku/
-|- web/
-`- tauri/  planned
-```
-
-## Responsibilities
-
-### SDK
-
-The SDK owns:
-
-- session state and event persistence
-- context rebuild
-- provider adapters
-- tool dispatch
-- permission decisions
-- wire event conversion
-
-### Hosts
-
-Hosts own:
-
-- command parsing
-- UI layout
-- transport details
-- permission prompts and other interaction surfaces
-- presentation of session history and streaming output
-
-## Current hosts
-
-### CLI
-
-`kuku-cli` implements command behavior for runs, session inspection, config operations, prompt asset inspection, and catalog views for Agents and Skills.
-
-### Server
-
-`kuku-server` runs a long-lived HTTP process and streams run events as NDJSON. It keeps active runs in memory, but durable state still comes from session files written by the SDK.
-
-### Web
-
-`apps/web` is a frontend SPA that talks to `kuku-server` over HTTP.
-
-### Tauri
-
-`apps/tauri` is planned as a desktop shell that embeds `kuku-server` rather than calling the SDK directly.
-
-## Current and planned connections
-
-Today the CLI opens Sessions through the SDK. The WebUI connects to the HTTP server, which owns its open Sessions. The planned CLI and TUI use that same server boundary. [Interactive clients](interactive-clients.md)
-
-See [Architecture Overview](overview.md) for the main split and [Extension Runtime](extension-runtime.md) for how packages and hooks attach around the runtime.
+The planned Rust TUI, CLI and WebUI share a server-owned Session. Local server discovery, per-window focus and input timing are specified in the [interactive client plan](interactive-clients.md).

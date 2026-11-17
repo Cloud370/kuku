@@ -2,7 +2,7 @@
 
 ## Entry Modes
 
-- `kuku` starts interactive mode in the current workspace.
+- `kuku` starts a foreground, line-based prompt in the current workspace. Enter `exit` or `quit` between Turns to leave.
 - `kuku run ...` starts a non-interactive run.
 
 ## Top-Level Commands
@@ -166,6 +166,12 @@ Defaults:
 - `--listen 127.0.0.1:17777`
 - `--max-concurrent-runs 16`
 
-`kuku web` requires a binary built with embedded Web UI assets. The release workflow and release artifacts include them. For local source builds, build `kuku-app` with `--features embedded-web-assets` after preparing `apps/web/dist`.
+`kuku server` works with the default build. For `kuku web`, build the browser assets and embed them in the unified binary. From the repository root with Node.js 24 and npm installed, run the following commands and open `http://127.0.0.1:17777` in your browser.
+
+```bash
+npm --prefix apps/web ci
+npm --prefix apps/web run build
+cargo run --locked -p kuku-app --features embedded-web-assets -- web
+```
 
 For request and stream formats, see [Server API](server-api.md).

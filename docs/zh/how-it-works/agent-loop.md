@@ -1,57 +1,18 @@
-# Agent Loop
+# Agent 执行循环
 
-只有写入 `events.jsonl` 的内容才算作 Session 事实。
+Agent 从收件箱接纳工作时开始一个 Turn。一个 Step 包含一次逻辑模型请求，以及响应要求使用的工具。一个 Turn 可以包含多个 Step。
 
-## Turn flow
+## 从输入到结果
 
-```text
-turn.started
-  -> message.user
-  -> model.response
-      stop_reason = tool_use ?
-        yes -> tool.call -> permission.requested -> permission.allow|permission.deny -> tool.result -> loop
-        length -> model.recovery -> model.response（最多一次）
-        no  -> turn.completed
-```
+1. Session 持久提交输入并返回回执。当前 SDK 在 Turn 开始时接纳符合条件的输入。
+2. SDK 准备该 Agent 的上下文，记录 Step 后发送模型请求。响应尚未结束时，客户端可以观察流式输出。
+3. 模型请求调用工具时，运行时接收一批调用。逐个绑定实际参数和工具定义，检查授权，记录派发并提交结果。相互独立的工作可以并发，相互冲突的工作区操作按顺序执行。
+4. 下一个 Step 收到已接纳的工具结果视图。最终响应没有工具调用时，Turn 结束并留下持久结果。模型输出达到上限而被截断时，公开 Session 会中断该 Turn，不会派发这份不完整响应里的工具调用。
 
-## Per turn
+用 `kuku show SESSION_ID --agent AGENT` 查看已落盘的结果。要判断任务是否完成，应检查实际文件、命令结果或任务测试。[事件参考](../reference/events.md) · [Session SDK](../reference/sdk.md)
 
-1. kuku 追加写入 `turn.started` 和 `message.user`。
-2. 它基于文件和已持久化事件重建模型上下文。
-3. 它将模型响应流式传给 Host，并在完成后追加写入 `model.response`。
-4. 如果响应达到输出上限，kuku 会持久化 `model.recovery`，丢弃不完整响应及其工具调用，并在当前用户消息后附加短运行时通知后重试一次。
-5. 如果响应结束这一轮，kuku 会为当前 conversation 追加写入 `turn.completed`。
-6. 如果响应请求 Tool，kuku 会追加写入 `tool.call`，用 `permission.requested` 记录待处理权限，记录权限决策，执行已允许的 Tool，追加写入 `tool.result`，然后为下一次模型调用重建上下文。
+## 等待、中断与交接
 
-稳定的系统协议会告诉模型：不包含工具调用的响应就是当前 turn 的最终答案。
-如果仍需检查或执行操作，模型必须在当前响应中调用相应工具，而不能只承诺稍后处理。
-Host 仍根据 provider 的终止状态判定是否完成；`length`、无效响应和中断的流都不算成功完成。
+`ask_user` 提问或延后工具授权后，Agent 可以让出执行容量，等宿主提交匹配的回复。取消 Agent 会停止新的派发，等待其所属工作收尾。重开 Session 会恢复已确认的历史和待决请求。工具派发后中断、结果未知时，需要先核实外部结果，再决定是否重新执行。
 
-## Tool execution
-
-彼此独立的 Tool 调用可以并行运行。kuku 在将结果写回事件日志时，会保留模型原始的 `tool.call` 顺序。
-
-委派出来的 agent conversation 在同一个 Session 账本里使用相同的循环。它们不会创建第二套运行时模型。
-
-## Permissions inside the loop
-
-模型可以请求某个 Tool，但运行时决定这个 Tool 是否可以执行。权限检查是运行时强制执行的机制，不是 Prompt 建议。
-
-`permission.requested` 是未解决 Tool 授权请求的持久待处理状态。它不是允许或拒绝决策，也不会从可观测性日志中读取。
-
-权限模型见 [Permissions](permissions.md)。
-
-## Handoff and rollback
-
-有两种 Session 行为会改变下一次模型调用可见的内容：
-
-- 当上下文过大时，handoff 会把较早的历史压缩成结构化摘要
-- rollback 会追加标记事件，使先前的轮次不再参与未来的上下文重建，也可以同时回退文件
-
-这两种行为都见 [Sessions](sessions.md)。
-
-运行时流和可观测性日志与 Session 事实日志分开。见 [Events](../reference/events.md) 和 [Sessions](sessions.md#observability-logs)。
-
-## Maintainer view
-
-本页描述的是可观察的运行时行为。关于 crate 边界和精确的组装顺序，请参见 [Architecture Overview](../architecture/overview.md)、[Prompt Assembly](../architecture/prompt-assembly.md) 和 [Module Contracts](../architecture/module-contracts.md)。
+交接选取摘要和最近几轮工作后，SDK 准备后继上下文段。先前上下文段仍可从日志解释。[Session](sessions.md) · [Prompt 装配](../architecture/prompt-assembly.md)

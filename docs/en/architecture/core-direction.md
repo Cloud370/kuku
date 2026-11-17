@@ -78,7 +78,7 @@ Do not start with all-plugin composition, hot-swappable loops, generic event mid
 
 ## Delivery and engineering choices
 
-Earlier releases had no external users. **Replace superseded APIs, addresses and Session formats directly.** Update in-tree callers and tests in the same change, remove obsolete adapters and keep one maintained execution path. Preserve user files and verification evidence. The SDK stages and acceptance conditions live in [Evolution](evolution.md#delivery-plan-public-sdk-execution-slice).
+kuku is in testing and has no established user base. **Replace superseded APIs, addresses and Session formats directly.** Update in-tree callers and tests in the same change, remove obsolete adapters and keep one maintained execution path. Preserve user files and verification evidence. The SDK stages and acceptance conditions live in [Evolution](evolution.md#delivery-plan-public-sdk-execution-slice).
 
 Deliver real single-Agent work through the public SDK and a thin CLI first, then early independent Agents using different providers, then durable waiting and small external-orchestration examples. Choose a few mature benchmark cases with their original verifiers, plus focused contract tests. Do not build a benchmark platform or demand an architecture-proof phase before useful execution.
 

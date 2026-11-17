@@ -1,50 +1,11 @@
-# Permissions
+# 工具权限
 
-Permissions 是运行时强制执行的机制。
+工具执行前，Session 将实际工具定义和最终参数绑定到此次调用的 ID。内置限制和项目策略可以拒绝动作。对于可继续的动作，宿主的 `ToolAuthorizer` 接收 Session、执行的 Agent、可信输入来源、工具、参数及工作目录。默认 CLI 和 HTTP server 使用 `TrustedLocal` 放行符合这些条件的动作。
 
-项目指令可以建议行为，但它们本身不会授予或拒绝 Tool 访问权限。
+| 决定 | 可观察结果 |
+|---|---|
+| 允许 | 运行时先记录派发，再调用工具，随后记录结果。 |
+| 拒绝 | 该调用收到被阻止的结果。宿主授权出错也会阻止派发，并返回错误。 |
+| 延后 | Agent 进入等待，保留持久请求 ID。宿主按 Agent 和请求 ID 回答，重开 Session 后仍然有效。 |
 
-## Decision sources
-
-运行时会按固定顺序评估权限：
-
-1. hard guard
-2. project policy deny
-3. session grants
-4. project policy allow
-5. default behavior
-
-hard guard 永远优先。
-
-## What the model can and cannot do
-
-- 模型可以请求一次 Tool 调用。
-- 运行时决定这次调用是否被允许。
-- 即使被拒绝，该调用仍会成为 Session 历史中的一个事件。
-
-这让权限系统可以被审计，并与 Prompt 表述分离。
-
-## Common modes
-
-不同 Host 暴露权限的方式可以不同，但运行时支持的底层选择相同：
-
-- 单次批准
-- Session 级批准
-- 项目级批准
-- 拒绝
-
-Subagent 的权限请求会回传给父级 run。硬性保护规则在这里同样适用。
-
-## Policy files and runtime facts
-
-项目权限状态由文件承载，并由运行时评估。它不是普通的对话上下文。
-
-## Failure shape
-
-如果 Tool 调用被拒绝，kuku 会记录权限决策并写入一个被阻止的 Tool 结果。如果调用被允许，执行会继续，结果会按正常方式写入。
-
-## Mental model
-
-Permissions 是模型意图和实际副作用之间执行边界的一部分。这也是 kuku 将运行时与 Host UI 和 Prompt 指令分离的主要原因之一。
-
-面向维护者的边界说明见 [Module Contracts](../architecture/module-contracts.md)。
+嵌入方通过 `SessionOptions.authorizer` 提供自己的策略。CLI 使用 `kuku reply SESSION_ID REQUEST_ID --agent AGENT --allow` 或 `--deny` 回应授权，`ask_user` 的问题使用 `--answer`。延后授权获准后，运行时会重新核对已准备的动作和当前工具定义，再派发执行。[Session](sessions.md#等待与回复) · [工具授权接口](../../../crates/kuku/src/permission/runtime.rs)
