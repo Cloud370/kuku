@@ -202,6 +202,31 @@ def preserve_draft_after_interrupt(client):
     print("Esc interrupted the observed work. Enter sent the preserved draft and exit restored the terminal.")
 
 
+def editable_multiline_paste(client):
+    workspace = client.workspace("work-paste")
+    paste = "原生终端草稿 e\u0301 👩‍💻\r\nsecond line\rthird line\nfourth lineX"
+    prompt = "原生终端草稿 e\u0301 👩‍💻\nsecond line\nthird line\nfourth line"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        assert terminal.request("screen")["bracketed_paste"], "The client must request bracketed paste"
+        terminal.press(f"\x1b[200~{paste}\x1b[201~")
+        terminal.expect("fourth lineX")
+        assert client.sessions(workspace) == [], "Pasting a line break must leave the draft unsent"
+        client.provider.assert_idle(duration=0.25)
+
+        terminal.press("\x7f\r")
+        call = client.provider.next("fourth line")
+        message = call.request["messages"][-1]
+        texts = [block["text"] for block in message["content"] if block["type"] == "text"]
+        assert message["role"] == "user" and prompt in texts, f"The edited paste did not match: {texts!r}"
+        call.text("multiline paste verified")
+        terminal.expect("multiline paste verified")
+        assert client.session(workspace)
+        client.provider.assert_idle(duration=0.25)
+        terminal.exit_cleanly()
+    print("Native multiline paste stayed editable and sent only after Enter with normalized line breaks.")
+
+
 def wait_restart_and_recover_crash(client, workspace, session, title):
     question_prompt = "persist a pending question"
     question = "Which durable answer should I use?"
@@ -362,6 +387,7 @@ def main():
             installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)
         preserve_draft_after_interrupt(client)
+        editable_multiline_paste(client)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))
         recover_from_provider_failure(client)
