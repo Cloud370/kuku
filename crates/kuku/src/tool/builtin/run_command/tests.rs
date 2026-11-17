@@ -59,7 +59,7 @@ async fn run_command_captures_stdout_from_workspace() {
     )
     .await;
 
-    assert_eq!(result.status, "ok");
+    assert_eq!(result.status, "ok", "{result:?}");
     assert!(result.summary.contains("command exited 0"));
     assert!(result.model_content.contains("stdout:"));
     assert!(result.model_content.contains("workspace marker"));
@@ -83,7 +83,7 @@ async fn run_command_treats_nonzero_exit_as_command_evidence() {
     )
     .await;
 
-    assert_eq!(result.status, "ok");
+    assert_eq!(result.status, "ok", "{result:?}");
     assert!(result.summary.contains("command exited 7"));
     assert!(result.model_content.contains("stderr:"));
     assert!(result.model_content.contains("bad"));
@@ -101,8 +101,11 @@ async fn run_command_reports_timeout_as_tool_error() {
     )
     .await;
 
-    assert_eq!(result.status, "error");
-    assert!(result.summary.contains("command timed out after 1s"));
+    assert_eq!(result.status, "error", "{result:?}");
+    assert!(
+        result.summary.contains("command timed out after 1s"),
+        "{result:?}"
+    );
     assert_eq!(
         result.structured.as_ref().unwrap()["kind"],
         "command_result"

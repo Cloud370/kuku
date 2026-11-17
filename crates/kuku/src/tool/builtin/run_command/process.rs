@@ -1,5 +1,7 @@
 #[cfg(unix)]
 use std::io;
+#[cfg(target_os = "macos")]
+use std::mem::size_of;
 #[cfg(unix)]
 use std::process::ExitStatus;
 
@@ -99,10 +101,11 @@ impl ProcessTree {
             return Ok(());
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(())
-        } else {
-            Err(error)
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Some(libc::EPERM) if group_has_no_live_members(group) => Ok(()),
+            _ => Err(error),
         }
     }
 
@@ -129,6 +132,39 @@ impl ProcessTree {
             }
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn group_has_no_live_members(group: libc::pid_t) -> bool {
+    // NOTE: A null buffer requests the capacity in PID slots. The leader's PID is still owned.
+    let capacity = unsafe { libc::proc_listpgrppids(group, std::ptr::null_mut(), 0) };
+    if capacity <= 0 {
+        return false;
+    }
+    let Some(bytes) = capacity.checked_mul(size_of::<libc::pid_t>() as libc::c_int) else {
+        return false;
+    };
+    let mut members = vec![0; capacity as usize];
+    // NOTE: The buffer has the advertised length. Clear thread-local errno to distinguish an empty list from an error.
+    let count = unsafe {
+        *libc::__error() = 0;
+        libc::proc_listpgrppids(group, members.as_mut_ptr().cast(), bytes)
+    };
+    if count == 0 {
+        return io::Error::last_os_error().raw_os_error() == Some(0);
+    }
+    // Darwin's group signal returns EPERM even if the only members are zombies.
+    count > 0
+        && count < capacity
+        && members[..count as usize].iter().all(|&pid| {
+            // NOTE: getpgid queries the PID without signalling it and excludes zombies on Darwin.
+            let member_group = unsafe { libc::getpgid(pid) };
+            if member_group == -1 {
+                io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            } else {
+                member_group != group
+            }
+        })
 }
 
 #[cfg(any(target_os = "macos", all(target_os = "linux", test)))]
@@ -317,7 +353,7 @@ mod windows {
 #[cfg(windows)]
 pub(super) use windows::ProcessTree;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
 
@@ -325,6 +361,8 @@ mod tests {
     use tokio::time::{sleep, timeout, Duration};
 
     use super::ProcessTree;
+    #[cfg(target_os = "macos")]
+    use super::{exited_without_reaping, group_has_no_live_members};
 
     #[tokio::test]
     async fn pre_reap_sweep_stops_a_process_that_joined_after_the_first_signal() {
@@ -356,6 +394,37 @@ mod tests {
         assert_eq!(Some(libc::SIGKILL), leader_status.signal());
         assert_eq!(Some(libc::SIGKILL), late_status.signal());
         assert_eq!(None, leader.id());
+        assert_eq!(None, tree.group);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn zombie_only_group_can_be_swept_before_reaping_the_leader() {
+        let (mut leader, mut tree) = ProcessTree::spawn(Command::new("sleep").arg("30")).unwrap();
+        let group = leader.id().unwrap() as i32;
+        let mut sibling = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .process_group(group)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let sibling_pid = sibling.id().unwrap();
+        timeout(Duration::from_secs(2), async {
+            while !exited_without_reaping(sibling_pid).unwrap() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!group_has_no_live_members(group));
+
+        tree.request_stop(&mut leader).unwrap();
+        let status = timeout(Duration::from_secs(2), tree.wait(&mut leader))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(libc::SIGKILL), status.signal());
+        assert_eq!(Some(7), sibling.try_wait().unwrap().unwrap().code());
         assert_eq!(None, tree.group);
     }
 }
