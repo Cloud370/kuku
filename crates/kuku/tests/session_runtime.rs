@@ -263,6 +263,15 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
         .reply_permission("reply", "main", &request.id, true)
         .unwrap();
     assert_eq!(
+        Some(receipt.clone()),
+        session
+            .reply_permission_receipt("reply", "main", &request.id, true)
+            .unwrap()
+    );
+    assert!(session
+        .reply_permission_receipt("reply", "main", &request.id, false)
+        .is_err());
+    assert_eq!(
         receipt,
         session
             .reply_permission("reply", "main", &request.id, true)
@@ -333,6 +342,15 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     let receipt = session
         .reply_question("answer", "main", &question.id, "blue-answer")
         .unwrap();
+    assert_eq!(
+        Some(receipt.clone()),
+        session
+            .reply_question_receipt("answer", "main", &question.id, "blue-answer")
+            .unwrap()
+    );
+    assert!(session
+        .reply_question_receipt("answer", "main", &question.id, "different-answer")
+        .is_err());
     assert_eq!(
         receipt,
         session

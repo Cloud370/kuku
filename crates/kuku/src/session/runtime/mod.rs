@@ -2,6 +2,7 @@
 
 mod driver;
 mod observe;
+mod receipts;
 mod record;
 mod types;
 
@@ -252,7 +253,7 @@ impl Session {
                 "input source or correlation exceeds 256 bytes".into(),
             ));
         }
-        let digest = fingerprint(&("send", &input))?;
+        let digest = receipts::input_fingerprint(&input)?;
         let target = input.target.clone();
         let wake = input.activation == Activation::Wake;
         let receipt = {
@@ -332,51 +333,6 @@ impl Session {
             .values()
             .map(|agent| agent.snapshot.clone())
             .collect()
-    }
-
-    /// Find a committed command receipt without accepting or activating work.
-    pub fn receipt(&self, command_id: &str) -> Result<Option<Receipt>> {
-        validate_key(command_id)?;
-        Ok(self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .commands
-            .get(command_id)
-            .map(|(_, receipt)| receipt.clone()))
-    }
-
-    /// Verify a delivered input's receipt without committing or activating work.
-    pub fn input_receipt(&self, input: &Input) -> Result<Option<Receipt>> {
-        validate_key(&input.command_id)?;
-        validate_address(&input.target)?;
-        if input.text.len() > 262_144 {
-            return Err(Error::InvalidArgument(
-                "input exceeds the supported byte limit".into(),
-            ));
-        }
-        let identity = match &input.source {
-            InputSource::Host(identity)
-            | InputSource::Agent(identity)
-            | InputSource::External(identity) => identity,
-        };
-        if identity.len() > 256
-            || input
-                .correlation
-                .as_ref()
-                .is_some_and(|value| value.len() > 256)
-        {
-            return Err(Error::InvalidArgument(
-                "input source or correlation exceeds 256 bytes".into(),
-            ));
-        }
-        let digest = fingerprint(&("send", input))?;
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .retry(&input.command_id, &digest)
     }
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
@@ -529,7 +485,7 @@ impl Session {
         allow: bool,
     ) -> Result<Receipt> {
         validate_key(command_id)?;
-        let digest = fingerprint(&("reply_permission", address, request_id, allow))?;
+        let digest = receipts::permission_fingerprint(command_id, address, request_id, allow)?;
         let receipt = {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
@@ -579,7 +535,7 @@ impl Session {
                 "question reply exceeds the configured input byte limit".into(),
             ));
         }
-        let digest = fingerprint(&("reply_question", address, request_id, &text))?;
+        let digest = receipts::question_fingerprint(command_id, address, request_id, &text)?;
         let receipt = {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
