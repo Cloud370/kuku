@@ -6,8 +6,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from evidence import inspect_sdk
+from evidence import inspect_sdk, SessionFacts
 
 
 class Fixture:
@@ -91,6 +92,30 @@ class Fixture:
         self.events.write_text("".join(json.dumps(event) + "\n" for event in self.records))
         self.report_path.write_text(json.dumps(self.report))
 
+    def renumber(self):
+        for identity, event in enumerate(self.records, 1):
+            event["id"] = identity
+        self.report["last_event_id"] = len(self.records)
+
+    def unprepared_retry(self, source_heads=True, partial=False):
+        admitted = [event for event in self.records if event["kind"] == "runtime.context_admitted" and event["ordinal"] > 0]
+        index = self.records.index(admitted[0])
+        abandoned = copy.deepcopy(admitted)
+        abandoned[1]["message"]["blocks"][0]["ToolResult"]["model_content"] = "unconfirmed dynamic handoff notice"
+        abandoned.append(dict(copy.deepcopy(abandoned[0]), ordinal=3,
+                              message={"role": "User", "blocks": [{"Text": "abandoned runtime suffix"}]}))
+        self.records[index:index] = abandoned[:1] if partial else abandoned
+        self.renumber()
+        if source_heads:
+            previous = self.records[index - 1]["id"]
+            for event in abandoned[:1] if partial else abandoned:
+                event["source_head"] = previous
+            current = previous if source_heads == "same" else (abandoned[0] if partial else abandoned[-1])["id"]
+            for event in admitted:
+                event["source_head"] = current
+            self.report["provider_settings"][-1]["source_head"] = current
+        return abandoned, admitted
+
     def repeat_turn(self):
         self.records.pop()
         self.operation("input_delivered", input={"command_id": "input-2", "target": "main"})
@@ -147,6 +172,102 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["output_references"][0]["stored_bytes"], 5)
         self.assertNotIn("private workload", json.dumps(evidence))
         self.assertIsNone(evidence["usage"]["provider_reported_cost_usd"])
+
+    def test_unprepared_same_segment_suffix_is_replaced_only_when_the_retry_is_prepared(self):
+        for source in (True, False, "same"):
+            with self.subTest(source=source):
+                self.fixture = Fixture(Path(self.temporary.name) / str(source))
+                self.fixture.unprepared_retry(source_heads=source)
+                evidence = self.fixture.inspect()
+                self.assertTrue(evidence["passed"], evidence)
+                self.assertEqual(evidence["facts"]["prepared_steps"], 2)
+                self.assertEqual(evidence["facts"]["tool_results"], 1)
+
+    def test_partial_unprepared_tool_use_does_not_leave_a_pending_pair(self):
+        self.fixture.unprepared_retry(partial=True)
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence)
+
+    def test_unconfirmed_tool_fingerprints_are_bounded_and_reclaimed_on_retry(self):
+        for limit, passes in ((1, False), (2, True)):
+            with self.subTest(limit=limit):
+                self.fixture = Fixture(Path(self.temporary.name) / str(limit))
+                self.fixture.unprepared_retry()
+                with patch("evidence.MAX_STAGED_TOOL_BLOCKS", limit):
+                    evidence = self.fixture.inspect()
+                self.assertEqual(evidence["passed"], passes, evidence)
+                if not passes:
+                    self.assertIn("diagnostic limit", evidence["error"])
+
+    def test_unprepared_tail_is_not_validated_as_a_model_view(self):
+        candidate = copy.deepcopy(next(event for event in self.fixture.records if event["kind"] == "runtime.context_admitted"))
+        candidate.update(ordinal=3, message={"blocks": [{"ToolUse": {"id": "never-called", "name": "run_command", "args": {}}}]})
+        self.fixture.records.insert(-1, candidate)
+        self.fixture.renumber()
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence)
+
+    def test_unchanged_prepared_head_discards_an_unconfirmed_suffix(self):
+        segment = next(event for event in self.fixture.records if event["kind"] == "runtime.context_segment")
+        candidate = copy.deepcopy(next(event for event in self.fixture.records if event["kind"] == "runtime.context_admitted"))
+        candidate["message"] = {"blocks": [{"ToolUse": {"id": "never-called", "name": "run_command", "args": {}}}]}
+        prepared = dict(copy.deepcopy(self.fixture.report["provider_settings"][0]), context_head=0)
+        facts = SessionFacts("main", self.fixture.events, "fixture")
+        for event in (segment, candidate, prepared):
+            facts.accept(event)
+        self.assertEqual(facts.segments[segment["id"]], 0)
+        self.assertFalse(facts.context_candidates)
+        self.assertFalse(facts.admitted_results)
+
+    def test_abandoned_tool_results_do_not_count_as_committed_model_context(self):
+        abandoned, admitted = self.fixture.unprepared_retry()
+        abandoned[1]["message"]["blocks"][0]["ToolResult"] = copy.deepcopy(self.fixture.result)
+        for event in admitted:
+            event["message"] = {"role": "User", "blocks": [{"Text": "retry omitted the tool pair"}]}
+        evidence = self.fixture.inspect()
+        self.assertFalse(evidence["passed"])
+        self.assertIn("not admitted", evidence["error"])
+
+    def test_retry_cannot_rewrite_a_previously_prepared_prefix(self):
+        abandoned, _ = self.fixture.unprepared_retry()
+        abandoned[0]["ordinal"] = 0
+        evidence = self.fixture.inspect()
+        self.assertFalse(evidence["passed"])
+        self.assertIn("confirmed prefix", evidence["error"])
+
+    def test_prepared_context_must_confirm_the_exact_candidate_and_source(self):
+        for mutation, error in (("head", "exact candidate"), ("source", "source watermark"), ("source-regression", "source watermark")):
+            with self.subTest(mutation=mutation):
+                self.fixture = Fixture(Path(self.temporary.name) / mutation)
+                abandoned, admitted = self.fixture.unprepared_retry()
+                prepared = self.fixture.report["provider_settings"][-1]
+                if mutation == "head":
+                    prepared["context_head"] -= 1
+                elif mutation == "source":
+                    prepared["source_head"] = abandoned[0]["source_head"]
+                else:
+                    admitted[0]["source_head"] = abandoned[0]["source_head"] - 1
+                evidence = self.fixture.inspect()
+                self.assertFalse(evidence["passed"])
+                self.assertIn(error, evidence["error"])
+
+    def test_deferred_confirmation_cannot_use_tool_facts_written_after_the_admission(self):
+        for kind, ordinal, error in (("tool.call", 1, "durable model call"), ("tool.result", 2, "first view")):
+            with self.subTest(kind=kind):
+                self.fixture = Fixture(Path(self.temporary.name) / kind)
+                record = next(event for event in self.fixture.records if event["kind"] == kind)
+                admitted = next(event for event in self.fixture.records if event["kind"] == "runtime.context_admitted"
+                                and event["ordinal"] == ordinal)
+                if kind == "tool.call":
+                    self.fixture.records.remove(admitted)
+                    self.fixture.records.insert(self.fixture.records.index(record), admitted)
+                else:
+                    self.fixture.records.remove(record)
+                    self.fixture.records.insert(self.fixture.records.index(admitted) + 1, record)
+                self.fixture.renumber()
+                evidence = self.fixture.inspect()
+                self.assertFalse(evidence["passed"])
+                self.assertIn(error, evidence["error"])
 
     def test_sdk_self_report_cannot_replace_mismatching_durable_counters(self):
         self.fixture.report["facts"]["tool_results"] = 9

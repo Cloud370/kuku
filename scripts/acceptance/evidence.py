@@ -12,6 +12,7 @@ TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cac
 RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "truncated")
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
+MAX_STAGED_TOOL_BLOCKS = 16_384
 
 
 def require(condition, message):
@@ -155,8 +156,9 @@ class SessionFacts:
         self.counts = Counter()
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
-        self.calls, self.results, self.tool_prepared, self.dispatched = {}, {}, {}, set()
+        self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
         self.segments, self.admitted_results = {}, set()
+        self.context_candidates, self.context_sources, self.staged_tool_blocks = {}, {}, 0
         self.context_used, self.context_pending = {}, {}
         self.settings, self.reports, self.outputs = [], [], []
         self.report_hashes = []
@@ -212,17 +214,10 @@ class SessionFacts:
             self.segments[identity] = 0
             self.context_used[identity], self.context_pending[identity] = set(), {}
         elif kind == "runtime.context_admitted":
-            segment = event.get("segment")
-            require(segment in self.segments and event.get("ordinal") == self.segments[segment],
-                    "admitted context has a missing segment or nonsequential ordinal")
-            self.segments[segment] += 1
-            self.admit(event.get("message", {}), segment)
+            self.stage_context(event)
         elif kind == "runtime.step_prepared":
             require(isinstance(request[1], str) and request not in self.steps, "prepared request identity is missing or duplicated")
-            require(event.get("segment") in self.segments
-                    and event.get("context_head") == self.segments[event["segment"]],
-                    "prepared request does not reference its exact admitted context head")
-            require(not self.context_pending[event["segment"]], "prepared context has an unpaired admitted tool use")
+            self.confirm_context(event)
             require(isinstance(event.get("body_hash"), str) and re.fullmatch(r"[a-f0-9]{64}", event["body_hash"]),
                     "prepared request has no valid body fingerprint")
             require(not self.connection or event.get("connection") == self.connection,
@@ -253,7 +248,8 @@ class SessionFacts:
             require(request in self.responses and key not in self.calls, "tool call has no model response or is duplicated")
             require(event.get("turn") == self.steps[request].get("turn"), "tool call belongs to another request turn")
             self.calls[key] = {"tool_call_id": event.get("tool_call_id"), "tool": event.get("tool"),
-                               "args_hash": fingerprint(event.get("args"))}
+                               "args_hash": fingerprint(event.get("args")), "event_id": identity,
+                               "id_hash": fingerprint(event.get("tool_call_id")), "tool_hash": fingerprint(event.get("tool"))}
             self.counts["tool_calls"] += 1
         elif kind == "runtime.tool_prepared":
             require(key in self.calls and key not in self.tool_prepared, "tool preparation has no unique model call")
@@ -266,6 +262,7 @@ class SessionFacts:
         elif kind == "tool.result":
             require(key in self.calls and key not in self.results, "tool result has no unique matching call")
             self.results[key] = fingerprint({field: event.get(field) for field in RESULT_VIEW_FIELDS})
+            self.result_events[key] = identity
             self.counts["tool_results"] += 1
             structured = event.get("structured") or {}
             require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
@@ -291,24 +288,88 @@ class SessionFacts:
         if operation == "input_delivered" and record.get("input", {}).get("target") == self.agent:
             self.pending.add(record["input"]["command_id"])
 
-    def admit(self, message, segment):
-        used, pending = self.context_used[segment], self.context_pending[segment]
-        for block in message.get("blocks", []):
+    def discard_context(self, segment):
+        candidate = self.context_candidates.pop(segment, None)
+        if candidate:
+            self.staged_tool_blocks -= candidate["tool_blocks"]
+
+    def context_source(self, event):
+        source = event.get("source_head")
+        require(source is None or type(source) is int and 0 <= source < event["id"],
+                "context source watermark is invalid")
+        return source
+
+    def stage_context(self, event):
+        segment, ordinal = event.get("segment"), event.get("ordinal")
+        require(segment in self.segments and type(ordinal) is int and ordinal >= self.segments[segment],
+                "admitted context rewrites a confirmed prefix or has a missing segment")
+        source = self.context_source(event)
+        previous = self.context_sources.get(segment)
+        require(source is None or previous is None or source >= previous, "context source watermark moved backwards")
+        candidate = self.context_candidates.get(segment)
+        if candidate and (ordinal == self.segments[segment] or source != candidate["source"]):
+            self.discard_context(segment)
+            candidate = None
+        if candidate is None:
+            candidate = {"source": source, "messages": [], "tool_blocks": 0}
+            self.context_candidates[segment] = candidate
+        require(ordinal == self.segments[segment] + len(candidate["messages"]),
+                "admitted context has a nonsequential candidate ordinal")
+        blocks = []
+        for block in event.get("message", {}).get("blocks", []):
             if "ToolUse" in block:
                 use = block["ToolUse"]
-                candidates = [key for key, call in self.calls.items() if key not in used
-                              and call["tool_call_id"] == use.get("id") and call["tool"] == use.get("name")
-                              and call["args_hash"] == fingerprint(use.get("args"))]
-                require(candidates and use.get("id") not in pending, "admitted tool use differs from its durable model call")
-                pending[use["id"]] = candidates
+                blocks.append(("use", fingerprint(use.get("id")), fingerprint(use.get("name")), fingerprint(use.get("args"))))
             if "ToolResult" in block:
                 result = block["ToolResult"]
-                digest = fingerprint({field: result.get(field) for field in RESULT_VIEW_FIELDS})
-                matches = [key for key in pending.get(result.get("tool_call_id"), []) if self.results.get(key) == digest]
+                blocks.append(("result", fingerprint(result.get("tool_call_id")),
+                               fingerprint({field: result.get(field) for field in RESULT_VIEW_FIELDS})))
+        self.staged_tool_blocks += len(blocks)
+        require(self.staged_tool_blocks <= MAX_STAGED_TOOL_BLOCKS, "unconfirmed context tool blocks exceed the diagnostic limit")
+        candidate["messages"].append((event["id"], blocks))
+        candidate["tool_blocks"] += len(blocks)
+        if source is not None:
+            self.context_sources[segment] = source
+
+    def confirm_context(self, event):
+        segment, head = event.get("segment"), event.get("context_head")
+        require(segment in self.segments and type(head) is int and head >= self.segments[segment],
+                "prepared request rewrites a confirmed context head or has a missing segment")
+        source = self.context_source(event)
+        previous = self.context_sources.get(segment)
+        require(source is None or previous is None or source >= previous, "context source watermark moved backwards")
+        candidate = self.context_candidates.get(segment)
+        if head > self.segments[segment]:
+            require(candidate and head == self.segments[segment] + len(candidate["messages"]),
+                    "prepared request does not reference its exact candidate context head")
+            require(source is None or candidate["source"] is None or source == candidate["source"],
+                    "prepared request confirms a different context source watermark")
+            for identity, blocks in candidate["messages"]:
+                self.admit(blocks, segment, identity)
+        require(not self.context_pending[segment], "prepared context has an unpaired admitted tool use")
+        self.segments[segment] = head
+        self.discard_context(segment)
+        if source is not None:
+            self.context_sources[segment] = source
+
+    def admit(self, blocks, segment, identity):
+        used, pending = self.context_used[segment], self.context_pending[segment]
+        for block in blocks:
+            if block[0] == "use":
+                _, call_id, name, args_hash = block
+                candidates = [key for key, call in self.calls.items() if key not in used
+                              and call["event_id"] < identity and call["id_hash"] == call_id
+                              and call["tool_hash"] == name and call["args_hash"] == args_hash]
+                require(candidates and call_id not in pending, "admitted tool use differs from its durable model call")
+                pending[call_id] = candidates
+            if block[0] == "result":
+                _, call_id, digest = block
+                matches = [key for key in pending.get(call_id, []) if self.results.get(key) == digest
+                           and self.result_events[key] < identity]
                 require(matches, "admitted tool result differs from its exact durable first view")
                 used.add(matches[0])
                 self.admitted_results.add(matches[0])
-                pending.pop(result["tool_call_id"])
+                pending.pop(call_id)
 
     def finish(self, report):
         snapshot = report.get("agent") or {}
