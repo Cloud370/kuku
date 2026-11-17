@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { visibleOutput } from "@/lib/output";
 
 const exampleOutput = [
   { stream: "stdout" as const, text: "$ cargo build --release" },
@@ -19,11 +20,9 @@ export function TerminalPanel({ lines = exampleOutput }: TerminalPanelProps) {
     <div className="h-full flex flex-col bg-[var(--color-surface)]">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
         <span className="text-[var(--text-xs)] text-[var(--color-text-muted)] font-mono">Terminal</span>
-        <button className="text-[var(--text-xs)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] cursor-pointer transition-colors">
-          Clear
-        </button>
       </div>
       <div className="flex-1 overflow-auto p-3 font-mono text-[var(--text-xs)] leading-relaxed">
+        {lines.length === 0 && <p className="text-[var(--color-text-muted)]">No live terminal output.</p>}
         {lines.map((line, i) => (
           <div
             key={i}
@@ -32,7 +31,7 @@ export function TerminalPanel({ lines = exampleOutput }: TerminalPanelProps) {
               line.stream === "stderr" ? "text-red-400" : "text-green-400/80",
             )}
           >
-            {line.text}
+            {visibleOutput(line.text)}
           </div>
         ))}
       </div>

@@ -4,20 +4,24 @@ export type PermissionDockProps = {
   toolIcon?: string;
   toolName: string;
   riskLabel?: string;
+  requestId?: string;
   summary: string;
+  detail?: string;
+  disabled?: boolean;
   onDeny?: () => void;
   onAllowOnce?: () => void;
-  onAllowAlways?: () => void;
 };
 
 export function PermissionDock({
   toolIcon = "🔧",
   toolName,
   riskLabel,
+  requestId,
   summary,
+  detail,
+  disabled,
   onDeny,
   onAllowOnce,
-  onAllowAlways,
 }: PermissionDockProps) {
   return (
     <div className="shrink-0 border-t border-b border-[var(--color-warning-border)] bg-[var(--color-warning)] px-4 py-2.5">
@@ -33,19 +37,20 @@ export function PermissionDock({
                 {riskLabel}
               </span>
             )}
+            {requestId && (
+              <span className="text-xs text-[var(--color-text-muted)]">{requestId}</span>
+            )}
           </div>
-          <p className="text-[var(--text-xs)] text-[var(--color-text-secondary)] mb-2">
-            {summary}
-          </p>
+          <p className="text-[var(--text-xs)] text-[var(--color-text-secondary)] mb-2">{summary}</p>
+          {detail && (
+            <pre className="max-h-32 overflow-auto text-xs whitespace-pre-wrap mb-2">{detail}</pre>
+          )}
           <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={onDeny}>
+            <Button variant="ghost" size="sm" onClick={onDeny} disabled={disabled}>
               Deny
             </Button>
-            <Button variant="primary" size="sm" onClick={onAllowOnce}>
+            <Button variant="primary" size="sm" onClick={onAllowOnce} disabled={disabled}>
               Allow Once
-            </Button>
-            <Button variant="secondary" size="sm" onClick={onAllowAlways}>
-              Allow Always
             </Button>
           </div>
         </div>

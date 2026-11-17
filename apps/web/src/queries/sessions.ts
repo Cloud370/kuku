@@ -1,23 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchSessions, fetchSessionEvents } from "@/api/sessions";
+import { fetchAgents, fetchSessions, fetchWorkspaces, resolveWorkspace } from "@/api/sessions";
+import type { Target } from "@/api/sessions";
 
-export function useSessions(workspace?: string) {
+export function useSessions(workspace: string, search: string) {
   return useQuery({
-    queryKey: ["sessions", workspace],
-    queryFn: () => fetchSessions(workspace),
+    queryKey: ["sessions", workspace, search],
+    queryFn: ({ signal }) => fetchSessions(workspace, search, signal),
+    enabled: workspace.length > 0,
+    staleTime: 5_000,
+  });
+}
+
+export function useWorkspaces() {
+  return useQuery({
+    queryKey: ["workspaces"],
+    queryFn: ({ signal }) => fetchWorkspaces(signal),
     staleTime: 10_000,
   });
 }
 
-export function useSessionEvents(
-  sessionId: string | undefined,
-  workspace: string,
-) {
+export function useWorkspaceResolution(workspace: string) {
   return useQuery({
-    queryKey: ["session-events", sessionId],
-    queryFn: () => fetchSessionEvents(sessionId as string, workspace),
-    enabled: !!sessionId,
+    queryKey: ["workspace", workspace],
+    queryFn: ({ signal }) => resolveWorkspace(workspace, signal),
+    enabled: workspace.length > 0,
+    retry: false,
     staleTime: 30_000,
-    refetchOnWindowFocus: false,
+  });
+}
+
+export function useAgents(target: Target, enabled: boolean) {
+  return useQuery({
+    queryKey: ["agents", target.workspace, target.session],
+    queryFn: ({ signal }) => fetchAgents(target, signal),
+    enabled,
+    retry: false,
   });
 }

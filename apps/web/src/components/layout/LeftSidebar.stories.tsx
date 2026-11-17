@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { LeftSidebar } from "./LeftSidebar";
+import { SessionList } from "./SessionList";
+import { WorkspaceZone } from "./WorkspaceZone";
 
 const meta = {
   title: "Layout/LeftSidebar",
@@ -17,4 +19,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  args: {
+    workspacePanel: (
+      <WorkspaceZone workspace="/work/kuku" workspaces={["/work/kuku", "/work/ops"]} />
+    ),
+    sessions: <SessionList />,
+  },
+};

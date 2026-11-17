@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-type ErrorType = "provider_network" | "provider_auth" | "provider_rate_limit" | "provider_overflow" | "internal";
+type ErrorType = "provider_network" | "provider_auth" | "provider_rate_limit" | "provider_overflow" | "internal" | "server";
 
 const errorLabels: Record<ErrorType, string> = {
   provider_network: "Network error — check your connection",
@@ -8,6 +8,7 @@ const errorLabels: Record<ErrorType, string> = {
   provider_rate_limit: "Rate limit exceeded — wait before retrying",
   provider_overflow: "Context limit exceeded",
   internal: "Internal error",
+  server: "Execution error",
 };
 
 export type ErrorNoticeProps = {

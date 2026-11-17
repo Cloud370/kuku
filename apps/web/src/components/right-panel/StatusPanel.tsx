@@ -1,71 +1,86 @@
-const exampleContext = {
+interface StatusContext {
+  model?: string;
+  provider?: string;
+  tier?: string | null;
+  turn?: number | null;
+  tokens?: { input_tokens: number | null; output_tokens: number | null };
+  sessionId?: string;
+  workspace?: string;
+  agent?: string;
+}
+
+const exampleContext: StatusContext = {
   model: "claude-opus-4-7",
   provider: "anthropic",
   turn: 3,
-  tokens: { input: 12450, output: 3201 },
+  tokens: { input_tokens: 12450, output_tokens: 3201 },
   sessionId: "sess-a3f2",
   workspace: "/home/cloud/projects/kuku",
 };
 
-const exampleJsonl = [
-  '{"type":"text","turn":3,"content":"Let me check the API configuration..."}',
-  '{"type":"tool_start","turn":3,"tool":"read_file","args":{"path":"src/api/gateway.ts"}}',
-  '{"type":"tool_output","turn":3,"tool":"read_file","content":"..."}',
-  '{"type":"text","turn":3,"content":"The configuration looks correct."}',
-];
+const exampleEvents = ["#6 user", "#9 assistant", "#10 tool_call", "#11 tool_result"];
 
 export type StatusPanelProps = {
-  context?: typeof exampleContext;
+  context?: StatusContext;
   events?: string[];
 };
 
-export function StatusPanel({ context = exampleContext, events = exampleJsonl }: StatusPanelProps) {
+export function StatusPanel({
+  context = exampleContext,
+  events = exampleEvents,
+}: StatusPanelProps) {
+  const rows = [
+    ["Workspace", context.workspace],
+    ["Session", context.sessionId],
+    ["Agent", context.agent],
+    ["Model", context.model],
+    ["Connection", context.provider],
+    ["Model tier", context.tier],
+    ["Turn", context.turn],
+    [
+      "Tokens",
+      context.tokens &&
+        `${String(context.tokens.input_tokens ?? "—")} in / ${String(context.tokens.output_tokens ?? "—")} out`,
+    ],
+  ];
+
   return (
     <div className="h-full flex flex-col">
-      <div className="p-3 border-b border-[var(--color-border)] shrink-0 space-y-1.5 text-[var(--text-xs)]">
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Model</span>
-          <span className="text-[var(--color-text-primary)] font-mono">{context.model}</span>
+      <dl className="p-3 border-b border-[var(--color-border)] shrink-0 space-y-1.5 text-[var(--text-xs)]">
+        {rows.map(
+          ([name, value]) =>
+            value !== undefined &&
+            value !== null &&
+            value !== "" && (
+              <div className="flex justify-between gap-4" key={name}>
+                <dt className="text-[var(--color-text-muted)] shrink-0">{name}</dt>
+                <dd
+                  className="truncate text-[var(--color-text-primary)] font-mono"
+                  title={String(value)}
+                >
+                  {value}
+                </dd>
+              </div>
+            ),
+        )}
+      </dl>
+      {events.length > 0 && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <p className="text-[var(--text-xs)] font-medium text-[var(--color-text-muted)] px-3 py-1.5 border-b border-[var(--color-border)]">
+            Event Log
+          </p>
+          <div className="flex-1 overflow-auto p-3 font-mono text-[var(--text-xs)] leading-relaxed space-y-0.5">
+            {events.map((line, index) => (
+              <p
+                key={index}
+                className="text-[var(--color-text-muted)] whitespace-pre-wrap break-all"
+              >
+                {line}
+              </p>
+            ))}
+          </div>
         </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Provider</span>
-          <span className="text-[var(--color-text-primary)]">{context.provider}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Turn</span>
-          <span className="text-[var(--color-text-primary)]">{context.turn}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Tokens</span>
-          <span className="text-[var(--color-text-primary)] font-mono">
-            {context.tokens.input} in / {context.tokens.output} out
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Session</span>
-          <span className="text-[var(--color-text-primary)] font-mono text-[var(--text-xs)]">
-            {context.sessionId}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-[var(--color-text-muted)]">Workspace</span>
-          <span className="text-[var(--color-text-primary)] font-mono text-[var(--text-xs)] truncate ml-4">
-            {context.workspace}
-          </span>
-        </div>
-      </div>
-      <div className="flex-1 min-h-0 flex flex-col">
-        <p className="text-[var(--text-xs)] font-medium text-[var(--color-text-muted)] px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
-          Event Log
-        </p>
-        <div className="flex-1 overflow-auto p-3 font-mono text-[var(--text-xs)] leading-relaxed space-y-0.5">
-          {events.map((line, i) => (
-            <div key={i} className="text-[var(--color-text-muted)] whitespace-pre-wrap break-all">
-              {line}
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

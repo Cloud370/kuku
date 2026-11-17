@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 
-type ToolStatus = "running" | "completed" | "error";
+type ToolStatus = "running" | "completed" | "error" | "unknown";
 type ToolKind = "tool" | "agent";
 
 export type ToolCardProps = {
@@ -18,6 +18,7 @@ const statusIcon: Record<ToolStatus, string> = {
   running: "⏳",
   completed: "✅",
   error: "❌",
+  unknown: "?",
 };
 
 export function ToolCard({
@@ -42,6 +43,7 @@ export function ToolCard({
       )}
     >
       <button
+        aria-expanded={open}
         onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors cursor-pointer hover:bg-[var(--color-surface-hover)]"
       >
@@ -53,6 +55,7 @@ export function ToolCard({
           {summary}
         </span>
         <span className="text-[var(--text-xs)] shrink-0">{statusIcon[status]}</span>
+        {status === "unknown" && <span className="text-[var(--text-xs)] text-[var(--color-text-muted)] shrink-0">Result unknown</span>}
         {(kind === "agent" || children) && (
           <span
             className={cn(
