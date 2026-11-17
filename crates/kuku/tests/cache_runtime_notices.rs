@@ -10,9 +10,7 @@ use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Provider};
 
 fn request_body(req: &HttpMockRequest) -> Option<serde_json::Value> {
-    let Some(body) = req.body.as_ref() else {
-        return None;
-    };
+    let body = req.body.as_ref()?;
     serde_json::from_slice::<serde_json::Value>(body).ok()
 }
 
@@ -32,7 +30,7 @@ fn content_blocks(message: &serde_json::Value) -> Vec<&serde_json::Value> {
     }
 }
 
-fn message_texts<'a>(body: &'a serde_json::Value) -> impl Iterator<Item = &'a str> {
+fn message_texts(body: &serde_json::Value) -> impl Iterator<Item = &str> {
     messages(body)
         .into_iter()
         .flat_map(content_blocks)

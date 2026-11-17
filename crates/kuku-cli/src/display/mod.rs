@@ -308,7 +308,7 @@ mod tests {
             },
         };
         let line = OutputLine::session_completed(summary);
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
 
         assert_eq!(json["type"], "session");
         assert_eq!(json["event"], "completed");
@@ -359,7 +359,7 @@ mod tests {
             tools: kuku::query::ToolSummary::default(),
         };
         let line = OutputLine::session_completed(summary);
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
         assert_eq!(json["tools"]["total_calls"], 0);
         assert!(json["tools"]["names"].as_array().unwrap().is_empty());
         assert_eq!(json["tools"]["denied"], 0);
@@ -391,7 +391,7 @@ mod tests {
             tools: kuku::query::ToolSummary::default(),
         };
         let line = OutputLine::session_completed(summary);
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
         assert_eq!(json["response"], "hello");
     }
 
@@ -418,7 +418,7 @@ mod tests {
             },
             tools: kuku::query::ToolSummary::default(),
         });
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
         assert_eq!(json["response"], serde_json::Value::Null);
     }
 
@@ -445,7 +445,7 @@ mod tests {
             },
             tools: kuku::query::ToolSummary::default(),
         });
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
         assert_eq!(json["response"], "partial");
     }
 
@@ -473,7 +473,7 @@ mod tests {
             tools: kuku::query::ToolSummary::default(),
         };
         let line = OutputLine::session_completed(summary);
-        let json: serde_json::Value = serde_json::from_str(&line.to_json_line().trim()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(line.to_json_line().trim()).unwrap();
         let rate_str = json["usage"]["cache_hit_rate"].to_string();
         assert!(
             rate_str.len() <= 5,

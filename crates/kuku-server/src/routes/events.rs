@@ -117,86 +117,6 @@ impl<'a> StreamConversationFilter<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::StreamConversationFilter;
-
-    fn filter_stream_events(
-        values: Vec<serde_json::Value>,
-        conversation: &str,
-    ) -> Vec<serde_json::Value> {
-        let mut filter = StreamConversationFilter::new(conversation);
-        values
-            .into_iter()
-            .filter(|value| filter.matches(value))
-            .collect()
-    }
-
-    #[test]
-    fn stream_conversation_filter_rejects_unscoped_live_events() {
-        let event = json!({"event": "line", "text": "unscoped output"});
-
-        let mut filter = StreamConversationFilter::new("review");
-
-        assert!(!filter.matches(&event));
-    }
-
-    #[test]
-    fn stream_conversation_filter_keeps_delegated_agent_tool_chain() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"tool_start": {"id": "child_tool", "tool": "read_file", "summary": "read", "kind": "simple"}}}),
-                json!({"type": "tool_output", "id": "other_agent", "event": {"text": "other child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "review", "text": "review done"}),
-            ],
-            "review",
-        );
-
-        assert_eq!(events.len(), 5);
-        assert!(events.iter().any(|event| event["type"] == "tool_start"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["tool_start"]["id"] == "child_tool"));
-        assert!(events.iter().any(|event| event["type"] == "tool_end"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["content"] == "main text"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "other child text"));
-    }
-
-    #[test]
-    fn main_stream_filter_keeps_unscoped_main_events_without_delegated_child_output() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "main", "text": "main done"}),
-            ],
-            "main",
-        );
-
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().any(|event| event["content"] == "main text"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["id"] == "agent_review"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
-    }
-}
-
 pub async fn events(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -274,5 +194,85 @@ pub async fn events(
             "events": filtered,
             "active_stream": active_stream,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::StreamConversationFilter;
+
+    fn filter_stream_events(
+        values: Vec<serde_json::Value>,
+        conversation: &str,
+    ) -> Vec<serde_json::Value> {
+        let mut filter = StreamConversationFilter::new(conversation);
+        values
+            .into_iter()
+            .filter(|value| filter.matches(value))
+            .collect()
+    }
+
+    #[test]
+    fn stream_conversation_filter_rejects_unscoped_live_events() {
+        let event = json!({"event": "line", "text": "unscoped output"});
+
+        let mut filter = StreamConversationFilter::new("review");
+
+        assert!(!filter.matches(&event));
+    }
+
+    #[test]
+    fn stream_conversation_filter_keeps_delegated_agent_tool_chain() {
+        let events = filter_stream_events(
+            vec![
+                json!({"type": "text", "content": "main text"}),
+                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
+                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
+                json!({"type": "tool_output", "id": "agent_review", "event": {"tool_start": {"id": "child_tool", "tool": "read_file", "summary": "read", "kind": "simple"}}}),
+                json!({"type": "tool_output", "id": "other_agent", "event": {"text": "other child text"}}),
+                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
+                json!({"type": "done", "conversation": "review", "text": "review done"}),
+            ],
+            "review",
+        );
+
+        assert_eq!(events.len(), 5);
+        assert!(events.iter().any(|event| event["type"] == "tool_start"));
+        assert!(events
+            .iter()
+            .any(|event| event["event"]["text"] == "review child text"));
+        assert!(events
+            .iter()
+            .any(|event| event["event"]["tool_start"]["id"] == "child_tool"));
+        assert!(events.iter().any(|event| event["type"] == "tool_end"));
+        assert!(events.iter().any(|event| event["type"] == "done"));
+        assert!(!events.iter().any(|event| event["content"] == "main text"));
+        assert!(!events
+            .iter()
+            .any(|event| event["event"]["text"] == "other child text"));
+    }
+
+    #[test]
+    fn main_stream_filter_keeps_unscoped_main_events_without_delegated_child_output() {
+        let events = filter_stream_events(
+            vec![
+                json!({"type": "text", "content": "main text"}),
+                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
+                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
+                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
+                json!({"type": "done", "conversation": "main", "text": "main done"}),
+            ],
+            "main",
+        );
+
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().any(|event| event["content"] == "main text"));
+        assert!(events.iter().any(|event| event["type"] == "done"));
+        assert!(!events.iter().any(|event| event["id"] == "agent_review"));
+        assert!(!events
+            .iter()
+            .any(|event| event["event"]["text"] == "review child text"));
     }
 }

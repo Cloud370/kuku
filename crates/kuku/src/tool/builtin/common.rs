@@ -714,7 +714,10 @@ mod tests {
             }),
         );
 
-        assert!(find_write_snapshot(&[snapshot.clone()], &path, false, Some("alpha")).is_some());
+        assert!(
+            find_write_snapshot(std::slice::from_ref(&snapshot), &path, false, Some("alpha"))
+                .is_some()
+        );
         assert!(find_write_snapshot(&[snapshot], &path, false, Some("hidden tail")).is_none());
     }
 
