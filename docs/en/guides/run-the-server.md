@@ -42,7 +42,7 @@ Use [Server API](../reference/server-api.md) for the exact request and response 
 
 ## Continue or Inspect Sessions
 
-Read durable event pages with `after` and `limit`; use `next_after` for the next cursor. A deferred question/authorization requires its exact request identity through the response endpoint. Waiting does not consume a model execution slot.
+Read durable event pages with `after` and `limit`; use `next_after` for the next cursor. A deferred question/authorization requires its exact request identity through the response endpoint. Waiting does not consume a model execution slot. After restarting the server, submit the matching reply through `POST /sessions/{id}/responses` with its original workspace, Agent, and request identity.
 
 The server also exposes:
 
@@ -51,6 +51,7 @@ The server also exposes:
 - `GET /sessions/{id}/conversations`
 - `DELETE /sessions/{id}`
 - `POST /runs/{id}/responses`
+- `POST /sessions/{id}/responses`
 
 ## Related Pages
 

@@ -360,3 +360,278 @@ async fn run_can_target_existing_non_main_conversation() {
         .iter()
         .any(|value| value["type"] == "done" && value["conversation"] == "review"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn running_input_retry_returns_original_receipt_without_another_slot() {
+    let mock = mock_provider::start_mock_provider().await;
+    let model = mock.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200).delay(std::time::Duration::from_millis(700)).body(mock_provider::anthropic_sse_response(serde_json::json!({
+            "id":"slow-dedup","type":"message","role":"assistant","content":[{"type":"text","text":"Original input only."}],
+            "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
+        })));
+    });
+    let server = common::TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    *server.state.run_manager.lock().await = kuku_server::run_manager::RunManager::new(1);
+    let client = wreq::Client::new();
+    let url = format!("{}/runs", server.base_url);
+    let payload = serde_json::json!({
+        "prompt":"keep original","workspace":server.workspace.path(),"session_id":"retry-running",
+        "command_id":"original-input","connection":"anthropic","model":"fixture-model"
+    });
+    let response = client.post(&url).json(&payload).send().await.unwrap();
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let started = next_event_of_type(&mut stream, &mut buffer, "run_start").await;
+    let duplicate: serde_json::Value = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(true, duplicate["ok"]);
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(started["receipt"], duplicate["receipt"]);
+    assert_eq!(started["run_id"], duplicate["run_id"]);
+    let mut conflicting = payload.clone();
+    conflicting["prompt"] = serde_json::json!("changed input");
+    let rejected: serde_json::Value = client
+        .post(&url)
+        .json(&conflicting)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(false, rejected["ok"]);
+    conflicting = payload.clone();
+    conflicting["model"] = serde_json::json!("changed-model");
+    let rejected: serde_json::Value = client
+        .post(&url)
+        .json(&conflicting)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(false, rejected["ok"]);
+    assert_eq!(
+        1,
+        server.state.run_manager.lock().await.active_run_ids().len()
+    );
+    let terminal = next_terminal_event(&mut stream, &mut buffer).await;
+    assert_eq!("done", terminal["type"]);
+    assert_eq!("fixture-model", terminal["config"]["model"]);
+    model.assert_hits(1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn waiting_input_retry_keeps_its_request_while_another_agent_uses_capacity() {
+    let mock = mock_provider::start_mock_provider().await;
+    let asked = mock.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages").body_contains("wait for data");
+        then.status(200).body(mock_provider::anthropic_sse_response(serde_json::json!({
+            "id":"ask-dedup","type":"message","role":"assistant",
+            "content":[{"type":"tool_use","id":"wait-dedup","name":"ask_user","input":{"question":"Which value?"}}],
+            "stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":6}
+        })));
+    });
+    let busy=mock.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/v1/messages").body_contains("hold capacity");
+        then.status(200).delay(std::time::Duration::from_millis(700)).body(mock_provider::anthropic_sse_response(serde_json::json!({
+            "id":"busy-dedup","type":"message","role":"assistant","content":[{"type":"text","text":"Busy finished."}],
+            "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
+        })));
+    });
+    let mut server = common::TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    *server.state.run_manager.lock().await = kuku_server::run_manager::RunManager::new(1);
+    let client = wreq::Client::new();
+    let url = format!("{}/runs", server.base_url);
+    let payload = serde_json::json!({"prompt":"wait for data","workspace":server.workspace.path(),"session_id":"retry-waiting","command_id":"waiting-input"});
+    let response = client.post(&url).json(&payload).send().await.unwrap();
+    let mut waiting = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let started = next_event_of_type(&mut waiting, &mut buffer, "run_start").await;
+    let question = next_event_of_type(&mut waiting, &mut buffer, "question").await;
+    let response=client.post(&url).json(&serde_json::json!({
+        "prompt":"hold capacity","workspace":server.workspace.path(),"session_id":"retry-waiting","agent":"busy"
+    })).send().await.unwrap();
+    let mut running = response.bytes_stream();
+    let mut running_buffer = Vec::new();
+    let _ = next_event_of_type(&mut running, &mut running_buffer, "run_start").await;
+    let duplicate: serde_json::Value = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(started["receipt"], duplicate["receipt"]);
+    let mut conflict = payload.clone();
+    conflict["prompt"] = serde_json::json!("changed while waiting");
+    let rejected: serde_json::Value = client
+        .post(&url)
+        .json(&conflict)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(false, rejected["ok"]);
+    let mut new_input = payload.clone();
+    new_input["command_id"] = serde_json::json!("fresh-while-waiting");
+    let rejected: serde_json::Value = client
+        .post(&url)
+        .json(&new_input)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(false, rejected["ok"]);
+    let path = kuku::session::session_events_path(
+        server.home.path(),
+        server.workspace.path(),
+        "retry-waiting",
+    )
+    .unwrap();
+    let agent = kuku::Session::read_agents(&path)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.address == "main")
+        .unwrap();
+    assert_eq!(kuku::AgentStatus::Waiting, agent.status);
+    assert_eq!(
+        question["id"].as_str(),
+        agent.question.as_ref().map(|request| request.id.as_str())
+    );
+    assert_eq!(0, agent.pending_inputs);
+    let terminal = next_terminal_event(&mut running, &mut running_buffer).await;
+    assert_eq!("done", terminal["type"]);
+    drop(waiting);
+    server.restart().await;
+    let reopened_url = format!("{}/runs", server.base_url);
+    let duplicate: serde_json::Value = client
+        .post(&reopened_url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(started["receipt"], duplicate["receipt"]);
+    assert!(duplicate["run_id"].is_null());
+    assert!(server
+        .state
+        .run_manager
+        .lock()
+        .await
+        .active_run_ids()
+        .is_empty());
+    server.close().await;
+    asked.assert_hits(1);
+    busy.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn input_retry_validation_leaves_unadmitted_work_idle_until_fresh_input() {
+    let mock = mock_provider::start_mock_provider().await;
+    let model=mock.mock(|when,then| {
+        when.method(httpmock::Method::POST).path("/v1/messages");
+        then.status(200).body(mock_provider::anthropic_sse_response(serde_json::json!({
+            "id":"pending","type":"message","role":"assistant","content":[{"type":"text","text":"pending work advanced explicitly"}],
+            "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
+        })));
+    });
+    let config = mock_provider::make_test_config(mock.port());
+    let server = common::TestServer::start(config.clone()).await;
+    let mut options =
+        kuku::SessionOptions::new(server.workspace.path(), server.home.path(), config);
+    options.session_id = Some("unadmitted-retry".into());
+    let session = kuku::Session::open(options).await.unwrap();
+    session
+        .create_agent(
+            "create:pending-input",
+            "main",
+            kuku::AgentConfig {
+                connection: Some("anthropic".into()),
+                model: Some("fixture-model".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut input = kuku::Input::new("pending-input", "main", "pending authorized work");
+    input.source = kuku::InputSource::Host("http".into());
+    let receipt = session.send(input).unwrap();
+    let path = session.events_path().to_path_buf();
+    session.close().await.unwrap();
+    // NOTE: Cut after the durable receipt to model a crash before admission.
+    server.retain_receipt_prefix("unadmitted-retry", &receipt);
+    let client = wreq::Client::new();
+    let url = format!("{}/runs", server.base_url);
+    let mut payload = serde_json::json!({
+        "prompt":"pending authorized work","workspace":server.workspace.path(),"session_id":"unadmitted-retry",
+        "command_id":"pending-input","connection":"anthropic","model":"changed-model"
+    });
+    let invalid: serde_json::Value = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(false, invalid["ok"]);
+    let snapshot = kuku::Session::read_agents(&path).unwrap().pop().unwrap();
+    assert_eq!(kuku::AgentStatus::Idle, snapshot.status);
+    assert_eq!(1, snapshot.pending_inputs);
+    assert_eq!(None, snapshot.turn);
+    payload["model"] = serde_json::json!("fixture-model");
+    let duplicate: serde_json::Value = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(serde_json::to_value(receipt).unwrap(), duplicate["receipt"]);
+    assert_eq!(
+        kuku::AgentStatus::Idle,
+        kuku::Session::read_agents(&path).unwrap()[0].status
+    );
+    model.assert_hits(0);
+    payload["command_id"] = serde_json::json!("explicit-fresh-input");
+    payload["prompt"] = serde_json::json!("advance pending work with explicit fresh input");
+    let completed = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        completed
+            .lines()
+            .any(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["type"] == "done"),
+        "{completed}"
+    );
+    model.assert_hits(1);
+}

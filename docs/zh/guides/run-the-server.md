@@ -40,7 +40,7 @@ curl http://127.0.0.1:17777/health
 
 ## 继续或检查 Session
 
-使用 `after`、`limit` 读取持久事件页，并将 `next_after` 用作下一游标。延后问题/授权必须通过回复端点携带精确请求标识。等待不占用模型执行槽位。
+使用 `after`、`limit` 读取持久事件页，并将 `next_after` 用作下一游标。延后问题/授权必须通过回复端点携带精确请求标识。等待不占用模型执行槽位。重启服务后，通过 `POST /sessions/{id}/responses` 携带原工作区、Agent 和请求标识回复。
 
 服务还提供：
 
@@ -49,6 +49,7 @@ curl http://127.0.0.1:17777/health
 - `GET /sessions/{id}/conversations`
 - `DELETE /sessions/{id}`
 - `POST /runs/{id}/responses`
+- `POST /sessions/{id}/responses`
 
 ## 相关页面
 

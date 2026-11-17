@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use kuku::session::{
-    AgentConfig, AgentStatus, Input, InputSource, Observation, Session, SessionOptions,
+    AgentConfig, AgentStatus, Input, InputSource, Observation, Receipt, Session, SessionOptions,
 };
 use tokio::sync::{broadcast, watch, Mutex as TokioMutex, OwnedSemaphorePermit, Semaphore};
 
@@ -23,6 +23,38 @@ pub(crate) enum HostReply {
     Question(String),
 }
 
+pub(crate) enum RunSubmission {
+    Started(broadcast::Receiver<String>),
+    Acknowledged {
+        receipt: Receipt,
+        run_id: Option<String>,
+        replayed: bool,
+    },
+}
+
+enum Submission {
+    Input {
+        config: Box<AgentConfig>,
+        prompt: String,
+    },
+    Reply {
+        request_id: String,
+        reply: HostReply,
+    },
+}
+
+enum Admission {
+    Execute {
+        receipt: Receipt,
+        permit: OwnedSemaphorePermit,
+    },
+    Acknowledge {
+        receipt: Receipt,
+        run_id: Option<String>,
+        replayed: bool,
+    },
+}
+
 /// Host controls and bounded observations for one admitted Agent run.
 pub struct RunHandle {
     session: Session,
@@ -36,6 +68,7 @@ pub struct RunHandle {
 
 struct OpenSession {
     session: Session,
+    workspace: PathBuf,
     runs: HashSet<String>,
 }
 
@@ -56,126 +89,41 @@ impl RunManager {
         }
     }
 
-    /// Persist one input and return a bounded subscription to its Session execution.
-    pub async fn spawn_run(
+    pub(crate) async fn spawn_run(
         &mut self,
-        mut options: SessionOptions,
+        options: SessionOptions,
         address: String,
         config: AgentConfig,
         prompt: String,
         command_id: Option<String>,
-    ) -> Result<(String, broadcast::Receiver<String>), kuku::Error> {
-        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| {
-            kuku::Error::InvalidArgument("server concurrent execution limit reached".into())
-        })?;
-        let session_id = options
-            .session_id
-            .clone()
-            .unwrap_or_else(kuku::session::new_session_id);
-        options.session_id = Some(session_id.clone());
-        let workspace = std::fs::canonicalize(&options.workspace)?;
-        let path = kuku::session::session_events_path(&options.data_dir, &workspace, &session_id)?;
-        let mut sessions = self.sessions.lock().await;
-        if !sessions.contains_key(&path) {
-            let session = Session::open(options).await?;
-            sessions.insert(
-                path.clone(),
-                OpenSession {
-                    session,
-                    runs: HashSet::new(),
-                },
-            );
-        }
-        let entry = sessions.get_mut(&path).expect("session was inserted");
-        let session = entry.session.clone();
-        let command_id = command_id.unwrap_or_else(kuku::session::new_session_id);
-        let run_id = kuku::session::new_session_id();
-        let setup = self.prepare_run(&session, &address, config, &prompt, &command_id);
-        let receipt = match setup {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                if entry.runs.is_empty() {
-                    let close = session.close().await;
-                    sessions.remove(&path);
-                    close?;
-                }
-                return Err(error);
-            }
-        };
-        let mut observer = session.observe(receipt.event_id.saturating_sub(1));
-        let (event_tx, event_rx) = broadcast::channel(256);
-        let recent_events = Arc::new(Mutex::new(RecentEvents::default()));
-        let start = crate::wire::run_start(&run_id, session.id(), &address, &receipt);
-        publish(&event_tx, &recent_events, start);
-        let (complete, done) = watch::channel(None);
-        let permit = Arc::new(Mutex::new(Some(permit)));
-        self.runs.lock().unwrap().insert(
-            run_id.clone(),
-            RunHandle {
-                session: session.clone(),
-                agent: address.clone(),
-                workspace,
-                done,
-                permit: permit.clone(),
-                recent_events: recent_events.clone(),
+    ) -> kuku::Result<RunSubmission> {
+        self.submit(
+            options,
+            address,
+            command_id,
+            Submission::Input {
+                config: Box::new(config),
+                prompt,
             },
-        );
-        entry.runs.insert(run_id.clone());
-        drop(sessions);
-        let runs = self.runs.clone();
-        let sessions = self.sessions.clone();
-        let task_run_id = run_id.clone();
-        tokio::spawn(async move {
-            let result = observe_run(
-                &session,
-                &address,
-                &mut observer,
-                event_tx.clone(),
-                recent_events.clone(),
-                permit,
-            )
-            .await;
-            let result = match result {
-                Ok(()) => wait_for_running_agents(&session, &mut observer, &sessions, &path).await,
-                Err(error) => Err(error),
-            };
-            let mut sessions = sessions.lock().await;
-            let close = if let Some(entry) = sessions.get_mut(&path) {
-                entry.runs.remove(&task_run_id);
-                if entry.runs.is_empty() {
-                    session.close().await
-                } else {
-                    Ok(())
-                }
-            } else {
-                Ok(())
-            };
-            if sessions
-                .get(&path)
-                .is_some_and(|entry| entry.runs.is_empty())
-            {
-                sessions.remove(&path);
-            }
-            let result = match (result, close) {
-                (Ok(()), close) => close,
-                (Err(error), Ok(())) => Err(error),
-                (Err(error), Err(cleanup)) => Err(kuku::Error::InvalidEventStream(format!(
-                    "{error}; session cleanup failed: {cleanup}"
-                ))),
-            };
-            if let Err(error) = &result {
-                publish(
-                    &event_tx,
-                    &recent_events,
-                    json_line(
-                        serde_json::json!({"type":"error","code":error.code(),"message":error.to_string()}),
-                    ),
-                );
-            }
-            runs.lock().unwrap().remove(&task_run_id);
-            let _ = complete.send(Some(result.map_err(|error| error.to_string())));
-        });
-        Ok((run_id, event_rx))
+        )
+        .await
+    }
+
+    pub(crate) async fn spawn_reply(
+        &mut self,
+        options: SessionOptions,
+        address: String,
+        request_id: String,
+        reply: HostReply,
+        command_id: Option<String>,
+    ) -> kuku::Result<RunSubmission> {
+        self.submit(
+            options,
+            address,
+            command_id,
+            Submission::Reply { request_id, reply },
+        )
+        .await
     }
 
     /// Cancel the selected Agent and await its owned cleanup.
@@ -289,6 +237,11 @@ impl RunManager {
                 interaction_id.into(),
             ));
         }
+        if let Some(receipt) =
+            reply_receipt(&run.session, &run.agent, interaction_id, command_id, &reply)?
+        {
+            return Ok(receipt);
+        }
         let mut permit = run.permit.lock().unwrap();
         let newly_acquired = permit.is_none();
         if newly_acquired {
@@ -296,22 +249,287 @@ impl RunManager {
                 kuku::Error::InvalidArgument("server concurrent execution limit reached".into())
             })?);
         }
-        let result = match reply {
-            HostReply::Permission(allow) => {
-                run.session
-                    .reply_permission(command_id, &run.agent, interaction_id, allow)
-            }
-            HostReply::Question(text) => {
-                run.session
-                    .reply_question(command_id, &run.agent, interaction_id, text)
-            }
-        };
+        let result = apply_reply(&run.session, &run.agent, interaction_id, command_id, reply);
         if newly_acquired
             && (result.is_err() || run.session.agent(&run.agent)?.status != AgentStatus::Running)
         {
             permit.take();
         }
         result
+    }
+
+    async fn submit(
+        &self,
+        mut options: SessionOptions,
+        address: String,
+        command_id: Option<String>,
+        submission: Submission,
+    ) -> kuku::Result<RunSubmission> {
+        let session_id = options
+            .session_id
+            .clone()
+            .unwrap_or_else(kuku::session::new_session_id);
+        options.session_id = Some(session_id.clone());
+        let workspace = std::fs::canonicalize(&options.workspace)?;
+        if options.data_dir.exists() {
+            options.data_dir = std::fs::canonicalize(&options.data_dir)?;
+        }
+        let mut path =
+            kuku::session::session_events_path(&options.data_dir, &workspace, &session_id)?;
+        let mut sessions = self.sessions.lock().await;
+        if !sessions.contains_key(&path) {
+            if matches!(submission, Submission::Reply { .. }) && !path.exists() {
+                return Err(kuku::Error::InvalidArgument(
+                    "persistent reply requires an existing Session".into(),
+                ));
+            }
+            let session = Session::open(options).await?;
+            path = session.events_path().to_path_buf();
+            sessions.insert(
+                path.clone(),
+                OpenSession {
+                    session,
+                    workspace,
+                    runs: HashSet::new(),
+                },
+            );
+        }
+        let entry = sessions.get_mut(&path).expect("session was inserted");
+        let session = entry.session.clone();
+        let command_id = command_id.unwrap_or_else(kuku::session::new_session_id);
+        let result = match self.admit(&session, &address, &command_id, submission) {
+            Ok(Admission::Execute { receipt, permit }) => {
+                let receiver = self.register_run(entry, path.clone(), address, receipt, permit);
+                return Ok(RunSubmission::Started(receiver));
+            }
+            Ok(Admission::Acknowledge {
+                receipt,
+                run_id,
+                replayed,
+            }) => Ok(RunSubmission::Acknowledged {
+                receipt,
+                run_id,
+                replayed,
+            }),
+            Err(error) => Err(error),
+        };
+        if entry.runs.is_empty() {
+            let close = session.close().await;
+            sessions.remove(&path);
+            match (result, close) {
+                (result, Ok(())) => result,
+                (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(cleanup)) => Err(kuku::Error::InvalidEventStream(format!(
+                    "{error}; session cleanup failed: {cleanup}"
+                ))),
+            }
+        } else {
+            result
+        }
+    }
+
+    fn admit(
+        &self,
+        session: &Session,
+        address: &str,
+        command_id: &str,
+        submission: Submission,
+    ) -> kuku::Result<Admission> {
+        let replayed = session.receipt(command_id)?.is_some();
+        let run_id = self.find_run(session, address);
+        match submission {
+            Submission::Input { config, prompt } => {
+                if replayed {
+                    self.validate_replayed_config(session, address, command_id, *config)?;
+                    let receipt = session
+                        .input_receipt(&http_input(command_id, address, &prompt))?
+                        .ok_or_else(|| {
+                            kuku::Error::InvalidEventStream(
+                                "committed input has no matching receipt".into(),
+                            )
+                        })?;
+                    return Ok(Admission::Acknowledge {
+                        receipt,
+                        run_id,
+                        replayed: true,
+                    });
+                }
+                if run_id.is_some() {
+                    return Err(kuku::Error::InvalidArgument(format!(
+                        "agent '{address}' already has an active HTTP control"
+                    )));
+                }
+                let permit = self.acquire_permit()?;
+                let receipt = self.prepare_run(session, address, *config, &prompt, command_id)?;
+                Ok(Admission::Execute { receipt, permit })
+            }
+            Submission::Reply { request_id, reply } => {
+                if let Some(run_id) = run_id {
+                    let receipt =
+                        self.respond(&run_id, &request_id, Some(address), command_id, reply)?;
+                    return Ok(Admission::Acknowledge {
+                        receipt,
+                        run_id: Some(run_id),
+                        replayed,
+                    });
+                }
+                if let Some(receipt) =
+                    reply_receipt(session, address, &request_id, command_id, &reply)?
+                {
+                    return Ok(Admission::Acknowledge {
+                        receipt,
+                        run_id: None,
+                        replayed: true,
+                    });
+                }
+                let permit = self.acquire_permit()?;
+                let receipt = apply_reply(session, address, &request_id, command_id, reply)?;
+                Ok(Admission::Execute { receipt, permit })
+            }
+        }
+    }
+
+    fn register_run(
+        &self,
+        entry: &mut OpenSession,
+        path: PathBuf,
+        address: String,
+        receipt: Receipt,
+        permit: OwnedSemaphorePermit,
+    ) -> broadcast::Receiver<String> {
+        let session = entry.session.clone();
+        let workspace = entry.workspace.clone();
+        let run_id = kuku::session::new_session_id();
+        let mut observer = session.observe(receipt.event_id.saturating_sub(1));
+        let (event_tx, event_rx) = broadcast::channel(256);
+        let recent_events = Arc::new(Mutex::new(RecentEvents::default()));
+        let start = crate::wire::run_start(&run_id, session.id(), &address, &receipt);
+        publish(&event_tx, &recent_events, start);
+        let (complete, done) = watch::channel(None);
+        let permit = Arc::new(Mutex::new(Some(permit)));
+        self.runs.lock().unwrap().insert(
+            run_id.clone(),
+            RunHandle {
+                session: session.clone(),
+                agent: address.clone(),
+                workspace,
+                done,
+                permit: permit.clone(),
+                recent_events: recent_events.clone(),
+            },
+        );
+        entry.runs.insert(run_id.clone());
+        let runs = self.runs.clone();
+        let sessions = self.sessions.clone();
+        let task_run_id = run_id.clone();
+        tokio::spawn(async move {
+            let result = observe_run(
+                &session,
+                &address,
+                &mut observer,
+                event_tx.clone(),
+                recent_events.clone(),
+                permit,
+            )
+            .await;
+            let result = match result {
+                Ok(()) => wait_for_running_agents(&session, &mut observer, &sessions, &path).await,
+                Err(error) => Err(error),
+            };
+            let mut sessions = sessions.lock().await;
+            let close = if let Some(entry) = sessions.get_mut(&path) {
+                entry.runs.remove(&task_run_id);
+                if entry.runs.is_empty() {
+                    session.close().await
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            };
+            if sessions
+                .get(&path)
+                .is_some_and(|entry| entry.runs.is_empty())
+            {
+                sessions.remove(&path);
+            }
+            let result = match (result, close) {
+                (Ok(()), close) => close,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(cleanup)) => Err(kuku::Error::InvalidEventStream(format!(
+                    "{error}; session cleanup failed: {cleanup}"
+                ))),
+            };
+            if let Err(error) = &result {
+                publish(
+                    &event_tx,
+                    &recent_events,
+                    json_line(
+                        serde_json::json!({"type":"error","code":error.code(),"message":error.to_string()}),
+                    ),
+                );
+            }
+            runs.lock().unwrap().remove(&task_run_id);
+            let _ = complete.send(Some(result.map_err(|error| error.to_string())));
+        });
+        event_rx
+    }
+
+    fn acquire_permit(&self) -> kuku::Result<OwnedSemaphorePermit> {
+        self.semaphore.clone().try_acquire_owned().map_err(|_| {
+            kuku::Error::InvalidArgument("server concurrent execution limit reached".into())
+        })
+    }
+
+    fn find_run(&self, session: &Session, address: &str) -> Option<String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, run)| {
+                run.session.events_path() == session.events_path() && run.agent == address
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
+    fn validate_replayed_config(
+        &self,
+        session: &Session,
+        address: &str,
+        command_id: &str,
+        config: AgentConfig,
+    ) -> kuku::Result<()> {
+        if config == AgentConfig::default() {
+            return Ok(());
+        }
+        let create_id = format!("create:{command_id}");
+        let configure_id = format!("config:{command_id}");
+        if session.receipt(&create_id)?.is_some() {
+            session.create_agent(&create_id, address, config)?;
+        } else if let Some(receipt) = session.receipt(&configure_id)? {
+            let event = session
+                .events(receipt.event_id.saturating_sub(1), 1)?
+                .into_iter()
+                .next()
+                .filter(|event| event.id == receipt.event_id)
+                .ok_or_else(|| {
+                    kuku::Error::InvalidEventStream(
+                        "configuration receipt has no committed event".into(),
+                    )
+                })?;
+            let kuku::event::EventPayload::Unknown(value) = event.payload else {
+                return Err(kuku::Error::InvalidEventStream(
+                    "configuration receipt does not reference an Agent configuration".into(),
+                ));
+            };
+            let original: AgentConfig = serde_json::from_value(value["record"]["config"].clone())?;
+            session.configure_agent(&configure_id, address, merge_config(original, config))?;
+        } else {
+            return Err(kuku::Error::InvalidArgument(format!(
+                "command '{command_id}' was committed without the supplied configuration"
+            )));
+        }
+        Ok(())
     }
 
     fn prepare_run(
@@ -344,9 +562,7 @@ impl RunManager {
         } else {
             session.create_agent(&format!("create:{run_id}"), address, config)?;
         }
-        let mut input = Input::new(run_id, address, prompt);
-        input.source = InputSource::Host("http".into());
-        let receipt = session.send(input)?;
+        let receipt = session.send(http_input(run_id, address, prompt))?;
         if matches!(
             session.agent(address)?.status,
             AgentStatus::Stopped | AgentStatus::Interrupted
@@ -354,6 +570,44 @@ impl RunManager {
             session.advance(address)?;
         }
         Ok(receipt)
+    }
+}
+
+fn http_input(command_id: &str, address: &str, prompt: &str) -> Input {
+    let mut input = Input::new(command_id, address, prompt);
+    input.source = InputSource::Host("http".into());
+    input
+}
+
+fn reply_receipt(
+    session: &Session,
+    address: &str,
+    request_id: &str,
+    command_id: &str,
+    reply: &HostReply,
+) -> kuku::Result<Option<Receipt>> {
+    match reply {
+        HostReply::Permission(allow) => {
+            session.reply_permission_receipt(command_id, address, request_id, *allow)
+        }
+        HostReply::Question(text) => {
+            session.reply_question_receipt(command_id, address, request_id, text)
+        }
+    }
+}
+
+fn apply_reply(
+    session: &Session,
+    address: &str,
+    request_id: &str,
+    command_id: &str,
+    reply: HostReply,
+) -> kuku::Result<Receipt> {
+    match reply {
+        HostReply::Permission(allow) => {
+            session.reply_permission(command_id, address, request_id, allow)
+        }
+        HostReply::Question(text) => session.reply_question(command_id, address, request_id, text),
     }
 }
 
@@ -365,6 +619,7 @@ async fn observe_run(
     recent_events: Arc<Mutex<RecentEvents>>,
     permit: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
 ) -> kuku::Result<()> {
+    let mut last_question = None;
     let mut last_permission = None;
     loop {
         match observer.next().await? {
@@ -393,29 +648,25 @@ async fn observe_run(
                     AgentStatus::Waiting => {
                         permit.lock().unwrap().take();
                         if let Some(request) = snapshot.question {
-                            if last_permission.as_deref() == Some(request.id.as_str()) {
-                                continue;
+                            if last_question.as_deref() != Some(request.id.as_str()) {
+                                last_question = Some(request.id.clone());
+                                publish(
+                                    &event_tx,
+                                    &recent_events,
+                                    json_line(
+                                        serde_json::json!({"type":"question","session_id":session.id(),"agent":address,"id":request.id,"text":request.text,"turn":request.turn}),
+                                    ),
+                                );
                             }
-                            last_permission = Some(request.id.clone());
-                            publish(
-                                &event_tx,
-                                &recent_events,
-                                json_line(
-                                    serde_json::json!({"type":"question","session_id":session.id(),"agent":address,"id":request.id,"text":request.text,"turn":request.turn}),
-                                ),
-                            );
                         }
                         if let Some(request) = snapshot.permission {
-                            if last_permission.as_deref() == Some(request.id.as_str()) {
-                                continue;
-                            }
-                            last_permission = Some(request.id.clone());
-                            if let Some(line) =
-                                crate::wire::serialize_event(&kuku::UiEvent::PermissionRequested {
-                                    request,
-                                })
-                            {
-                                publish(&event_tx, &recent_events, line);
+                            if last_permission.as_deref() != Some(request.id.as_str()) {
+                                last_permission = Some(request.id.clone());
+                                if let Some(line) = crate::wire::serialize_event(
+                                    &kuku::UiEvent::PermissionRequested { request },
+                                ) {
+                                    publish(&event_tx, &recent_events, line);
+                                }
                             }
                         }
                     }
@@ -445,9 +696,7 @@ async fn observe_run(
                         );
                         return Ok(());
                     }
-                    AgentStatus::Running | AgentStatus::Idle => {
-                        last_permission = None;
-                    }
+                    AgentStatus::Running | AgentStatus::Idle => {}
                 }
             }
             None => return Ok(()),

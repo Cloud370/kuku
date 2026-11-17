@@ -40,7 +40,7 @@ impl TestServer {
         Self::start_with_authorizer(config, None, Arc::new(DeferTools)).await
     }
 
-    async fn start_with_authorizer(
+    pub async fn start_with_authorizer(
         config: kuku::config::Config,
         password: Option<String>,
         authorizer: Arc<dyn kuku::permission::ToolAuthorizer>,
@@ -58,20 +58,8 @@ impl TestServer {
             authorizer,
         });
 
-        let app = kuku_server::build_app(state.clone());
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let (addr, handle) = listen(state.clone()).await;
         let base_url = format!("http://{addr}");
-
-        let handle = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
 
         Self {
             addr,
@@ -81,6 +69,22 @@ impl TestServer {
             state,
             handle: Some(handle),
         }
+    }
+
+    pub async fn restart(&mut self) {
+        self.close().await;
+        let state = Arc::new(kuku_server::AppState {
+            run_manager: Mutex::new(kuku_server::run_manager::RunManager::new(16)),
+            config: self.state.config.clone(),
+            password: self.state.password.clone(),
+            kuku_home: self.home.path().into(),
+            authorizer: self.state.authorizer.clone(),
+        });
+        let (addr, handle) = listen(state.clone()).await;
+        self.addr = addr;
+        self.base_url = format!("http://{addr}");
+        self.state = state;
+        self.handle = Some(handle);
     }
 
     pub async fn close(&mut self) {
@@ -95,6 +99,36 @@ impl TestServer {
             handle.abort();
         }
     }
+
+    pub fn retain_receipt_prefix(&self, session_id: &str, receipt: &kuku::Receipt) {
+        let path =
+            kuku::session::session_events_path(self.home.path(), self.workspace.path(), session_id)
+                .unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        let bytes = contents
+            .split_inclusive(|byte| *byte == b'\n')
+            .take(receipt.event_id as usize)
+            .map(<[u8]>::len)
+            .sum::<usize>();
+        let journal = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        journal.set_len(bytes as u64).unwrap();
+        journal.sync_all().unwrap();
+    }
+}
+
+async fn listen(state: Arc<kuku_server::AppState>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let app = kuku_server::build_app(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    (addr, handle)
 }
 
 #[derive(Debug)]

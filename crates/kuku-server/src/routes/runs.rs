@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
+use crate::run_manager::RunSubmission;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -76,16 +77,31 @@ pub async fn create_run(
             .spawn_run(options, agent, agent_config, body.prompt, body.command_id)
             .await
         {
-            Ok((_, receiver)) => receiver,
+            Ok(submission) => submission,
             Err(error) => {
                 return Json(crate::error_mapping::error_envelope(&error)).into_response()
             }
         }
     };
+    submission_response(event_rx)
+}
+
+pub(crate) fn submission_response(submission: RunSubmission) -> Response {
+    let receiver = match submission {
+        RunSubmission::Started(receiver) => receiver,
+        RunSubmission::Acknowledged {
+            receipt,
+            run_id,
+            replayed,
+        } => {
+            return Json(json!({"ok":true,"replayed":replayed,"run_id":run_id,"receipt":receipt}))
+                .into_response();
+        }
+    };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(1);
     tokio::spawn(async move {
         use tokio_stream::StreamExt;
-        let mut stream = BroadcastStream::new(event_rx);
+        let mut stream = BroadcastStream::new(receiver);
         while let Some(item) = stream.next().await {
             let line = match item {
                 Ok(line) => line,

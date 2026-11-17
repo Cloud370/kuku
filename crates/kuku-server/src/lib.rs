@@ -82,6 +82,10 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/runs", post(routes::runs::create_run))
         .route("/runs/{id}", delete(routes::runs::cancel_run))
         .route("/runs/{id}/responses", post(routes::responses::respond))
+        .route(
+            "/sessions/{id}/responses",
+            post(routes::responses::respond_session),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

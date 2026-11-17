@@ -18,6 +18,7 @@ The default single-user server uses trusted-local tool authorization. Embedded h
 | `POST` | `/runs` | Submit work and observe NDJSON |
 | `DELETE` | `/runs/{id}` | Cancel and await owned cleanup |
 | `POST` | `/runs/{id}/responses` | Answer a pending question or authorization |
+| `POST` | `/sessions/{id}/responses` | Reopen a persistent Session and answer its exact pending request |
 | `GET` | `/sessions` | List retained Sessions |
 | `DELETE` | `/sessions/{id}` | Delete a closed Session |
 | `GET` | `/sessions/{id}/events` | Read a bounded durable page and optional recent progress |
@@ -49,7 +50,7 @@ Request bodies are limited to 10 MB. SDK input and execution limits still apply.
 
 Model selection uses the SDK resolver. Optional fields are `tier`, `connection`, `model`, `reasoning_effort`, `service_tier`, and `max_output_tokens`. `no_agents` and `no_skills` disable their tool surfaces. An exact connection selects its configured endpoint regardless of protocol overlap. Reopening without model options preserves that Agent's configuration; explicit changes affect only that Agent. A changed route clears previous Agent-local reasoning/service overrides before applying new explicit values.
 
-`command_id` accepts 1–100 bytes and is the SDK input's idempotency identity. The returned `run_id` identifies this HTTP execution handle; it is separate from the Session-local command identity. Receipt acknowledges durable delivery, while terminal execution facts arrive later. Reuse the same Session and Agent to continue its context. Other addresses in the Session have independent contexts and may execute concurrently. Submitting another HTTP run for an already-running address fails visibly.
+`command_id` accepts 1–100 bytes and is the SDK input's idempotency identity. The returned `run_id` identifies this HTTP execution handle; it is separate from the Session-local command identity. Receipt acknowledges durable delivery, while terminal execution facts arrive later. Reuse the same Session and Agent to continue its context. Other addresses in the Session have independent contexts and may execute concurrently. New commands for an already-running or waiting address fail visibly. Retrying the same input command returns HTTP JSON with `ok`, `replayed: true`, its original durable `receipt`, and the retained `run_id` when still available. This retry does not allocate another execution slot, alter configuration, or dispatch work again. Conflicting input or explicit configuration reuse fails. SDK callers can still enqueue fresh inputs at safe runtime boundaries; the HTTP host keeps one active control handle per Agent.
 
 The response uses `application/x-ndjson`. When the last HTTP run finishes, the server waits for Agents already running in that Session before closing it. Waiting and interrupted Agents stay dormant. Session execution continues when the HTTP observer disconnects. Closing or slowing a client does not control the execution chain.
 
@@ -59,7 +60,7 @@ The response uses `application/x-ndjson`. When the last HTTP run finishes, the s
 
 `committed` identifies a durable event by `id` and `kind`; read its payload through the event endpoint. `lagged` reports dropped transient updates; reconnect using the durable event cursor. Queues are bounded: 256 broadcast messages and 200 recent messages, capped at 1 MiB per run. Live progress may be lost; committed facts and the terminal response remain inspectable through the Session log.
 
-A question emits `question` with its exact `id`, `agent`, and `text`. A deferred authorization emits `permission` with its matching request identity. Waiting releases the server execution slot; it does not time out into implicit approval or denial.
+A question emits `question` with its exact `id`, `agent`, and `text`. A deferred authorization emits `permission` with its matching request identity. Each pending request identity is emitted once per retained HTTP control, including when a question and authorization coexist. Answering the question does not decide the authorization. Waiting releases the server execution slot; it does not time out into implicit approval or denial.
 
 Terminal events are `done`, `cancelled`, or `error`. `done` follows durable settlement and includes `session_id`, `agent`, `text`, `turn`, cumulative provider `usage`, and the Agent's `config`. `conversation` mirrors the Agent address for existing consumers. A completed Turn does not establish task success; inspect actual files and verifier commands.
 
@@ -83,7 +84,17 @@ Success returns `{"ok":true}` after cancellation and cleanup have completed. A m
 
 `choice` is `once` or `deny` for authorization, or `answer` with a `text` field for a question. `agent` is optional but must match the original run when supplied. `conversation` remains its alias. Session/project-wide grants are not inferred from a reply. A caller-selected `command_id` gives idempotent reply retries. Mismatched or stale request identities fail without advancing the Agent.
 
-Replies to a currently open server run continue through its original stream. After the server has closed, a pending request remains in its Session and can be reopened through the public SDK or `kuku reply` with the same workspace/data directory.
+Replies to a currently open server run continue through its original stream.
+
+## `POST /sessions/{id}/responses`
+
+Use the persistent Session identity after a server restart; no old HTTP `run_id` is needed. The body uses the same reply fields and requires `workspace`:
+
+```json
+{"workspace":"/code/my-project","agent":"reviewer","interaction_id":"exact-pending-request","choice":"answer","text":"the requested information","command_id":"reply-1"}
+```
+
+The Session must already exist. `agent` defaults to `main`. The host opens that Session, calls its matching SDK reply operation, and retains the same runtime until its continuation settles or waits again. A new HTTP execution returns the normal NDJSON stream and a new `run_id`; `run_start.receipt` identifies the durable reply. If this Agent already has a retained HTTP control, the reply returns JSON acknowledgement with that `run_id` and continues through its existing stream. Duplicate reply commands return their original receipt without creating another continuation. Mismatched/stale requests and conflicting retries fail without model or tool dispatch.
 
 ## `GET /sessions`
 

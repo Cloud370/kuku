@@ -18,6 +18,7 @@
 | `POST` | `/runs` | 提交工作并观察 NDJSON |
 | `DELETE` | `/runs/{id}` | 取消并等待所拥有工作的清理 |
 | `POST` | `/runs/{id}/responses` | 回复待决问题或授权 |
+| `POST` | `/sessions/{id}/responses` | 重开持久 Session 并回复精确待决请求 |
 | `GET` | `/sessions` | 列出保留的 Session |
 | `DELETE` | `/sessions/{id}` | 删除已关闭的 Session |
 | `GET` | `/sessions/{id}/events` | 读取有界持久页及可选近期进度 |
@@ -49,7 +50,7 @@
 
 模型选择复用 SDK 解析器。可选字段为 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier` 和 `max_output_tokens`。`no_agents`、`no_skills` 禁用对应工具面。精确连接按配置名称选择端点，不因协议相同而选用其他连接。重开时不传模型参数会保留该 Agent 的配置；显式修改只影响该 Agent。切换路由时先清除旧的 Agent 局部 reasoning/service 覆盖值，再应用新显式值。
 
-`command_id` 接受 1–100 字节，是 SDK 输入幂等标识，返回的 `run_id` 标识本次 HTTP 执行控制句柄，与 Session 内命令标识分开。回执确认输入已经持久化，执行终结事实随后产生。重复使用同一 Session 和 Agent 延续其上下文；同一 Session 中其他地址具有独立上下文，可并发执行。对已经运行的地址再次提交 HTTP run 会明确失败。
+`command_id` 接受 1–100 字节，是 SDK 输入幂等标识，返回的 `run_id` 标识本次 HTTP 执行控制句柄，与 Session 内命令标识分开。回执确认输入已经持久化，执行终结事实随后产生。重复使用同一 Session 和 Agent 延续其上下文；同一 Session 中其他地址具有独立上下文，可并发执行。对已在运行或等待的地址提交新命令会明确失败。重试同一输入命令时返回 HTTP JSON，包含 `ok`、`replayed: true`、原始持久 `receipt`，以及仍被保留时的 `run_id`。重试不会再占执行槽位、修改配置或重复派发；输入或显式配置的冲突复用会失败。SDK 调用方仍可在安全边界接纳新输入，HTTP 宿主维持每个 Agent 一个活动控制句柄。
 
 响应为 `application/x-ndjson`。最后一个 HTTP run 完成后，服务会等待该 Session 中已在运行的 Agent 结算，再关闭资源。等待和中断的 Agent 保持休眠。HTTP 观察者断开后 Session 继续执行，关闭或放慢客户端不会成为执行链的控制者。
 
@@ -59,7 +60,7 @@
 
 `committed` 通过 `id` 和 `kind` 标识持久事件，完整 payload 从事件端点读取。`lagged` 报告丢失的瞬时更新，可使用持久游标重新读取。每个 run 的队列有界：广播最多 256 条，近期缓冲最多 200 条且每个 run 不超过 1 MiB。瞬时进度可能丢失，已提交事实与终结响应仍可通过 Session 日志检查。
 
-问题发送带精确 `id`、`agent` 和 `text` 的 `question` 事件；延后授权发送带匹配标识的 `permission`。等待会释放服务执行槽位，不会因超时隐式授权或拒绝。
+问题发送带精确 `id`、`agent` 和 `text` 的 `question` 事件；延后授权发送带匹配标识的 `permission`。每个待决请求标识在一个保留的 HTTP 控制中只通知一次，问题与授权并存时也分别通知；回答问题不会决定授权。等待会释放服务执行槽位，不会因超时隐式授权或拒绝。
 
 终结事件为 `done`、`cancelled` 或 `error`。`done` 位于持久结算之后，含 `session_id`、`agent`、`text`、`turn`、累计 Provider `usage` 和 Agent `config`。`conversation` 为兼容现有消费者而镜像 Agent 地址。Turn 完成不代表任务成功，应检查真实文件与判定命令。
 
@@ -83,7 +84,17 @@ Provider 用量及未知报告遵循 [Session SDK](../how-it-works/sessions.md)�
 
 授权的 `choice` 为 `once` 或 `deny`；问题使用 `answer` 并提供 `text`。`agent` 可选，提供时必须匹配原 run；`conversation` 仍为别名。回复不会隐含 Session/项目范围授权。调用方指定 `command_id` 可安全重试同一回复。错误或过期请求不会推进 Agent。
 
-当前打开的服务 run 通过原流继续。服务关闭后，待决请求保留在 Session 中，可使用公开 SDK 或 `kuku reply`，配合同一工作区/数据目录重开。
+当前打开的服务 run 通过原流继续。
+
+## `POST /sessions/{id}/responses`
+
+服务重启后使用持久 Session 标识，无需旧 HTTP `run_id`。请求沿用回复字段，并必须提供 `workspace`：
+
+```json
+{"workspace":"/code/my-project","agent":"reviewer","interaction_id":"exact-pending-request","choice":"answer","text":"the requested information","command_id":"reply-1"}
+```
+
+Session 必须已存在，`agent` 默认 `main`。宿主重开该 Session，调用匹配的 SDK 回复操作，并保留同一运行时直到续接结算或再次等待。新的 HTTP 执行返回普通 NDJSON 流和新 `run_id`，`run_start.receipt` 指向持久回复。若该 Agent 已有保留的 HTTP 控制，则返回含该 `run_id` 的 JSON 回执，并通过原流继续。重复回复命令返回原回执，不产生第二次续接。错误/过期请求和冲突重试均不会派发模型或工具。
 
 ## `GET /sessions`
 
