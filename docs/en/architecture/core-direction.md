@@ -2,69 +2,82 @@
 
 ## Status and reading contract
 
-Design baseline: 2026-10-25. This page is the canonical concise statement of the target direction, not a claim that the rewrite exists. It supersedes earlier planning suggestions of independent child Sessions, opt-in idle wake, and mandatory storage indexes/checkpoints. Current implementation behavior remains in the existing guides and code.
+Design baseline: 2026-11-17. This is the canonical target for the rewrite, not shipped behavior. It supersedes hierarchical `/root/...` identities, a mandatory root-owned execution tree, CLI adaptation deferred beyond the first usable result, and blanket bans on small rebuildable indexes. Existing guides and code describe the current release.
 
-For core work, read this page, then only the relevant code and [Evolution](evolution.md) section. Do not reconstruct decisions from chat history or read the whole documentation tree. Keep this page under 100 lines; replace superseded decisions rather than appending discussion transcripts. English is canonical; keep the Chinese mirror aligned.
+Read this page first, then only task-relevant code and [Evolution](evolution.md). Keep this page under 100 lines and replace superseded decisions instead of appending discussion history. English is canonical; keep the Chinese structure aligned. Documentation approval does not start implementation.
 
 ## Product and design test
 
-kuku is an **embeddable, file-native Rust Agent SDK**, not an application with internal methods exported afterwards, nor a component kit requiring users to assemble an Agent. CLI, server, and UI are thin hosts of the same usable runtime. No mandatory daemon, HTTP server, subprocess CLI, or plugin container is required to embed it.
+kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harness**. A small, complete execution runtime supports interactive work, independent subagents, Teams, and event-driven long-running work. CLI, server, and UI use the same public SDK; embedding requires no daemon, HTTP server, subprocess CLI, or plugin container.
 
-The goal is a lightweight work harness: low overhead, reliable long-running work, and concepts shared by humans, models, and implementation. Make concepts intuitive and visible, not hidden behind modes. Before adding a mechanism, ask what real work requires it, why existing concepts cannot express it, and whether it reduces total complexity.
+Give reliability, low resource use, and low human/model cognitive cost equal weight. A mechanism needs a concrete job and one owner. The default Harness supplies working prompts, tools, model selection, and delegation; callers need not assemble an agent platform. Custom Harnesses choose recipients, context, scheduling, and work completion through explicit SDK operations, without replacing persistence, authorization, or execution.
 
 ## Preserve from kuku
 
-- **Prompt text remains external to Rust execution logic.** Keep model-facing behavioral instructions in versioned assets/templates; code loads, renders, and composes them instead of scattering instruction prose through branches and tool implementations. Structured runtime data is not itself a Prompt template.
-- **Prompt rendering and context assembly stay separate.** Prompt assets define wording; context assembly explicitly selects and orders policy, Agent identity, tool guidance, memory, Skills, accepted history, and new input with provenance; providers translate the prepared request into protocol form.
-- Preserve stable layers and inspectable assembly, file-backed facts, native Skills, configurable presets/tiers, host separation, and useful provider/tool implementations and tests. Rewrite ownership and execution boundaries, not everything that already works. See [Prompt Assembly](prompt-assembly.md) for the existing implementation, not a requirement to keep every old replay algorithm.
+- **Keep behavioral Prompt text in versioned assets/templates**, outside Rust execution branches and tool implementations. Structured runtime facts are not themselves Prompt templates.
+- **Keep Prompt rendering, context assembly, and provider adaptation separate.** Assets own wording; context owns selection, ordering, and recorded sources; providers declare model capabilities and translate prepared requests. Persist what entered model context.
+- Preserve native Skills, configurable Presets/Tiers, file-backed facts, inspectable assembly, useful provider/tool implementations, and relevant tests. Rewrite coupled ownership and execution paths; the existing [Prompt Assembly](prompt-assembly.md) is evidence, not a requirement to keep its replay algorithm.
 
-## One identity and execution model
+## Persistent objects and execution records
 
 | Concept | Target meaning |
 |---|---|
-| Session | One durable work session containing the main Agent and delegated work |
-| Agent | A Session-local address: `/root`, `/root/agent1`, `/root/agent1/agent1`; owns its dialogue and execution |
-| Turn | One round of admitted input and work for that address |
-| Step | One logical model request plus tools caused by its response |
+| Session | Persistent history and execution facts for a set of Agents; the unit of opening, recovery, resource ownership, and data retention |
+| Agent | A Session-local stable address with its own context, current configuration, pending input, and resumable execution state |
+| Turn | A recorded round of admitted work for one Agent; ending a Turn does not establish business-task success |
+| Step | One logical model request and the tool calls caused by its response |
 | ToolCall | One action with requested, authorized, dispatched, and settled facts |
-| Job | A handle for background work, not another executor or output copy |
+| Job | A handle for an existing background execution and output, not another executor or copied result |
 
-Humans, model tools, and runtime use the same Agent path. Allocate once and never reuse it for different work; titles may change. Qualify with Session identity only across Sessions. Do not add a parallel hidden Agent UUID/alias system. Paths express delegation, not filesystem locations or authority. Conversation is the address's dialogue, Attempt is a Step's concrete model attempt, and a context segment is a stable-prefix request series: no extra identity hierarchy is needed for them.
+Session and Agent are the core persistent objects. Use **flat, readable Agent addresses**, for example `main`, `reviewer`, and `agent-3`, unique and never reassigned within a Session. Titles may change; suspension, reopening, and later work keep the same identity. Humans, model tools, and runtime use that address; cross-Session references add the Session identity. Do not add a hidden parallel Agent UUID/alias system. Example spellings are not frozen API names.
 
-Subagents stay in the Session, with independent execution/configuration; do not turn them into independent Sessions or a Team framework. Delegation is a tree, permitted communication can cross siblings, and waits are explicit. Humans and Agents share observable semantics, not human-only approval powers.
+Record creation relationships separately. A default main Agent has no intrinsic authority over all others; creation ancestry is not task ownership, communication permission, or resource lifetime. Subagents normally remain in the same Session. Independent Agents may communicate when authorized; a parent Turn ending does not cancel descendants. Task boards, Team membership/roles, and long-lived assistant identities belong to Harnesses. Work may span Agents/Sessions; accept external correlation without requiring a Task object for ordinary SDK use.
 
-## Input, execution, and configuration
+## One execution path
 
-- Sending durably queues a message. A running recipient admits it at the next safe Step boundary; an **idle recipient starts a Turn by default**. An explicitly stopped/closed recipient needs authorized continuation. Sending does not wait for a reply; runtime receipts and completion are not model-written chatter.
-- Batch pending inputs and coalesce wakeups. Preserve unadmitted messages across failures; inbox is a log-derived view, not a second store. Guide concise collaboration with short instructions; enforce ownership and basic execution budgets in code, not another model call judging every message.
-- Prepare each Step once: admitted input, effective model selection, tool definitions, and context. Technical retries reuse that prepared input; later input/configuration waits for a later boundary. Retry ownership is explicit, not multiplied across layers.
-- Preset defines working instructions/tools/defaults; Tier selects a resource route/defaults; explicit model, reasoning effort, and service settings override according to one documented resolution rule. Record requested and effective choices. Unsupported explicit choices fail clearly; never silently lower reasoning or ignore a provider-specific fast/service setting.
-- Accept all calls from one model response as a batch. Schedule independent work concurrently and conflicting work safely in order without an extra model round trip per call. Authorize final arguments and bind tool definitions; grouping does not bypass validation or hide partial failure.
+- Agent creation and input submission support caller idempotency: retrying the same command returns its original durable receipt; conflicting reuse is rejected. Receipt, model admission, and completion are distinct facts. Input carries its actual source, target, and correlation; seeing context grants no new authority.
+- Delivery, admission, and activation are separate. Default sending wakes an idle recipient; a custom Harness may enqueue without activation and control later advancement. Running Agents admit input only at safe boundaries. Preserve pending input, batch admission, and coalesce wakeups. Explicit stops need authorized continuation.
+- One Agent has at most one advancing execution chain; different Agents can run concurrently. The Session writer serializes commits; model/tool I/O does not hold the writer. Inbox and status are derived from the committed log. Runtime receipts and routing do not require model-written acknowledgements or a model classifying every message.
+- Prepare each Step once, binding admitted input, resolved model/settings, tool definitions, and context. Technical retries reuse it under one retry owner. Later input/configuration applies at later boundaries; obsolete callbacks cannot mutate a replacement execution.
+- Accept a model's tool calls as a batch. Run independent work concurrently, order conflicts safely, bind authorization to final arguments and the actual tool definition, and preserve call/result pairing and partial failures.
+- Runtime progresses independently of observers. Expose submission, configuration, explicit advancement/control, query, and resumable observation through the same public SDK. Losing or slowing a subscriber cannot lose committed results or cause unbounded buffering.
 
-## Facts, output, and immutable prefixes
+## Model choice and independent context
 
-- **Committed files are authoritative; memory is disposable acceleration.** Start with one append-only Session log, one owning writer, and separately stored large output. Open with bounded streaming replay; append incrementally, never rescan history per write. Add one validated rebuildable checkpoint or small offset index only when measured latency requires it; physical segmentation is not a starting requirement.
-- Define acknowledgement/durability barriers before confirming input, dispatching effects, and confirming results. Record necessary execution facts, not every internal transition. Recovery reconstructs facts, not suspended async stacks; unknown effects are never automatically retried. Write failure stops dependent work; cancel means resource cleanup, not just a changed label.
-- Tool output streams to Session-owned files using bounded buffers. First admission returns a rule-based structured summary or bounded fallback, explicitly marked filtered/incomplete with a readable reference. Retain exactly what the model saw. No global shell hook, hidden command rewriting, or default summarizer LLM. Short calls and Jobs share one execution/output; later Job completion is not a second result for the original ToolCall.
-- Use one bounded output-reading entry point for summary/range/search/incremental access. UI reads do not consume model output. Set result, output-file, and Session-output budgets; disclose loss and preserve references for their promised lifetime, not OS temporary-file expiry. Do not build a generic Artifact platform for this.
-- **Submitted provider-visible prefixes are immutable within a context segment.** Filter before first admission only. Do not rerender accepted content from today's templates/config/files or retroactively prune tool results. Capacity or incompatible request-header changes require an explicit successor segment with recorded handoff; old history stays intact. Stable prefixes improve eligibility, not guarantee provider cache retention.
+Use one resolver for the SDK, user interfaces, main Agents, and subagents. Presets define behavior/tools/initial defaults; Tiers are reusable model-route/settings defaults. Select an exact configured connection and model, never the first connection matching a protocol. Explicit Agent choices override defaults and never mutate other Agents or process-wide defaults.
 
-## Workspace and SDK boundaries
+Adapters describe and validate available reasoning and service options. These are independent choices: enabling supported acceleration does not implicitly change the model or reasoning. Do not impose a universal `fast/ultrafast` ladder. Unsupported explicit choices fail visibly. Record requested settings, resolved settings sent, and provider-reported settings when available; unavailable confirmation stays unknown.
 
-A workspace is an ordinary directory, not a Git repository. Main and child Agents share it by default; callers may explicitly assign another directory. Core execution, persistence, file tools, and change recording must work the same with or without Git. Git commands and worktrees are optional tools/user choices, never implicit setup, isolation, or merge machinery. File conflict checks use observed content/version, not Git availability.
+New Agents start with **independent context by default**, without forking the parent's transcript. A Harness explicitly chooses task material and references. Reusing an Agent preserves its own accumulated context. Resource defaults do not imply context inheritance; a route change must not silently carry incompatible provider-specific settings.
 
-Expose usable defaults plus explicit model/tool/host adapters, submission, observation, querying, cancellation, and asynchronous shutdown. Runtime drives execution independently of subscribers. Do not seize process cwd, environment, signals, global logging, or unrelated processes. Every resource has an owner; slow observation must not become unbounded buffering or lost committed results.
+## Durable facts and cache continuity
 
-**Proposed minimal permission boundary:** one asynchronous host authorization entry receives the actual action, Agent identity, final arguments, and execution directory, then returns allow or deny. The host may decide automatically or ask its user before returning; the core enforces the decision before dispatch and records it. No rule DSL, role hierarchy, remembered-grant system, or approval workflow framework is required. Errors, cancellation, or unavailable required approval do not authorize execution. Tool authorization is not OS process confinement; allowing shell execution does not prove all its effects stay in the workspace. Exact API and default policy remain to be confirmed.
+- **Committed files are authoritative; memory is disposable acceleration.** Start with one append-only Session log, one owning writer, and separate large-output files. Recover with bounded streaming reads and append incrementally without rescanning history. Small rebuildable indexes may support identity, idempotency, and lookup; add checkpoints or physical segmentation only for measured needs.
+- Define durable barriers before acknowledging input, dispatching effects, and confirming results. Save referenced output before confirming its reference. Recovery reconstructs facts, not suspended async stacks. Unknown effects are not automatically repeated; persistence failure stops dependent work. Record necessary facts, not every internal transition.
+- Stream tool output with bounded buffers and explicit quotas. First model admission uses a rule-based structured summary or bounded fallback with readable references and visible filtering/incompleteness. Preserve that exact view. Short calls and Jobs share execution/output; later Job completion is not a second result for the original ToolCall. No hidden command rewriting, global shell hooks, or default summarizer LLM.
+- Provide one bounded output reader for summary/range/search/incremental access; UI reads do not consume model output. Retain references for their promised lifetime, not OS temporary-file expiry. Do not introduce a generic Artifact platform.
+- **Submitted provider-visible prefixes stay immutable within a context segment.** Store admitted content once and reference it, rather than copying full history per Step. Never rerender history from today's templates/config/files or retroactively prune admitted results. Capacity or incompatible changes use a committed successor segment and recorded handoff. Cache reuse remains a first-class goal, not a reason to force shared Agent histories or promise provider cache retention.
 
-Do not start with all-plugin composition, hot replacement of the loop, generic event middleware, multiple storage backends, distributed writers, Team management, workflow DSLs, or transparent crash-resumption of arbitrary processes. The WebUI rewrite is abandoned; DSH is a source of contracts, not the architecture to reproduce.
+## Waiting and resource lifetime
 
-## Rewrite scope and next usable result
+Represent resumable waiting at explicit safe boundaries, including questions or authorization before dispatch. Persist the pending request, target action, and reply correlation; release unneeded execution capacity. Resume only the matching live request after validating its current conditions. Never interpret an unrelated message as approval or transparently resume arbitrary in-flight processes.
 
-The existing release has one user and does not need continued maintenance. **The rewrite has no old-API, old-address, or old-Session-format compatibility requirement.** Do not build adapters, migrations, or dual runtimes just to preserve the old version. Retaining source/data as a reference is not a maintenance commitment, and this decision does not authorize deleting user files.
+Distinguish waiting, canceling current execution, and closing live resources. Cancellation stops new dispatch and cleans up owned work; asynchronous close awaits cleanup and durable writes and reports failures. Reopening restores pending facts for explicit Harness scheduling. Timers, external event intake, cross-Session assistant routing, and outgoing delivery policies belong to the Harness/host.
 
-This checkpoint changes documentation only. Recommended workflow: commit reviewed direction documents, then explicitly create a normal rewrite branch/worktree; main is a reference, not a second development line.
+Bound model requests, tool processes, inbox admission, output, and observer queues separately. Dormant Agents need no polling model calls, dedicated OS threads/processes, or permanent full-history copies. Share immutable assets and suitable clients; keep only needed active context. Waiting for a person consumes no model-execution slot. Measure local memory/I/O separately from cache-aware model cost and user-visible latency.
 
-The first usable result is a **public-SDK Rust caller** that opens a Session in a plain non-Git directory, submits input, executes a multi-tool Step, returns a result, cancels/cleans up, and reopens new-format history. Start with `/root`, reusable providers/tools, and generic bounded output; CLI uses the same public interface. **Integrate a real model and real tools early to complete a useful task, not just a greeting.** Validate design through implementation, not a separate pre-implementation proof stage. Focused tests protect concrete contracts; passing mocks alone does not establish usability.
+## Workspace, trust, and scope
 
-Keep SDK/type/event schemas, commit barriers, storage thresholds, output quotas/parsers, and handoff details open until the next usable result needs them. Distinguish cumulative tokens, request size, disk bytes, and RAM; optimize useful work per model call and precise first admission rather than cache-hit percentage alone. [Evolution](evolution.md) holds optional implementation evidence, not more product prerequisites.
+A workspace is an ordinary directory. Agents share it by default; callers may choose another directory. Core behavior is identical with and without Git. Worktrees, commits, and merges remain explicit choices; file conflict checks use observed content/version. The SDK does not seize process cwd, environment, signals, global logging, or unrelated processes.
+
+Target trusted callers/single-user use; the host supplies strong OS isolation when needed. The default local entry explicitly uses a trusted-local policy; embedded hosts can supply their own policy. A host authorization boundary receives the real caller, final action/arguments, and directory, and allows, denies, or defers it. Error/cancellation is never permission. No mandatory rule DSL, role hierarchy, approval platform, or model-based safety classifier is required.
+
+Do not start with all-plugin composition, hot-swappable loops, generic event middleware, multiple storage backends, distributed writers, built-in Team/task platforms, or workflow DSLs. The WebUI rewrite remains abandoned. Reference systems supply evidence for individual contracts, not a package layout or product to reproduce.
+
+## Delivery and engineering choices
+
+The existing release has one user and no continued-maintenance obligation. **No old-API, old-address, or old-Session-format compatibility layer is required.** Preserve useful code and data; this does not authorize deleting user files. Branch/worktree status, staged scope, and evidence live in [Evolution](evolution.md#active-batch-public-sdk-execution-slice).
+
+Deliver real single-Agent work through the public SDK and a thin CLI first, then early independent Agents using different providers, then durable waiting and small external-orchestration examples. Choose a few mature benchmark cases with their original verifiers, plus focused contract tests. Do not build a benchmark platform or demand an architecture-proof phase before useful execution.
+
+Ownership, identity, admission, configuration scope, durable effects, and resource limits are the target commitments. Exact Rust signatures, event schemas, numeric limits, parsers, selected cases, and checkpoint choices are engineering decisions within them. Change this baseline explicitly if evidence requires a different commitment; do not infer a new direction from one reference implementation.
