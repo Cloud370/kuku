@@ -5,8 +5,10 @@ pub mod stream;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 #[allow(dead_code)]
@@ -24,8 +26,10 @@ pub struct TestServer {
     reason = "integration binaries use different subsets of shared helpers"
 )]
 impl TestServer {
+    const TOKEN: &str = "server-contract-test-token";
+
     pub async fn start(config: kuku::config::Config) -> Self {
-        Self::start_with_password(config, None).await
+        Self::start_with_password(config, Some(Self::TOKEN.into())).await
     }
 
     pub async fn start_with_password(
@@ -37,7 +41,7 @@ impl TestServer {
     }
 
     pub async fn start_deferred(config: kuku::config::Config) -> Self {
-        Self::start_with_authorizer(config, None, Arc::new(DeferTools)).await
+        Self::start_with_authorizer(config, Some(Self::TOKEN.into()), Arc::new(DeferTools)).await
     }
 
     pub async fn start_with_authorizer(
@@ -100,19 +104,88 @@ impl TestServer {
         }
     }
 
-    pub fn retain_receipt_prefix(&self, session_id: &str, receipt: &kuku::Receipt) {
-        let path =
-            kuku::session::session_events_path(self.home.path(), self.workspace.path(), session_id)
-                .unwrap();
-        let contents = std::fs::read(&path).unwrap();
-        let bytes = contents
-            .split_inclusive(|byte| *byte == b'\n')
-            .take(receipt.event_id as usize)
-            .map(<[u8]>::len)
-            .sum::<usize>();
-        let journal = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        journal.set_len(bytes as u64).unwrap();
-        journal.sync_all().unwrap();
+    pub fn request(&self, method: wreq::Method, path: &str) -> wreq::RequestBuilder {
+        let request = wreq::Client::new().request(method, format!("{}{path}", self.base_url));
+        match &self.state.password {
+            Some(password) => request.bearer_auth(password),
+            None => request,
+        }
+    }
+
+    pub fn session_request(
+        &self,
+        id: &str,
+        route: &str,
+        parameters: &[(&str, &str)],
+    ) -> wreq::RequestBuilder {
+        let mut query = vec![("workspace", self.workspace.path().to_str().unwrap())];
+        query.extend_from_slice(parameters);
+        self.request(wreq::Method::GET, &format!("/sessions/{id}/{route}"))
+            .query(&query)
+    }
+
+    pub async fn command_response(&self, id: &str, mut body: Value) -> wreq::Response {
+        if body["workspace"].is_null() {
+            body["workspace"] = json!(self.workspace.path());
+        }
+        if body["agent"].is_null() {
+            body["agent"] = json!("main");
+        }
+        self.request(wreq::Method::POST, &format!("/sessions/{id}/commands"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    pub async fn command(&self, id: &str, body: Value) -> (u16, Value) {
+        let response = self.command_response(id, body).await;
+        let status = response.status().as_u16();
+        (status, response.json().await.unwrap())
+    }
+
+    pub async fn submit(&self, id: &str, body: Value) -> Value {
+        let (status, value) = self.command(id, body).await;
+        assert_eq!(200, status, "{value}");
+        assert_eq!(true, value["ok"], "{value}");
+        value
+    }
+
+    pub async fn snapshot(&self, id: &str, agent: &str) -> Value {
+        let response = self
+            .session_request(id, "snapshot", &[("agent", agent)])
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(200, status, "{value}");
+        value
+    }
+
+    pub async fn wait_for_snapshot(
+        &self,
+        id: &str,
+        agent: &str,
+        ready: impl Fn(&Value) -> bool,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let snapshot = self.snapshot(id, agent).await;
+                if ready(&snapshot) {
+                    return snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("Session '{id}', Agent '{agent}' did not reach the expected state")
+        })
+    }
+
+    pub fn events_path(&self, id: &str) -> std::path::PathBuf {
+        kuku::session::session_events_path(self.home.path(), self.workspace.path(), id).unwrap()
     }
 }
 

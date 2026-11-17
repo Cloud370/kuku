@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
+pub(super) use crate::util::path::is_default_excluded_dir;
 use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 
 // ---------- Types ----------
@@ -162,13 +163,6 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-pub(super) fn is_default_excluded_dir(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
-    )
 }
 
 // ---------- File I/O helpers ----------

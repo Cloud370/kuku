@@ -23,6 +23,22 @@ pub fn mock_text_response(server: &MockServer, text: &str) {
     });
 }
 
+pub fn tool_response(tool: &str, id: &str, arguments: serde_json::Value) -> String {
+    anthropic_sse_response(serde_json::json!({
+        "id":"fixture-tool","type":"message","role":"assistant",
+        "content":[{"type":"tool_use","id":id,"name":tool,"input":arguments}],
+        "stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":6},
+    }))
+}
+
+pub fn text_response(text: &str) -> String {
+    anthropic_sse_response(serde_json::json!({
+        "id":"fixture-text","type":"message","role":"assistant",
+        "content":[{"type":"text","text":text}],"stop_reason":"end_turn",
+        "usage":{"input_tokens":8,"output_tokens":4},
+    }))
+}
+
 pub use kuku::test_support::anthropic_sse_response;
 
 pub fn make_test_config(mock_port: u16) -> kuku::config::Config {

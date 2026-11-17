@@ -1,6 +1,6 @@
 mod common;
 
-use common::mock_provider;
+use common::{mock_provider, TestServer};
 use kuku::event::{EventPayload, EventStore};
 
 fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, session_id: &str) {
@@ -99,174 +99,183 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
 }
 
 #[tokio::test]
-async fn nonexistent_session_returns_not_found() {
+async fn nonexistent_session_returns_structured_not_found() {
     let mock = mock_provider::start_mock_provider().await;
-    let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
-
-    let client = wreq::Client::new();
-    let resp = client
-        .get(format!("{}/sessions/nonexistent/events", server.base_url))
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let response = server
+        .session_request("nonexistent", "events", &[])
         .send()
         .await
         .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["ok"], false);
-    assert_eq!(body["code"], "session_not_found");
+    assert_eq!(404, response.status());
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(false, body["ok"]);
+    assert_eq!("session_not_found", body["code"]);
 }
 
 #[tokio::test]
-async fn health_passes_even_with_password_set() {
+async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
     let mock = mock_provider::start_mock_provider().await;
-    let config = mock_provider::make_test_config(mock.port());
-    let server =
-        common::TestServer::start_with_password(config, Some("testpass".to_string())).await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "raw-event-pages";
+    write_session_events(server.home.path(), server.workspace.path(), id);
 
-    let client = wreq::Client::new();
-    let resp = client
-        .get(format!("{}/health", server.base_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["ok"], true);
-}
-
-#[tokio::test]
-async fn events_can_filter_by_conversation_and_keep_session_envelope() {
-    let mock = mock_provider::start_mock_provider().await;
-    let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
-    let session_id = "s_events_conversation_filter";
-    write_session_events(server.home.path(), server.workspace.path(), session_id);
-
-    let client = wreq::Client::new();
-    let resp = client
-        .get(format!(
-            "{}/sessions/{}/events?workspace={}&conversation=review&after=0",
-            server.base_url,
-            session_id,
-            server.workspace.path().display()
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body["events"].as_array().unwrap();
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "session.created"));
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["conversation"] == "review"));
-    assert!(!events
-        .iter()
-        .any(|event| event["payload"]["text"] == "main message"));
-    assert!(!events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "model.response"));
-    assert!(!events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "tool.call"));
-    assert!(!events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "tool.result"));
-}
-
-#[tokio::test]
-async fn main_conversation_filter_keeps_unscoped_main_facts() {
-    let mock = mock_provider::start_mock_provider().await;
-    let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
-    let session_id = "s_events_main_filter";
-    write_session_events(server.home.path(), server.workspace.path(), session_id);
-
-    let client = wreq::Client::new();
-    let resp = client
-        .get(format!(
-            "{}/sessions/{}/events?workspace={}&conversation=main&after=0",
-            server.base_url,
-            session_id,
-            server.workspace.path().display()
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body["events"].as_array().unwrap();
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["text"] == "main message"));
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "model.response"));
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "tool.call"));
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["kind"] == "tool.result"));
-    assert!(!events
-        .iter()
-        .any(|event| event["payload"]["text"] == "review message"));
-}
-
-#[tokio::test]
-async fn events_without_conversation_returns_full_ledger() {
-    let mock = mock_provider::start_mock_provider().await;
-    let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
-    let session_id = "s_events_full_ledger";
-    write_session_events(server.home.path(), server.workspace.path(), session_id);
-
-    let client = wreq::Client::new();
-    let resp = client
-        .get(format!(
-            "{}/sessions/{}/events?workspace={}",
-            server.base_url,
-            session_id,
-            server.workspace.path().display()
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body["events"].as_array().unwrap();
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["text"] == "main message"));
-    assert!(events
-        .iter()
-        .any(|event| event["payload"]["text"] == "review message"));
-}
-
-#[tokio::test]
-async fn filtered_event_page_advances_the_scanned_cursor() {
-    let mock = mock_provider::start_mock_provider().await;
-    let server = common::TestServer::start(mock_provider::make_test_config(mock.port())).await;
-    write_session_events(server.home.path(), server.workspace.path(), "s_page");
-    let body: serde_json::Value = wreq::Client::new()
-        .get(format!(
-            "{}/sessions/s_page/events?workspace={}&agent=missing&after=1&limit=2",
-            server.base_url,
-            server.workspace.path().display()
-        ))
+    let review: serde_json::Value = server
+        .session_request(id, "events", &[("agent", "review")])
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(0, body["events"].as_array().unwrap().len());
-    assert!(body["next_after"].as_u64().unwrap() > 1);
-    assert!(body["next_after"].as_u64().unwrap() <= 3);
+    let review_entries = review["events"].as_array().unwrap();
+    assert_eq!(4, review_entries.len());
+    assert_eq!("session.created", review_entries[0]["payload"]["kind"]);
+    assert_eq!("review message", review_entries[2]["payload"]["text"]);
+
+    let main: serde_json::Value = server
+        .session_request(id, "events", &[("agent", "main")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let main_entries = main["events"].as_array().unwrap();
+    assert_eq!(6, main_entries.len());
+    assert!(main_entries
+        .iter()
+        .any(|entry| entry["payload"]["kind"] == "tool.result"));
+    assert!(main_entries
+        .iter()
+        .all(|entry| entry["payload"]["conversation"] != "review"));
+
+    let page: serde_json::Value = server
+        .session_request(
+            id,
+            "events",
+            &[("agent", "missing"), ("after", "1"), ("limit", "2")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(page["events"].as_array().unwrap().is_empty());
+    assert_eq!(3, page["next_after"]);
+
+    let full: serde_json::Value = server
+        .session_request(id, "events", &[])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(9, full["events"].as_array().unwrap().len());
+    assert_eq!(9, full["next_after"]);
+}
+
+#[tokio::test]
+async fn history_pages_are_bounded_by_the_requested_snapshot_cursor() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "history-boundary";
+    write_session_events(server.home.path(), server.workspace.path(), id);
+    let mut store = EventStore::open(server.events_path(id)).unwrap();
+    let cursor = store.last_id();
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-09T00:00:06Z".into(),
+            conversation: "main".into(),
+            turn: 2,
+            text: "message after the saved cursor".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+
+    let before = (cursor + 1).to_string();
+    let page: serde_json::Value = server
+        .session_request(
+            id,
+            "history",
+            &[("agent", "main"), ("before", &before), ("limit", "2")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!("tool_call", page["entries"][0]["type"]);
+    assert_eq!("tool_result", page["entries"][1]["type"]);
+    assert_eq!(7, page["next_before"]);
+    let older: serde_json::Value = server
+        .session_request(id, "history", &[("before", "7"), ("limit", "3")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!("main message", older["entries"][0]["text"]);
+    assert_eq!("main model response", older["entries"][1]["text"]);
+    assert!(older["next_before"].is_null());
+
+    let observer = server
+        .session_request(
+            id,
+            "observe",
+            &[("agent", "main"), ("after", &cursor.to_string())],
+        )
+        .send()
+        .await
+        .unwrap();
+    let mut observer = observer.bytes_stream();
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        common::stream::next_json_line(
+            &mut observer,
+            &mut Vec::new(),
+            "first post-snapshot commit",
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cursor + 1, frame["id"].as_u64().unwrap());
+    assert_eq!("message after the saved cursor", frame["entry"]["text"]);
+}
+
+#[tokio::test]
+async fn file_completion_exposes_only_visible_workspace_relative_paths() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let workspace = server.workspace.path();
+    std::fs::create_dir(workspace.join("src")).unwrap();
+    std::fs::create_dir(workspace.join(".ssh")).unwrap();
+    std::fs::write(workspace.join("src/visible.rs"), b"").unwrap();
+    std::fs::write(workspace.join(".env"), b"test secret").unwrap();
+    std::fs::write(workspace.join(".ssh/id_rsa"), b"test key").unwrap();
+    let response: serde_json::Value = server
+        .request(wreq::Method::GET, "/workspaces/files")
+        .query(&[("workspace", workspace.to_str().unwrap()), ("query", "")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(["src/", "src/visible.rs"]),
+        response["paths"]
+    );
+    let response = server
+        .request(wreq::Method::GET, "/workspaces/files")
+        .query(&[("workspace", workspace.to_str().unwrap()), ("query", "../")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(400, response.status());
 }

@@ -1,272 +1,308 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use kuku::event::{EventPayload, EventStore};
+use kuku::session::{Observation, OutputRead, Session};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
+use super::Params;
+use super::{manager, SessionTarget};
+use crate::error_mapping::{ApiError, Result};
+use crate::run_manager::RunManager;
+use crate::wire::{committed_frame, event_agent, history_entry, live_frame};
 use crate::AppState;
 
+const HISTORY_DEFAULT_LIMIT: usize = 40;
+const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
+const HISTORY_SCAN_LIMIT: usize = 4096;
+const READ_PAGE_SIZE: usize = 64;
+const HEARTBEAT: Duration = Duration::from_secs(15);
+
 #[derive(Deserialize)]
-pub struct EventsQuery {
-    pub after: Option<u64>,
-    #[serde(alias = "agent")]
-    pub conversation: Option<String>,
-    pub limit: Option<usize>,
-    pub workspace: Option<String>,
+pub(super) struct EventsQuery {
+    workspace: PathBuf,
+    after: Option<u64>,
+    #[serde(alias = "conversation")]
+    agent: Option<String>,
+    limit: Option<usize>,
 }
 
-fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation: &str) -> bool {
-    match crate::wire::event_agent(payload) {
-        Some(value) => value == conversation,
-        None => {
-            matches!(payload, kuku::event::EventPayload::SessionCreated { .. })
-                || conversation == "main"
-        }
-    }
+#[derive(Deserialize)]
+pub(super) struct HistoryQuery {
+    workspace: PathBuf,
+    agent: Option<String>,
+    before: Option<u64>,
+    limit: Option<usize>,
 }
 
-fn stream_event_conversation(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("agent")
-        .and_then(|item| item.as_str())
-        .or_else(|| {
-            value
-                .get("payload")
-                .and_then(|payload| payload.get("record"))
-                .and_then(|record| record.get("address"))
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| {
-            value
-                .get("payload")
-                .and_then(|payload| payload.get("record"))
-                .and_then(|record| record.get("input"))
-                .and_then(|input| input.get("target"))
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
-        .or_else(|| {
-            value
-                .get("kind")
-                .and_then(|kind| kind.get("agent"))
-                .and_then(|agent| agent.get("conversation"))
-                .and_then(|item| item.as_str())
-        })
+#[derive(Deserialize)]
+pub(super) struct ObserveQuery {
+    workspace: PathBuf,
+    agent: Option<String>,
+    after: Option<u64>,
 }
 
-fn stream_event_agent_conversation(value: &serde_json::Value) -> Option<&str> {
-    if value.get("type").and_then(|item| item.as_str()) != Some("tool_start") {
-        return None;
-    }
-
-    value
-        .get("kind")
-        .and_then(|kind| kind.get("agent"))
-        .and_then(|agent| agent.get("conversation"))
-        .and_then(|item| item.as_str())
+#[derive(Deserialize)]
+pub(super) struct OutputQuery {
+    workspace: PathBuf,
+    offset: Option<u64>,
+    max_bytes: Option<usize>,
+    search: Option<String>,
 }
 
-struct StreamConversationFilter<'a> {
-    conversation: &'a str,
-    agent_tool_conversations: HashMap<String, String>,
-}
-
-impl<'a> StreamConversationFilter<'a> {
-    fn new(conversation: &'a str) -> Self {
-        Self {
-            conversation,
-            agent_tool_conversations: HashMap::new(),
-        }
-    }
-
-    fn matches(&mut self, value: &serde_json::Value) -> bool {
-        let event_type = value.get("type").and_then(|item| item.as_str());
-        let id = value.get("id").and_then(|item| item.as_str());
-
-        if let (Some("tool_start"), Some(id), Some(conversation)) =
-            (event_type, id, stream_event_agent_conversation(value))
-        {
-            self.agent_tool_conversations
-                .insert(id.to_string(), conversation.to_string());
-        }
-
-        let matched_tool_conversation = id.and_then(|id| self.agent_tool_conversations.get(id));
-        let matches = if let Some(conversation) = matched_tool_conversation {
-            conversation == self.conversation
-        } else if let Some(conversation) = stream_event_conversation(value) {
-            conversation == self.conversation
-        } else {
-            self.conversation == "main"
-        };
-
-        if event_type == Some("tool_end") {
-            if let Some(id) = id {
-                self.agent_tool_conversations.remove(id);
-            }
-        }
-
-        matches
-    }
-}
-
-pub async fn events(
+pub(super) async fn events(
     State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-    Query(params): Query<EventsQuery>,
-) -> Json<serde_json::Value> {
-    let home = &state.kuku_home;
-
-    let workspace = match params.workspace {
-        Some(ws) => std::path::PathBuf::from(ws),
-        None => match kuku::session::current_workspace() {
-            Ok(w) => w,
-            Err(_) => {
-                return Json(
-                    json!({"ok": false, "code": "invalid_request", "message": "workspace parameter required"}),
-                );
-            }
-        },
-    };
-
-    let events_path = match kuku::session::session_events_path(home, &workspace, &session_id) {
-        Ok(p) => p,
-        Err(_) => {
-            return Json(
-                json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
-            );
-        }
-    };
-
-    if !events_path.exists() {
-        return Json(
-            json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
-        );
-    }
-
-    let after = params.after.unwrap_or(0);
-    let limit = params.limit.unwrap_or(100);
-    if !(1..=256).contains(&limit) {
-        return Json(
-            json!({"ok":false,"code":"invalid_request","message":"limit must be between 1 and 256"}),
-        );
-    }
-    let events = match kuku::event::EventStore::read_page(&events_path, after, limit) {
-        Ok(e) => e,
-        Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
-    };
-
-    let next_after = events.last().map(|event| event.id).unwrap_or(after);
-    let conversation = params.conversation.as_deref();
-    let filtered: Vec<_> = events
+    Path(id): Path<String>,
+    Params(query): Params<EventsQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let after = query.after.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100);
+    validate_limit(limit)?;
+    let events = EventStore::read_page(&target.path, after, limit)?;
+    let next_after = events.last().map_or(after, |event| event.id);
+    let filtered = events
         .iter()
-        .filter(|e| e.id > after)
         .filter(|event| {
-            conversation
-                .is_none_or(|conversation| event_matches_conversation(&event.payload, conversation))
-        })
-        .map(|e| {
-            json!({
-                "id": e.id,
-                "payload": serde_json::to_value(&e.payload).unwrap_or_default(),
+            query.agent.as_ref().is_none_or(|agent| {
+                matches!(event.payload, EventPayload::SessionCreated { .. })
+                    || event_agent(&event.payload).unwrap_or("main") == agent
             })
         })
-        .collect();
-
-    let active_stream: Vec<serde_json::Value> = {
-        let mgr = state.run_manager.lock().await;
-        let mut stream_filter = conversation.map(StreamConversationFilter::new);
-        mgr.recent_events(&session_id)
-            .into_iter()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-            .filter(|value| {
-                stream_filter
-                    .as_mut()
-                    .is_none_or(|filter| filter.matches(value))
-            })
-            .collect()
-    };
-
-    Json(json!({"events": filtered, "next_after": next_after, "active_stream": active_stream}))
+        .map(|event| json!({"id":event.id,"payload":event.payload}))
+        .collect::<Vec<_>>();
+    Ok(Json(
+        json!({"ok":true,"events":filtered,"next_after":next_after}),
+    ))
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
+pub(super) async fn history(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Params(query): Params<HistoryQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
+    validate_limit(limit)?;
+    let (entries, next_before) = history_page(
+        &target.path,
+        query.agent.as_deref().unwrap_or("main"),
+        query.before,
+        limit,
+    )?;
+    Ok(Json(
+        json!({"ok":true,"entries":entries,"next_before":next_before}),
+    ))
+}
 
-    use super::StreamConversationFilter;
-
-    fn filter_stream_events(
-        values: Vec<serde_json::Value>,
-        conversation: &str,
-    ) -> Vec<serde_json::Value> {
-        let mut filter = StreamConversationFilter::new(conversation);
-        values
-            .into_iter()
-            .filter(|value| filter.matches(value))
-            .collect()
+pub(super) async fn observe(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Params(query): Params<ObserveQuery>,
+) -> Result<Response> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let after = query.after.unwrap_or_default();
+    if after != 0 && after > EventStore::read_head(&target.path)? {
+        return Err(ApiError::invalid(
+            "observation cursor is ahead of the Session",
+        ));
     }
+    let manager = manager(&state).await;
+    let (send, read) = mpsc::channel(1);
+    tokio::spawn(async move {
+        if let Err(error) = follow(&manager, &target, query.agent.as_deref(), after, &send).await {
+            let mut value = error.value();
+            value["type"] = json!("error");
+            let _ = write_frame(&send, value).await;
+        }
+    });
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        Body::from_stream(ReceiverStream::new(read)),
+    )
+        .into_response())
+}
 
-    #[test]
-    fn stream_conversation_filter_rejects_unscoped_live_events() {
-        let event = json!({"event": "line", "text": "unscoped output"});
-
-        let mut filter = StreamConversationFilter::new("review");
-
-        assert!(!filter.matches(&event));
+pub(super) async fn output(
+    State(state): State<Arc<AppState>>,
+    Path((id, output_id)): Path<(String, String)>,
+    Params(query): Params<OutputQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let mut read = OutputRead {
+        search: query.search,
+        ..OutputRead::default()
+    };
+    if let Some(offset) = query.offset {
+        read.offset = offset;
     }
-
-    #[test]
-    fn stream_conversation_filter_keeps_delegated_agent_tool_chain() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"tool_start": {"id": "child_tool", "tool": "read_file", "summary": "read", "kind": "simple"}}}),
-                json!({"type": "tool_output", "id": "other_agent", "event": {"text": "other child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "review", "text": "review done"}),
-            ],
-            "review",
-        );
-
-        assert_eq!(events.len(), 5);
-        assert!(events.iter().any(|event| event["type"] == "tool_start"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["tool_start"]["id"] == "child_tool"));
-        assert!(events.iter().any(|event| event["type"] == "tool_end"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["content"] == "main text"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "other child text"));
+    if let Some(max_bytes) = query.max_bytes {
+        read.limit = max_bytes;
     }
+    let output = Session::read_saved_output(&target.path, &output_id, &read)?;
+    Ok(Json(json!({"ok":true,"output":output})))
+}
 
-    #[test]
-    fn main_stream_filter_keeps_unscoped_main_events_without_delegated_child_output() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "main", "text": "main done"}),
-            ],
-            "main",
-        );
-
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().any(|event| event["content"] == "main text"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["id"] == "agent_review"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
+fn validate_limit(limit: usize) -> Result<()> {
+    if !(1..=256).contains(&limit) {
+        return Err(ApiError::invalid("limit must be between 1 and 256"));
     }
+    Ok(())
+}
+
+fn history_page(
+    path: &std::path::Path,
+    agent: &str,
+    mut before: Option<u64>,
+    limit: usize,
+) -> Result<(Vec<Value>, Option<u64>)> {
+    let mut entries = Vec::new();
+    let mut bytes = 0;
+    let mut scanned = 0;
+    'pages: loop {
+        let page = EventStore::read_page_before(path, before, READ_PAGE_SIZE)?;
+        if page.is_empty() {
+            before = None;
+            break;
+        }
+        for event in page.into_iter().rev() {
+            let entry = (event_agent(&event.payload).unwrap_or("main") == agent)
+                .then(|| history_entry(&event))
+                .flatten();
+            if let Some(entry) = entry {
+                let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
+                if !entries.is_empty() && bytes + size > HISTORY_PAGE_BYTES {
+                    break 'pages;
+                }
+                bytes += size;
+                entries.push(entry);
+            }
+            before = Some(event.id);
+            scanned += 1;
+            if entries.len() == limit || scanned >= HISTORY_SCAN_LIMIT {
+                break 'pages;
+            }
+        }
+    }
+    entries.reverse();
+    add_tool_names(&mut entries);
+    Ok((entries, before.filter(|id| *id > 1)))
+}
+
+fn add_tool_names(entries: &mut [Value]) {
+    let mut tools = HashMap::new();
+    for entry in entries {
+        if let (Some(turn), Some(call)) = (entry["turn"].as_u64(), entry["tool_call_id"].as_str()) {
+            if let Some(tool) = entry["tool"].as_str() {
+                tools.insert((turn, call.to_owned()), tool.to_owned());
+            } else if let Some(tool) = tools.get(&(turn, call.to_owned())) {
+                entry["tool"] = json!(tool);
+            }
+        }
+    }
+}
+
+type FrameWriter = mpsc::Sender<std::result::Result<String, Infallible>>;
+
+async fn follow(
+    manager: &RunManager,
+    target: &SessionTarget,
+    agent: Option<&str>,
+    mut after: u64,
+    send: &FrameWriter,
+) -> Result<()> {
+    let mut changes = manager.changes();
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if let Some(session) = manager.open_session(&target.path) {
+            let mut observer = session.observe(after);
+            loop {
+                let observation = tokio::select! {
+                    _ = send.closed() => return Ok(()),
+                    _ = ping.tick() => {
+                        if !write_frame(send, json!({"type":"heartbeat"})).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    item = observer.next() => item?,
+                };
+                let Some(observation) = observation else {
+                    break;
+                };
+                let frame = match observation {
+                    Observation::Committed(event) => {
+                        after = event.id;
+                        Some(committed_frame(&event, agent))
+                    }
+                    Observation::Live {
+                        agent: source,
+                        event,
+                        execution_id,
+                        after,
+                        turn,
+                    } => {
+                        if agent.is_some_and(|agent| agent != source) {
+                            continue;
+                        }
+                        live_frame(&event, &source, execution_id, turn, after)
+                    }
+                    Observation::Lagged { skipped } => {
+                        Some(json!({"type":"lagged","skipped":skipped}))
+                    }
+                };
+                if let Some(frame) = frame {
+                    if !write_frame(send, frame).await {
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        } else {
+            target.require_exists()?;
+            let events = EventStore::read_page(&target.path, after, READ_PAGE_SIZE)?;
+            if !events.is_empty() {
+                for event in events {
+                    after = event.id;
+                    if !write_frame(send, committed_frame(&event, agent)).await {
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            tokio::select! {
+                _ = send.closed() => return Ok(()),
+                _ = changes.changed() => {}
+                _ = ping.tick() => {
+                    if !write_frame(send, json!({"type":"heartbeat"})).await {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn write_frame(send: &FrameWriter, frame: Value) -> bool {
+    send.send(Ok(format!("{frame}\n"))).await.is_ok()
 }

@@ -1,131 +1,364 @@
-use kuku::query::UiEvent;
+//! Command envelopes and the client view of committed and live Session facts.
 
+use std::path::PathBuf;
+
+use kuku::event::{EventPayload, StoredEvent};
+use kuku::session::{
+    AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt,
+};
+use kuku::UiEvent;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+#[derive(Deserialize)]
+pub(crate) struct CommandRequest {
+    pub(crate) workspace: PathBuf,
+    pub(crate) agent: String,
+    pub(crate) command_id: String,
+    #[serde(flatten)]
+    pub(crate) command: Command,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum Command {
+    Send {
+        text: String,
+        #[serde(default)]
+        timing: SendTiming,
+        bootstrap_skill: Option<String>,
+        create: Option<Box<AgentConfig>>,
+        config_patch: Option<Box<AgentConfig>>,
+        #[serde(default)]
+        create_agent_if_missing: bool,
+        prompts_dir: Option<PathBuf>,
+    },
+    CreateAgent {
+        #[serde(default)]
+        config: Box<AgentConfig>,
+    },
+    Configure {
+        config: Box<AgentConfig>,
+    },
+    ReplyQuestion {
+        request_id: String,
+        text: String,
+    },
+    ReplyPermission {
+        request_id: String,
+        allow: bool,
+    },
+    Withdraw {
+        input_command_id: String,
+    },
+    Advance,
+    Cancel {
+        execution_id: u64,
+    },
+}
+
+impl Command {
+    pub(crate) fn creation(&self) -> Option<&AgentConfig> {
+        if let Self::Send { create, .. } = self {
+            create.as_deref()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn input(&self, command_id: &str, address: &str) -> kuku::Result<Option<Input>> {
+        let Self::Send {
+            text,
+            timing,
+            bootstrap_skill,
+            config_patch,
+            create_agent_if_missing,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        let mut input = Input::new(command_id, address, text);
+        input.source = InputSource::Host("http".into());
+        input.bootstrap_skill.clone_from(bootstrap_skill);
+        input.timing = match timing {
+            SendTiming::Steer => InputTiming::NextStep,
+            SendTiming::NextTurn => InputTiming::NextTurn,
+        };
+        if config_patch.is_some() || *create_agent_if_missing {
+            let digest = Sha256::digest(serde_json::to_vec(&(
+                config_patch,
+                create_agent_if_missing,
+            ))?);
+            input.correlation = Some(format!("http:send:{digest:x}"));
+        }
+        Ok(Some(input))
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SendTiming {
+    #[default]
+    Steer,
+    NextTurn,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CommandResult {
+    ok: bool,
+    pub(crate) receipt: Receipt,
+    replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<InputStatus>,
+}
+
+impl CommandResult {
+    pub(crate) fn new(receipt: Receipt, replayed: bool, status: Option<InputStatus>) -> Self {
+        Self {
+            ok: true,
+            receipt,
+            replayed,
+            status,
+        }
+    }
+}
+
+/// Encode a live runtime event as one line of the shared CLI event format.
 pub fn serialize_event(event: &UiEvent) -> Option<String> {
+    Some(format!("{}\n", event_value(event)?))
+}
+
+pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
+    match payload {
+        EventPayload::ModelResponse { conversation, .. }
+        | EventPayload::ModelError { conversation, .. }
+        | EventPayload::ToolCall { conversation, .. }
+        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::MessageAssistant { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+        | EventPayload::ConversationRollback { conversation, .. }
+        | EventPayload::ConversationRollbackUndone { conversation, .. }
+        | EventPayload::ModelRecovery { conversation, .. }
+        | EventPayload::ContextSkills { conversation, .. } => Some(conversation),
+        EventPayload::Unknown(value) => value["agent"]
+            .as_str()
+            .or_else(|| value["conversation"].as_str())
+            .or_else(|| value["record"]["address"].as_str())
+            .or_else(|| value["record"]["input"]["target"].as_str()),
+        _ => None,
+    }
+}
+
+pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
+    json!({
+        "address": agent.address,
+        "status": agent.status,
+        "pending_inputs": agent.pending_inputs,
+        "execution_id": agent.execution_id,
+        "turn": agent.turn,
+        "permission": agent.permission,
+        "question": agent.question,
+    })
+}
+
+pub(crate) fn history_entry(event: &StoredEvent) -> Option<Value> {
+    let agent = event_agent(&event.payload).unwrap_or("main");
+    let mut entry = match &event.payload {
+        EventPayload::MessageUser {
+            turn, text, from, ..
+        } => {
+            json!({"type":"user","turn":turn,"text":text,"from":from})
+        }
+        EventPayload::ModelResponse {
+            turn,
+            text,
+            thinking,
+            request_id,
+            ..
+        } if !text.is_empty()
+            || thinking
+                .as_ref()
+                .is_some_and(|thinking| !thinking.is_empty()) =>
+        {
+            json!({"type":"assistant","turn":turn,"text":text,"thinking":thinking,"request_id":request_id})
+        }
+        EventPayload::ModelError {
+            turn,
+            kind,
+            message,
+            request_id,
+            ..
+        } => {
+            json!({"type":"error","turn":turn,"code":kind,"text":message,"request_id":request_id})
+        }
+        EventPayload::ToolCall {
+            turn,
+            tool_call_id,
+            tool,
+            args,
+            ..
+        } => {
+            json!({"type":"tool_call","turn":turn,"tool_call_id":tool_call_id,"tool":tool,"args":args})
+        }
+        EventPayload::ToolResult {
+            turn,
+            tool_call_id,
+            status,
+            summary,
+            model_content,
+            truncated,
+            structured,
+            ..
+        } => json!({
+            "type":"tool_result",
+            "turn":turn,
+            "tool_call_id":tool_call_id,
+            "status":status,
+            "summary":summary,
+            "model_content":model_content,
+            "truncated":truncated,
+            "structured":structured,
+            "output_id":structured.as_ref().and_then(output_id),
+        }),
+        EventPayload::TurnCancelled { turn, reason, .. } => {
+            json!({"type":"status","turn":turn,"status":"cancelled","text":reason})
+        }
+        EventPayload::TurnInterrupted { turn, reason, .. } => {
+            json!({"type":"status","turn":turn,"status":"interrupted","text":reason})
+        }
+        EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
+            interaction_entry(&value["record"])?
+        }
+        _ => return None,
+    };
+    entry["id"] = json!(event.id);
+    entry["agent"] = json!(agent);
+    Some(entry)
+}
+
+pub(crate) fn committed_frame(event: &StoredEvent, target: Option<&str>) -> Value {
+    let kind = event.payload.kind_name();
+    let agent = event_agent(&event.payload);
+    let mut value = json!({"type":"committed","id":event.id,"kind":kind});
+    if let Some(agent) = agent {
+        value["agent"] = json!(agent);
+    }
+    let matches = target.is_none_or(|target| agent.unwrap_or("main") == target);
+    if matches {
+        if let Some(entry) = history_entry(event) {
+            value["entry"] = entry;
+        }
+        match &event.payload {
+            EventPayload::ModelResponse {
+                turn, request_id, ..
+            }
+            | EventPayload::ModelError {
+                turn, request_id, ..
+            } => {
+                value["turn"] = json!(turn);
+                value["request_id"] = json!(request_id);
+            }
+            EventPayload::Unknown(record) if kind == "runtime.step_prepared" => {
+                value["turn"] = record["turn"].clone();
+                value["request_id"] = record["request_id"].clone();
+            }
+            _ => {}
+        }
+    }
+    if let EventPayload::Unknown(payload) = &event.payload {
+        if kind == "runtime.operation" && payload["record"]["operation"] != "session_closed" {
+            value["state_changed"] = json!(true);
+            let record = &payload["record"];
+            value["operation"] = record["operation"].clone();
+            if record["operation"] == "turn_settled" {
+                value["settlement"] = json!({
+                    "status":record["status"],"turn":record["turn"],"output":record["output"],
+                    "error":record["error"],"usage":record["usage"],
+                });
+            }
+        }
+    }
+    value
+}
+
+pub(crate) fn live_frame(
+    event: &UiEvent,
+    agent: &str,
+    execution_id: u64,
+    turn: u64,
+    cursor: u64,
+) -> Option<Value> {
+    Some(json!({
+        "type":"live",
+        "agent":agent,
+        "execution_id":execution_id,
+        "turn":turn,
+        "cursor":cursor,
+        "event":event_value(event)?,
+    }))
+}
+
+fn output_id(structured: &Value) -> Option<&str> {
+    structured["output_id"]
+        .as_str()
+        .or_else(|| structured["output_ref"]["id"].as_str())
+}
+
+fn interaction_entry(record: &Value) -> Option<Value> {
+    let request = &record["request"];
+    match record["operation"].as_str()? {
+        "question_requested" => Some(json!({
+            "type":"question",
+            "turn":request["turn"],
+            "text":request["text"],
+            "request":request,
+        })),
+        "permission_waiting" => Some(json!({
+            "type":"permission",
+            "turn":request["turn"],
+            "text":request["summary"],
+            "request":request,
+        })),
+        "question_replied" => Some(json!({
+            "type":"question_reply",
+            "request_id":record["request_id"],
+            "text":record["input"]["text"],
+        })),
+        "permission_replied" => Some(json!({
+            "type":"permission_reply",
+            "request_id":record["request_id"],
+            "allow":record["allow"],
+        })),
+        _ => None,
+    }
+}
+
+fn event_value(event: &UiEvent) -> Option<Value> {
     let mut value = kuku::wire::to_wire(event)?;
     match event {
         UiEvent::ToolStart {
             kind: kuku::query::ToolKind::Agent { conversation, .. },
             ..
-        } => {
-            value["conversation"] = serde_json::Value::String(conversation.as_str().to_string());
-        }
-        UiEvent::PermissionRequested { request } => {
-            value["conversation"] =
-                serde_json::Value::String(request.conversation.as_str().to_string());
-        }
-        UiEvent::ToolOutput {
+        } => value["conversation"] = json!(conversation.as_str()),
+        UiEvent::PermissionRequested { request }
+        | UiEvent::ToolOutput {
             event: kuku::query::ToolEvent::PermissionRequested { request },
             ..
         } => {
-            value["conversation"] =
-                serde_json::Value::String(request.conversation.as_str().to_string());
+            value["conversation"] = json!(request.conversation.as_str());
+            value["turn"] = json!(request.turn);
         }
-        UiEvent::Done { output, .. } => {
-            value["conversation"] =
-                serde_json::Value::String(output.conversation.as_str().to_string());
-        }
+        UiEvent::Done { output, .. } => value["conversation"] = json!(output.conversation.as_str()),
         _ => {}
     }
-    let mut line = serde_json::to_string(&value).ok()?;
-    line.push('\n');
-    Some(line)
-}
-
-pub(crate) fn event_agent(payload: &kuku::event::EventPayload) -> Option<&str> {
-    match payload {
-        kuku::event::EventPayload::ModelResponse { conversation, .. }
-        | kuku::event::EventPayload::ModelError { conversation, .. }
-        | kuku::event::EventPayload::ToolCall { conversation, .. }
-        | kuku::event::EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        kuku::event::EventPayload::ConversationOpened { conversation, .. }
-        | kuku::event::EventPayload::ConversationBound { conversation, .. }
-        | kuku::event::EventPayload::PromptSnapshot { conversation, .. }
-        | kuku::event::EventPayload::MessageUser { conversation, .. }
-        | kuku::event::EventPayload::MessageAssistant { conversation, .. }
-        | kuku::event::EventPayload::TurnStarted { conversation, .. }
-        | kuku::event::EventPayload::TurnCompleted { conversation, .. }
-        | kuku::event::EventPayload::TurnCancelled { conversation, .. }
-        | kuku::event::EventPayload::TurnInterrupted { conversation, .. }
-        | kuku::event::EventPayload::ConversationRollback { conversation, .. }
-        | kuku::event::EventPayload::ConversationRollbackUndone { conversation, .. }
-        | kuku::event::EventPayload::ModelRecovery { conversation, .. }
-        | kuku::event::EventPayload::ContextSkills { conversation, .. } => Some(conversation),
-        kuku::event::EventPayload::Unknown(value) => value
-            .get("agent")
-            .and_then(|item| item.as_str())
-            .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
-            .or_else(|| {
-                value
-                    .get("record")
-                    .and_then(|record| record.get("address"))
-                    .and_then(|item| item.as_str())
-            })
-            .or_else(|| {
-                value
-                    .get("record")
-                    .and_then(|record| record.get("input"))
-                    .and_then(|input| input.get("target"))
-                    .and_then(|item| item.as_str())
-            }),
-        _ => None,
-    }
-}
-
-pub(crate) fn serialize_agent_event(event: &UiEvent, agent: &str) -> Option<String> {
-    let line = serialize_event(event)?;
-    let mut value: serde_json::Value = serde_json::from_str(&line).ok()?;
-    value["agent"] = serde_json::Value::String(agent.into());
-    Some(format!("{value}\n"))
-}
-
-/// Encode the durable input receipt and explicit HTTP run identity.
-pub fn run_start(
-    run_id: &str,
-    session_id: &str,
-    agent: &str,
-    receipt: &kuku::session::Receipt,
-) -> String {
-    let value = serde_json::json!({
-        "type": "run_start",
-        "run_id": run_id,
-        "session_id": session_id,
-        "agent": agent,
-        "receipt": receipt,
-    });
-    format!("{}\n", value)
-}
-
-#[cfg(test)]
-mod tests {
-    use kuku::conversation::address::ConversationAddress;
-    use kuku::query::{PermissionRequest, ToolEvent, UiEvent};
-
-    use super::serialize_event;
-
-    #[test]
-    fn nested_permission_output_includes_top_level_conversation() {
-        let event = UiEvent::ToolOutput {
-            id: "parent_tool".to_string(),
-            event: ToolEvent::PermissionRequested {
-                request: PermissionRequest {
-                    id: "req_1".to_string(),
-                    conversation: ConversationAddress::parse("review").unwrap(),
-                    turn: 1,
-                    tool_call_id: "child_tool".to_string(),
-                    tool: "run_command".to_string(),
-                    risk: "command".to_string(),
-                    summary: "cargo test".to_string(),
-                    candidate: "cargo test".to_string(),
-                    source: "default_ask".to_string(),
-                },
-            },
-        };
-
-        let line = serialize_event(&event).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-
-        assert_eq!(value["conversation"], "review");
-        assert_eq!(value["type"], "tool_output");
-        assert_eq!(value["event"]["permission"]["id"], "req_1");
-    }
+    Some(value)
 }
