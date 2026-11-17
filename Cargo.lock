@@ -1485,10 +1485,12 @@ name = "kuku-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "httpmock",
  "kuku",
  "kuku-server",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
 ]

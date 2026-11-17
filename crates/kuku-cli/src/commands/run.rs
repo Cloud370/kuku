@@ -1,78 +1,396 @@
+//! Local input, rendering, and cleanup over the public Session SDK.
+
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Instant;
 
-use kuku::agent::registry::AgentRegistry;
-use kuku::prompt::builtin_prompt_catalog;
-use kuku::{query, PermissionChoice, ToolEvent, UiEvent};
+use kuku::session::{AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions};
+use kuku::{ToolEvent, UiEvent};
+use serde_json::json;
 
-use crate::cli_args::RunArgs;
-use crate::display::{Display, OutputLine, RenderMode, RunMetrics, RunUsageSummary};
+use crate::cli_args::{ReplyArgs, RunArgs};
+use crate::display::OutputLine;
 
-fn cache_hit_rate(cache_read: u64, input: u64) -> f64 {
-    if input + cache_read > 0 {
-        let raw = cache_read as f64 / (input + cache_read) as f64;
-        (raw * 1000.0).round() / 1000.0
-    } else {
-        0.0
-    }
+mod render;
+
+use render::RunRenderer;
+
+type HostResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+struct PreparedRun {
+    options: SessionOptions,
+    agent: AgentConfig,
+    prompt: String,
+    update_config: bool,
 }
 
-fn build_usage_summary(
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read: u64,
-    cache_creation: u64,
-    model_requests: u64,
-    thinking_duration_ms: u64,
-) -> RunUsageSummary {
-    let total_input = input_tokens + cache_read + cache_creation;
-    RunUsageSummary {
-        total_input_tokens: total_input,
-        total_tokens: total_input + output_tokens,
-        cache_hit_rate: cache_hit_rate(cache_read, input_tokens),
-        model_requests,
-        thinking_duration_ms,
-    }
+/// Execute a task through the same persistent Session API used by embedded callers.
+pub async fn run(args: RunArgs) -> HostResult<()> {
+    let prepared = prepare_run(&args, resolve_config_path(args.config.as_deref())?)?;
+    let session = Session::open(prepared.options).await?;
+    let result = run_open_session(
+        &args,
+        &session,
+        prepared.agent,
+        prepared.prompt,
+        prepared.update_config,
+    )
+    .await;
+    let close = session.close().await;
+    finish_close(result, close)
 }
 
-fn resolve_config_path(
-    custom: Option<&str>,
-) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    if let Some(p) = custom {
-        return Ok(std::path::PathBuf::from(p));
+/// Reply to a matching durable request, observe its continuation, and await cleanup.
+pub async fn reply(args: ReplyArgs) -> HostResult<()> {
+    let config = load_config(resolve_config_path(args.config.as_deref())?)?;
+    let workspace = workspace_path(args.workspace.as_deref())?;
+    let home = data_path(args.data_dir.as_deref())?;
+    if !kuku::session::session_events_path(&home, &workspace, &args.session_id)?.exists() {
+        return Err(format!(
+            "session '{}' does not exist in this workspace",
+            args.session_id
+        )
+        .into());
     }
-    let home = kuku::session::kuku_home()?;
-    Ok(home.join("config.toml"))
+    let mut options = SessionOptions::new(workspace, home, config);
+    options.session_id = Some(args.session_id);
+    let session = Session::open(options).await?;
+    let command_id = args.command_id.unwrap_or_else(command_id);
+    let result = async {
+        let pending = session.agent(&args.agent)?.permission;
+        let receipt = match args.answer.as_ref() {
+            Some(text) => session.reply_question(&command_id, &args.agent, &args.request_id, text)?,
+            None => session.reply_permission(&command_id, &args.agent, &args.request_id, args.allow)?,
+        };
+        if let Some(request) = pending {
+            println!("{}", permission_decision_line(&request, if args.allow { "allow" } else { "deny" }.into(), "host".into()).to_json_line());
+        }
+        let mut observer = session.observe(receipt.event_id);
+        loop {
+            let snapshot = session.agent(&args.agent)?;
+            if snapshot.status != AgentStatus::Running && !session.agents().iter().any(|agent| agent.status == AgentStatus::Running) {
+                println!("{}", serde_json::to_string(&snapshot)?);
+                if let Some(error) = snapshot.last_error { return Err(error.into()) }
+                if snapshot.status == AgentStatus::Stopped { return Err("agent cancelled after cleanup".into()) }
+                return Ok::<(), Box<dyn std::error::Error>>(());
+            }
+            tokio::select! {
+                event = observer.next() => { if event?.is_none() { return Err("session observation ended before continuation settled".into()); } }
+                _ = tokio::signal::ctrl_c() => {
+                    session.cancel(&args.agent).await?;
+                    return Err("agent cancelled after cleanup".into());
+                }
+            }
+        }
+    }.await;
+    let close = session.close().await;
+    finish_close(result, close)
 }
 
-fn close_thinking(
-    in_thinking: &mut bool,
-    thinking_start: &mut Option<Instant>,
-    display: &mut Display,
-    use_stream_json: bool,
-) {
-    if *in_thinking {
-        *in_thinking = false;
-        let elapsed = thinking_start
-            .take()
-            .map(|s| s.elapsed())
-            .unwrap_or_default();
-        if !use_stream_json {
-            println!("{}", display.thinking_end(elapsed));
+/// Read local prompts until EOF, preserving the same Session between inputs.
+pub async fn interactive(config: Option<String>) -> HostResult<()> {
+    let mut session_id = None;
+    loop {
+        print!("> ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input)? == 0 {
+            break;
+        }
+        let prompt = input.trim();
+        if matches!(prompt, "exit" | "quit") {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+        let args = RunArgs {
+            prompt: vec![prompt.into()],
+            auto_yes: true,
+            model: None,
+            connection: None,
+            command_id: None,
+            tier: None,
+            agent: "main".into(),
+            workspace: None,
+            data_dir: None,
+            reasoning_effort: None,
+            service_tier: None,
+            max_output_tokens: None,
+            session: session_id.clone(),
+            cont: false,
+            json: false,
+            stream_json: false,
+            show_thinking: false,
+            raw: false,
+            verbose: false,
+            config: config.clone(),
+            prompts_dir: None,
+            no_agents: false,
+            no_skills: false,
+            skill_body: None,
+            bootstrap_skill_name: None,
+        };
+        let prepared = prepare_run(&args, resolve_config_path(args.config.as_deref())?)?;
+        let session = Session::open(prepared.options).await?;
+        session_id = Some(session.id().to_string());
+        let result = run_open_session(
+            &args,
+            &session,
+            prepared.agent,
+            prepared.prompt,
+            prepared.update_config,
+        )
+        .await;
+        let close = session.close().await;
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+        }
+        close?;
+    }
+    Ok(())
+}
+
+async fn run_open_session(
+    args: &RunArgs,
+    session: &Session,
+    config: AgentConfig,
+    prompt: String,
+    update_config: bool,
+) -> HostResult<()> {
+    let prior = session
+        .agents()
+        .into_iter()
+        .find(|agent| agent.address == args.agent);
+    if prior
+        .as_ref()
+        .is_some_and(|agent| agent.status == AgentStatus::Waiting)
+    {
+        return Err(
+            "agent is waiting; use `kuku reply` with its exact pending request identity".into(),
+        );
+    }
+    match prior {
+        None => {
+            session.create_agent(&command_id(), &args.agent, config)?;
+        }
+        Some(snapshot) if update_config || snapshot.config.bootstrap_skill.is_some() => {
+            session.configure_agent(
+                &command_id(),
+                &args.agent,
+                merge_agent_config(snapshot.config, config),
+            )?;
+        }
+        Some(_) => {}
+    }
+    let mut renderer = RunRenderer::new(args);
+    let start = Instant::now();
+    let receipt = session.send(Input::new(
+        args.command_id.clone().unwrap_or_else(command_id),
+        &args.agent,
+        prompt,
+    ))?;
+    let mut observer = session.observe(receipt.event_id.saturating_sub(1));
+    if matches!(
+        session.agent(&args.agent)?.status,
+        AgentStatus::Stopped | AgentStatus::Interrupted
+    ) {
+        session.advance(&args.agent)?;
+    }
+    if args.stream_json {
+        println!(
+            "{}",
+            json!({"type":"session", "event":"started", "session_id": session.id(), "agent":args.agent,"receipt":receipt})
+        );
+    } else if !args.json {
+        eprintln!("session {} agent {}", session.id(), args.agent);
+    }
+    loop {
+        let event = tokio::select! {
+            event = observer.next() => event?,
+            _ = tokio::signal::ctrl_c() => {
+                session.cancel(&args.agent).await?;
+                break;
+            }
+        };
+        match event {
+            Some(Observation::Live { agent, event }) if agent == args.agent => {
+                renderer.event(*event)
+            }
+            Some(Observation::Live { .. }) => {}
+            Some(Observation::Committed(event)) if event.id >= receipt.event_id => {
+                let snapshot = session.agent(&args.agent)?;
+                let target_settled = snapshot.status == AgentStatus::Waiting
+                    || (snapshot.status != AgentStatus::Running && snapshot.pending_inputs == 0);
+                if target_settled
+                    && !session
+                        .agents()
+                        .iter()
+                        .any(|agent| agent.status == AgentStatus::Running)
+                {
+                    break;
+                }
+            }
+            Some(Observation::Committed(_)) => {}
+            Some(Observation::Lagged { skipped }) => {
+                if args.stream_json {
+                    println!("{}", json!({"type":"lagged","skipped":skipped}));
+                }
+            }
+            None => return Err("session observation ended before the agent settled".into()),
         }
     }
+    for _ in 0..256 {
+        match tokio::time::timeout(std::time::Duration::from_millis(1), observer.next()).await {
+            Ok(Ok(Some(Observation::Live { agent, event }))) if agent == args.agent => {
+                renderer.event(*event)
+            }
+            Ok(Ok(Some(_))) => {}
+            Ok(Ok(None)) | Err(_) => break,
+            Ok(Err(error)) => return Err(error.into()),
+        }
+    }
+    let snapshot = session.agent(&args.agent)?;
+    renderer.finish(session, &snapshot, start.elapsed());
+    if let Some(error) = snapshot.last_error {
+        return Err(error.into());
+    }
+    if snapshot.status == AgentStatus::Stopped {
+        return Err("agent cancelled after cleanup".into());
+    }
+    Ok(())
 }
 
-fn noninteractive_permission_choice(
-    auto_yes: bool,
-    use_stream_json: bool,
-) -> Option<PermissionChoice> {
-    if auto_yes {
-        Some(PermissionChoice::Once)
-    } else if use_stream_json {
-        Some(PermissionChoice::Deny)
+fn prepare_run(args: &RunArgs, config_path: PathBuf) -> HostResult<PreparedRun> {
+    let config = load_config(config_path)?;
+    let workspace = workspace_path(args.workspace.as_deref())?;
+    let home = data_path(args.data_dir.as_deref())?;
+    let mut prompt = args.prompt.join(" ");
+    let mut bootstrap_skill = args.bootstrap_skill_name.clone();
+    if !args.no_skills {
+        if let Some((name, rest)) = slash_command_candidate(&prompt) {
+            let registry =
+                kuku::skill::build_registry_snapshot_for_host(&home, &workspace, &config)?;
+            if registry.get(&name).is_none() {
+                return Err(format!("unknown skill: {name}").into());
+            }
+            bootstrap_skill = Some(name);
+            prompt = rest;
+        }
+    }
+    if args.skill_body.is_some() && bootstrap_skill.is_none() {
+        return Err("bootstrap skill input requires its skill name".into());
+    }
+    let session_id = if args.cont {
+        Some(
+            kuku::session::list_sessions(&home, Some(&workspace))?
+                .into_iter()
+                .max_by(|left, right| left.created_at.cmp(&right.created_at))
+                .ok_or("no sessions found")?
+                .session_id,
+        )
     } else {
-        None
+        args.session.clone()
+    };
+    if let Some(id) = &session_id {
+        if !kuku::session::session_events_path(&home, &workspace, id)?.exists() {
+            return Err(format!("session '{id}' does not exist in this workspace").into());
+        }
+    }
+    let mut options = SessionOptions::new(workspace, home, config);
+    options.session_id = session_id;
+    options.prompts_dir = args.prompts_dir.as_ref().map(PathBuf::from);
+    let agent = AgentConfig {
+        connection: args.connection.clone(),
+        tier: args.tier.clone(),
+        model: args.model.clone(),
+        reasoning_effort: args.reasoning_effort.clone(),
+        service_tier: args.service_tier.clone(),
+        max_output_tokens: args.max_output_tokens,
+        no_agents: args.no_agents,
+        no_skills: args.no_skills,
+        bootstrap_skill,
+        ..AgentConfig::default()
+    };
+    let update_config = agent != AgentConfig::default();
+    Ok(PreparedRun {
+        options,
+        agent,
+        prompt,
+        update_config,
+    })
+}
+
+fn merge_agent_config(mut current: AgentConfig, update: AgentConfig) -> AgentConfig {
+    if update.connection.is_some() || update.model.is_some() || update.tier.is_some() {
+        current.reasoning_effort = None;
+        current.service_tier = None;
+    }
+    if update.connection.is_some() {
+        current.connection = update.connection;
+    }
+    if update.model.is_some() {
+        current.model = update.model;
+    }
+    if update.tier.is_some() {
+        current.tier = update.tier;
+        current.model = None;
+    }
+    if update.reasoning_effort.is_some() {
+        current.reasoning_effort = update.reasoning_effort;
+    }
+    if update.service_tier.is_some() {
+        current.service_tier = update.service_tier;
+    }
+    if update.max_output_tokens.is_some() {
+        current.max_output_tokens = update.max_output_tokens;
+    }
+    current.no_agents |= update.no_agents;
+    current.no_skills |= update.no_skills;
+    current.bootstrap_skill = update.bootstrap_skill;
+    current
+}
+
+fn resolve_config_path(custom: Option<&str>) -> HostResult<PathBuf> {
+    Ok(match custom {
+        Some(path) => PathBuf::from(path),
+        None => data_path(None)?.join("config.toml"),
+    })
+}
+
+fn load_config(path: PathBuf) -> HostResult<kuku::config::Config> {
+    if !path.exists() {
+        return Err(format!("config file not found: {}; run `kuku init`", path.display()).into());
+    }
+    Ok(kuku::config::load_config(&path)?.resolve()?)
+}
+
+fn workspace_path(path: Option<&str>) -> HostResult<PathBuf> {
+    Ok(match path {
+        Some(path) => std::fs::canonicalize(path)?,
+        None => kuku::session::current_workspace()?,
+    })
+}
+
+fn data_path(path: Option<&str>) -> HostResult<PathBuf> {
+    Ok(match path {
+        Some(path) => PathBuf::from(path),
+        None => kuku::session::kuku_home()?,
+    })
+}
+
+fn command_id() -> String {
+    kuku::session::new_session_id()
+}
+
+fn finish_close(result: HostResult<()>, close: kuku::Result<()>) -> HostResult<()> {
+    match (result, close) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(error), Err(cleanup)) => {
+            Err(format!("{error}; session cleanup failed: {cleanup}").into())
+        }
     }
 }
 
@@ -98,9 +416,7 @@ fn nested_model_recovery_info(event: &UiEvent) -> Option<&kuku::query::ModelReco
 
 fn conversation_for_tool_kind(kind: &kuku::query::ToolKind) -> Option<String> {
     match kind {
-        kuku::query::ToolKind::Agent { conversation, .. } => {
-            Some(conversation.as_str().to_string())
-        }
+        kuku::query::ToolKind::Agent { conversation, .. } => Some(conversation.as_str().into()),
         _ => None,
     }
 }
@@ -131,7 +447,7 @@ fn permission_ask_line(request: &kuku::query::PermissionRequest) -> OutputLine {
         request.risk.clone(),
         request.summary.clone(),
     )
-    .with_conversation(Some(request.conversation.as_str().to_string()))
+    .with_conversation(Some(request.conversation.as_str().into()))
 }
 
 fn permission_decision_line(
@@ -140,801 +456,7 @@ fn permission_decision_line(
     rule: String,
 ) -> OutputLine {
     OutputLine::permission_decision(request.id.clone(), request.tool.clone(), decision, rule)
-        .with_conversation(Some(request.conversation.as_str().to_string()))
-}
-
-struct BootstrapSkillInput {
-    name: String,
-    body: String,
-}
-
-fn build_cli_skill_registry(
-    workspace: &std::path::Path,
-    kuku_home: &std::path::Path,
-    config: &kuku::config::Config,
-) -> Result<kuku::skill::registry::SkillRegistry, Box<dyn std::error::Error>> {
-    Ok(kuku::skill::build_registry_snapshot_for_host(
-        kuku_home, workspace, config,
-    )?)
-}
-
-fn build_skill_body(
-    skill_name: &str,
-    registry: &kuku::skill::registry::SkillRegistry,
-) -> Result<Option<BootstrapSkillInput>, Box<dyn std::error::Error>> {
-    let Some(def) = registry.get(skill_name) else {
-        return Ok(None);
-    };
-    let dir = def.source_path.as_deref().unwrap_or("").to_string();
-    Ok(Some(BootstrapSkillInput {
-        name: skill_name.to_string(),
-        body: format!("<!-- loaded: {dir} -->\n\n{}", def.instructions),
-    }))
-}
-
-struct BuiltQuery {
-    query: kuku::Query,
-    tier_name: String,
-    model_name: String,
-    config: kuku::config::Config,
-    previous_input_tokens: u64,
-}
-
-fn build_query(
-    args: &RunArgs,
-    config_path: std::path::PathBuf,
-) -> Result<BuiltQuery, Box<dyn std::error::Error>> {
-    let config_file =
-        kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
-    let cfg = config_file
-        .resolve()
-        .map_err(|e| format!("config error: {e}"))?;
-
-    let prompt = args.prompt.join(" ");
-
-    let slash_command = slash_command_candidate(&prompt);
-    let (user_prompt, bootstrap_skill) = if let Some(body) = &args.skill_body {
-        (
-            prompt.clone(),
-            Some(BootstrapSkillInput {
-                name: args.bootstrap_skill_name.clone().unwrap_or_default(),
-                body: body.clone(),
-            }),
-        )
-    } else if !args.no_skills {
-        if let Some((skill_name, rest)) = slash_command {
-            let workspace = kuku::session::current_workspace()?;
-            let kuku_home = kuku::session::kuku_home()?;
-            let registry = build_cli_skill_registry(&workspace, &kuku_home, &cfg)?;
-            match build_skill_body(&skill_name, &registry) {
-                Ok(Some(skill)) => (
-                    if rest.is_empty() { String::new() } else { rest },
-                    Some(skill),
-                ),
-                Ok(None) => {
-                    return Err(format!(
-                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
-                    )
-                    .into());
-                }
-                Err(e) => {
-                    return Err(format!("Error loading skill '{skill_name}': {e}").into());
-                }
-            }
-        } else {
-            (prompt.clone(), None)
-        }
-    } else if slash_command.is_some() && args.no_skills {
-        eprintln!("warning: slash command used with --no-skills; skill injection skipped");
-        (prompt.clone(), None)
-    } else {
-        (prompt.clone(), None)
-    };
-
-    let mut q = query(&user_prompt).config_path(config_path);
-    if let Some(skill) = bootstrap_skill {
-        if skill.name.is_empty() {
-            q = q.skill_body(skill.body);
-        } else {
-            q = q.bootstrap_skill(skill.name, skill.body);
-        }
-    }
-    if args.no_skills {
-        q = q.no_skills();
-    }
-    if args.no_agents {
-        q = q.no_agents();
-    } else {
-        let workspace = kuku::session::current_workspace()?;
-        let discovery_config = cfg.discovery.clone();
-        let catalog = match &args.prompts_dir {
-            Some(dir) => {
-                let dir = std::path::PathBuf::from(dir);
-                kuku::prompt::PromptCatalog::load_from_dir(&dir)
-                    .map_err(|e| format!("failed to load prompts from {}: {e}", dir.display()))?
-            }
-            None => builtin_prompt_catalog(),
-        };
-        let registry = AgentRegistry::builder()
-            .builtins(&catalog)
-            .build_with_discovery(&workspace, &discovery_config)?
-            .build();
-        q = q.agents(registry);
-    }
-    if let Some(ref dir) = args.prompts_dir {
-        q = q.prompts_dir(std::path::PathBuf::from(dir));
-    }
-
-    let tier_name = args
-        .model
-        .clone()
-        .unwrap_or_else(|| cfg.default_tier().to_string());
-    let model_name = cfg
-        .tier(&tier_name)
-        .map(|t| t.model.clone())
-        .unwrap_or_else(|| tier_name.clone());
-
-    if let Some(model) = &args.model {
-        if cfg.tier(model).is_some() {
-            q = q.tier(model.clone());
-        } else {
-            q = q.model(model.clone());
-        }
-    }
-
-    let mut previous_input_tokens: u64 = 0;
-    if let Some(session) = &args.session {
-        q = q.session(session.clone());
-    } else if args.cont {
-        let home = kuku::session::kuku_home()?;
-        let workspace = kuku::session::current_workspace()?;
-        let sessions = kuku::session::list_sessions(&home, Some(&workspace))?;
-        let latest = sessions
-            .iter()
-            .max_by_key(|s| s.created_at.as_str())
-            .ok_or("no sessions found")?;
-        let session_id = latest.session_id.clone();
-        q = q.session(session_id.clone());
-
-        if let Ok(events_path) = kuku::session::session_events_path(&home, &workspace, &session_id)
-        {
-            if let Ok(events) = kuku::event::EventStore::replay(&events_path) {
-                for event in events.iter().rev() {
-                    if let kuku::event::EventPayload::ModelResponse {
-                        input_tokens_total: Some(input_tokens_total),
-                        ..
-                    } = &event.payload
-                    {
-                        previous_input_tokens = *input_tokens_total;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(BuiltQuery {
-        query: q,
-        tier_name,
-        model_name,
-        config: cfg,
-        previous_input_tokens,
-    })
-}
-
-/// Non-interactive run: `kuku run "prompt" [flags]`
-pub async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = resolve_config_path(args.config.as_deref())?;
-    if !config_path.exists() {
-        eprintln!("error: config file not found: {}", config_path.display());
-        eprintln!("hint: run `kuku init` to initialize");
-        std::process::exit(1);
-    }
-
-    let built = build_query(&args, config_path)?;
-    let BuiltQuery {
-        query: q,
-        tier_name,
-        model_name,
-        config: cfg,
-        previous_input_tokens,
-    } = built;
-
-    use std::io::IsTerminal;
-    let mode = if args.raw || !std::io::stdout().is_terminal() {
-        RenderMode::Raw
-    } else {
-        RenderMode::Pretty
-    };
-    let think_level_str = cfg
-        .tier(&tier_name)
-        .map(|t| t.think.as_str())
-        .unwrap_or("medium");
-    let mut display = match mode {
-        RenderMode::Pretty => Display::new(args.show_thinking, think_level_str),
-        RenderMode::Raw => Display::new_raw(args.show_thinking, think_level_str),
-    };
-
-    // JSON single-result path: use run(), output one final JSON line
-    if args.json {
-        let json_start = std::time::Instant::now();
-        let output = if args.auto_yes {
-            q.run_with_permission_choice(PermissionChoice::Once).await?
-        } else {
-            q.run().await?
-        };
-        let json_elapsed = json_start.elapsed();
-        let (input_tokens, output_tokens, cache_read, cache_creation) = output
-            .usage
-            .as_ref()
-            .map(|u| {
-                (
-                    u.input_tokens.unwrap_or(0),
-                    u.output_tokens.unwrap_or(0),
-                    u.cache_read_input_tokens.unwrap_or(0),
-                    u.cache_creation_input_tokens.unwrap_or(0),
-                )
-            })
-            .unwrap_or((0, 0, 0, 0));
-        let line = OutputLine::session_completed(RunMetrics {
-            session_id: output.session_id,
-            tier: tier_name.clone(),
-            model: model_name.clone(),
-            turns: output.turn,
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: cache_read,
-            cache_creation_input_tokens: cache_creation,
-            duration_ms: json_elapsed.as_millis() as u64,
-            response: Some(output.text),
-            usage: build_usage_summary(
-                input_tokens,
-                output_tokens,
-                cache_read,
-                cache_creation,
-                output.model_request_count,
-                output.thinking_duration_ms,
-            ),
-            tools: output.tool_summary.clone(),
-        });
-        println!("{}", line.to_json_line());
-        return Ok(());
-    }
-
-    let use_stream_json = args.stream_json;
-    let mut run = q.start().await?;
-    let session_id = run.session_id().to_string();
-
-    let prev_tokens = if previous_input_tokens > 0 {
-        Some(previous_input_tokens)
-    } else {
-        None
-    };
-    if use_stream_json {
-        println!(
-            "{}",
-            OutputLine::session_started(
-                session_id.clone(),
-                tier_name.clone(),
-                model_name.clone(),
-                prev_tokens,
-            )
-            .to_json_line()
-        );
-    } else {
-        println!(
-            "{}",
-            display.session_start(&session_id, &tier_name, &model_name)
-        );
-        if previous_input_tokens > 0 {
-            println!("{}", display.context_previous(previous_input_tokens));
-        }
-    }
-
-    let session_start = Instant::now();
-    let mut in_thinking = false;
-    let mut thinking_start: Option<Instant> = None;
-    let mut total_input_tokens: u64 = 0;
-    let mut total_output_tokens: u64 = 0;
-    let mut total_cache_read_input_tokens: u64 = 0;
-    let mut total_cache_creation_input_tokens: u64 = 0;
-    let mut current_turn: u64 = 0;
-    let mut text_buffer = String::new();
-    let mut was_cancelled = false;
-    let mut done_output: Option<kuku::RunOutput> = None;
-    let mut tool_conversations = std::collections::HashMap::<String, String>::new();
-
-    loop {
-        let event = tokio::select! {
-            result = run.next() => result?,
-            _ = tokio::signal::ctrl_c() => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                was_cancelled = true;
-                break;
-            }
-        };
-
-        match event {
-            Some(UiEvent::TextDelta { text }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if use_stream_json {
-                    text_buffer.push_str(&text);
-                    println!("{}", OutputLine::text_delta(text).to_json_line());
-                } else {
-                    print!("{text}");
-                }
-            }
-            Some(UiEvent::ThinkingDelta { text }) => {
-                if !in_thinking {
-                    in_thinking = true;
-                    thinking_start = Some(Instant::now());
-                    if !use_stream_json {
-                        println!();
-                        println!("{}", display.thinking_start());
-                    }
-                }
-                if !use_stream_json {
-                    if let Some(rendered) = display.thinking_line(&text) {
-                        print!("{rendered}");
-                    }
-                }
-            }
-            Some(UiEvent::ModelRecovery { info }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                text_buffer.clear();
-                if use_stream_json {
-                    println!("{}", OutputLine::model_recovery(info).to_json_line());
-                } else {
-                    println!("{}", display.model_recovery(&info));
-                }
-            }
-            Some(
-                event @ UiEvent::ToolOutput {
-                    event: ToolEvent::ModelRecovery { .. },
-                    ..
-                },
-            ) => {
-                let info = nested_model_recovery_info(&event)
-                    .expect("nested recovery pattern must contain recovery info");
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if use_stream_json {
-                    println!(
-                        "{}",
-                        OutputLine::model_recovery(info.clone()).to_json_line()
-                    );
-                } else {
-                    println!("{}", display.model_recovery(info));
-                }
-            }
-            Some(UiEvent::ToolStart {
-                id,
-                tool,
-                summary,
-                kind,
-            }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if use_stream_json {
-                    if let Some(conversation) = conversation_for_tool_kind(&kind) {
-                        tool_conversations.insert(id.clone(), conversation);
-                    }
-                    println!(
-                        "{}",
-                        tool_call_line(tool, id, summary, &kind).to_json_line()
-                    );
-                } else {
-                    println!("\n{}", display.tool_call(&tool, &summary, &id));
-                }
-            }
-            Some(UiEvent::ToolEnd {
-                id,
-                status,
-                summary,
-                ..
-            }) => {
-                if use_stream_json {
-                    let conversation = tool_conversations.remove(&id);
-                    println!(
-                        "{}",
-                        tool_result_line(id, status, summary, conversation).to_json_line()
-                    );
-                } else {
-                    println!("{}", display.tool_result(&status, &summary, &id));
-                }
-            }
-            Some(UiEvent::PermissionRequested { request }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if let Some(choice) =
-                    noninteractive_permission_choice(args.auto_yes, use_stream_json)
-                {
-                    let _ = run.decide(&request.id, choice, None).await?;
-                    if use_stream_json {
-                        if matches!(choice, PermissionChoice::Deny) {
-                            println!("{}", permission_ask_line(&request).to_json_line());
-                        }
-                        let decision = if matches!(choice, PermissionChoice::Deny) {
-                            "deny"
-                        } else {
-                            "allow"
-                        };
-                        println!(
-                            "{}",
-                            permission_decision_line(
-                                &request,
-                                decision.into(),
-                                "noninteractive".into(),
-                            )
-                            .to_json_line()
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            display.permission_decision("allow", &request.tool, "posture")
-                        );
-                        println!("{}", display.tool_running());
-                    }
-                } else {
-                    let prompt_line = display.permission_ask(&request.tool, &request.summary);
-                    print!("{prompt_line} ");
-                    io::stdout().flush()?;
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    let (decision, rule) = match input.trim() {
-                        "y" | "" => (PermissionChoice::Once, "user"),
-                        _ => (PermissionChoice::Deny, "user"),
-                    };
-                    let _ = run.decide(&request.id, decision, None).await?;
-                    let decision_str = if matches!(decision, PermissionChoice::Once) {
-                        "allow"
-                    } else {
-                        "deny"
-                    };
-                    println!(
-                        "{}",
-                        display.permission_decision(decision_str, &request.tool, rule)
-                    );
-                    println!("{}", display.tool_running());
-                }
-            }
-            Some(UiEvent::ToolOutput {
-                id: parent_tool_id,
-                event: ToolEvent::PermissionRequested { request },
-            }) => {
-                let event = UiEvent::ToolOutput {
-                    id: parent_tool_id.clone(),
-                    event: ToolEvent::PermissionRequested {
-                        request: request.clone(),
-                    },
-                };
-                let Some(parent_tool_id) = nested_permission_parent_tool_id(&event) else {
-                    continue;
-                };
-                let parent_tool_id = parent_tool_id.to_string();
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if let Some(choice) =
-                    noninteractive_permission_choice(args.auto_yes, use_stream_json)
-                {
-                    let _ = run
-                        .decide(&request.id, choice, Some(parent_tool_id.as_str()))
-                        .await?;
-                    if use_stream_json {
-                        if matches!(choice, PermissionChoice::Deny) {
-                            println!("{}", permission_ask_line(&request).to_json_line());
-                        }
-                        let decision = if matches!(choice, PermissionChoice::Deny) {
-                            "deny"
-                        } else {
-                            "allow"
-                        };
-                        println!(
-                            "{}",
-                            permission_decision_line(
-                                &request,
-                                decision.into(),
-                                "noninteractive".into(),
-                            )
-                            .to_json_line()
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            display.permission_decision("allow", &request.tool, "posture")
-                        );
-                        println!("{}", display.tool_running());
-                    }
-                } else {
-                    let prompt_line = display.permission_ask(&request.tool, &request.summary);
-                    print!("{prompt_line} ");
-                    io::stdout().flush()?;
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    let (decision, rule) = match input.trim() {
-                        "y" | "" => (PermissionChoice::Once, "user"),
-                        _ => (PermissionChoice::Deny, "user"),
-                    };
-                    let _ = run
-                        .decide(&request.id, decision, Some(parent_tool_id.as_str()))
-                        .await?;
-                    let decision_str = if matches!(decision, PermissionChoice::Once) {
-                        "allow"
-                    } else {
-                        "deny"
-                    };
-                    println!(
-                        "{}",
-                        display.permission_decision(decision_str, &request.tool, rule)
-                    );
-                    println!("{}", display.tool_running());
-                }
-            }
-            Some(UiEvent::Done {
-                usage,
-                turn,
-                output,
-            }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                if let Some(u) = &usage {
-                    total_input_tokens += u.input_tokens.unwrap_or(0);
-                    total_output_tokens += u.output_tokens.unwrap_or(0);
-                    total_cache_read_input_tokens += u.cache_read_input_tokens.unwrap_or(0);
-                    total_cache_creation_input_tokens += u.cache_creation_input_tokens.unwrap_or(0);
-                }
-                current_turn = turn;
-                done_output = Some(output);
-                break;
-            }
-            Some(UiEvent::Cancelled { turn }) => {
-                close_thinking(
-                    &mut in_thinking,
-                    &mut thinking_start,
-                    &mut display,
-                    use_stream_json,
-                );
-                current_turn = turn;
-                was_cancelled = true;
-                break;
-            }
-            Some(UiEvent::TurnStart { turn }) => {
-                current_turn = turn;
-            }
-            Some(UiEvent::Log { record }) => {
-                if use_stream_json {
-                    println!("{}", OutputLine::log(record).to_json_line());
-                }
-            }
-            Some(_) => {}
-            None => break,
-        }
-    }
-
-    let session_elapsed = session_start.elapsed();
-    println!();
-    if use_stream_json {
-        let ts = done_output
-            .as_ref()
-            .map(|o| o.tool_summary.clone())
-            .unwrap_or_default();
-        let model_reqs = done_output
-            .as_ref()
-            .map(|o| o.model_request_count)
-            .unwrap_or(0);
-        let think_ms = done_output
-            .as_ref()
-            .map(|o| o.thinking_duration_ms)
-            .unwrap_or(0);
-        let metrics = RunMetrics {
-            session_id: session_id.clone(),
-            tier: tier_name.clone(),
-            model: model_name.clone(),
-            turns: current_turn,
-            input_tokens: total_input_tokens,
-            output_tokens: total_output_tokens,
-            cache_read_input_tokens: total_cache_read_input_tokens,
-            cache_creation_input_tokens: total_cache_creation_input_tokens,
-            duration_ms: session_elapsed.as_millis() as u64,
-            response: if text_buffer.is_empty() {
-                None
-            } else {
-                Some(text_buffer)
-            },
-            usage: build_usage_summary(
-                total_input_tokens,
-                total_output_tokens,
-                total_cache_read_input_tokens,
-                total_cache_creation_input_tokens,
-                model_reqs,
-                think_ms,
-            ),
-            tools: ts,
-        };
-        if done_output.is_some() {
-            println!("{}", OutputLine::session_completed(metrics).to_json_line());
-        } else {
-            println!(
-                "{}",
-                OutputLine::session_interrupted(metrics).to_json_line()
-            );
-        }
-    } else if was_cancelled {
-        eprintln!("{}", display.session_interrupted(&session_id, current_turn));
-        std::process::exit(130);
-    } else if args.verbose {
-        let usage = build_usage_summary(
-            total_input_tokens,
-            total_output_tokens,
-            total_cache_read_input_tokens,
-            total_cache_creation_input_tokens,
-            done_output
-                .as_ref()
-                .map(|o| o.model_request_count)
-                .unwrap_or(0),
-            done_output
-                .as_ref()
-                .map(|o| o.thinking_duration_ms)
-                .unwrap_or(0),
-        );
-        let ts = done_output.as_ref().map(|o| &o.tool_summary);
-        println!(
-            "{}",
-            display.session_completed_verbose(
-                &session_id,
-                current_turn,
-                total_input_tokens,
-                total_output_tokens,
-                total_cache_read_input_tokens,
-                total_cache_creation_input_tokens,
-                session_elapsed,
-                &usage,
-                ts,
-                done_output.as_ref().map(|o| o.text.as_str()).unwrap_or(""),
-            )
-        );
-    } else {
-        println!(
-            "{}",
-            display.session_completed(
-                &session_id,
-                current_turn,
-                total_input_tokens,
-                total_output_tokens,
-                total_cache_read_input_tokens,
-                total_cache_creation_input_tokens,
-                session_elapsed,
-            )
-        );
-    }
-    Ok(())
-}
-
-/// Interactive mode: bare `kuku` (no subcommand).
-/// Currently uses CLI text streaming; future TUI.
-pub async fn interactive(config: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = resolve_config_path(config.as_deref())?;
-    if !config_path.exists() {
-        eprintln!("error: config file not found: {}", config_path.display());
-        eprintln!("hint: run `kuku init` to initialize");
-        std::process::exit(1);
-    }
-
-    let config_file =
-        kuku::config::load_config(&config_path).map_err(|e| format!("config error: {e}"))?;
-    let config = config_file
-        .resolve()
-        .map_err(|e| format!("config error: {e}"))?;
-    let workspace = kuku::session::current_workspace()?;
-    let kuku_home = kuku::session::kuku_home()?;
-    let skill_registry = build_cli_skill_registry(&workspace, &kuku_home, &config)?;
-
-    loop {
-        print!("> ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
-        let prompt = input.trim().to_string();
-        if prompt.is_empty() {
-            continue;
-        }
-        if prompt == "exit" || prompt == "quit" {
-            break;
-        }
-
-        if prompt == "/undo" {
-            let workspace = kuku::session::current_workspace()?;
-            let home = kuku::session::kuku_home()?;
-            if let Err(e) = crate::commands::undo::run_undo(&workspace, &home) {
-                eprintln!("undo error: {e}");
-            }
-            continue;
-        }
-
-        let (user_prompt, bootstrap_skill_name, skill_body) = if let Some((skill_name, rest)) =
-            slash_command_candidate(&prompt)
-        {
-            match build_skill_body(&skill_name, &skill_registry) {
-                Ok(Some(skill)) => (
-                    if rest.is_empty() { String::new() } else { rest },
-                    Some(skill.name),
-                    Some(skill.body),
-                ),
-                Ok(None) => {
-                    eprintln!(
-                        "Unknown skill: {skill_name}. Run 'kuku skills list' to see available skills."
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("Error loading skill '{skill_name}': {e}");
-                    continue;
-                }
-            }
-        } else {
-            (prompt, None, None)
-        };
-
-        let args = RunArgs {
-            prompt: vec![user_prompt],
-            auto_yes: false,
-            model: None,
-            session: None,
-            cont: false,
-            json: false,
-            stream_json: false,
-            show_thinking: false,
-            raw: false,
-            verbose: false,
-            config: Some(config_path.to_string_lossy().into_owned()),
-            prompts_dir: None,
-            no_agents: false,
-            no_skills: false,
-            bootstrap_skill_name,
-            skill_body,
-        };
-        if let Err(e) = run(args).await {
-            eprintln!("error: {e}");
-        }
-    }
-    Ok(())
+        .with_conversation(Some(request.conversation.as_str().into()))
 }
 
 fn parse_slash_command(input: &str) -> (String, String) {

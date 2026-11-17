@@ -13,8 +13,10 @@ kuku run "check this project"
 To choose a tier explicitly:
 
 ```bash
-kuku run --model strong "review this diff"
+kuku run --tier strong "review this diff"
 ```
+
+For an exact endpoint and model, use `kuku run --connection <configured-name> --model <model-id> "task"`. Run in an ordinary directory or add `--workspace <path>`; no Git initialization is required. The default local policy allows file and command tools. Verify the changed files and command results before treating the task as successful.
 
 Exact flags are in [CLI](../reference/cli.md).
 
@@ -26,7 +28,7 @@ For back-and-forth work, start the interactive CLI:
 kuku
 ```
 
-Then enter prompts one turn at a time.
+Then enter prompts one Turn at a time. The interactive host reopens the same Session between inputs.
 
 ## Continue Existing Work
 
@@ -54,28 +56,15 @@ Use these when another tool or script will consume the result:
 
 - `--json` for one final JSON line with full metrics
 - `--stream-json` for realtime JSON lines (final event includes metrics)
-- `--verbose` for human-readable output with detailed usage, tools, and response
+- `--verbose` for human-readable output with durable state, settings, and usage
 - `--raw` for plain text
 
 ### JSON output structure
 
-`--json` and `--stream-json` emit a `session_completed` object:
+`--json` returns the durable result for the selected Agent. `--stream-json` includes transient progress and the same final object. The CLI reference owns the [output fields and request controls](../reference/cli.md#kuku-run). Usage is provider-reported; an unavailable value is not proof of zero usage.
 
-```json
-{"type":"session","event":"completed","session_id":"...","tier":"balanced",
- "model":"claude-sonnet-4-6","turns":1,"input_tokens":4500,"output_tokens":900,
- "cache_read_input_tokens":27000,"cache_creation_input_tokens":0,"duration_ms":7910,
- "response":"READY",
- "usage":{"total_input_tokens":31500,"total_tokens":32400,
-          "cache_hit_rate":0.857,"model_requests":3,"thinking_duration_ms":3200},
- "tools":{"total_calls":5,"names":["read_file","write_file","bash"],
-          "denied":0,"errors":1,"rounds":2}}
-```
+A durable question or authorization returns `event: "waiting"` with its exact request identity. Reply using `kuku reply <session-id> <request-id> --answer "answer"`, `--allow`, or `--deny`. Preserve the same workspace and data directory. See [Manage Sessions](manage-sessions.md).
 
-All fields are always present, including `cache_creation_input_tokens` (defaults to 0). `response` is the full final assistant text. On interrupt (`session_interrupted`), `response` is partial text or `null`.
+Ctrl-C waits for owned command cleanup. The Session log and retained output survive closing and reopening.
 
-## Roll Back a Turn
-
-Inside interactive mode, use `/undo` to roll back to an earlier turn.
-
-For session storage and event semantics, see [File Layout](../reference/file-layout.md) and [Events](../reference/events.md).
+For storage and event semantics, see [File Layout](../reference/file-layout.md) and [Events](../reference/events.md).

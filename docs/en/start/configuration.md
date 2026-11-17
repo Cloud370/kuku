@@ -35,7 +35,7 @@ The default install defines three tiers:
 - `balanced`
 - `light`
 
-Each tier maps to one provider, one model, a thinking level, and token limits. `default_model = "balanced"` selects the tier used when you do not pass `--model`.
+Each tier maps to one provider, one model, a thinking level, and token limits. `default_model = "balanced"` selects the default tier. Use `--tier <name>` to choose another tier, or `--connection <name> --model <model-id>` to select an exact connection and model.
 
 ## Common Changes
 

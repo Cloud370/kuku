@@ -11,36 +11,14 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct EventsQuery {
     pub after: Option<u64>,
+    #[serde(alias = "agent")]
     pub conversation: Option<String>,
+    pub limit: Option<usize>,
     pub workspace: Option<String>,
 }
 
-fn event_conversation(payload: &kuku::event::EventPayload) -> Option<&str> {
-    match payload {
-        kuku::event::EventPayload::ToolCall { conversation, .. }
-        | kuku::event::EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        kuku::event::EventPayload::ConversationOpened { conversation, .. }
-        | kuku::event::EventPayload::ConversationBound { conversation, .. }
-        | kuku::event::EventPayload::PromptSnapshot { conversation, .. }
-        | kuku::event::EventPayload::MessageUser { conversation, .. }
-        | kuku::event::EventPayload::MessageAssistant { conversation, .. }
-        | kuku::event::EventPayload::TurnStarted { conversation, .. }
-        | kuku::event::EventPayload::TurnCompleted { conversation, .. }
-        | kuku::event::EventPayload::TurnCancelled { conversation, .. }
-        | kuku::event::EventPayload::TurnInterrupted { conversation, .. }
-        | kuku::event::EventPayload::ConversationRollback { conversation, .. }
-        | kuku::event::EventPayload::ConversationRollbackUndone { conversation, .. }
-        | kuku::event::EventPayload::ModelRecovery { conversation, .. }
-        | kuku::event::EventPayload::ContextSkills { conversation, .. } => Some(conversation),
-        kuku::event::EventPayload::Unknown(value) => {
-            value.get("conversation").and_then(|item| item.as_str())
-        }
-        _ => None,
-    }
-}
-
 fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation: &str) -> bool {
-    match event_conversation(payload) {
+    match crate::wire::event_agent(payload) {
         Some(value) => value == conversation,
         None => {
             matches!(payload, kuku::event::EventPayload::SessionCreated { .. })
@@ -51,8 +29,24 @@ fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation:
 
 fn stream_event_conversation(value: &serde_json::Value) -> Option<&str> {
     value
-        .get("conversation")
+        .get("agent")
         .and_then(|item| item.as_str())
+        .or_else(|| {
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("record"))
+                .and_then(|record| record.get("address"))
+                .and_then(|item| item.as_str())
+        })
+        .or_else(|| {
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("record"))
+                .and_then(|record| record.get("input"))
+                .and_then(|input| input.get("target"))
+                .and_then(|item| item.as_str())
+        })
+        .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
         .or_else(|| {
             value
                 .get("kind")
@@ -151,12 +145,19 @@ pub async fn events(
         );
     }
 
-    let events = match kuku::event::EventStore::replay(&events_path) {
+    let after = params.after.unwrap_or(0);
+    let limit = params.limit.unwrap_or(100);
+    if !(1..=256).contains(&limit) {
+        return Json(
+            json!({"ok":false,"code":"invalid_request","message":"limit must be between 1 and 256"}),
+        );
+    }
+    let events = match kuku::event::EventStore::read_page(&events_path, after, limit) {
         Ok(e) => e,
         Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
     };
 
-    let after = params.after.unwrap_or(0);
+    let next_after = events.last().map(|event| event.id).unwrap_or(after);
     let conversation = params.conversation.as_deref();
     let filtered: Vec<_> = events
         .iter()
@@ -187,14 +188,7 @@ pub async fn events(
             .collect()
     };
 
-    if active_stream.is_empty() {
-        Json(json!(filtered))
-    } else {
-        Json(json!({
-            "events": filtered,
-            "active_stream": active_stream,
-        }))
-    }
+    Json(json!({"events": filtered, "next_after": next_after, "active_stream": active_stream}))
 }
 
 #[cfg(test)]

@@ -1,233 +1,111 @@
 # Server API
 
-## Start the Server
+## 启动服务
 
-默认监听地址：
+默认地址为 `127.0.0.1:17777`。监听非回环地址需要 `--password`。
 
-```text
-127.0.0.1:17777
-```
+## 认证
 
-非 loopback 监听要求 `--password`。
+回环客户端跳过密码检查。远程客户端发送 `Authorization: Bearer <token>`。认证失败以 HTTP 200 返回 `{"ok":false,"code":"auth_required","message":"password required"}`。
 
-## Authentication
+默认单用户服务使用 trusted-local 工具授权。嵌入宿主可通过 `AppState.authorizer` 允许、拒绝或延后精确工具动作。
 
-- loopback 客户端跳过密码检查。
-- 远程客户端必须发送 `Authorization: Bearer <token>`。
-- 认证失败时返回 HTTP 200：
+## 端点
 
-```json
-{"ok": false, "code": "auth_required", "message": "password required"}
-```
-
-## Endpoints
-
-| Method | Path | Purpose |
+| 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/health` | 健康检查 |
-| `POST` | `/runs` | 启动运行并流式返回 NDJSON |
-| `DELETE` | `/runs/{id}` | 取消运行 |
-| `POST` | `/runs/{id}/responses` | 回复交互请求 |
-| `GET` | `/sessions` | 列出 Sessions |
-| `DELETE` | `/sessions/{id}` | 删除一个 Session |
-| `GET` | `/sessions/{id}/events` | 检查持久账本和可选实时流 |
-| `GET` | `/sessions/{id}/conversations` | 列出一个 Session 内的 conversation 线程 |
+| `POST` | `/runs` | 提交工作并观察 NDJSON |
+| `DELETE` | `/runs/{id}` | 取消并等待所拥有工作的清理 |
+| `POST` | `/runs/{id}/responses` | 回复待决问题或授权 |
+| `GET` | `/sessions` | 列出保留的 Session |
+| `DELETE` | `/sessions/{id}` | 删除已关闭的 Session |
+| `GET` | `/sessions/{id}/events` | 读取有界持久页及可选近期进度 |
+| `GET` | `/sessions/{id}/conversations` | 查看一个 Session 中的稳定 Agent |
 
-请求体限制为 10 MB。
+请求体上限为 10 MB，SDK 的输入和执行限制仍然生效。
 
 ## `GET /health`
 
-响应：
-
 ```json
-{
-  "ok": true,
-  "version": "0.1.0",
-  "workspace": "/current/server/working/dir"
-}
+{"ok":true,"version":"0.1.0","workspace":"/server/working/directory"}
 ```
 
 ## `POST /runs`
-
-请求体：
 
 ```json
 {
   "prompt": "check this project",
   "workspace": "/code/my-project",
-  "session_id": "optional-existing-session",
-  "conversation": "optional-address",
-  "tier": "optional-tier-name"
+  "session_id": "optional-session",
+  "agent": "reviewer",
+  "connection": "named-connection",
+  "model": "exact-model-id",
+  "command_id": "optional-caller-command"
 }
 ```
 
-规则：
+`workspace` 必须是目录。`session_id` 可选，`agent` 默认 `main`。稳定地址为扁平的小写 ASCII 字母、数字、`-` 或 `_`，最多 64 字节。输入仍接受 `conversation` 作为 `agent` 别名。
 
-- `workspace` 必填，且必须存在
-- `session_id` 可选
-- `conversation` 可选，默认是 `main`
-- `tier` 可选
+模型选择复用 SDK 解析器。可选字段为 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier` 和 `max_output_tokens`。`no_agents`、`no_skills` 禁用对应工具面。精确连接按配置名称选择端点，不因协议相同而选用其他连接。重开时不传模型参数会保留该 Agent 的配置；显式修改只影响该 Agent。切换路由时先清除旧的 Agent 局部 reasoning/service 覆盖值，再应用新显式值。
 
-复用相同的 `session_id` 和 `conversation` 就表示继续同一线程。
+`command_id` 接受 1–100 字节，是 SDK 输入幂等标识，返回的 `run_id` 标识本次 HTTP 执行控制句柄，与 Session 内命令标识分开。回执确认输入已经持久化，执行终结事实随后产生。重复使用同一 Session 和 Agent 延续其上下文；同一 Session 中其他地址具有独立上下文，可并发执行。对已经运行的地址再次提交 HTTP run 会明确失败。
 
-成功响应是内容类型为 `application/x-ndjson` 的 NDJSON 流。
+响应为 `application/x-ndjson`。最后一个 HTTP run 完成后，服务会等待该 Session 中已在运行的 Agent 结算，再关闭资源。等待和中断的 Agent 保持休眠。HTTP 观察者断开后 Session 继续执行，关闭或放慢客户端不会成为执行链的控制者。
 
-## NDJSON Wire Events
+## NDJSON 事件
 
-顶层流事件类型：
+`run_start` 包含 `run_id`、`session_id`、`agent` 和持久输入 `receipt`。瞬时更新包括 `turn_start`、`model_request`、`text`、`thinking`、`tool_start`、`tool_output`、`tool_end` 和 `log`。
 
-- `run_start`
-- `turn_start`
-- `model_request`
-- `text`
-- `thinking`
-- `tool_start`
-- `tool_output`
-- `tool_end`
-- `permission`
-- `log`
-- `done`
-- `cancelled`
-- `error`
+`committed` 通过 `id` 和 `kind` 标识持久事件，完整 payload 从事件端点读取。`lagged` 报告丢失的瞬时更新，可使用持久游标重新读取。每个 run 的队列有界：广播最多 256 条，近期缓冲最多 200 条且每个 run 不超过 1 MiB。瞬时进度可能丢失，已提交事实与终结响应仍可通过 Session 日志检查。
 
-示例：
+问题发送带精确 `id`、`agent` 和 `text` 的 `question` 事件；延后授权发送带匹配标识的 `permission`。等待会释放服务执行槽位，不会因超时隐式授权或拒绝。
+
+终结事件为 `done`、`cancelled` 或 `error`。`done` 位于持久结算之后，含 `session_id`、`agent`、`text`、`turn`、累计 Provider `usage` 和 Agent `config`。`conversation` 为兼容现有消费者而镜像 Agent 地址。Turn 完成不代表任务成功，应检查真实文件与判定命令。
 
 ```json
-{"type":"run_start","run_id":"..."}
-{"type":"text","content":"hello"}
-{"type":"done","session_id":"...","text":"done","turn":1,"usage":null,"model_request_count":1,"thinking_duration_ms":0,"tool_summary":{"total_calls":0,"names":[],"denied":0,"errors":0,"rounds":0}}
+{"type":"run_start","run_id":"http-run-1","session_id":"...","agent":"main","receipt":{"command_id":"command-1","event_id":3,"agent":"main"}}
+{"type":"text","content":"hello","agent":"main"}
+{"type":"done","session_id":"...","agent":"main","conversation":"main","text":"done","turn":1,"usage":{"model_requests":1},"config":{}}
 ```
 
-`tool_start` 包含 `kind` 元数据。
-
-- 普通工具：`"kind":"simple"`
-- 命令工具：`"kind":{"command":{"pid":42}}`
-- agent 工具：`"kind":{"agent":{"conversation":"review","binding_id":"sha256:..."}}`
-
-`done` 会包含运行指标：
-
-| Field | Type | Description |
-|---|---|---|
-| `model_request_count` | `u64` | 本 Session 中的模型 API 调用次数 |
-| `thinking_duration_ms` | `u64` | thinking 块累计耗时 |
-| `tool_summary.total_calls` | `u64` | Tool 调用总数，包括 blocked |
-| `tool_summary.names` | `string[]` | 按首次出现顺序记录的唯一 Tool 名称 |
-| `tool_summary.denied` | `u64` | 权限拒绝次数 |
-| `tool_summary.errors` | `u64` | 返回错误状态的 Tool 执行次数 |
-| `tool_summary.rounds` | `u64` | model -> tools -> result 的循环次数 |
-
-运行会以 `done`、`cancelled` 或 `error` 结束。
-
-`log` 记录是 active stream 中 host 可见的可观测性数据，不会作为持久 Session 事实写入。
+Provider 用量及未知报告遵循 [Session SDK](../how-it-works/sessions.md)。活动 `log` 为可观察性记录，与持久执行事实分开存放。
 
 ## `DELETE /runs/{id}`
 
-响应：
-
-```json
-{"ok": true}
-```
-
-或者：
-
-```json
-{"ok": false, "code": "session_not_found", "message": "run not found"}
-```
+取消及清理完成后返回 `{"ok":true}`。run 不存在返回 `session_not_found`；清理失败返回 `cleanup_failed` 和错误消息。服务退出时关闭 Session、保留待决等待、等待清理并报告失败。
 
 ## `POST /runs/{id}/responses`
 
-请求体：
-
 ```json
-{
-  "interaction_id": "req_1",
-  "choice": "once"
-}
+{"interaction_id":"exact-pending-request","agent":"reviewer","choice":"once","command_id":"reply-1"}
 ```
 
-有效 `choice` 值：
+授权的 `choice` 为 `once` 或 `deny`；问题使用 `answer` 并提供 `text`。`agent` 可选，提供时必须匹配原 run；`conversation` 仍为别名。回复不会隐含 Session/项目范围授权。调用方指定 `command_id` 可安全重试同一回复。错误或过期请求不会推进 Agent。
 
-- `once`
-- `session`
-- `project`
-- `deny`
+当前打开的服务 run 通过原流继续。服务关闭后，待决请求保留在 Session 中，可使用公开 SDK 或 `kuku reply`，配合同一工作区/数据目录重开。
 
 ## `GET /sessions`
 
-查询参数：
-
-- 可选 `workspace`
-
-成功响应：
-
-```json
-{
-  "ok": true,
-  "sessions": []
-}
-```
-
-每个 session 项包含 `session_id`、`workspace`、`title`、`created_at`、`turn_count`、`status`、`mtime` 和 `size`。
+可选 `workspace` 查询用于过滤。响应为 `{"ok":true,"sessions":[]}`。Session 条目包含 `session_id`、`workspace`、`title`、`created_at`、`turn_count`、`status`、`mtime` 和 `size`。
 
 ## `GET /sessions/{id}/conversations`
 
-查询参数：
-
-- 可选 `workspace`
-
-成功响应：
-
-```json
-{
-  "ok": true,
-  "session_id": "sess_123",
-  "conversations": [
-    {
-      "conversation": "main",
-      "binding_id": null,
-      "status": "completed:3"
-    }
-  ]
-}
-```
-
-每个 conversation 项都会报告：
-
-- `conversation`
-- `binding_id`
-- `status`，取值为 `opened`、`active:<turn>`、`completed:<turn>`、`cancelled:<turn>` 或 `interrupted:<turn>`
+可选 `workspace` 指定 Session 位置。保留的端点返回 `{"ok":true,"session_id":"...","conversations":[]}`。每项报告 `agent`/`conversation`、`status`、`pending_inputs`、待决 `permission`/`question`、`config` 和 `usage`。读取不会推进执行或获取第二个 Session 运行时。
 
 ## `DELETE /sessions/{id}`
 
-查询参数：
-
-- 可选 `workspace`
-
-常见错误码：
-
-- `session_locked`
-- `session_not_found`
-- `internal`
+可选 `workspace` 指定位置。常见错误为 `session_locked`、`session_not_found` 和 `internal`。
 
 ## `GET /sessions/{id}/events`
 
-查询参数：
+查询字段：
 
-- 可选 `after` 整数事件 id
-- 可选 `conversation` address
-- 可选 `workspace`
+- `after`：排他的持久事件游标，默认 0。
+- `limit`：最多扫描的记录数，默认 100，接受 1–256。
+- `agent` 或 `conversation`：有界账本页内的地址过滤。
+- `workspace`：Session 位置。
 
-响应形态：
+响应始终包含 `events`、`next_after` 和 `active_stream`。即使过滤排除了所有事件，`next_after` 仍为最后扫描到的账本游标，应将其用于下一页。持久事件保留 `id` 和 `payload`；近期活动进度可为空，不替代持久记录。
 
-- 只有历史事件：JSON 数组
-- 历史事件加实时缓存流：包含 `events` 和 `active_stream` 的对象
-
-持久 `/events` 数据就是来自 `events.jsonl` 的 Session 账本。
-
-当 kuku 重试达到输出上限的响应时，账本会包含 `model.recovery`。该事件记录失败请求和重试请求的 id、冻结的恢复提示来源，并支持按 conversation 过滤。
-
-- 省略 `conversation` 可检查完整账本
-- 传 `conversation=review` 可过滤单个线程
-- 传 `after=<id>` 可做增量读取
-
-当存在活动流时，`active_stream` 还可能包含 host 可见的运行时记录，包括 `log` 记录。持久 Session 的语义仍然是以事实为中心。
+其他进程持有 Session writer 时可能阻止读取；服务会明确返回资源冲突，不启动第二个 writer。

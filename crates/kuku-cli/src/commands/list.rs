@@ -1,15 +1,16 @@
 use std::path::PathBuf;
 
-use kuku::conversation::{reduce_conversations, TurnTerminal};
-use kuku::event::EventStore;
-use kuku::session::{current_workspace, kuku_home, list_sessions, SessionStatus};
+use kuku::session::{current_workspace, kuku_home, list_sessions, Session, SessionStatus};
 
 use crate::cli_args::ListArgs;
 use crate::display::util::truncate;
 
 /// List sessions: `kuku list [-a] [-w <workspace>] [-v]`
 pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let home = kuku_home()?;
+    let home = match args.data_dir {
+        Some(path) => PathBuf::from(path),
+        None => kuku_home()?,
+    };
 
     if let Some(session_id) = args.session_id.as_deref() {
         let workspace = match args.workspace.as_deref() {
@@ -17,36 +18,18 @@ pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
             None => current_workspace()?,
         };
         let path = kuku::session::session_events_path(&home, &workspace, session_id)?;
-        let events = EventStore::replay(&path)?;
-        let conversations = reduce_conversations(&events);
-
-        if conversations.is_empty() {
-            println!("no conversations found");
+        let agents = Session::read_agents(&path)?;
+        if agents.is_empty() {
+            println!("no agents found");
             return Ok(());
         }
-
-        println!("{:<24} {:<16} status", "conversation", "binding");
-        for conversation in conversations {
-            let binding = conversation
-                .active_binding
-                .unwrap_or_else(|| "-".to_string());
-            let status = if let Some(active_turn) = conversation.active_turn {
-                format!("active turn {}", active_turn.turn)
-            } else {
-                match conversation.last_terminal {
-                    Some((turn, TurnTerminal::Completed)) => format!("turn {} completed", turn),
-                    Some((turn, TurnTerminal::Cancelled)) => format!("turn {} cancelled", turn),
-                    Some((turn, TurnTerminal::Interrupted)) => {
-                        format!("turn {} interrupted", turn)
-                    }
-                    None => "opened".to_string(),
-                }
-            };
+        println!("{:<24} {:<16} pending", "agent", "status");
+        for agent in agents {
             println!(
                 "{:<24} {:<16} {}",
-                conversation.address.as_str(),
-                truncate(&binding, 16),
-                status
+                agent.address,
+                serde_json::to_value(agent.status)?,
+                agent.pending_inputs
             );
         }
         return Ok(());

@@ -2,7 +2,9 @@ use kuku::event::{EventPayload, StoredEvent};
 
 fn event_conversation(payload: &EventPayload) -> Option<&str> {
     match payload {
-        EventPayload::ToolCall { conversation, .. }
+        EventPayload::ModelResponse { conversation, .. }
+        | EventPayload::ModelError { conversation, .. }
+        | EventPayload::ToolCall { conversation, .. }
         | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
         EventPayload::ConversationOpened { conversation, .. }
         | EventPayload::ConversationBound { conversation, .. }
@@ -17,7 +19,23 @@ fn event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ModelRecovery { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
-        EventPayload::Unknown(value) => value.get("conversation").and_then(|item| item.as_str()),
+        EventPayload::Unknown(value) => value
+            .get("agent")
+            .and_then(|item| item.as_str())
+            .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
+            .or_else(|| {
+                value
+                    .get("record")
+                    .and_then(|record| record.get("address"))
+                    .and_then(|item| item.as_str())
+            })
+            .or_else(|| {
+                value
+                    .get("record")
+                    .and_then(|record| record.get("input"))
+                    .and_then(|input| input.get("target"))
+                    .and_then(|item| item.as_str())
+            }),
         _ => None,
     }
 }

@@ -31,10 +31,66 @@ pub fn serialize_event(event: &UiEvent) -> Option<String> {
     Some(line)
 }
 
-pub fn run_start(run_id: &str) -> String {
+pub(crate) fn event_agent(payload: &kuku::event::EventPayload) -> Option<&str> {
+    match payload {
+        kuku::event::EventPayload::ModelResponse { conversation, .. }
+        | kuku::event::EventPayload::ModelError { conversation, .. }
+        | kuku::event::EventPayload::ToolCall { conversation, .. }
+        | kuku::event::EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
+        kuku::event::EventPayload::ConversationOpened { conversation, .. }
+        | kuku::event::EventPayload::ConversationBound { conversation, .. }
+        | kuku::event::EventPayload::PromptSnapshot { conversation, .. }
+        | kuku::event::EventPayload::MessageUser { conversation, .. }
+        | kuku::event::EventPayload::MessageAssistant { conversation, .. }
+        | kuku::event::EventPayload::TurnStarted { conversation, .. }
+        | kuku::event::EventPayload::TurnCompleted { conversation, .. }
+        | kuku::event::EventPayload::TurnCancelled { conversation, .. }
+        | kuku::event::EventPayload::TurnInterrupted { conversation, .. }
+        | kuku::event::EventPayload::ConversationRollback { conversation, .. }
+        | kuku::event::EventPayload::ConversationRollbackUndone { conversation, .. }
+        | kuku::event::EventPayload::ModelRecovery { conversation, .. }
+        | kuku::event::EventPayload::ContextSkills { conversation, .. } => Some(conversation),
+        kuku::event::EventPayload::Unknown(value) => value
+            .get("agent")
+            .and_then(|item| item.as_str())
+            .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
+            .or_else(|| {
+                value
+                    .get("record")
+                    .and_then(|record| record.get("address"))
+                    .and_then(|item| item.as_str())
+            })
+            .or_else(|| {
+                value
+                    .get("record")
+                    .and_then(|record| record.get("input"))
+                    .and_then(|input| input.get("target"))
+                    .and_then(|item| item.as_str())
+            }),
+        _ => None,
+    }
+}
+
+pub(crate) fn serialize_agent_event(event: &UiEvent, agent: &str) -> Option<String> {
+    let line = serialize_event(event)?;
+    let mut value: serde_json::Value = serde_json::from_str(&line).ok()?;
+    value["agent"] = serde_json::Value::String(agent.into());
+    Some(format!("{value}\n"))
+}
+
+/// Encode the durable input receipt and explicit HTTP run identity.
+pub fn run_start(
+    run_id: &str,
+    session_id: &str,
+    agent: &str,
+    receipt: &kuku::session::Receipt,
+) -> String {
     let value = serde_json::json!({
         "type": "run_start",
         "run_id": run_id,
+        "session_id": session_id,
+        "agent": agent,
+        "receipt": receipt,
     });
     format!("{}\n", value)
 }

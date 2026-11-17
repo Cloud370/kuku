@@ -24,11 +24,14 @@ use tower_http::trace::TraceLayer;
 
 use run_manager::RunManager;
 
+/// Shared host resources and authorization supplied to HTTP handlers.
 pub struct AppState {
     pub run_manager: Mutex<RunManager>,
     pub config: Arc<ArcSwap<kuku::config::Config>>,
     pub password: Option<String>,
     pub kuku_home: PathBuf,
+    /// Authority consulted before exact tool actions are dispatched.
+    pub authorizer: Arc<dyn kuku::permission::ToolAuthorizer>,
 }
 
 fn is_loopback(addr: &SocketAddr) -> bool {
@@ -102,6 +105,7 @@ pub async fn start_server(
         config: config_store,
         password,
         kuku_home,
+        authorizer: Arc::new(kuku::permission::TrustedLocal),
     });
 
     let app = build_app(state);
@@ -125,21 +129,7 @@ pub async fn shutdown_signal(state: Arc<AppState>) {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
 
-    let run_ids = {
-        let mgr = state.run_manager.lock().await;
-        mgr.active_run_ids()
-    };
-
-    let mut handles = Vec::new();
-    for run_id in run_ids {
-        if let Some(jh) = {
-            let mgr = state.run_manager.lock().await;
-            mgr.cancel(&run_id)
-        } {
-            handles.push(jh);
-        }
-    }
-    for jh in handles {
-        let _ = jh.await;
+    if let Err(error) = state.run_manager.lock().await.close_all().await {
+        tracing::error!(%error, "session cleanup failed");
     }
 }

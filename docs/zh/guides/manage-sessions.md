@@ -1,10 +1,10 @@
-# Manage Sessions
+# 管理 Session
 
-每个 Session 都以一个目录和一份账本的形式保存在 kuku home 下。
+每个 Session 在 kuku home 下拥有一个目录和一份账本。
 
-## List Sessions
+## 列出 Session
 
-仅当前工作区：
+只列当前工作区：
 
 ```bash
 kuku list
@@ -16,66 +16,73 @@ kuku list
 kuku list --all
 ```
 
-显式指定某个工作区：
+显式指定工作区：
 
 ```bash
 kuku list --workspace /path/to/workspace
 ```
 
-## List Conversations In One Session
+## 列出一个 Session 中的 Agent
 
 ```bash
 kuku list <session-id>
 ```
 
-它会显示每个 conversation address、当前绑定以及最新 turn 是打开、活动、完成、取消还是中断。
+显示每个稳定 Agent 地址、执行状态和待接纳输入数量。
 
-## Continue A Session
+## 继续 Session
 
-继续主线程 conversation：
+继续 `main` Agent：
 
 ```bash
 kuku run --session <session-id> "continue"
 ```
 
-或者继续最近一个 Session：
+或继续最近的 Session：
 
 ```bash
 kuku run --continue "continue"
 ```
 
-agent conversation 则通过在 `agent` Tool 中复用同一个 conversation address 来继续。
+使用 `--agent reviewer` 创建或继续同一 Session 中的另一个 Agent。新 Agent 默认拥有独立上下文；重开已有地址保留其自身上下文和模型配置。
 
-## Read Session Data
+等待中的 Agent 需要精确的待决请求：
+
+```bash
+kuku reply <session-id> <request-id> --agent reviewer --answer "the requested information"
+kuku reply <session-id> <request-id> --agent reviewer --allow
+```
+
+使用 `--deny` 拒绝授权。普通后续 Prompt 不会成为授权。回复命令标识支持幂等重试，过期请求标识会被拒绝。
+
+## 读取 Session 数据
 
 ```bash
 kuku show <session-id>
-kuku show <session-id> --conversation review
+kuku show <session-id> --agent review
+kuku show <session-id> --agent review --json
 kuku events <session-id>
-kuku events <session-id> --conversation review
+kuku events <session-id> --agent review
 ```
 
-- `kuku show` 读取某个 conversation 的最终 transcript 输出。
+- `kuku show` 读取一个 Agent 的最后持久响应。
 - `kuku events` 读取持久账本事实。
-- 省略 `--conversation` 可检查完整账本。
-- 对 `kuku events` 加 `-v` 或 `-vv` 可获取更多细节。
+- 省略 `--agent` 检查完整账本。
+- 使用 `--after <id> --limit <n> --json` 读取有界持久页，默认上限为 100 条。
+- Session 位于其他位置时，检查命令接受 `--workspace` 和 `--data-dir`。
 
-## Delete A Session
+## 删除 Session
 
 ```bash
 kuku delete <session-id>
 ```
 
-如果该 Session 属于其他工作区，请加上 `--workspace`。
+属于另一个工作区时添加 `--workspace`。
 
-## Roll Back A Conversation
+关闭 Session 保留已提交上下文和待决请求。已经接纳至 Provider 可见上下文的输入不可变；交互宿主不再提供原地转录回滚。
 
-在交互模式中，使用 `/undo`。
-
-规范模型中的 rollback 是 conversation 作用域的。它会追加 rollback 事实，而不是删除历史。
-
-## Related Pages
+## 相关页面
 
 - [CLI](../reference/cli.md)
-- [File Layout](../reference/file-layout.md)
-- [Events](../reference/events.md)
+- [文件布局](../reference/file-layout.md)
+- [事件](../reference/events.md)

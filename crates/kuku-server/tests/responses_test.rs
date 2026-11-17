@@ -52,7 +52,9 @@ async fn invalid_choice_returns_error() {
 async fn response_with_wrong_run_id_does_not_resolve_permission() {
     let mock = mock_provider::start_mock_provider().await;
     mock.mock(|when, then| {
-        when.method(httpmock::Method::POST).path("/v1/messages");
+        when.method(httpmock::Method::POST).path("/v1/messages").matches(|request| {
+            !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("\"tool_result\"")
+        });
         then.status(200)
             .header("request-id", "req_tool")
             .header("connection", "close")
@@ -87,7 +89,7 @@ async fn response_with_wrong_run_id_does_not_resolve_permission() {
     });
 
     let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
+    let server = common::TestServer::start_deferred(config).await;
     let client = wreq::Client::new();
 
     let resp = client
@@ -146,7 +148,9 @@ async fn response_with_wrong_run_id_does_not_resolve_permission() {
 async fn permission_response_preserves_conversation_identity() {
     let mock = mock_provider::start_mock_provider().await;
     mock.mock(|when, then| {
-        when.method(httpmock::Method::POST).path("/v1/messages");
+        when.method(httpmock::Method::POST).path("/v1/messages").matches(|request| {
+            !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("\"tool_result\"")
+        });
         then.status(200)
             .header("request-id", "req_tool_review")
             .header("connection", "close")
@@ -181,7 +185,7 @@ async fn permission_response_preserves_conversation_identity() {
     });
 
     let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
+    let server = common::TestServer::start_deferred(config).await;
     let client = wreq::Client::new();
 
     let resp = client

@@ -69,6 +69,7 @@ async fn main() {
         config: config_store,
         password: args.password,
         kuku_home,
+        authorizer: Arc::new(kuku::permission::TrustedLocal),
     });
 
     let app = kuku_server::build_app(state.clone());

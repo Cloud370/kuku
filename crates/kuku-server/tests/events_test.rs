@@ -157,7 +157,7 @@ async fn events_can_filter_by_conversation_and_keep_session_envelope() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body.as_array().unwrap();
+    let events = body["events"].as_array().unwrap();
     assert!(events
         .iter()
         .any(|event| event["payload"]["kind"] == "session.created"));
@@ -200,7 +200,7 @@ async fn main_conversation_filter_keeps_unscoped_main_facts() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body.as_array().unwrap();
+    let events = body["events"].as_array().unwrap();
     assert!(events
         .iter()
         .any(|event| event["payload"]["text"] == "main message"));
@@ -240,11 +240,33 @@ async fn events_without_conversation_returns_full_ledger() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let events = body.as_array().unwrap();
+    let events = body["events"].as_array().unwrap();
     assert!(events
         .iter()
         .any(|event| event["payload"]["text"] == "main message"));
     assert!(events
         .iter()
         .any(|event| event["payload"]["text"] == "review message"));
+}
+
+#[tokio::test]
+async fn filtered_event_page_advances_the_scanned_cursor() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = common::TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    write_session_events(server.home.path(), server.workspace.path(), "s_page");
+    let body: serde_json::Value = wreq::Client::new()
+        .get(format!(
+            "{}/sessions/s_page/events?workspace={}&agent=missing&after=1&limit=2",
+            server.base_url,
+            server.workspace.path().display()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(0, body["events"].as_array().unwrap().len());
+    assert!(body["next_after"].as_u64().unwrap() > 1);
+    assert!(body["next_after"].as_u64().unwrap() <= 3);
 }

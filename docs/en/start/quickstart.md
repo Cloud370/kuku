@@ -27,7 +27,7 @@ See [Environment Variables](../reference/environment-variables.md) and [Config](
 ## 3. Run a First Task
 
 ```bash
-kuku run say hello
+kuku run "inspect the files in this directory"
 ```
 
 Or start interactive mode:
@@ -36,7 +36,9 @@ Or start interactive mode:
 kuku
 ```
 
-No subcommand starts an interactive session in the current workspace.
+No subcommand starts an interactive Session in the current workspace. The default local policy permits tools; file and command results persist under the printed Session identity.
+
+For explicit selection, use `--tier <name>` or `--connection <name> --model <model-id>` before the prompt.
 
 ## 4. Inspect the Result
 

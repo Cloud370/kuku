@@ -7,20 +7,6 @@ use serde_json::json;
 
 use crate::AppState;
 
-fn conversation_status(state: &kuku::conversation::ConversationState) -> String {
-    if let Some(active_turn) = state.active_turn.as_ref() {
-        return format!("active:{}", active_turn.turn);
-    }
-    match state.last_terminal.as_ref() {
-        Some((turn, kuku::conversation::TurnTerminal::Completed)) => format!("completed:{}", turn),
-        Some((turn, kuku::conversation::TurnTerminal::Cancelled)) => format!("cancelled:{}", turn),
-        Some((turn, kuku::conversation::TurnTerminal::Interrupted)) => {
-            format!("interrupted:{}", turn)
-        }
-        None => "opened".to_string(),
-    }
-}
-
 #[derive(Deserialize)]
 pub struct SessionsQuery {
     pub workspace: Option<String>,
@@ -85,20 +71,22 @@ pub async fn conversations(
         }
     };
 
-    let events = match kuku::event::EventStore::replay(&events_path) {
-        Ok(events) => events,
-        Err(error) => {
-            return Json(json!({"ok": false, "code": "internal", "message": error.to_string()}))
-        }
+    let agents = match kuku::session::Session::read_agents(&events_path) {
+        Ok(agents) => agents,
+        Err(error) => return Json(crate::error_mapping::error_envelope(&error)),
     };
-
-    let conversations = kuku::conversation::reduce_conversations(&events)
-        .into_iter()
-        .map(|conversation| {
+    let conversations = agents
+        .iter()
+        .map(|agent| {
             json!({
-                "conversation": conversation.address.as_str(),
-                "binding_id": conversation.active_binding,
-                "status": conversation_status(&conversation),
+                "conversation": agent.address,
+                "agent": agent.address,
+                "status": agent.status,
+                "pending_inputs": agent.pending_inputs,
+                "permission": agent.permission,
+                "question": agent.question,
+                "config": agent.config,
+                "usage": agent.usage,
             })
         })
         .collect::<Vec<_>>();

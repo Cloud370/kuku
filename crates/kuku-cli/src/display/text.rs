@@ -34,25 +34,27 @@ pub enum RenderMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Display {
     mode: RenderMode,
-    think_level: &'static str,
+    think_level: String,
     show_thinking: bool,
     line_start: bool,
 }
 
 impl Display {
-    pub fn new(show_thinking: bool, think_level: &'static str) -> Self {
+    /// Create a decorated renderer using the supplied provider reasoning label.
+    pub fn new(show_thinking: bool, think_level: &str) -> Self {
         Self {
             mode: RenderMode::Pretty,
-            think_level,
+            think_level: think_level.to_string(),
             show_thinking,
             line_start: true,
         }
     }
 
-    pub fn new_raw(show_thinking: bool, think_level: &'static str) -> Self {
+    /// Create a plain renderer using the supplied provider reasoning label.
+    pub fn new_raw(show_thinking: bool, think_level: &str) -> Self {
         Self {
             mode: RenderMode::Raw,
-            think_level,
+            think_level: think_level.to_string(),
             show_thinking,
             line_start: true,
         }

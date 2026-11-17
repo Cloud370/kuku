@@ -186,7 +186,9 @@ async fn invalid_conversation_returns_error() {
 async fn cancel_while_waiting_for_permission_stops_run() {
     let mock = mock_provider::start_mock_provider().await;
     mock.mock(|when, then| {
-        when.method(httpmock::Method::POST).path("/v1/messages");
+        when.method(httpmock::Method::POST).path("/v1/messages").matches(|request| {
+            !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("\"tool_result\"")
+        });
         then.status(200)
             .header("request-id", "req_tool")
             .header("connection", "close")
@@ -222,7 +224,7 @@ async fn cancel_while_waiting_for_permission_stops_run() {
     });
 
     let config = mock_provider::make_test_config(mock.port());
-    let server = common::TestServer::start(config).await;
+    let server = common::TestServer::start_deferred(config).await;
     wait_for_server(&server.base_url).await;
 
     let client = wreq::Client::builder()

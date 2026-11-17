@@ -1,13 +1,13 @@
 use std::sync::{Mutex, OnceLock};
 
 use super::{
-    build_query, conversation_for_tool_kind, nested_model_recovery_info,
-    nested_permission_parent_tool_id, noninteractive_permission_choice, parse_slash_command,
-    permission_ask_line, permission_decision_line, slash_command_candidate, tool_call_line,
-    tool_result_line,
+    conversation_for_tool_kind, nested_model_recovery_info, nested_permission_parent_tool_id,
+    parse_slash_command, permission_ask_line, permission_decision_line, prepare_run,
+    slash_command_candidate, tool_call_line, tool_result_line,
 };
 use crate::cli_args::RunArgs;
-use kuku::{PermissionChoice, UiEvent};
+use clap::Parser;
+use kuku::UiEvent;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -33,28 +33,21 @@ fn test_config_path(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn stream_json_without_yes_denies_permission_requests() {
-    assert_eq!(
-        noninteractive_permission_choice(false, true),
-        Some(PermissionChoice::Deny)
+fn reply_requires_one_explicit_decision() {
+    use crate::cli_args::Cli;
+    assert!(Cli::try_parse_from(["kuku", "reply", "s_test", "request"]).is_err());
+    assert!(
+        Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--allow", "--deny"]).is_err()
     );
-}
-
-#[test]
-fn yes_auto_allows_permission_requests() {
-    assert_eq!(
-        noninteractive_permission_choice(true, false),
-        Some(PermissionChoice::Once)
+    assert!(Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--allow"]).is_ok());
+    assert!(Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--deny"]).is_ok());
+    assert!(
+        Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--answer", "text"]).is_ok()
     );
-    assert_eq!(
-        noninteractive_permission_choice(true, true),
-        Some(PermissionChoice::Once)
-    );
-}
-
-#[test]
-fn interactive_without_yes_waits_for_user_input() {
-    assert_eq!(noninteractive_permission_choice(false, false), None);
+    assert!(Cli::try_parse_from([
+        "kuku", "reply", "s_test", "request", "--answer", "text", "--allow"
+    ])
+    .is_err());
 }
 
 #[test]
@@ -200,7 +193,7 @@ fn slash_command_candidate_rejects_path_like_prompts() {
 }
 
 #[test]
-fn build_query_treats_path_like_prompt_as_plain_text() {
+fn prepare_run_treats_path_like_prompt_as_plain_text() {
     let _guard = env_lock().lock().unwrap();
     let workspace = temp_workspace();
     let previous_cwd = std::env::current_dir().unwrap();
@@ -210,6 +203,15 @@ fn build_query_treats_path_like_prompt_as_plain_text() {
         prompt: vec!["/tmp/foo".to_string()],
         auto_yes: false,
         model: None,
+        connection: None,
+        command_id: None,
+        tier: None,
+        agent: "main".into(),
+        workspace: None,
+        data_dir: None,
+        reasoning_effort: None,
+        service_tier: None,
+        max_output_tokens: None,
         session: None,
         cont: false,
         json: false,
@@ -225,12 +227,12 @@ fn build_query_treats_path_like_prompt_as_plain_text() {
         bootstrap_skill_name: None,
     };
 
-    let result = build_query(&args, test_config_path(&workspace)).unwrap();
+    let result = prepare_run(&args, test_config_path(&workspace)).unwrap();
 
     std::env::set_current_dir(previous_cwd).unwrap();
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert_eq!(result.query.prompt(), "/tmp/foo");
+    assert_eq!(result.prompt, "/tmp/foo");
 }
 
 #[test]
@@ -264,6 +266,15 @@ fn slash_command_surfaces_skill_discovery_errors() {
         prompt: vec!["/broken-skill do something".to_string()],
         auto_yes: false,
         model: None,
+        connection: None,
+        command_id: None,
+        tier: None,
+        agent: "main".into(),
+        workspace: None,
+        data_dir: None,
+        reasoning_effort: None,
+        service_tier: None,
+        max_output_tokens: None,
         session: None,
         cont: false,
         json: false,
@@ -279,7 +290,7 @@ fn slash_command_surfaces_skill_discovery_errors() {
         bootstrap_skill_name: None,
     };
 
-    let error = match build_query(&args, test_config_path(&workspace)) {
+    let error = match prepare_run(&args, test_config_path(&workspace)) {
         Ok(_) => panic!("expected discovery failure"),
         Err(error) => error,
     };
@@ -288,4 +299,28 @@ fn slash_command_surfaces_skill_discovery_errors() {
     let _ = std::fs::remove_dir_all(&workspace);
 
     assert!(!error.to_string().is_empty());
+}
+
+#[test]
+fn switching_route_clears_incompatible_settings_without_changing_other_agents() {
+    let current = kuku::AgentConfig {
+        model: Some("old".into()),
+        tier: Some("old-tier".into()),
+        reasoning_effort: Some("high".into()),
+        service_tier: Some("fast".into()),
+        ..Default::default()
+    };
+    let untouched = current.clone();
+    let next = super::merge_agent_config(
+        current,
+        kuku::AgentConfig {
+            connection: Some("second".into()),
+            tier: Some("new-tier".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(None, next.model);
+    assert_eq!(None, next.reasoning_effort);
+    assert_eq!(None, next.service_tier);
+    assert_eq!(Some("high"), untouched.reasoning_effort.as_deref());
 }

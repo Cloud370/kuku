@@ -27,7 +27,7 @@ export OPENAI_API_KEY="..."
 ## 3. Run a First Task
 
 ```bash
-kuku run say hello
+kuku run "inspect the files in this directory"
 ```
 
 或者启动交互模式：
@@ -36,7 +36,9 @@ kuku run say hello
 kuku
 ```
 
-不带 subcommand 时，会在当前工作区启动一个交互式 Session。
+不带 subcommand 时，会在当前工作区启动一个交互式 Session。默认本地策略允许工具，文件和命令结果保存在打印出的 Session 标识下。
+
+显式选择时，在 Prompt 前使用 `--tier <name>` 或 `--connection <name> --model <model-id>`。
 
 ## 4. Inspect the Result
 

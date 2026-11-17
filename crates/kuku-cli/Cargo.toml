@@ -24,7 +24,12 @@ server = ["kuku-server"]
 kuku = { workspace = true }
 kuku-server = { path = "../kuku-server", optional = true }
 clap = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
+
+[dev-dependencies]
+kuku = { workspace = true, features = ["test_support"] }
+httpmock = "0.7"
+tempfile = "3"

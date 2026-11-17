@@ -7,6 +7,7 @@ async fn main() {
 
     let result = match cli.command {
         Some(Command::Run(args)) => kuku_cli::commands::run::run(args).await,
+        Some(Command::Reply(args)) => kuku_cli::commands::run::reply(args).await,
         Some(Command::Show(args)) => kuku_cli::commands::show::run(args).await,
         Some(Command::Events(args)) => kuku_cli::commands::events::run(args).await,
         Some(Command::List(args)) => kuku_cli::commands::list::run(args).await,

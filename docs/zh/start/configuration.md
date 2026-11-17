@@ -35,7 +35,7 @@ $KUKU_HOME/config.toml
 - `balanced`
 - `light`
 
-每个 tier 都会映射到一个 provider、一个 model、一个 thinking level，以及 token limits。`default_model = "balanced"` 表示当你不传 `--model` 时使用这个 tier。
+每个 tier 都会映射到一个 provider、一个 model、一个 thinking level，以及 token limits。`default_model = "balanced"` 选择默认 Tier。使用 `--tier <name>` 选择其他 Tier，或 `--connection <name> --model <model-id>` 精确指定连接和模型。
 
 ## Common Changes
 

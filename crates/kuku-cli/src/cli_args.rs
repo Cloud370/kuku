@@ -16,6 +16,8 @@ pub struct Cli {
 pub enum Command {
     /// Execute an agent task (non-interactive)
     Run(RunArgs),
+    /// Reply to one durable question or authorization request
+    Reply(ReplyArgs),
     /// Show final output from a session
     Show(ShowArgs),
     /// Show events from a session
@@ -72,16 +74,51 @@ pub struct RunArgs {
     #[arg(trailing_var_arg = true, required = true)]
     pub prompt: Vec<String>,
 
-    /// Skip permission prompts; decide by posture
+    /// Explicitly select the default trusted-local policy
     #[arg(short = 'y', long = "yes")]
     pub auto_yes: bool,
 
-    /// Model tier name (strong/balanced/light) or bare model ID
+    /// Exact model identifier (existing tier names remain accepted)
     #[arg(long = "model")]
     pub model: Option<String>,
 
+    /// Exact configured connection name
+    #[arg(long)]
+    pub connection: Option<String>,
+    /// Caller command identity, allowing safe input retries
+    #[arg(long)]
+    pub command_id: Option<String>,
+
+    /// Reusable model tier
+    #[arg(long)]
+    pub tier: Option<String>,
+
+    /// Stable agent address within the session
+    #[arg(long, default_value = "main")]
+    pub agent: String,
+
+    /// Working directory (defaults to the current directory)
+    #[arg(long)]
+    pub workspace: Option<String>,
+
+    /// Persistent data directory (defaults to KUKU_HOME or ~/.kuku)
+    #[arg(long)]
+    pub data_dir: Option<String>,
+
+    /// Provider-supported reasoning effort
+    #[arg(long)]
+    pub reasoning_effort: Option<String>,
+
+    /// Provider-supported service tier
+    #[arg(long)]
+    pub service_tier: Option<String>,
+
+    /// Bound output tokens per model request
+    #[arg(long)]
+    pub max_output_tokens: Option<u32>,
+
     /// Continue an existing session
-    #[arg(short = 's', long = "session")]
+    #[arg(short = 's', long = "session", conflicts_with = "cont")]
     pub session: Option<String>,
 
     /// Continue the most recent session
@@ -133,6 +170,39 @@ pub struct RunArgs {
     pub bootstrap_skill_name: Option<String>,
 }
 
+/// Select one durable request and an explicit host reply.
+#[derive(Args)]
+pub struct ReplyArgs {
+    /// Session containing the pending request
+    pub session_id: String,
+    /// Exact durable request identity
+    pub request_id: String,
+    /// Stable agent address
+    #[arg(long, default_value = "main")]
+    pub agent: String,
+    /// Authorize the bound action once
+    #[arg(long, required_unless_present_any = ["deny", "answer"], conflicts_with_all = ["deny", "answer"])]
+    pub allow: bool,
+    /// Deny the bound action
+    #[arg(long, required_unless_present_any = ["allow", "answer"], conflicts_with_all = ["allow", "answer"])]
+    pub deny: bool,
+    /// Answer the exact pending question
+    #[arg(long, required_unless_present_any = ["allow", "deny"], conflicts_with_all = ["allow", "deny"])]
+    pub answer: Option<String>,
+    /// Caller command identity, allowing safe retries
+    #[arg(long)]
+    pub command_id: Option<String>,
+    /// Working directory
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Persistent data directory
+    #[arg(long)]
+    pub data_dir: Option<String>,
+    /// Configuration file
+    #[arg(long)]
+    pub config: Option<String>,
+}
+
 // ── Agents ──
 
 #[derive(Args)]
@@ -178,9 +248,18 @@ pub struct ShowArgs {
     /// Session ID
     pub session_id: String,
 
-    /// Conversation address (defaults to main)
-    #[arg(long = "conversation")]
+    /// Stable agent address (defaults to main)
+    #[arg(long = "agent", alias = "conversation")]
     pub conversation: Option<String>,
+    /// Emit the durable Agent snapshot, including pending requests
+    #[arg(long)]
+    pub json: bool,
+    /// Working directory
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Persistent data directory
+    #[arg(long)]
+    pub data_dir: Option<String>,
 }
 
 // ── Events ──
@@ -190,9 +269,25 @@ pub struct EventsArgs {
     /// Session ID
     pub session_id: String,
 
-    /// Conversation address (defaults to full ledger)
-    #[arg(long = "conversation")]
+    /// Stable agent address (defaults to full ledger)
+    #[arg(long = "agent", alias = "conversation")]
     pub conversation: Option<String>,
+
+    /// Return events after this durable cursor
+    #[arg(long, default_value_t = 0)]
+    pub after: u64,
+    /// Maximum records (1..=256)
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
+    /// Emit stored event JSON lines
+    #[arg(long)]
+    pub json: bool,
+    /// Working directory
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Persistent data directory
+    #[arg(long)]
+    pub data_dir: Option<String>,
 
     /// Verbose output (-v for metadata, -vv for full context)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
@@ -217,6 +312,9 @@ pub struct ListArgs {
     /// Verbose listing (mtime, created_at)
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+    /// Persistent data directory
+    #[arg(long)]
+    pub data_dir: Option<String>,
 }
 
 // ── Delete ──

@@ -1,21 +1,39 @@
-use kuku::event::EventStore;
-use kuku::session::{current_workspace, kuku_home, session_events_path};
+use std::path::PathBuf;
+
+use kuku::session::{current_workspace, kuku_home, session_events_path, Session};
 
 use crate::cli_args::ShowArgs;
-use crate::display::derive_final_output_for_conversation;
 
-/// Show final output from a session: `kuku show <session_id>`
+/// Show the last durable response from one agent without opening an executor.
 pub async fn run(args: ShowArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let home = kuku_home()?;
-    let workspace = current_workspace()?;
+    let home = match args.data_dir {
+        Some(path) => PathBuf::from(path),
+        None => kuku_home()?,
+    };
+    let workspace = match args.workspace {
+        Some(path) => PathBuf::from(path),
+        None => current_workspace()?,
+    };
     let path = session_events_path(&home, &workspace, &args.session_id)?;
-    let events = EventStore::replay(&path)?;
-    let conversation = args.conversation.as_deref().unwrap_or("main");
-    match derive_final_output_for_conversation(&events, conversation) {
+    let address = args.conversation.as_deref().unwrap_or("main");
+    let agent = Session::read_agents(&path)?
+        .into_iter()
+        .find(|agent| agent.address == address)
+        .ok_or_else(|| {
+            format!(
+                "agent '{address}' was not found in session {}",
+                args.session_id
+            )
+        })?;
+    if args.json {
+        println!("{}", serde_json::to_string(&agent)?);
+        return Ok(());
+    }
+    match agent.last_output {
         Some(text) => println!("{text}"),
         None => eprintln!(
-            "no final output found in session {} conversation {}",
-            args.session_id, conversation
+            "no final output found in session {} agent {address}",
+            args.session_id
         ),
     }
     Ok(())
