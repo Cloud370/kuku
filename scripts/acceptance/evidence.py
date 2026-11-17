@@ -10,6 +10,8 @@ import re
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 RESULT_FIELDS = ("tool_call_id", "status", "summary", "model_content", "structured", "truncated")
+STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
+                   "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 
 
 def require(condition, message):
@@ -114,6 +116,39 @@ def usage_summary(requests, usages, reports, session_scope=False):
             "reported_providers": sorted(providers), "cost_ledger_basis": "conservative_upper_bound"}
 
 
+def streaming_summary(report, requests, records, text_bytes, thinking_bytes):
+    source = report.get("streaming")
+    if source is None:
+        return {"reported": False, "coverage_complete": False}
+    require(isinstance(source, dict), "SDK streaming statistics are not an object")
+    counters = {field: source.get(field) for field in STREAM_COUNTERS}
+    require(all(type(value) is int and value >= 0 for value in counters.values()),
+            "SDK streaming statistics contain missing or invalid counters")
+    elapsed = report.get("elapsed_ms")
+    require(type(elapsed) is int and elapsed >= 0, "streaming statistics have no valid elapsed duration")
+    for field, count in (("first_model_text_ms", "model_text_chunks"),
+                         ("first_model_thinking_ms", "model_thinking_chunks"),
+                         ("first_tool_output_ms", "tool_output_chunks"),
+                         ("first_model_request_ms", "model_request_events")):
+        value = source.get(field)
+        require((counters[count] == 0 and value is None) or
+                (counters[count] > 0 and type(value) is int and 0 <= value <= elapsed),
+                "streaming first-observation time differs from its counter or elapsed duration")
+        counters[field] = value
+    require(counters["model_request_events"] <= requests and counters["committed_events"] <= records,
+            "SDK observed more model requests or committed events than exist in durable facts")
+    require(counters["model_text_bytes"] <= text_bytes and counters["model_thinking_bytes"] <= thinking_bytes,
+            "SDK streaming model byte counts exceed durable responses")
+    require((counters["model_text_bytes"] == 0 or counters["model_text_chunks"] > 0)
+            and (counters["model_thinking_bytes"] == 0 or counters["model_thinking_chunks"] > 0)
+            and (counters["tool_output_bytes"] == 0 or counters["tool_output_chunks"] > 0),
+            "SDK streaming bytes have no corresponding observed chunks")
+    return {"reported": True, "validated": True,
+            "scope": "caller-observed transient updates; durable facts validate count/byte bounds, not replay timing",
+            "coverage_complete": counters["model_request_events"] > 0 and counters["lagged_updates"] == 0
+            and counters["model_text_bytes"] + counters["model_thinking_bytes"] > 0, **counters}
+
+
 class SessionFacts:
     def __init__(self, agent, events_path, connection):
         self.agent, self.events_path, self.connection = agent, events_path, connection
@@ -128,11 +163,13 @@ class SessionFacts:
         self.settled, self.pending, self.created = None, set(), set()
         self.session_id, self.closed_at, self.last_id = None, 0, 0
         self.cleanup_failures = 0
+        self.records, self.text_bytes, self.thinking_bytes = 0, 0, 0
 
     def accept(self, event):
         identity = event.get("id")
         require(type(identity) is int and identity > self.last_id, "event cursor is not strictly increasing")
         self.last_id = identity
+        self.records += 1
         kind = event.get("kind")
         if kind == "session.created":
             require(self.session_id is None, "Session contains duplicate creation facts")
@@ -200,6 +237,8 @@ class SessionFacts:
                 require(request not in self.responses, "request has duplicate model responses")
                 self.responses[request] = event["id"]
                 self.counts["model_responses"] += 1
+                self.text_bytes += len((event.get("text") or "").encode())
+                self.thinking_bytes += len((event.get("thinking") or "").encode())
             elif kind == "runtime.model_usage":
                 require(request not in self.usages, "request has duplicate normalized usage records")
                 require(event.get("usage") is None or isinstance(event["usage"], dict), "invalid normalized usage record")
@@ -305,8 +344,6 @@ class SessionFacts:
                 and limits.get("automatic_retries") == 0, "SDK report has no explicit bounded request/retry limits")
         require(all(count <= limits["max_steps"] for count in Counter(step.get("turn") for step in self.steps.values()).values()),
                 "durable model requests exceeded the declared per-turn limit")
-        if snapshot.get("config", {}).get("no_agents"):
-            require(self.created == {self.agent}, "nondelegating benchmark created another Agent")
         usage = usage_summary(self.steps, self.usages, self.reports)
         normalized = snapshot.get("usage", {})
         require(normalized.get("model_requests") == len(self.usages)
@@ -319,11 +356,12 @@ class SessionFacts:
                 "output_references": self.outputs, "usage": usage, "usage_scope": "selected_agent",
                 "session_usage": usage_summary(self.session_steps, self.session_usages, self.session_reports, True),
                 "other_agents": sorted(self.created - {self.agent}), "limits": limits,
+                "streaming": streaming_summary(report, len(self.steps), self.records, self.text_bytes, self.thinking_bytes),
                 "models": sorted({step["model"] for step in self.steps.values()}),
                 "connections": sorted({step["connection"] for step in self.steps.values()})}
 
 
-def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None):
+def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False):
     inspected = {"passed": False, "result_path": str(result_path), "data_dir": str(data_dir)}
     try:
         report = json_file(result_path)
@@ -352,6 +390,9 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
                     require(records <= 100_000, "event log exceeds the diagnostic record limit")
                     facts.accept(json.loads(line))
         inspected.update(facts.finish(report), events_path=str(path), events_sha256=digest.hexdigest(), records=records)
+        if require_streaming:
+            require(inspected["streaming"]["coverage_complete"], "required SDK streaming coverage is missing, empty or lagged")
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+        inspected["passed"] = False
         inspected["error"] = str(error)
     return inspected

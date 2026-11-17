@@ -172,7 +172,6 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("first view", result["error"])
 
     def test_session_billing_includes_another_agents_same_request_identity(self):
-        self.fixture.config["no_agents"] = False
         self.fixture.records.pop()
         self.fixture.operation("agent_created", address="reviewer", config={})
         self.fixture.add("runtime.step_prepared", agent="reviewer", turn=4, request_id="request-1",
@@ -186,6 +185,37 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["usage"]["input_tokens"], 200)
         self.assertEqual(result["session_usage"]["input_tokens"], 250)
         self.assertEqual(result["other_agents"], ["reviewer"])
+
+    def streaming(self):
+        self.fixture.report["elapsed_ms"] = 10
+        self.fixture.report["streaming"] = {"model_text_chunks": 1, "model_thinking_chunks": 0,
+            "tool_output_chunks": 1, "model_text_bytes": 4, "model_thinking_bytes": 0, "tool_output_bytes": 5,
+            "first_model_text_ms": 5, "first_model_thinking_ms": None, "first_tool_output_ms": 3,
+            "first_model_request_ms": 1, "model_request_events": 2, "committed_events": 20, "lagged_updates": 0}
+
+    def test_streaming_observations_are_checked_against_durable_count_and_byte_bounds(self):
+        self.streaming()
+        result = self.fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        self.assertTrue(result["streaming"]["coverage_complete"])
+        self.fixture.report["streaming"]["model_text_bytes"] = 99
+        self.assertFalse(self.fixture.inspect()["passed"])
+
+    def test_streaming_first_output_time_cannot_exceed_the_run(self):
+        self.streaming()
+        self.fixture.report["streaming"]["first_model_text_ms"] = 11
+        self.assertFalse(self.fixture.inspect()["passed"])
+
+    def test_explicit_streaming_selection_rejects_missing_or_lagged_coverage(self):
+        self.fixture.write()
+        result = inspect_sdk(self.fixture.report_path, self.fixture.data, "fixture", "/kuku/data", require_streaming=True)
+        self.assertFalse(result["passed"])
+        self.streaming()
+        self.fixture.report["streaming"]["lagged_updates"] = 1
+        self.fixture.write()
+        result = inspect_sdk(self.fixture.report_path, self.fixture.data, "fixture", "/kuku/data", require_streaming=True)
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["streaming"]["validated"])
 
     def test_report_cannot_substitute_a_different_session_identity(self):
         self.fixture.report["session_id"] = "another-session"

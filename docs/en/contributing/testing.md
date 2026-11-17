@@ -73,6 +73,8 @@ The original reward, collected/passed/failed test counts, SDK exit status, and c
 
 The inspector reads at most 1 MiB per event, 100,000 events and a 4 MiB SDK report, retaining bounded hashes/metadata rather than duplicating context history. Diagnostic limits are 4,096 prepared requests and 8,192 tool calls/provider reports. Recheck existing evidence without another model request using `inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`; omit `--container-data` for a report written with host paths. This read-only selection needs neither credentials nor a budget reservation.
 
+When the caller reports `streaming`, the inspector validates its counters, first-observation times and durable request/model-byte bounds. These are observations through the same SDK subscription, not replayable wire timings. Add `--require-streaming` to `inspect`, `live`, or a live benchmark when the selected protocol check requires nonempty model output without lagged updates. Older callers remain explicitly unreported. A model's `no_agents` setting disables its collaboration tools; it does not prevent the host from creating other independent Agents in the Session.
+
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
 ## Resource measurements

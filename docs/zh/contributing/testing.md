@@ -73,6 +73,8 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 检查器每个事件最多读取 1 MiB，累计最多 100,000 个事件，SDK 报告上限 4 MiB；只保留有界 hash／元数据，不复制上下文历史。诊断上限为 4,096 个准备请求及 8,192 个工具调用／provider 报告。无需再次调用模型即可复核已有证据：`inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`；报告使用宿主路径时省略 `--container-data`。此只读选择不要求凭据或费用预留。
 
+调用程序报告 `streaming` 时，检查器核对计数、首次观察时间及持久请求／模型字节数的上界。这些数据来自同一个 SDK 订阅，不是可重放的线路计时。所选协议检查要求非空模型输出且没有丢弃更新时，可对 `inspect`、`live` 或真实 benchmark 增加 `--require-streaming`。旧调用程序明确保持未报告。模型的 `no_agents` 设置禁用其协作工具，不禁止宿主在同一 Session 创建其他独立 Agent。
+
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
 ## 资源测量

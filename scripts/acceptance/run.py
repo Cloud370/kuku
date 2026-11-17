@@ -526,7 +526,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                 record["resources"] = sampler.finish()
             record["sdk_result"] = str(logs / "agent" / "result.json")
             record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
-                                                  "/kuku/data", record["session_id"])
+                                                  "/kuku/data", record["session_id"], args.require_streaming)
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
@@ -656,6 +656,7 @@ def parser():
     inspect.add_argument("--session-data", type=Path, required=True)
     inspect.add_argument("--container-data", help="data mount prefix in a container-produced SDK report")
     inspect.add_argument("--connection")
+    inspect.add_argument("--require-streaming", action="store_true")
     budget = sub.add_parser("budget")
     budget.add_argument("action", choices=("init", "show", "settle"))
     budget.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json")
@@ -673,6 +674,7 @@ def parser():
         paid.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json")
         paid.add_argument("--reserve-usd", type=money)
         paid.add_argument("--reservation-reason", help="request/token/retry bounds and conservative rates")
+        paid.add_argument("--require-streaming", action="store_true", help="require nonempty unlagged SDK model streaming observations")
         if group == "live":
             paid.add_argument("--config", type=Path, required=True, help="hash the caller's config without copying possible inline credentials")
             paid.add_argument("--sdk-result", type=Path, required=True)
@@ -742,7 +744,7 @@ def main():
             run_metrics(args, directory, record)
         elif args.group == "inspect":
             record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
-                                                  args.connection, args.container_data)
+                                                  args.connection, args.container_data, require_streaming=args.require_streaming)
             record["passed"] = record["sdk_evidence"]["passed"]
         else:
             commands = selected_commands(args.group) if not paid else [args.command[1:] if args.command[:1] == ["--"] else args.command]
@@ -760,7 +762,8 @@ def main():
                 check["exit_code"] == 0 and not check["timed_out"] and not check.get("capture_incomplete")
                 for check in record["checks"])
             if paid:
-                record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection)
+                record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection,
+                                                      require_streaming=args.require_streaming)
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         record["error"] = redact(str(error), secrets.values())
