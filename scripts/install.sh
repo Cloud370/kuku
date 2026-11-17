@@ -73,7 +73,9 @@ fi
 
 # ── Download ──
 ARCHIVE_NAME="kuku-${PLATFORM}.tar.gz"
-CACHE_FILE="${CACHE_DIR}/${ARCHIVE_NAME}"
+STAGE=$(mktemp -d "$BIN_DIR/.install.XXXXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
+CACHE_FILE="$STAGE/$ARCHIVE_NAME"
 echo "Downloading $URL ..."
 curl -fsSL "$URL" -o "$CACHE_FILE"
 
@@ -96,9 +98,11 @@ if [ -n "$SHA256" ]; then
 fi
 
 # ── Extract ──
-echo "Extracting to $BIN_DIR..."
-tar xzf "$CACHE_FILE" -C "$BIN_DIR"
-chmod +x "$BIN_DIR/kuku"
+echo "Installing in $BIN_DIR..."
+tar xzf "$CACHE_FILE" -C "$STAGE" kuku
+chmod +x "$STAGE/kuku"
+mv -f "$STAGE/kuku" "$BIN_DIR/kuku"
+mv -f "$CACHE_FILE" "$CACHE_DIR/$ARCHIVE_NAME"
 
 # ── PATH check ──
 case ":$PATH:" in
@@ -143,6 +147,7 @@ echo "kuku $MANIFEST_VERSION installed successfully."
 echo ""
 echo "  kuku --help          Show usage"
 echo "  kuku --version       Show version"
-echo "  kuku init            Initialize a project"
+echo "  kuku init            Create the user configuration"
+echo "  kuku                 Open the terminal client in this directory"
 echo ""
 echo "Docs: https://kuku.run"
