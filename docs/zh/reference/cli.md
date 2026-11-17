@@ -53,12 +53,12 @@ kuku run [options] <prompt...>
 | `--verbose` | 显示持久 Agent 快照、配置和用量 |
 | `--config <path>` | 指定配置文件 |
 | `--prompts-dir <dir>` | 覆盖内嵌 Prompt 资产 |
-| `--no-agents` | 禁用 `agent` 工具 |
+| `--no-agents` | 禁用 `create_agent`、`send_message` 和 `list_agents`，保留 `ask_user` |
 | `--no-skills` | 禁用默认 Skill 工具 `list_skills`、`search_skills`、`use_skill` 及斜杠 Skill 加载 |
 
-本地 CLI 使用 SDK 的 trusted-local 策略，无需 `--yes` 即可运行文件和命令工具。Session 持有执行；Ctrl-C 会取消 Agent 并等待清理，每次运行都会等待异步 Session close。本地 Harness 正常关闭前会等待已在运行的 Agent 结算，不会自动恢复等待或中断的 Agent。Turn 完成代表执行结束，任务是否成功仍需检查文件或命令判定结果。
+本地 CLI 使用 SDK 的 trusted-local 策略，无需 `--yes` 即可运行文件和命令工具。Session 持有执行；Ctrl-C 会取消 Agent 并等待清理，每次运行都会等待异步 Session close。本地 Harness 正常关闭前会等待已在运行的 Agent 结算。打开 Session 或重放命令不会恢复已停止/中断的工作；新的 `run` 命令会显式推进目标 Agent。等待中的 Agent 需要匹配的回复。Turn 完成代表执行结束，任务是否成功仍需检查文件或命令判定结果。
 
-Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection` 即使在多个连接共用协议时也只选择指定名称。显式设置只影响所选 Agent。重开时不传选择参数，会保留该 Agent 的配置与独立上下文。切换模型路由会清除该 Agent 先前的 reasoning/service 覆盖值，再应用新的显式设置。
+Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection` 即使在多个连接共用协议时也只选择指定名称。显式 `--model` 覆盖 Tier 的模型，重开 Agent 时同时提供这两个参数也遵循此优先级。显式设置只影响所选 Agent。重开时不传选择参数，会保留该 Agent 的配置与独立上下文。切换模型路由会清除该 Agent 先前的 reasoning/service 覆盖值，再应用新的显式设置。
 
 使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。重试不会修改配置、重复工作、批准待决请求或授权恢复中断执行；冲突输入会失败。此路径下 `--json`/`--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置应使用新的命令标识。
 
@@ -74,13 +74,15 @@ kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --a
 
 回复必须匹配保留的请求，重开后同样如此。`--allow` 只授权绑定动作一次；`--deny` 拒绝；`--answer` 回答待决问题。普通 `run` 输入不会成为授权。`--command-id` 支持安全重试；已提交回复仅返回原回执和当前状态，不恢复工作或再次作出授权决定。过期或不匹配的请求明确失败。此命令也接受 `--config`、`--workspace`、`--data-dir`，观察续接并等待清理。
 
+回复固定输出 JSON 行，无需 `--json`：新的问题回复以 `AgentSnapshot` 结束；新的授权回复先输出 `permission_decision`，再输出快照。重复回复输出上文所述含 `receipt` 和 `state` 的 `acknowledged` Session 对象。回复不使用普通 `run` 的完成对象。
+
 ## `kuku show`
 
 ```text
 kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
 ```
 
-不启动执行运行时，读取最后的持久响应。`--json` 返回完整 Agent 快照，包括待决问题/授权标识。
+不启动执行运行时，读取最后的持久响应。`--json` 返回完整 Agent 快照，包括待决问题/授权标识。`show` 和指定 Session 的 `list` 使用[离线账本快照](sdk.md#操作)，不查询活动运行时；仅凭其状态无法判定活动执行是否已经停止。
 
 ## `kuku events`
 

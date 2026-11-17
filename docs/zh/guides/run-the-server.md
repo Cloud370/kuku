@@ -32,7 +32,7 @@ curl http://127.0.0.1:17777/health
 
 ## 通过 HTTP 执行任务
 
-向 `POST /runs` 提交 `prompt` 和 `workspace`。可添加 `connection` 与 `model`，或 `tier` 精确选择模型。`agent` 选择稳定地址，默认 `main`；其他地址具有独立上下文。响应为 NDJSON，首项包含 Session 标识和持久回执。
+向 `POST /runs` 提交 `prompt` 和 `workspace`。可添加 `connection` 与 `model`，或 `tier` 精确选择模型。`agent` 选择稳定地址，默认 `main`；其他地址具有独立上下文。新执行返回 NDJSON，首项包含 Session 标识和持久回执。
 
 服务使用公开 Session SDK，默认工具策略为 trusted-local。HTTP 订阅者只观察进度，断开客户端后执行仍继续。使用 `DELETE /runs/{id}` 取消并等待清理。
 

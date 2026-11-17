@@ -34,7 +34,7 @@ curl http://127.0.0.1:17777/health
 
 ## Run a Task Over HTTP
 
-Send `POST /runs` with a `prompt` and `workspace`. Add `connection` plus `model`, or `tier`, for explicit selection. `agent` chooses a stable address and defaults to `main`; another address has independent context. The response is NDJSON and its first event reports the Session identity and durable receipt.
+Send `POST /runs` with a `prompt` and `workspace`. Add `connection` plus `model`, or `tier`, for explicit selection. `agent` chooses a stable address and defaults to `main`; another address has independent context. A fresh execution returns NDJSON and its first event reports the Session identity and durable receipt.
 
 The server uses the public Session SDK and trusted-local tool policy by default. HTTP subscribers only observe progress: disconnecting a client leaves execution running. Use `DELETE /runs/{id}` to cancel and await cleanup.
 

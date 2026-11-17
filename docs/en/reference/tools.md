@@ -1,5 +1,7 @@
 # Tools
 
+This page describes the default public Session tool surface used by CLI and server. Presets or explicit tool selection can narrow it.
+
 ## Built-In Tools
 
 | Tool | Required args | Optional args | Risk |
@@ -8,7 +10,6 @@
 | `read_file` | `path` | `offset`, `limit` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
-| `fetch_web` | `url`, `prompt`, `model_tier` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
 | `write_file` | `path`, `content`, `brief` | none | `edit` |
@@ -16,38 +17,28 @@
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
 | `forget_memory` | `scope`, `text` | none | `edit` |
 
-Conditional tools:
+Conditional skill tools:
 
-- `agent(to, message, tier?)`
 - `list_skills(offset?, limit?)`
 - `search_skills(query, offset?, limit?)`
 - `use_skill(skill_name)`
 
 When the default skill tool surface is enabled, the runtime exposes `list_skills`, `search_skills`, and `use_skill` together.
 
-## `agent(to, message, tier?)`
+## Session Coordination Tools
 
-`agent` delegates work to a named agent contact card in a separate conversation.
+| Tool | Required args | Optional args | Risk |
+|---|---|---|---|
+| `ask_user` | `question` | none | `session` |
+| `create_agent` | `address` | `connection`, `tier`, `model`, `preset`, `instructions` | `session` |
+| `send_message` | `to`, `message` | `wake` | `session` |
+| `list_agents` | none | none | `session` |
 
-Arguments:
+`create_agent` creates a stable, flat Session-local address with independent context; an optional `preset` supplies the contact card. Supply the instructions and task material the recipient needs. `send_message` addresses an existing Agent and returns a durable delivery receipt, not its final work result. Its `wake` defaults to true; false queues the input for explicit advancement. `list_agents` reads retained states and latest durable outputs without consuming observations.
 
-| Arg | Required | Meaning |
-|---|---|---|
-| `to` | yes | Conversation address, such as `review` or `review/api` |
-| `message` | yes | Task text to send into that conversation |
-| `tier` | no | Model tier to use when first binding a new conversation |
+`ask_user` persists a question and yields at the current tool-batch boundary. The host replies to its exact request identity through the SDK, CLI `reply`, or server response endpoint. Question and authorization waiting semantics are defined in [Sessions](../how-it-works/sessions.md#waiting-and-replies).
 
-Behavior:
-
-- `main` is reserved and rejected.
-- Unknown root contacts are rejected as `unknown agent contact: <name>`.
-- The root address segment selects the agent contact card.
-- Reusing the same address continues the same conversation.
-- `tier` only applies on first bind.
-- Passing `tier` while continuing an existing address is rejected.
-- Continuing an address whose binding identity no longer matches is rejected.
-
-Use `agent` when the work benefits from isolated context and its own transcript. Do not use it as a synonym for “run another process.”
+`--no-agents` (or `AgentConfig.no_agents`) removes `create_agent`, `send_message`, and `list_agents` while retaining `ask_user`. See [CLI](cli.md#kuku-run) for host flags.
 
 ## Conversation and Ledger Inspection
 
@@ -77,7 +68,7 @@ Every tool returns the same top-level shape:
 
 Snapshot-related `edit_file` and `write_file` errors retain `structured.kind: "error"` and add one recovery-oriented `reason_code`: `snapshot_required`, `full_snapshot_required`, `snapshot_stale`, or `old_text_not_visible`.
 
-Within one run, Kuku serializes `read_file`, `edit_file`, `write_file`, `remember_memory`, `forget_memory`, `run_command`, and `agent` slots against each other. Command and agent write paths cannot be determined statically, so independent commands or agents may also wait; other read-only tools remain concurrent. This ordering covers only Kuku-managed slots, not external processes, so snapshot hash checks still apply.
+Within one advancing Agent, Kuku serializes `read_file`, `edit_file`, `write_file`, `remember_memory`, `forget_memory`, and `run_command` slots against each other. Command write paths cannot be determined statically, so independent commands may also wait; other read-only tools remain concurrent. Different Agents can advance concurrently in the same Session. This ordering covers only Kuku-managed slots, not external processes, so snapshot hash checks still apply.
 
 ## Notes By Tool
 
@@ -85,7 +76,6 @@ Within one run, Kuku serializes `read_file`, `edit_file`, `write_file`, `remembe
 - `read_file` returns line-numbered content and supports pagination.
 - `search_text` is regex-based and supports `files`, `lines`, and `count` views.
 - `fetch_url` downloads to a temp directory, rejects non-HTTP(S) URLs and embedded credentials, and enforces a 50 MB limit.
-- `fetch_web` is for HTML-like content, enforces a 10 MB body limit, returns small pages directly, and summarizes larger pages with the requested `model_tier`.
 - `query_session` filters the session ledger, defaults to excluding rolled-back events, and truncates individual event content.
 - `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
 - `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.

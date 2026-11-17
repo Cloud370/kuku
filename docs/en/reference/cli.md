@@ -53,12 +53,12 @@ Flags:
 | `--verbose` | Show the durable Agent snapshot, configuration, and usage |
 | `--config <path>` | Use a specific config file |
 | `--prompts-dir <dir>` | Override embedded prompt assets |
-| `--no-agents` | Disable the `agent` tool |
+| `--no-agents` | Disable `create_agent`, `send_message`, and `list_agents`; retain `ask_user` |
 | `--no-skills` | Disable the default skill tool surface: `list_skills`, `search_skills`, and `use_skill`, plus slash-skill loading |
 
-The local CLI uses the SDK's trusted-local policy. It does not require `--yes` to run file or command tools. The Session owns execution; Ctrl-C cancels the Agent and waits for cleanup, and every run awaits asynchronous Session close. The local Harness lets already-running Agents settle before normal close; it does not automatically resume waiting or interrupted Agents. A completed Turn records execution completion, while task success still needs a file or command verifier.
+The local CLI uses the SDK's trusted-local policy. It does not require `--yes` to run file or command tools. The Session owns execution; Ctrl-C cancels the Agent and waits for cleanup, and every run awaits asynchronous Session close. The local Harness lets already-running Agents settle before normal close. Opening a Session or replaying a command does not resume stopped/interrupted work; a fresh `run` command explicitly advances its target. A waiting Agent requires its matching reply. A completed Turn records execution completion, while task success still needs a file or command verifier.
 
-Use `--tier` for a tier name. `--model` selects an exact identifier, and `--connection` selects one named connection even when multiple connections use the same protocol. Explicit settings affect only the selected Agent. Reopening without selection flags retains that Agent's configuration and independent context. A changed model route clears previous Agent-local reasoning/service overrides before applying new explicit values.
+Use `--tier` for a tier name. `--model` selects an exact identifier, and `--connection` selects one named connection even when multiple connections use the same protocol. An explicit `--model` overrides the tier’s model, including when both flags are supplied while reopening an Agent. Explicit settings affect only the selected Agent. Reopening without selection flags retains that Agent's configuration and independent context. A changed model route clears previous Agent-local reasoning/service overrides before applying new explicit values.
 
 With `--command-id`, retrying the same input returns its original durable receipt and current Agent state. A retry does not configure the Agent, repeat work, approve a pending request, or authorize recovery of interrupted execution. Conflicting input reuse fails. `--json`/`--stream-json` report `event: "acknowledged"`, `replayed: true`, `receipt`, and `state` on this path; use a new command identity for new work or configuration.
 
@@ -74,13 +74,15 @@ kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --a
 
 Replies target the exact retained request, including after reopening. `--allow` authorizes its bound action once; `--deny` rejects it; `--answer` answers a pending question. Ordinary `run` input never acts as approval. `--command-id` enables retrying the same reply; an already committed reply returns only its original acknowledgement and current state, without resuming work or issuing another permission decision. Stale or mismatched requests fail visibly. This command also accepts `--config`, `--workspace`, and `--data-dir`, observes the continuation, and awaits cleanup.
 
+Reply output is JSON lines without a `--json` flag: a fresh question answer ends with an `AgentSnapshot`; a fresh permission reply first emits `permission_decision`, then the snapshot. A duplicate reply emits the `acknowledged` Session object with `receipt` and `state` described above. These replies do not use the normal `run` completion object.
+
 ## `kuku show`
 
 ```text
 kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
 ```
 
-Read the last durable response without opening an execution runtime. `--json` returns the complete Agent snapshot, including pending question/authorization identities.
+Read the last durable response without opening an execution runtime. `--json` returns the complete Agent snapshot, including pending question/authorization identities. `show` and Session-specific `list` use the [offline journal snapshot](sdk.md#operations), not a live runtime query; their status alone does not establish that an active run has stopped.
 
 ## `kuku events`
 
