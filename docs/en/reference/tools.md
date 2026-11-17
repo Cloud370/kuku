@@ -8,6 +8,7 @@ This page describes the default public Session tool surface used by CLI and serv
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
+| `read_output` | `id` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
@@ -53,6 +54,25 @@ Important filters:
 - `skip_rolled_back`: defaults to `true`
 
 `query_session` is for historical recall, not for data already present in the current messages.
+
+## Retained Command Output
+
+`read_output` reads a Session-owned output ID returned by `run_command`. It uses the same bounded reader as `Session::read_output`; it accepts no filesystem path. The tool remains subject to host authorization even though it is read-only.
+
+| Argument | Contract |
+|---|---|
+| `id` | Required output ID: 1–128 ASCII letters, digits, `-`, or `_` |
+| `offset` | Nonnegative raw byte offset across stdout and stderr in capture order; defaults to `0` |
+| `limit` | Maximum raw bytes to scan: `1`–`8192`; defaults to `4096` |
+| `search` | Optional literal filter: `1`–`4096` UTF-8 bytes, no longer than `limit` |
+
+The result is complete JSON in `model_content`, at most 16,384 UTF-8 bytes; `structured` contains the same value. Encoding overhead or replacement of invalid UTF-8 can reduce the returned page below the requested scan limit. The tool keeps the reader's raw byte offsets and never cuts the JSON text. A search that cannot fit the result bound even at its minimum scan window returns an error asking for a shorter literal.
+
+`segments` preserve stream identity, capture order, raw offsets and byte lengths. `next_offset` and `has_more` control continuation; always pass `next_offset` to the next read instead of adding `limit`. Literal search can retain overlap between scan windows. An empty matching page with `has_more: true` still requires continuation. `filtered` identifies search results and `lossy_utf8` reports replacement of invalid or split UTF-8 bytes.
+
+`complete` reports writer finalization. `capture_truncated` reports discarded output at the capture quota; `cleanup_incomplete` reports a pipe cleanup deadline. These flags remain explicit even when the returned JSON page fits its limit. `summary` contains the reader's selected build/test lines. See [Output and cleanup](../how-it-works/sessions.md#output-and-cleanup) for capture lifetime and cleanup semantics.
+
+Offsets are supplied by each caller. Repeated reads of finalized output do not consume it, and UI reads cannot advance a model cursor. Invalid IDs, argument types, scan limits, or search lengths produce an error without an out-of-range read.
 
 ## Tool Result Envelope
 

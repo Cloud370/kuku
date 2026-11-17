@@ -8,6 +8,7 @@
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
+| `read_output` | `id` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
@@ -53,6 +54,25 @@
 - `skip_rolled_back`：默认是 `true`
 
 `query_session` 用于历史回忆，不应用来重复读取当前消息中已经存在的数据。
+
+## 保留的命令输出
+
+`read_output` 读取 `run_command` 返回、由 Session 持有的输出 ID。它与 `Session::read_output` 共用同一个有界读取器，不接受文件系统路径。即使该工具只读，仍须经过宿主授权。
+
+| Argument | Contract |
+|---|---|
+| `id` | 必需的输出 ID：1–128 个 ASCII 字母、数字、`-` 或 `_` |
+| `offset` | 按捕获顺序跨 stdout 和 stderr 的非负原始字节偏移；默认 `0` |
+| `limit` | 扫描的原始字节数上限：`1`–`8192`；默认 `4096` |
+| `search` | 可选的字面量过滤：`1`–`4096` 个 UTF-8 字节，且不得长于 `limit` |
+
+`model_content` 返回完整 JSON，最多 16,384 个 UTF-8 字节；`structured` 包含相同的值。编码开销或无效 UTF-8 的替换可能使返回页小于请求的扫描上限。工具保留读取器的原始字节偏移，不切割 JSON 文本。如果搜索在最小扫描窗口下仍无法满足结果上限，会返回错误并要求缩短字面量。
+
+`segments` 保留流标识、捕获顺序、原始偏移和字节数。通过 `next_offset` 和 `has_more` 续读；下一次读取应传入 `next_offset`，不要自行加上 `limit`。字面量搜索的相邻扫描窗口可能保留重叠。匹配页为空但 `has_more: true` 时仍需继续。`filtered` 表示搜索结果，`lossy_utf8` 表示替换了无效或被窗口切开的 UTF-8 字节。
+
+`complete` 表示写入器已完成收尾。`capture_truncated` 表示捕获配额导致输出丢弃；`cleanup_incomplete` 表示管道清理达到截止时间。即使返回的 JSON 页满足大小上限，这些标记也会明确保留。`summary` 包含读取器选出的构建或测试结果行。捕获数据的生命周期和清理语义见 [输出与清理](../how-it-works/sessions.md#输出与清理)。
+
+每个调用方自行提供偏移。重复读取已完成的输出不会消费数据，UI 读取也不会推进模型游标。无效 ID、参数类型、扫描上限或搜索长度会返回错误，不进行越界读取。
 
 ## Tool Result Envelope
 
