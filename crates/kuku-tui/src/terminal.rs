@@ -3,15 +3,12 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+#[cfg(not(windows))]
+use crossterm::event::EventStream;
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+#[cfg(not(windows))]
 use futures_util::StreamExt;
 use kuku_client::ConnectionOptions;
 use ratatui::backend::CrosstermBackend;
@@ -20,6 +17,9 @@ use ratatui::Terminal;
 use crate::app::App;
 use crate::jobs::{Job, Jobs};
 use crate::ui;
+
+#[cfg(windows)]
+mod windows;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const UPDATE_BATCH: usize = 32;
@@ -33,7 +33,10 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let mut app = App::new(workspace, options.remote.clone());
     let mut jobs = Jobs::new(options);
     let mut terminal = Screen::new()?;
+    #[cfg(not(windows))]
     let mut events = EventStream::new();
+    #[cfg(windows)]
+    let mut events = windows::Input::new()?;
     let mut clipboard = Clipboard::default();
     let mut frames = tokio::time::interval(FRAME_INTERVAL);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -93,23 +96,10 @@ struct Screen {
 
 impl Screen {
     fn new() -> io::Result<Self> {
-        enable_raw_mode()?;
-        let mut restore = Restore {
-            enhanced_keyboard: false,
-        };
+        let mut restore = Restore::new()?;
         let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture,
-            Hide
-        )?;
-        restore.enhanced_keyboard = execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
-        .is_ok();
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
+        restore.enable_input_modes(&mut stdout)?;
         let terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(io::Error::other)?;
         Ok(Self {
             terminal,
@@ -127,19 +117,73 @@ impl Screen {
 
 struct Restore {
     enhanced_keyboard: bool,
+    #[cfg(windows)]
+    _modes: windows::ConsoleModes,
+}
+
+impl Restore {
+    fn new() -> io::Result<Self> {
+        #[cfg(not(windows))]
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self {
+            enhanced_keyboard: false,
+            #[cfg(windows)]
+            _modes: windows::ConsoleModes::enter()?,
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn enable_input_modes(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        use crossterm::event::{
+            EnableMouseCapture, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        };
+
+        execute!(stdout, EnableMouseCapture)?;
+        self.enhanced_keyboard = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn enable_input_modes(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        stdout.write_all(b"\x1b[?1000;1006h")?;
+        self.enhanced_keyboard = true;
+        stdout.write_all(b"\x1b[>1u")?;
+        stdout.flush()
+    }
+
+    #[cfg(not(windows))]
+    fn disable_input_modes(&self, stdout: &mut Stdout) {
+        use crossterm::event::{DisableMouseCapture, PopKeyboardEnhancementFlags};
+
+        if self.enhanced_keyboard {
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
+        let _ = execute!(stdout, DisableMouseCapture);
+    }
+
+    #[cfg(windows)]
+    fn disable_input_modes(&self, stdout: &mut Stdout) {
+        if self.enhanced_keyboard {
+            let _ = stdout.write_all(b"\x1b[<1u");
+        }
+        let _ = stdout.write_all(b"\x1b[?1006;1000l");
+        let _ = stdout.flush();
+    }
 }
 
 impl Drop for Restore {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        if self.enhanced_keyboard {
-            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
-        }
-        let _ = execute!(stdout, DisableMouseCapture);
+        self.disable_input_modes(&mut stdout);
         let _ = execute!(stdout, DisableBracketedPaste);
         let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = execute!(stdout, Show);
-        let _ = disable_raw_mode();
+        #[cfg(not(windows))]
+        let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 

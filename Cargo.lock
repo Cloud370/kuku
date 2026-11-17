@@ -1859,9 +1859,11 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "serde_json",
+ "termina",
  "tokio",
  "unicode-segmentation",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3328,6 +3330,19 @@ dependencies = [
  "dirs-next",
  "rustversion",
  "winapi",
+]
+
+[[package]]
+name = "termina"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881a7f20ade48167027822c52a0aeca879afa3174b15c71997827826bce669f9"
+dependencies = [
+ "bitflags 2.13.2",
+ "parking_lot",
+ "rustix",
+ "signal-hook",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
