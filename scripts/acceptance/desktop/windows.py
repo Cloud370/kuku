@@ -107,17 +107,17 @@ class Desktop:
             time.sleep(0.35)
         raise AssertionError(f"Windows Terminal did not switch to the keyboard language 0x{expected:04x}")
 
-    def picture(self, name):
+    def picture(self, name, settle=0.2):
         from PIL import ImageGrab
 
         self.focus()
-        time.sleep(0.2)
+        time.sleep(settle)
         bounds = wintypes.RECT()
         dwm = ctypes.WinDLL("dwmapi")
         dwm.DwmGetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
         if dwm.DwmGetWindowAttribute(self.window, 9, ctypes.byref(bounds), ctypes.sizeof(bounds)):
             raise RuntimeError("Could not capture the Windows Terminal client bounds")
-        image = ImageGrab.grab(bbox=(bounds.left, bounds.top, bounds.right, bounds.bottom))
+        image = ImageGrab.grab(bbox=(bounds.left, bounds.top, bounds.right, bounds.bottom), include_layered_windows=True)
         data = io.BytesIO()
         image.save(data, format="PNG")
         content = data.getvalue()
@@ -235,9 +235,9 @@ def exercise(client, desktop, workspace, state, checks):
     if pinyin_registered() and pinyin_configured():
         checks["ime"] = {"language": desktop.language(LANG_CHINESE), "keys": "nihao<Space>"}
         desktop.spell("nihao")
-        checks["ime"]["screenshots"] = [desktop.picture("05-pinyin-candidates")]
+        checks["ime"]["screenshots"] = [desktop.picture("05-pinyin-before-space", settle=1.5)]
         desktop.press(VK_SPACE)
-        checks["ime"]["screenshots"].append(desktop.picture("06-pinyin-commit"))
+        checks["ime"]["screenshots"].append(desktop.picture("06-pinyin-after-space", settle=1.0))
         client.provider.assert_idle(duration=0.25)
         desktop.language(LANG_ENGLISH)
         desktop.press(VK_RETURN)
