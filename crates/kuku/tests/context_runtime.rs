@@ -265,8 +265,12 @@ async fn tool_result_first_view_is_frozen_and_continued_steps_read_only_new_fact
             EventPayload::ToolResult {
                 tool_call_id,
                 model_content,
+                structured,
                 ..
-            } if tool_call_id == "read" => Some(model_content.clone()),
+            } if tool_call_id == "read" => {
+                assert!(structured.is_some());
+                Some(model_content.clone())
+            }
             _ => None,
         })
         .unwrap();
@@ -285,6 +289,19 @@ async fn tool_result_first_view_is_frozen_and_continued_steps_read_only_new_fact
         .collect::<Vec<_>>();
     assert_eq!(1, results.len());
     assert_eq!(source_view, results[0].model_content);
+    assert!(results[0].structured.is_none());
+    for body in &bodies[1..] {
+        let wire_result = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        assert_eq!(
+            json!({"role":"tool","tool_call_id":"read","content":source_view}),
+            *wire_result
+        );
+    }
     let steps = facts(&events, "runtime.step_prepared", "main");
     assert!(steps[1]["context_events_read"].as_u64().unwrap() < events.len() as u64);
 }

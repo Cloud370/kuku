@@ -698,6 +698,111 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let render = |events: &[StoredEvent]| {
+            let (_, history) = super::super::replay::rebuild_history_for_provider(
+                events,
+                &ConversationAddress::MAIN,
+            );
+            let request = crate::provider::types::ProviderRequest {
+                assembly: crate::context::ContextAssembly {
+                    system_prompt: String::new(),
+                    prelude_messages: Vec::new(),
+                    history,
+                    tools: Vec::new(),
+                    prompt_asset_sources: Vec::new(),
+                    project_instruction_sources: Vec::new(),
+                    memory_sources: Vec::new(),
+                    runtime_context: None,
+                    handoff_summary: None,
+                },
+                catalog: &catalog,
+                current_input: crate::provider::types::CanonicalPromptInput { parts: Vec::new() },
+                model: "fixture".into(),
+                max_output_tokens: Some(128),
+                temperature: None,
+                stream: true,
+                think_level: crate::config::ThinkLevel::Off,
+                thinking: Default::default(),
+            };
+            [
+                crate::provider::openai_compat::render_body(&request),
+                crate::provider::anthropic::render_body(&request),
+                crate::provider::openai_responses::render_body(&request),
+            ]
+        };
+        for status in ["ok", "error", "cancelled"] {
+            for model_content in ["", "EXACT_MODEL_VIEW"] {
+                let events = vec![
+                    StoredEvent {
+                        id: 1,
+                        payload: EventPayload::ToolCall {
+                            turn: 1,
+                            ts: String::new(),
+                            conversation: Some("main".into()),
+                            tool_call_id: "tool".into(),
+                            request_id: "req_1".into(),
+                            index: 0,
+                            tool: "fixture".into(),
+                            args: json!({}),
+                        },
+                    },
+                    StoredEvent {
+                        id: 2,
+                        payload: EventPayload::ToolResult {
+                            turn: 1,
+                            ts: String::new(),
+                            conversation: Some("main".into()),
+                            tool_call_id: "tool".into(),
+                            status: status.into(),
+                            summary: "DIAGNOSTIC_SUMMARY".into(),
+                            model_content: model_content.into(),
+                            truncated: true,
+                            files_read: vec!["read".into()],
+                            files_changed: vec!["changed".into()],
+                            commands_run: vec!["command".into()],
+                            memory_changed: Some(json!({"diagnostic":true})),
+                            structured: Some(json!({"diagnostic":"x".repeat(65_536)})),
+                        },
+                    },
+                ];
+                let projected = events
+                    .iter()
+                    .cloned()
+                    .filter_map(|event| project_source(event, "main", Some(1)))
+                    .collect::<Vec<_>>();
+                assert!(matches!(
+                    &projected[1].payload,
+                    EventPayload::ToolResult {
+                        structured: None,
+                        ..
+                    }
+                ));
+                let original = render(&events);
+                assert_eq!(original, render(&projected));
+                assert_eq!(
+                    model_content,
+                    original[0]["messages"].as_array().unwrap().last().unwrap()["content"]
+                );
+                let messages = original[1]["messages"].as_array().unwrap();
+                assert_eq!(
+                    model_content,
+                    messages.last().unwrap()["content"][0]["content"]
+                );
+                assert_eq!(
+                    status != "ok",
+                    messages.last().unwrap()["content"][0]["is_error"]
+                );
+                assert_eq!(
+                    model_content,
+                    original[2]["input"].as_array().unwrap().last().unwrap()["output"]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn frozen_assets_are_selected_by_agent_across_bounded_pages() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.jsonl");
