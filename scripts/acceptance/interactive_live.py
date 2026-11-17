@@ -27,7 +27,8 @@ PROVIDER_HOST = "api.deepseek.com"
 PROMPT = (
     "Fix quoted CSV totals in report.py. Read the source and tests, then use the file editing "
     "tool to fix the implementation. Keep the public function and tests intact. "
-    "Run python check.py and git diff -- report.py after editing. After a passing check, end with the plain text CSV totals verified."
+    f"Run {'python' if os.name == 'nt' else 'python3'} check.py and git diff -- report.py after editing. "
+    "After a passing check, end with the plain text CSV totals verified."
 )
 IMPLEMENTATION = '''def totals(lines):
     amounts = {}
@@ -196,12 +197,14 @@ def handoff(client, workspace, browser, args, result):
         terminal.resume("Fix quoted CSV totals")
         screen = terminal.expect("CSV totals verified")["screen"]
         (args.evidence / "terminal-final.txt").write_text(screen, encoding="utf-8")
+        names, saved_commands = verify_history(client, workspace, session)
+        result["tools"] = names
+        review_saved_commands(terminal, saved_commands, args.evidence)
         terminal.exit_cleanly()
     client.assert_current_service(original)
     stdout, _ = client.cli(workspace, "show", session, "--json")
     snapshot = json.loads(stdout)
     assert snapshot["last_output"] == final
-    result["tools"] = verify_history(client, workspace, session)
     files = subprocess.check_output(["git", "diff", "--name-only"], cwd=workspace, text=True).splitlines()
     assert files == ["report.py"], f"Unexpected changed project files: {files}"
     (args.evidence / "project.diff").write_bytes(subprocess.check_output(["git", "diff"], cwd=workspace))
@@ -209,6 +212,32 @@ def handoff(client, workspace, browser, args, result):
     (args.evidence / "project-checks.txt").write_bytes(checks.stdout + checks.stderr)
     assert checks.returncode == 0
     result.update(passed=True, changed_files=files, check_exit=0, upgrade_during_tool=True)
+
+
+def review_saved_commands(terminal, count, evidence):
+    wanted = {"diff --git a/report.py": "terminal-diff.txt",
+              "CSV regression checks passed": "terminal-check.txt"}
+    for index in range(count):
+        terminal.press("/tools\r")
+        terminal.expect("Tool details and saved output")
+        terminal.type("run_command Saved output")
+        terminal.expect("› run_command")
+        terminal.press("\x1b[B" * index + "\r")
+        screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
+        for page in range(4):
+            contents = "\n".join(line.partition("│")[2].rpartition("│")[0] for line in screen.splitlines())
+            for marker in list(wanted):
+                if marker in contents:
+                    (evidence / wanted.pop(marker)).write_text(screen, encoding="utf-8")
+            if not wanted:
+                terminal.press("\x1b")
+                return
+            if page < 3:
+                terminal.press("\x1b[6~")
+                screen = terminal.request("screen")["screen"]
+        terminal.press("\x1b")
+        terminal.expect("CSV totals verified")
+    raise AssertionError(f"Saved tool output in the resumed terminal lacked {list(wanted)}")
 
 
 def final_output(client, workspace, session):
@@ -225,9 +254,11 @@ def verify_history(client, workspace, session):
     tools = [entry for entry in entries if entry["type"] == "tool_result"]
     names = [calls[entry["tool_call_id"]] for entry in tools]
     saved = []
+    saved_commands = 0
     for entry, name in zip(tools, names):
         if name != "run_command" or not entry.get("output_id"):
             continue
+        saved_commands += 1
         query = urlencode({"workspace": workspace, "offset": 0, "max_bytes": 16384})
         output = client.request("GET", f"/sessions/{session}/outputs/{quote(entry['output_id'], safe='')}?{query}").as_json()["output"]
         assert output["complete"] and not output["capture_truncated"] and not output["has_more"]
@@ -235,7 +266,7 @@ def verify_history(client, workspace, session):
     output = "".join(saved)
     assert "CSV regression checks passed" in output and "diff --git" in output
     assert "read_file" in names and ("edit_file" in names or "write_file" in names) and "run_command" in names
-    return names
+    return names, saved_commands
 
 
 def main():
