@@ -137,8 +137,13 @@ def two_workspaces_and_disconnect(client):
         client.assert_current_service(original)
         assert client.session(other)
 
-        left.submit(prompt)
-        client.gated_tool(workspace, client.provider.next(prompt), tool_id)
+        left.type(prompt)
+        left.expect("Draft", state="Connected")
+        left.press("\r")
+        call = client.provider.next(prompt)
+        left.expect("Waiting for model", state="Connected")
+        client.gated_tool(workspace, call, tool_id)
+        left.expect("Running tools", state="Connected")
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -155,12 +160,18 @@ def two_workspaces_and_disconnect(client):
         screen = reopened.expect(final)["screen"]
         assert screen.count(final) == 1, "Restored terminal must show one durable response"
         assert screen.count("run_command") == 1, "Restored terminal must show one tool result"
+        details = reopened.expect("Saved output")["screen"]
+        assert "--gated-tool" in details
+        reopened.press("\x0f")
+        collapsed = reopened.expect("Ctrl+O show")["screen"]
+        assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
         reopened.press("\x0f")
         reopened.expect("Saved output")
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
-    print("Two native workspaces shared one service. Busy restart was deferred and the closed terminal recovered.")
+    print("Two native workspaces shared a service. The terminal distinguished a draft, model wait, and running tool.")
+    print("Busy restart was deferred. The resumed terminal showed saved tool details and toggled their preview.")
     return workspace, session, prompt
 
 
@@ -274,7 +285,9 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         terminal.resume(title)
         terminal.submit(started)
         crashed_call = client.provider.next(started)
+        terminal.expect("Waiting for model", state="Connected")
         client.kill(restarted)
+        terminal.expect("Reconnecting")
     crashed_call.text("Uncommitted response after crash")
     with client.terminal(workspace) as terminal:
         terminal.resume(title)
@@ -285,7 +298,8 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         assert snapshot["last_output"] != "Uncommitted response after crash"
         client.provider.assert_idle(duration=0.2)
         terminal.exit_cleanly()
-    print("Restart preserved a pending request. Recovery from a crash showed the interrupted work.")
+    print("Restart preserved a pending request. The open terminal showed Reconnecting after the service stopped.")
+    print("After recovery, the terminal showed the interrupted work.")
 
 
 def remote_authorization_and_script_json(client, workspace):
