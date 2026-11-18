@@ -567,11 +567,53 @@ mod tests {
 
         let fenced = format!("```text\n{RICH_TABLE}\n```\n\nOrdinary\nparagraph.");
         let plain = rows(&render_markdown(&fenced, 60, LIMIT));
+        assert!(plain[0].starts_with("╭─ text "));
         assert!(plain
             .iter()
             .any(|line| line.starts_with("│ | 项目 | Result | Cost | ")));
         assert!(plain.iter().any(|line| line == "Ordinary paragraph."));
         assert!(plain.iter().all(|line| !line.starts_with('┌')));
+    }
+
+    #[test]
+    fn unlabeled_fences_preserve_literal_content_and_wrap_without_a_language_title() {
+        let source = "```\n  # 甲乙\n\n    **Literal**\n```";
+        let width = 20;
+        let plain = rows(&render_markdown(source, width, LIMIT));
+        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[1].starts_with("│   # 甲乙 "));
+        assert_eq!(format!("│{}│", " ".repeat(width - 2)), plain[2]);
+        assert!(plain[3].starts_with("│     **Literal** "));
+        assert_eq!(
+            ["  a", "bcd", ""],
+            rows(&render_markdown("```\n  abcd\n```", 3, LIMIT)).as_slice(),
+        );
+    }
+
+    #[test]
+    fn an_empty_streaming_fence_waits_for_content_or_an_explicit_language() {
+        for source in ["```", "```\n", "```\n```", "~~~  \n"] {
+            assert!(render_markdown(source, 32, LIMIT).is_empty(), "{source:?}");
+        }
+        assert_eq!(
+            render_markdown("Intro.", 32, LIMIT),
+            render_markdown("Intro.\n```", 32, LIMIT),
+        );
+        let explicit = rows(&render_markdown("```python", 32, LIMIT));
+        assert!(explicit[0].starts_with("╭─ python "));
+    }
+
+    #[test]
+    fn indented_code_keeps_relative_indentation_under_an_untitled_border() {
+        let width = 32;
+        let plain = rows(&render_markdown(
+            "    # Literal\n        second",
+            width,
+            LIMIT,
+        ));
+        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[1].starts_with("│ # Literal "));
+        assert!(plain[2].starts_with("│     second "));
     }
 
     #[test]

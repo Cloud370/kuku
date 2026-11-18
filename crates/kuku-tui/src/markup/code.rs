@@ -71,11 +71,20 @@ impl CodeBlock {
     ) -> Vec<Line<'static>> {
         let frame = Frame::new(width);
         let limit = limit.saturating_add(1);
-        let mut output = vec![frame.label(self.language.as_deref().unwrap_or("Code"))];
-        if limit == 1 {
+        let mut output = match self.language.as_deref() {
+            Some(language) => vec![frame.label(language)],
+            None if self.text.is_empty() => return Vec::new(),
+            None if frame.bordered => vec![frame.border('╭', '╮')],
+            None => Vec::new(),
+        };
+        if output.len() == limit {
             return output;
         }
-        let mut highlighter = self.language.as_deref().and_then(Highlighter::new);
+        let mut highlighter = self
+            .language
+            .as_deref()
+            .filter(|_| !self.text.is_empty())
+            .and_then(Highlighter::new);
 
         for line in self.text.split_inclusive('\n') {
             let remaining = limit - output.len();
@@ -106,7 +115,7 @@ impl CodeBlock {
             output.push(frame.line(Line::default()));
         }
         if frame.bordered && output.len() < limit {
-            output.push(frame.bottom());
+            output.push(frame.border('╰', '╯'));
         }
         output
     }
@@ -248,8 +257,11 @@ impl Frame {
         Line::from(spans)
     }
 
-    fn bottom(&self) -> Line<'static> {
-        Line::styled(format!("╰{}╯", "─".repeat(self.width - 2)), edge())
+    fn border(&self, left: char, right: char) -> Line<'static> {
+        Line::styled(
+            format!("{left}{}{right}", "─".repeat(self.width - 2)),
+            edge(),
+        )
     }
 }
 
