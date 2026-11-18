@@ -15,7 +15,7 @@ const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
 const WELCOME_WIDTH: u16 = 56;
 const WELCOME_HEIGHT: u16 = 7;
-const WELCOME_INDENT: &str = "     ";
+const WELCOME_INDENT: &str = "    ";
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
 
@@ -120,9 +120,7 @@ pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<L
 fn wordmark(mark: bool) -> Line<'static> {
     let mut line = Line::default();
     if mark {
-        for glyph in KUKU_MARK {
-            line.push_span(Span::styled(glyph, Style::default().fg(ACCENT)));
-        }
+        line.push_span(Span::styled(KUKU_MARK, Style::default().fg(ACCENT)));
         line.push_span("  ");
     }
     line.push_span(Span::styled(BRAND, emphasis(Color::Reset)));

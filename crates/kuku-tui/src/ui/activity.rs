@@ -12,7 +12,7 @@ mod clock;
 mod motion;
 
 pub(crate) use clock::ActivityClock;
-use motion::Sprite;
+use motion::Ring;
 
 const COMPACT_WIDTH: usize = 37;
 const WIDE_WIDTH: usize = 66;
@@ -89,7 +89,7 @@ impl ObservedActivity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActivityFrame {
     status: ObservedActivity,
-    sprite: Sprite,
+    ring: Ring,
     elapsed: Option<u64>,
 }
 
@@ -116,13 +116,13 @@ impl ActivityFrame {
             color @ (ERROR | WARNING) => color,
             _ => ACCENT,
         };
-        let sprite = status.motion().zip(step).map_or_else(
-            || Sprite::resting(tone),
-            |(phase, step)| Sprite::moving(phase, step),
+        let ring = status.motion().zip(step).map_or_else(
+            || Ring::resting(tone),
+            |(phase, step)| Ring::moving(phase, step),
         );
         Self {
             status,
-            sprite,
+            ring,
             elapsed,
         }
     }
@@ -142,7 +142,7 @@ impl ActivityFrame {
 pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
     let compact = width < COMPACT_WIDTH;
     let wide = width >= WIDE_WIDTH;
-    let mut line = frame.sprite.line(compact);
+    let mut line = frame.ring.line(width);
     let muted = Style::default().fg(MUTED);
     let name = single_line(&app.active.agent);
     let separator = if compact { " " } else { SEPARATOR };

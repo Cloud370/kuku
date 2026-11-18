@@ -295,7 +295,7 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let wide = screen(&mut app, 118, 28);
     let rows: Vec<_> = wide.lines().collect();
     assert_eq!("", rows[0].trim());
-    assert_eq!("▚▜▸  kuku", rows[1].trim());
+    assert_eq!("⢎⡱  kuku", rows[1].trim());
     assert!(rows[2].contains("New session"));
     assert!(rows[4].contains("Enter sends your first prompt"));
     assert!(rows[4].contains("/resume opens a saved session"));

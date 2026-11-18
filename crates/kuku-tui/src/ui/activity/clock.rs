@@ -4,7 +4,7 @@ use crate::app::{Address, App, TurnTiming};
 
 use super::{ActivityFrame, ObservedActivity};
 
-pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(160);
+pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(140);
 const PHASE_CONFIRMATION: Duration = Duration::from_millis(96);
 
 #[derive(Default)]
