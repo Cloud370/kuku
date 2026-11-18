@@ -49,6 +49,10 @@ pub enum Error {
     #[error("command '{0}' was already committed with different content")]
     CommandConflict(String),
 
+    /// The selected input is unavailable for queued replacement.
+    #[error("input '{0}' is no longer queued for replacement")]
+    InputNotQueued(String),
+
     /// A session identity was already retained by another creation intent.
     #[error("session '{0}' was already created by a different intent")]
     SessionCreationConflict(String),
@@ -121,6 +125,7 @@ impl Error {
             Error::PermissionRequestNotPending(_) => "internal",
             Error::QuestionRequestNotPending(_) => "question_not_pending",
             Error::CommandConflict(_) => "command_conflict",
+            Error::InputNotQueued(_) => "input_not_queued",
             Error::SessionCreationConflict(_) => "session_creation_conflict",
             Error::ExecutionNotActive(_) => "execution_not_active",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",

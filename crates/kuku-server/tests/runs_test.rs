@@ -7,7 +7,9 @@ use common::mock_provider::{self, text_response};
 use common::TestServer;
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
-use kuku::session::{AgentConfig, Input, InputSource, Session, SessionOptions};
+use kuku::session::{
+    Activation, AgentConfig, Input, InputSource, InputTiming, Session, SessionOptions,
+};
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -326,6 +328,164 @@ async fn busy_delivery_is_durable_and_rejects_conflicting_payload_recipient_timi
     assert_eq!("accepted", accepted["status"]);
     assert_eq!(2, operations(&server, id, "input_delivered"));
     delayed.assert_hits(1);
+}
+
+#[tokio::test]
+async fn queued_replacement_replays_and_observes_exact_delivery_ids_after_restart() {
+    let mock = mock_provider::start_mock_provider().await;
+    let reply = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("edited follow-up");
+        then.status(200)
+            .body(text_response("edited delivery accepted"));
+    });
+    let config = mock_provider::make_test_config(mock.port());
+    let mut server = TestServer::start(config.clone()).await;
+    let id = "queued-replacement";
+    let mut options = SessionOptions::new(server.workspace.path(), server.home.path(), config);
+    options.session_id = Some(id.into());
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    for command_id in ["first", "second"] {
+        session
+            .send(Input {
+                activation: Activation::Enqueue,
+                source: InputSource::Host("http".into()),
+                timing: InputTiming::NextTurn,
+                ..Input::new(command_id, "main", "identical follow-up")
+            })
+            .unwrap();
+    }
+    session.close().await.unwrap();
+    let start = server.snapshot(id, "main").await;
+    let after = start["cursor"].as_u64().unwrap().to_string();
+
+    let replacement = json!({"type":"replace_queued", "command_id":"replacement",
+        "input_command_id":"first", "text":"edited follow-up", "agent":"main", "workspace":server.workspace.path()});
+    let unconsumed = server.command_response(id, replacement.clone()).await;
+    assert_eq!(200, unconsumed.status());
+    drop(unconsumed);
+    let snapshot = server.snapshot(id, "main").await;
+    assert_eq!(
+        "replacement",
+        snapshot["pending"][0]["receipt"]["command_id"]
+    );
+    assert_eq!("edited follow-up", snapshot["pending"][0]["input"]["text"]);
+    assert_eq!("next_turn", snapshot["pending"][0]["input"]["timing"]);
+    assert_eq!(start["pending"][1], snapshot["pending"][1]);
+    let receipt = snapshot["pending"][0]["receipt"].clone();
+
+    server.restart().await;
+    let reopened = server.snapshot(id, "main").await;
+    assert_eq!(snapshot["pending"], reopened["pending"]);
+    for (key, status) in [("first", "withdrawn"), ("replacement", "queued")] {
+        let found: Value = server
+            .session_request(id, &format!("receipts/{key}"), &[])
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(true, found["ok"]);
+        assert_eq!(key, found["receipt"]["command_id"]);
+        assert_eq!(status, found["status"]);
+    }
+    let replay: Value = server
+        .request(wreq::Method::POST, &format!("/sessions/{id}/commands"))
+        .query(&[("replay_only", true)])
+        .json(&replacement)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(true, replay["replayed"]);
+    assert_eq!(receipt, replay["receipt"]);
+    assert_eq!("queued", replay["status"]);
+    let mut conflicting = replacement.clone();
+    conflicting["input_command_id"] = json!("second");
+    let (status, conflict) = server.command(id, conflicting).await;
+    assert_eq!(409, status);
+    assert_eq!("command_conflict", conflict["code"]);
+
+    server
+        .submit(
+            id,
+            json!({"type":"withdraw", "command_id":"withdraw-second", "input_command_id":"second"}),
+        )
+        .await;
+    server
+        .submit(id, json!({"type":"advance", "command_id":"resume"}))
+        .await;
+    server
+        .wait_for_snapshot(id, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "edited delivery accepted"
+        })
+        .await;
+    let replayed = server.submit(id, replacement).await;
+    assert_eq!(receipt, replayed["receipt"]);
+    assert_eq!(true, replayed["replayed"]);
+    assert_eq!("accepted", replayed["status"]);
+    let (status, rejected) = server
+        .command(
+            id,
+            json!({"type":"replace_queued", "command_id":"late",
+        "input_command_id":"replacement", "text":"past the admission boundary"}),
+        )
+        .await;
+    assert_eq!(409, status);
+    assert_eq!("input_not_queued", rejected["code"]);
+    let missing = server
+        .session_request(id, "receipts/late", &[])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(404, missing.status());
+    assert_eq!(1, operations(&server, id, "input_replacement"));
+
+    let mut stream = server
+        .session_request(id, "observe", &[("agent", "main"), ("after", &after)])
+        .send()
+        .await
+        .unwrap()
+        .bytes_stream();
+    let mut buffer = Vec::new();
+    let deliveries = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut deliveries = Vec::new();
+        while deliveries.len() < 3 {
+            let frame =
+                common::stream::next_json_line(&mut stream, &mut buffer, "queued delivery").await;
+            if let Some(delivery) = frame.get("delivery") {
+                deliveries.push(delivery.clone());
+            }
+        }
+        deliveries
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        vec![
+            json!({"status":"replaced", "input_id":"first", "replacement_id":"replacement"}),
+            json!({"status":"withdrawn", "input_id":"second"}),
+            json!({"status":"accepted", "input_ids":["replacement"]}),
+        ],
+        deliveries
+    );
+    let admitted: Vec<_> = EventStore::replay(server.events_path(id))
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::MessageUser { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(vec!["edited follow-up"], admitted);
+    reply.assert_hits(1);
 }
 
 #[tokio::test]

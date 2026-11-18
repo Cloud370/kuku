@@ -17,6 +17,29 @@ const READ_TIMEOUT: Duration = Duration::from_secs(45);
 const RETRY_DELAYS_MS: [u64; 4] = [100, 250, 500, 1000];
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
+/// A committed change to input delivery for the observed Agent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum InputDelivery {
+    /// Inputs admitted together at an execution boundary.
+    Accepted {
+        /// Original command identities in admission order.
+        input_ids: Vec<String>,
+    },
+    /// A previously queued input that was withdrawn.
+    Withdrawn {
+        /// Original command identity of the withdrawn input.
+        input_id: String,
+    },
+    /// One queued input became withdrawn and another took its place.
+    Replaced {
+        /// Original command identity of the withdrawn input.
+        input_id: String,
+        /// Command identity of the new input in the queue.
+        replacement_id: String,
+    },
+}
+
 /// A typed observation frame, carrying either a durable fact or transient preview.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -42,6 +65,8 @@ pub enum Observation {
         tool_call_id: Option<String>,
         /// Operation code for a runtime-state fact.
         operation: Option<String>,
+        /// Delivery outcome for the selected Agent, when present.
+        delivery: Option<InputDelivery>,
         /// Durable status and output returned for a settled turn.
         settlement: Option<Box<AgentSettlement>>,
         /// Whether a committed stop still had owned work to clean up.

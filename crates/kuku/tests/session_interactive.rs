@@ -8,9 +8,10 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use kuku::event::{EventPayload, EventStore, ModelStopReason};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer, TrustedLocal};
 use kuku::{
-    Activation, AdapterFuture, AgentConfig, AgentStatus, Error, Input, InputStatus, InputTiming,
-    ModelAdapter, ModelEvent, ModelRequest, ModelStream, Observation, ProviderFailureKind, Session,
-    SessionOptions, ToolAccess, ToolAdapter, ToolCancellation, ToolOutput, ToolSpec,
+    Activation, AdapterFuture, AgentConfig, AgentStatus, Error, Input, InputSource, InputStatus,
+    InputTiming, ModelAdapter, ModelEvent, ModelRequest, ModelStream, Observation,
+    ProviderFailureKind, Session, SessionOptions, ToolAccess, ToolAdapter, ToolCancellation,
+    ToolOutput, ToolSpec,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -234,6 +235,177 @@ fn next_turn(key: &str, text: &str) -> Input {
         timing: InputTiming::NextTurn,
         ..Input::new(key, "main", text)
     }
+}
+
+#[tokio::test]
+async fn queued_replacement_recovers_from_a_torn_record_and_from_a_lost_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options =
+        SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+    options.session_id = Some("replace-queued".into());
+    options.limits.max_pending_inputs = 2;
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let original = Input {
+        activation: Activation::Enqueue,
+        correlation: Some("original submission metadata".into()),
+        bootstrap_skill: Some("inspect-fixture".into()),
+        ..next_turn("old", "same text")
+    };
+    let other = Input {
+        activation: Activation::Enqueue,
+        ..Input::new("other", "main", "same text")
+    };
+    let old_receipt = session.send(original.clone()).unwrap();
+    let other_receipt = session.send(other.clone()).unwrap();
+    let path = session.events_path().to_owned();
+    let prefix = std::fs::read(&path).unwrap();
+
+    let replace = |session: &Session| {
+        session.replace_queued("new", "main", "old", "edited 界", &original.source)
+    };
+    let lost_receipt = replace(&session).unwrap();
+    assert_eq!(other_receipt.event_id + 1, lost_receipt.event_id);
+    let complete = std::fs::read(&path).unwrap();
+    assert!(complete.starts_with(&prefix));
+    assert!(complete.ends_with(b"\n"));
+    assert_eq!(
+        1,
+        complete[prefix.len()..]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+    );
+    drop(session);
+    std::fs::write(&path, &complete[..complete.len() - 1]).unwrap();
+
+    let reopened = Session::open(options.clone()).await.unwrap();
+    let pending = reopened.pending_inputs("main").unwrap();
+    assert_eq!(original, pending[0].input);
+    assert_eq!(old_receipt, pending[0].receipt);
+    assert_eq!(other, pending[1].input);
+    assert_eq!(None, reopened.receipt("new").unwrap());
+    assert!(matches!(
+        reopened.replace_queued(
+            "bad-source",
+            "main",
+            "old",
+            "new text",
+            &InputSource::Host("other".into())
+        ),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        reopened.replace_queued("empty", "main", "old", " \n", &original.source),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert_eq!(pending, reopened.pending_inputs("main").unwrap());
+    let replacement = replace(&reopened).unwrap();
+    assert_eq!(lost_receipt, replacement);
+    drop(reopened);
+
+    let session = Session::open(options).await.unwrap();
+    assert_eq!(replacement, replace(&session).unwrap());
+    let pending = session.pending_inputs("main").unwrap();
+    let edited = Input {
+        command_id: "new".into(),
+        text: "edited 界".into(),
+        ..original
+    };
+    assert_eq!(2, pending.len());
+    assert_eq!(edited, pending[0].input);
+    assert_eq!(replacement, pending[0].receipt);
+    assert_eq!(other, pending[1].input);
+    assert_eq!(other_receipt, pending[1].receipt);
+    assert_eq!(
+        InputStatus::Withdrawn,
+        session.input_status("main", "old").unwrap()
+    );
+    assert_eq!(
+        InputStatus::Queued,
+        session.input_status("main", "new").unwrap()
+    );
+    assert!(matches!(
+        session.replace_queued("new", "main", "old", "changed retry", &edited.source),
+        Err(Error::CommandConflict(id)) if id == "new"
+    ));
+    assert!(matches!(
+        session.replace_queued("too-late", "main", "old", "another edit", &edited.source),
+        Err(Error::InputNotQueued(id)) if id == "old"
+    ));
+    assert_eq!(None, session.receipt("too-late").unwrap());
+    assert_eq!(pending, session.pending_inputs("main").unwrap());
+    session.close().await.unwrap();
+    assert_eq!(
+        Some((replacement, Some(InputStatus::Queued))),
+        Session::read_receipt(&path, "new").unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_replacement_and_admission_deliver_exactly_one_version() {
+    let (_root, session, mut calls, _) = open_model().await;
+    let source = InputSource::Host("local".into());
+    session
+        .send(Input {
+            activation: Activation::Enqueue,
+            ..Input::new("old", "main", "original race text")
+        })
+        .unwrap();
+    let ready_to_race = Arc::new(tokio::sync::Barrier::new(2));
+    let replace = tokio::spawn({
+        let ready_to_race = ready_to_race.clone();
+        let session = session.clone();
+        let source = source.clone();
+        async move {
+            ready_to_race.wait().await;
+            session.replace_queued("new", "main", "old", "replacement race text", &source)
+        }
+    });
+    ready_to_race.wait().await;
+    session.advance("main").unwrap();
+    let call = next_call(&mut calls).await;
+    let body = call.request.body.to_string();
+    match replace.await.unwrap() {
+        Ok(receipt) => {
+            assert!(body.contains("replacement race text"));
+            assert!(!body.contains("original race text"));
+            assert_eq!(
+                InputStatus::Withdrawn,
+                session.input_status("main", "old").unwrap()
+            );
+            assert_eq!(
+                InputStatus::Accepted,
+                session.input_status("main", "new").unwrap()
+            );
+            assert_eq!(
+                receipt,
+                session
+                    .replace_queued("new", "main", "old", "replacement race text", &source)
+                    .unwrap()
+            );
+        }
+        Err(Error::InputNotQueued(id)) => {
+            assert_eq!("old", id);
+            assert!(body.contains("original race text"));
+            assert!(!body.contains("replacement race text"));
+            assert_eq!(
+                InputStatus::Accepted,
+                session.input_status("main", "old").unwrap()
+            );
+            assert_eq!(None, session.receipt("new").unwrap());
+        }
+        result => panic!("unexpected race result: {result:?}"),
+    }
+    call.response
+        .send(Reply::Text("one input accepted"))
+        .unwrap();
+    ready(&session, AgentStatus::Idle).await;
+    assert!(session.pending_inputs("main").unwrap().is_empty());
+    assert!(calls.try_recv().is_err());
+    session.close().await.unwrap();
 }
 
 #[tokio::test]

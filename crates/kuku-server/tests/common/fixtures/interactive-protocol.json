@@ -30,6 +30,16 @@
     {"type": "lagged", "skipped": 25},
     {"type": "heartbeat"}
   ],
+  "queued_replacement": {
+    "type": "replace_queued",
+    "input_command_id": "send-example",
+    "text": "Inspect the two modified files"
+  },
+  "queue_observation": [
+    {"type": "committed", "id": 25, "agent": "main", "kind": "runtime.operation", "operation": "input_replacement", "state_changed": true, "delivery": {"status": "replaced", "input_id": "send-example", "replacement_id": "edited-example"}},
+    {"type": "committed", "id": 26, "agent": "main", "kind": "runtime.operation", "operation": "input_withdrawal", "state_changed": true, "delivery": {"status": "withdrawn", "input_id": "other-example"}},
+    {"type": "committed", "id": 27, "agent": "main", "kind": "runtime.operation", "operation": "inputs_accepted", "state_changed": true, "delivery": {"status": "accepted", "input_ids": ["edited-example"]}}
+  ],
   "error": {
     "ok": false,
     "code": "command_conflict",

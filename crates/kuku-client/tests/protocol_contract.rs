@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuku_client::{
-    Acknowledgement, Action, ApiError, Client, Command, HistoryKind, HistoryPage, InputStatus,
-    Observation, PendingStore, SubscriptionUpdate, Target, Timing,
+    Acknowledgement, Action, ApiError, Client, Command, HistoryKind, HistoryPage, InputDelivery,
+    InputStatus, Observation, PendingStore, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,6 +46,50 @@ fn shared_protocol_fixture_decodes_history_receipts_observation_and_errors() {
     assert!(matches!(frames[4], Observation::Heartbeat));
     let error: ApiError = serde_json::from_value(fixture["error"].clone()).unwrap();
     assert_eq!("command_conflict", error.code);
+}
+
+#[test]
+fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
+    let fixture: Value = serde_json::from_str(PROTOCOL).unwrap();
+    let action = Action::ReplaceQueued {
+        input_command_id: "send-example".into(),
+        text: "Inspect the two modified files".into(),
+    };
+    assert_eq!(
+        fixture["queued_replacement"],
+        serde_json::to_value(&action).unwrap()
+    );
+    assert_eq!(
+        action,
+        serde_json::from_value(fixture["queued_replacement"].clone()).unwrap()
+    );
+    let frames: Vec<Observation> =
+        serde_json::from_value(fixture["queue_observation"].clone()).unwrap();
+    let delivery: Vec<_> = frames
+        .into_iter()
+        .map(|frame| match frame {
+            Observation::Committed {
+                delivery: Some(delivery),
+                ..
+            } => delivery,
+            other => panic!("unexpected queue observation: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        vec![
+            InputDelivery::Replaced {
+                input_id: "send-example".into(),
+                replacement_id: "edited-example".into()
+            },
+            InputDelivery::Withdrawn {
+                input_id: "other-example".into()
+            },
+            InputDelivery::Accepted {
+                input_ids: vec!["edited-example".into()]
+            },
+        ],
+        delivery
+    );
 }
 
 #[tokio::test]

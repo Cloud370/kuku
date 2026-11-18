@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::{CommandExecution, OpenSession, RunManager};
 use crate::error_mapping::{ApiError, Result};
-use crate::wire::{Command, CommandResult};
+use crate::wire::{http_input_source, Command, CommandResult};
 
 pub(crate) const INTERNAL_CREATE_PREFIX: &str = "http:agent:";
 
@@ -84,6 +84,16 @@ impl RunManager {
                     Some(withdrawal.status),
                 ));
             }
+            Command::ReplaceQueued {
+                input_command_id,
+                text,
+            } => open.session.replace_queued(
+                command_id,
+                address,
+                &input_command_id,
+                &text,
+                &http_input_source(),
+            ),
             Command::Advance => open.session.advance_command(command_id, address),
             Command::Cancel { execution_id } => {
                 open.session
@@ -133,6 +143,7 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
         Command::CreateAgent { .. }
         | Command::Configure { .. }
         | Command::Withdraw { .. }
+        | Command::ReplaceQueued { .. }
         | Command::Cancel { .. } => false,
     }
 }

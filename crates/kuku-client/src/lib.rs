@@ -13,12 +13,12 @@ pub use http::{Client, Error, Health};
 pub use kuku::adapter::ModelSelection;
 pub use kuku::event::StoredEvent;
 pub use kuku::{
-    AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputStatus, OutputChunk,
-    OutputSegment, OutputStream, PendingInput as QueuedInput, PermissionRequest, QuestionRequest,
-    Receipt, UsageTotals,
+    AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
+    InputTiming, OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput,
+    PermissionRequest, QuestionRequest, Receipt, UsageTotals,
 };
 pub use pending::PendingStore;
-pub use subscription::{Observation, Subscription, SubscriptionUpdate};
+pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
     EventPage, HistoryEntry, HistoryKind, HistoryPage, ReplyPreview, SessionStatus, SessionSummary,

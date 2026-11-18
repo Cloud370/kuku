@@ -52,6 +52,10 @@ pub(crate) enum Command {
     Withdraw {
         input_command_id: String,
     },
+    ReplaceQueued {
+        input_command_id: String,
+        text: String,
+    },
     Advance,
     Cancel {
         execution_id: u64,
@@ -80,7 +84,7 @@ impl Command {
             return Ok(None);
         };
         let mut input = Input::new(command_id, address, text);
-        input.source = InputSource::Host("http".into());
+        input.source = http_input_source();
         input.bootstrap_skill.clone_from(bootstrap_skill);
         input.timing = match timing {
             SendTiming::Steer => InputTiming::NextStep,
@@ -95,6 +99,10 @@ impl Command {
         }
         Ok(Some(input))
     }
+}
+
+pub(crate) fn http_input_source() -> InputSource {
+    InputSource::Host("http".into())
 }
 
 #[derive(Default, Deserialize)]
@@ -311,6 +319,24 @@ pub(crate) fn committed_frame(
             value["state_changed"] = json!(true);
             let record = &payload["record"];
             value["operation"] = record["operation"].clone();
+            if matches {
+                match record["operation"].as_str() {
+                    Some("inputs_accepted") => {
+                        value["delivery"] = json!({"status":"accepted","input_ids":record["input_ids"]});
+                    }
+                    Some("input_withdrawal") if record["status"] == "withdrawn" => {
+                        value["delivery"] = json!({"status":"withdrawn","input_id":record["input_command_id"]});
+                    }
+                    Some("input_replacement") => {
+                        value["delivery"] = json!({
+                            "status": "replaced",
+                            "input_id": record["input_command_id"],
+                            "replacement_id": record["command"]["command_id"],
+                        });
+                    }
+                    _ => {}
+                }
+            }
             if !matches && include_agent_activity && record["operation"] == "agent_stopped" {
                 value["cleanup_pending"] = record["cleanup_pending"].clone();
             }

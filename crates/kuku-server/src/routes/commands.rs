@@ -131,6 +131,18 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         Command::Configure { config } | Command::CreateAgent { config } => {
             validate_agent_workspace(workspace, config)?;
         }
+        Command::ReplaceQueued {
+            input_command_id,
+            text,
+        } => {
+            validate_command_id(input_command_id)?;
+            if text.trim().is_empty() || text.len() > kuku::RuntimeLimits::default().max_input_bytes
+            {
+                return Err(ApiError::invalid(
+                    "replacement text is empty or exceeds the byte limit",
+                ));
+            }
+        }
         Command::ReplyQuestion { .. }
         | Command::ReplyPermission { .. }
         | Command::Withdraw { .. }

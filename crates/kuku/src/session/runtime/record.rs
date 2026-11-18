@@ -58,6 +58,12 @@ pub(super) enum Record {
         input_command_id: String,
         status: InputStatus,
     },
+    InputReplacement {
+        command: Command,
+        address: String,
+        input_command_id: String,
+        text: String,
+    },
     ExecutionStarted {
         address: String,
     },
@@ -188,6 +194,15 @@ impl AgentState {
             .filter(|entry| !self.question_replies.contains(&entry.input.command_id))
             .find_map(|entry| task_preview(&entry.input.text));
     }
+
+    pub(super) fn queued_message_position(&self, command_id: &str) -> Option<usize> {
+        if self.question_replies.contains(command_id) {
+            return None;
+        }
+        self.inbox
+            .iter()
+            .position(|entry| entry.input.command_id == command_id)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -281,6 +296,34 @@ impl State {
                     agent.question_replies.remove(&input_command_id);
                     agent.update_inbox();
                 }
+            }
+            Record::InputReplacement {
+                command,
+                address,
+                input_command_id,
+                text,
+            } => {
+                let position = self
+                    .agent(&address)?
+                    .queued_message_position(&input_command_id)
+                    .ok_or_else(|| {
+                        Error::InvalidEventStream(format!(
+                            "agent {address}: replaced input {input_command_id} was not queued"
+                        ))
+                    })?;
+                let command_id = command.command_id.clone();
+                self.remember_command(command, event_id, address.clone());
+                self.deliveries
+                    .insert(input_command_id, InputStatus::Withdrawn);
+                self.deliveries
+                    .insert(command_id.clone(), InputStatus::Queued);
+                let receipt = self.commands[&command_id].1.clone();
+                let agent = self.agent_mut(&address)?;
+                let entry = &mut agent.inbox[position];
+                entry.receipt = receipt;
+                entry.input.command_id = command_id;
+                entry.input.text = text;
+                agent.update_inbox();
             }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;

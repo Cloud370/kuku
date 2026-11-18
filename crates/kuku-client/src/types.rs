@@ -96,6 +96,13 @@ pub enum Action {
         /// The input's original command identity.
         input_command_id: String,
     },
+    /// Replace the text of one input before it is admitted, preserving its queue position.
+    ReplaceQueued {
+        /// The input's original command identity.
+        input_command_id: String,
+        /// The text delivered under this replacement command's identity.
+        text: String,
+    },
     /// Explicitly let an Agent advance eligible work.
     Advance,
     /// Interrupt the specific execution the client observed.

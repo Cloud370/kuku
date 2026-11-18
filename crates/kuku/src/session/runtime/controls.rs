@@ -82,6 +82,58 @@ impl Session {
         })
     }
 
+    /// Replace an unadmitted message from the trusted source in its original queue position.
+    /// Repeating the same command returns its committed receipt without waking the agent.
+    pub fn replace_queued(
+        &self,
+        command_id: &str,
+        address: &str,
+        input_command_id: &str,
+        text: &str,
+        source: &super::InputSource,
+    ) -> Result<Receipt> {
+        validate_key(input_command_id)?;
+        let command = command(
+            command_id,
+            address,
+            &("replace_queued", address, input_command_id, text, source),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &command.fingerprint)? {
+            return Ok(receipt);
+        }
+        if text.trim().is_empty() || text.len() > self.inner.options.limits.max_input_bytes {
+            return Err(Error::InvalidArgument(
+                "replacement text is empty or exceeds the configured byte limit".into(),
+            ));
+        }
+        let old = state
+            .agents
+            .get(address)
+            .and_then(|agent| {
+                agent
+                    .queued_message_position(input_command_id)
+                    .map(|index| &agent.inbox[index].input)
+            })
+            .ok_or_else(|| Error::InputNotQueued(input_command_id.into()))?;
+        if &old.source != source {
+            return Err(Error::InvalidArgument(format!(
+                "input '{input_command_id}' belongs to a different source"
+            )));
+        }
+        self.commit(
+            &mut state,
+            Record::InputReplacement {
+                command,
+                address: address.into(),
+                input_command_id: input_command_id.into(),
+                text: text.into(),
+            },
+        )?;
+        Ok(state.commands[command_id].1.clone())
+    }
+
     pub(super) fn resume(
         &self,
         state: &mut State,

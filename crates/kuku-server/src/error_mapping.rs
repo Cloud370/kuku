@@ -59,6 +59,7 @@ impl From<kuku::Error> for ApiError {
             | Error::InvalidSessionId(_)
             | Error::InvalidWorkspacePath(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             Error::CommandConflict(_) => (StatusCode::CONFLICT, "command_conflict"),
+            Error::InputNotQueued(_) => (StatusCode::CONFLICT, "input_not_queued"),
             Error::SessionCreationConflict(_) => {
                 (StatusCode::CONFLICT, "session_creation_conflict")
             }
