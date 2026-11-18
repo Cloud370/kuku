@@ -70,6 +70,8 @@ Bound model requests, tool processes, inbox admission, output, and observer queu
 
 ## Workspace, trust, and scope
 
+Workspace actions should return bounded model evidence and machine-readable execution facts for hosts. Explicitly named Session values should survive reopening with on-demand access to their content. The proposed [workspace execution design](workspace-execution.md) covers scripting, retention, resource costs and acceptance.
+
 A workspace is an ordinary directory. Agents share it by default; callers may choose another directory. Core behavior is identical with and without Git. Worktrees, commits, and merges remain explicit choices; file conflict checks use observed content/version. The SDK does not seize process cwd, environment, signals, global logging, or unrelated processes.
 
 Target trusted callers/single-user use; the host supplies strong OS isolation when needed. The default local entry explicitly uses a trusted-local policy; embedded hosts can supply their own policy. A host authorization boundary receives the real caller, final action/arguments, and directory, and allows, denies, or defers it. Error/cancellation is never permission. No mandatory rule DSL, role hierarchy, approval platform, or model-based safety classifier is required.
