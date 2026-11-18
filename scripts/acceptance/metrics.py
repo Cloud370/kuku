@@ -1,6 +1,6 @@
 """Native process samples for the public SDK resource caller."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 import ctypes
 import json
 import os
@@ -22,6 +22,8 @@ def process_sample(pid):
         for field, key in (("VmRSS", "rss_kib"), ("VmHWM", "rss_high_water_kib"), ("Threads", "threads")):
             match = re.search(rf"^{field}:\s+(\d+)", status, re.MULTILINE)
             values[key] = int(match[1]) if match else None
+        name = re.search(r"^Name:[ \t]+(.+)$", status, re.MULTILINE)
+        values["image"] = name[1] if name else None
         ticks = os.sysconf("SC_CLK_TCK")
         values["cpu_s"] = (int(fields[11]) + int(fields[12])) / ticks
         values["reaped_children_cpu_s"] = (int(fields[13]) + int(fields[14])) / ticks
@@ -98,24 +100,25 @@ class WindowsProcesses:
             raise ctypes.WinError(ctypes.get_last_error())
         entry = self.process_entry()
         entry.size = ctypes.sizeof(entry)
-        children, threads = defaultdict(set), {}
+        children, processes = defaultdict(set), {}
         try:
             found = self.first_process(snapshot, ctypes.byref(entry))
             while found:
-                threads[entry.pid] = entry.threads
+                processes[entry.pid] = (entry.threads, entry.name)
                 children[entry.parent].add(entry.pid)
                 found = self.next_process(snapshot, ctypes.byref(entry))
         finally:
             self.close_handle(snapshot)
 
         def read(pid):
-            return self.sample(pid, threads.get(pid), children.get(pid, set()))
+            if pid not in processes:
+                return None
+            threads, image = processes[pid]
+            return self.sample(pid, threads, image, children.get(pid, set()))
 
         return read
 
-    def sample(self, pid, threads, children):
-        if threads is None:
-            return None
+    def sample(self, pid, threads, image, children):
         process_query_limited_information = 0x1000
         handle = self.open_process(process_query_limited_information, False, pid)
         if not handle:
@@ -129,7 +132,7 @@ class WindowsProcesses:
             memory = self.memory_counters()
             memory.size = ctypes.sizeof(memory)
             have_memory = self.process_memory(handle, ctypes.byref(memory), memory.size)
-            return {"cpu_s": cpu, "threads": threads, "children": children,
+            return {"cpu_s": cpu, "threads": threads, "image": image, "children": children,
                     "rss_kib": memory.working_set // 1024 if have_memory else None,
                     "rss_high_water_kib": memory.peak // 1024 if have_memory else None,
                     "read_bytes": None, "write_bytes": None, "reaped_children_cpu_s": None}
@@ -181,7 +184,8 @@ class ProcessSampler:
         phase = self.phases.setdefault(name, {"samples": 0, "sdk_rss_samples": [],
             "sdk_threads_max": 0, "tool_peak_rss_kib": 0, "sdk_first_cpu_s": sdk["cpu_s"],
             "sdk_first_read_bytes": sdk["read_bytes"], "sdk_first_write_bytes": sdk["write_bytes"],
-            "tool_samples": 0, "tool_processes_max": 0, "first_sample_s": stamp})
+            "tool_samples": 0, "tool_processes_max": 0, "fixture_processes_max": 0,
+            "tool_process_peaks_by_image": {}, "first_sample_s": stamp})
         phase["last_sample_s"] = stamp
         phase["samples"] += 1
         if sdk["rss_kib"] is not None:
@@ -193,6 +197,7 @@ class ProcessSampler:
         for field in ("read_bytes", "write_bytes"):
             phase["sdk_last_" + field] = sdk[field]
         pending, seen, rss, processes = list(sdk["children"]), {self.pid}, 0, 0
+        images = Counter()
         while pending:
             pid = pending.pop()
             if pid in seen:
@@ -203,9 +208,16 @@ class ProcessSampler:
                 self.children_seen.add(pid)
                 rss += child["rss_kib"] or 0
                 processes += 1
+                if child["image"]:
+                    images[child["image"].casefold()] += 1
                 pending.extend(child["children"])
         phase["tool_peak_rss_kib"] = max(phase["tool_peak_rss_kib"], rss)
         phase["tool_processes_max"] = max(phase["tool_processes_max"], processes)
+        if sdk["image"]:
+            phase["fixture_processes_max"] = max(phase["fixture_processes_max"], images[sdk["image"].casefold()])
+        by_image = phase["tool_process_peaks_by_image"]
+        for image, count in images.items():
+            by_image[image] = max(by_image.get(image, 0), count)
         phase["tool_samples"] += processes
         self.last = {key: value for key, value in sdk.items() if key != "children"}
 
@@ -336,13 +348,14 @@ def run_metrics(args, directory, record):
         if phases.get(phase, {}).get("sdk_median_rss_kib") is None or phases[phase]["samples"] < 2:
             record["missing_measurements"].append("process_samples_" + phase)
     workload = caller.get("workspace_workload", {})
-    observed_peaks = [phases.get(phase, {}).get("tool_processes_max") for phase in stress_peaks]
+    observed_peaks = [phases.get(phase, {}).get("fixture_processes_max") for phase in stress_peaks]
     if workload and all(peak is not None for peak in observed_peaks):
         capacity = min(args.script_host_operations, args.script_workers * workload["stress_commands_per_worker"])
         record["host_operation_limit"] = {"configured": args.script_host_operations,
                                           "possible_peak_for_workload": capacity,
-                                          "observed_tool_process_peak": max(observed_peaks),
-                                          "per_round_tool_process_peaks": observed_peaks}
+                                          "observed_fixture_process_peak": max(observed_peaks),
+                                          "per_round_fixture_process_peaks": observed_peaks,
+                                          "per_round_all_descendant_peaks": [phases[phase]["tool_processes_max"] for phase in stress_peaks]}
         if max(observed_peaks) < capacity:
             record["missing_measurements"].append("script_host_operation_saturation")
         if max(observed_peaks) > args.script_host_operations:
