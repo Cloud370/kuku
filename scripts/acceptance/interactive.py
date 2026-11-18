@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
@@ -588,6 +589,7 @@ def delegated_agent_cards(client):
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--bridge", required=True, type=Path)
