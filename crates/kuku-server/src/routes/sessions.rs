@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
@@ -5,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use kuku::adapter::inspect_model;
-use kuku::event::EventStore;
+use kuku::event::{EventPayload, EventStore};
 use kuku::session::{AgentSnapshot, AgentStatus, Session, SessionStatus};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,10 +15,11 @@ use super::workspaces::resolve_workspace;
 use super::Params;
 use super::{canonical_home, manager, SessionTarget, WorkspaceQuery};
 use crate::error_mapping::{ApiError, Result};
-use crate::wire::agent_summary;
+use crate::wire::{agent_summary, event_agent};
 use crate::AppState;
 
 const TITLE_CHARS: usize = 160;
+const PROGRESS_WINDOW: usize = 64;
 
 #[derive(Deserialize)]
 pub(super) struct ListQuery {
@@ -29,6 +31,8 @@ pub(super) struct ListQuery {
 pub(super) struct SnapshotQuery {
     workspace: PathBuf,
     agent: Option<String>,
+    #[serde(default)]
+    progress: bool,
 }
 
 pub(super) async fn list(
@@ -153,6 +157,11 @@ pub(super) async fn snapshot(
         "pending":view.pending_inputs,
         "selection":null,
     });
+    if query.progress {
+        if let Some(progress) = execution_progress(&target.path, &view.snapshot, view.cursor)? {
+            value["progress"] = progress;
+        }
+    }
     let effective = view
         .snapshot
         .active_config
@@ -178,6 +187,53 @@ pub(super) async fn snapshot(
         );
     }
     Ok(Json(value))
+}
+
+fn execution_progress(path: &FsPath, agent: &AgentSnapshot, cursor: u64) -> Result<Option<Value>> {
+    let Some(execution) = agent
+        .execution_id
+        .filter(|_| agent.status == AgentStatus::Running)
+    else {
+        return Ok(None);
+    };
+    let count = cursor.saturating_sub(execution).min(PROGRESS_WINDOW as u64) as usize;
+    let events = EventStore::read_page_before(path, Some(cursor.saturating_add(1)), count)?;
+    let mut settled = HashSet::new();
+    let mut running = Vec::new();
+    let mut prepared = false;
+    for event in events.into_iter().rev() {
+        if event.id <= execution {
+            break;
+        }
+        if event_agent(&event.payload) != Some(agent.address.as_str()) {
+            continue;
+        }
+        match event.payload {
+            EventPayload::ToolResult { tool_call_id, .. } => {
+                settled.insert(tool_call_id);
+            }
+            EventPayload::Unknown(record) if record["kind"] == "runtime.tool_dispatched" => {
+                if let Some(id) = record["tool_call_id"].as_str() {
+                    if !settled.contains(id) {
+                        running.push(id.to_owned());
+                    }
+                }
+            }
+            EventPayload::Unknown(record) if record["kind"] == "runtime.step_prepared" => {
+                prepared = true;
+                break;
+            }
+            EventPayload::ModelResponse { .. } | EventPayload::ModelError { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(if !running.is_empty() {
+        Some(json!({"phase":"running_tools","tool_call_ids":running}))
+    } else if prepared {
+        Some(json!({"phase":"waiting_for_model"}))
+    } else {
+        None
+    })
 }
 
 fn selection(

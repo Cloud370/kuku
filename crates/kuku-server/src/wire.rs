@@ -271,6 +271,9 @@ pub(crate) fn committed_frame(event: &StoredEvent, target: Option<&str>) -> Valu
                 value["turn"] = record["turn"].clone();
                 value["request_id"] = record["request_id"].clone();
             }
+            EventPayload::Unknown(record) if kind == "runtime.tool_dispatched" => {
+                value["tool_call_id"] = record["tool_call_id"].clone();
+            }
             _ => {}
         }
     }

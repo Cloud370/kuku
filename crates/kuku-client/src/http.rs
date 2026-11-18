@@ -246,6 +246,25 @@ impl Client {
         .await
     }
 
+    /// Get a snapshot with recent committed execution progress for attaching an observer.
+    pub async fn observation_snapshot(&self, target: &Target) -> Result<Snapshot, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+            progress: bool,
+        }
+        self.get(
+            ["sessions", &target.session_id, "snapshot"],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+                progress: true,
+            },
+        )
+        .await
+    }
+
     /// List Agent states in an existing Session.
     pub async fn agents(
         &self,

@@ -166,6 +166,38 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     assert_eq!("queued", inserted["status"]);
     let waiting = server.snapshot(id, "main").await;
     assert_eq!(2, waiting["agent"]["pending_inputs"]);
+    assert!(waiting.get("progress").is_none());
+    let progress = server
+        .session_request(id, "snapshot", &[("agent", "main"), ("progress", "true")])
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(
+        json!({"phase":"running_tools","tool_call_ids":["gated-tool"]}),
+        progress["progress"]
+    );
+    let mut observer = server
+        .session_request(id, "observe", &[("agent", "main"), ("after", "0")])
+        .send()
+        .await
+        .unwrap()
+        .bytes_stream();
+    let dispatch = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut buffer = Vec::new();
+        loop {
+            let item = common::stream::next_json_line(&mut observer, &mut buffer, "dispatch").await;
+            if item["kind"] == "runtime.tool_dispatched" {
+                break item;
+            }
+        }
+    })
+    .await
+    .expect("the running tool dispatch was committed");
+    assert_eq!("gated-tool", dispatch["tool_call_id"]);
+    drop(observer);
     assert!(
         queued["receipt"]["event_id"].as_u64().unwrap()
             < inserted["receipt"]["event_id"].as_u64().unwrap()

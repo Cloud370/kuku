@@ -146,6 +146,19 @@ pub struct AgentSummary {
     pub permission: Option<PermissionRequest>,
 }
 
+/// Latest identifiable execution phase inferred from the selected Agent's committed history.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum AgentProgress {
+    /// A prepared model request has no committed response yet.
+    WaitingForModel,
+    /// One or more dispatched tool calls have no committed result yet.
+    RunningTools {
+        /// Identities of the unfinished calls found within the history window.
+        tool_call_ids: Vec<String>,
+    },
+}
+
 /// State at one committed Session cursor, suitable for race-free subscription.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Snapshot {
@@ -172,6 +185,8 @@ pub struct Snapshot {
     /// The stopped execution's owned work is still cleaning up.
     #[serde(default)]
     pub cleaning_up: bool,
+    /// Bounded execution history for a new observer, when requested and available.
+    pub progress: Option<AgentProgress>,
 }
 
 impl Snapshot {

@@ -18,10 +18,11 @@ pub use kuku::{
     Receipt, UsageTotals,
 };
 pub use pending::PendingStore;
-pub use subscription::{Observation, Subscription};
+pub use subscription::{Observation, Subscription, SubscriptionUpdate};
 pub use types::{
-    Acknowledgement, Action, AgentSummary, ApiError, Command, EventPage, HistoryEntry, HistoryKind,
-    HistoryPage, SessionStatus, SessionSummary, Snapshot, Target, Timing,
+    Acknowledgement, Action, AgentProgress, AgentSummary, ApiError, Command, EventPage,
+    HistoryEntry, HistoryKind, HistoryPage, SessionStatus, SessionSummary, Snapshot, Target,
+    Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

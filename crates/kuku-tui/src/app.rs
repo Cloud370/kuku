@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kuku_client::{
-    new_id, Action, AgentConfig, Command, Error, HistoryKind, HistoryPage, ModelSelection,
-    Observation, Snapshot, Target, Timing,
+    new_id, Action, AgentConfig, Command, Error, HistoryEntry, HistoryKind, HistoryPage,
+    ModelSelection, Observation, Snapshot, Target, Timing,
 };
 
 use crate::editor::Editor;
@@ -14,8 +14,11 @@ use crate::output::OutputViewer;
 use crate::selection::TextSelection;
 use crate::transcript::{HistoryRequest, Transcript};
 
+mod activity;
 mod pending;
 
+pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
+use activity::{ExecutionProgress, Watch};
 pub(crate) use pending::{PendingItem, PendingStage};
 
 const DEFAULT_AGENT: &str = "main";
@@ -57,7 +60,9 @@ pub(crate) struct Pane {
     pub(crate) sending: bool,
     creation_rejected: bool,
     pub(crate) stopping: bool,
-    observation_problem: Option<String>,
+    watch: Watch,
+    progress: ExecutionProgress,
+    submission: Option<(u64, SubmissionStatus)>,
     last_event: u64,
     live_floor: u64,
     retired_execution_floor: u64,
@@ -74,7 +79,7 @@ impl Pane {
     }
 
     pub(crate) fn observation_problem(&self) -> Option<&str> {
-        self.observation_problem.as_deref()
+        self.watch.problem()
     }
 
     pub(crate) fn config(&self) -> &AgentConfig {
@@ -148,7 +153,14 @@ impl Pane {
             return;
         }
         if snapshot.cursor >= self.last_event {
-            self.execution = snapshot.execution_id();
+            let execution = snapshot.execution_id();
+            if execution != self.execution {
+                self.progress = ExecutionProgress::default();
+                self.retired_execution_floor = self.retired_execution_floor.max(
+                    execution.map_or(snapshot.cursor, |execution| execution.saturating_sub(1)),
+                );
+                self.execution = execution;
+            }
         }
         if self
             .config_receipt
@@ -166,6 +178,43 @@ impl Pane {
             .cleaning_up
             .then(|| Instant::now() + CLEANUP_REFRESH);
         self.snapshot = Some(snapshot);
+    }
+
+    fn observe_execution(
+        &mut self,
+        id: u64,
+        kind: &str,
+        operation: Option<&str>,
+        entry: Option<&HistoryEntry>,
+        tool_call_id: Option<String>,
+    ) {
+        if id <= self.retired_execution_floor || self.execution.is_some_and(|active| id < active) {
+            return;
+        }
+        match operation {
+            Some("execution_started") => {
+                if self.execution != Some(id) {
+                    self.progress = ExecutionProgress::default();
+                }
+                self.execution = Some(id);
+                self.live_floor = id;
+            }
+            Some("turn_settled") => {
+                self.execution = None;
+                self.progress = ExecutionProgress::default();
+                self.transcript.clear_preview();
+                self.live_floor = id;
+                self.retired_execution_floor = id;
+            }
+            _ => {}
+        }
+        if matches!(
+            kind,
+            "runtime.step_prepared" | "model.response" | "model.error"
+        ) {
+            self.live_floor = id;
+        }
+        self.progress.committed(kind, entry, tool_call_id);
     }
 }
 
@@ -474,12 +523,18 @@ impl App {
             Update::Loaded(selection, snapshot, page) if selection == self.selection() => {
                 self.loaded(snapshot, page)
             }
+            Update::WatchConnected(selection) if selection == self.selection() => {
+                self.pane_mut().watch = Watch::Connected;
+            }
+            Update::WatchReconnecting(selection, error) if selection == self.selection() => {
+                self.drop_watch(Watch::Reconnecting(format!(
+                    "Service updates interrupted · {error}"
+                )));
+            }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
-                let pane = self.pane_mut();
-                pane.opening = false;
-                pane.observation_problem =
-                    Some(format!("Connection or history · {error} · /reconnect"));
-                pane.transcript.clear_preview();
+                self.drop_watch(Watch::Failed(format!(
+                    "Agent updates · {error} · /reconnect"
+                )));
             }
             Update::Observation(selection, event) if selection == self.selection() => {
                 self.observe(event)
@@ -558,6 +613,8 @@ impl App {
                 Err(error) => self.problem(format!("Open browser · {error}")),
             },
             Update::Loaded(..)
+            | Update::WatchConnected(..)
+            | Update::WatchReconnecting(..)
             | Update::WatchFailed(..)
             | Update::Observation(..)
             | Update::Refreshed(..)
@@ -618,14 +675,16 @@ impl App {
         self.model_version = self.model_version.wrapping_add(1);
         let pane = self.pane_mut();
         pane.opening = false;
-        pane.observation_problem = None;
+        pane.watch = Watch::Detached;
         pane.refresh_in_flight = false;
         pane.refresh_due = false;
         pane.history_in_flight = None;
         if !self.available() {
             self.effects.push(Job::StopObserving);
         } else if self.pane().exists {
-            self.pane_mut().opening = true;
+            let pane = self.pane_mut();
+            pane.opening = true;
+            pane.watch = Watch::Connecting;
             self.effects.push(Job::Observe(self.selection()));
         } else {
             self.effects.push(Job::StopObserving);
@@ -669,7 +728,7 @@ impl App {
         let pane = self.pane_mut();
         pane.exists = true;
         pane.opening = false;
-        pane.observation_problem = None;
+        let progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
         pane.last_event = snapshot.cursor;
         pane.live_floor = snapshot.cursor;
         pane.retired_execution_floor = snapshot
@@ -684,7 +743,15 @@ impl App {
                 }
             }
         }
+        if let Some(entry) =
+            page.entries.iter().rev().find(|entry| {
+                entry.kind == HistoryKind::User && entry.agent == snapshot.agent.address
+            })
+        {
+            pane.record_submission(entry.id, SubmissionStatus::Accepted);
+        }
         pane.set_snapshot(snapshot);
+        pane.progress = progress;
         pane.transcript.replace_recent(page);
         if pane.history_in_flight.is_none() {
             if let Some(request) = pane.transcript.restore_request() {
@@ -692,6 +759,14 @@ impl App {
                 self.effects.push(Job::History(self.selection(), request));
             }
         }
+    }
+
+    fn drop_watch(&mut self, state: Watch) {
+        let pane = self.pane_mut();
+        pane.opening = false;
+        pane.watch = state;
+        pane.progress.clear_stream();
+        pane.transcript.clear_preview();
     }
 
     fn observe(&mut self, event: Observation) {
@@ -705,6 +780,7 @@ impl App {
                 state_changed,
                 kind,
                 operation,
+                tool_call_id,
                 ..
             } => {
                 if id <= pane.last_event {
@@ -713,19 +789,17 @@ impl App {
                 pane.last_event = id;
                 let same_agent = agent.as_deref() == Some(&active_agent);
                 let prepared = same_agent && kind == "runtime.step_prepared";
-                if same_agent && operation.as_deref() == Some("execution_started") {
-                    pane.execution = Some(id);
-                }
-                if same_agent && operation.as_deref() == Some("turn_settled") {
-                    pane.execution = None;
-                    pane.transcript.clear_preview();
-                    pane.live_floor = id;
-                    pane.retired_execution_floor = id;
-                }
-                if prepared
-                    || (same_agent && matches!(kind.as_str(), "model_response" | "model_error"))
-                {
-                    pane.live_floor = id;
+                if same_agent {
+                    pane.observe_execution(
+                        id,
+                        &kind,
+                        operation.as_deref(),
+                        entry.as_deref(),
+                        tool_call_id,
+                    );
+                    if operation.as_deref() == Some("inputs_accepted") {
+                        pane.record_submission(id, SubmissionStatus::Accepted);
+                    }
                 }
                 if let Some(entry) = entry.filter(|entry| entry.agent == active_agent) {
                     if entry.kind == HistoryKind::User {
@@ -755,13 +829,16 @@ impl App {
                         .execution
                         .is_none_or(|execution| execution_id >= execution)
                 {
-                    if !terminal {
+                    if !terminal && pane.execution != Some(execution_id) {
                         pane.execution = Some(execution_id);
+                        pane.progress = ExecutionProgress::default();
                     }
+                    pane.progress.live(&event);
                     pane.transcript.live(execution_id, turn, &event);
                 }
             }
             Observation::Lagged { .. } => {
+                pane.progress.clear_stream();
                 pane.transcript.clear_preview();
                 self.refresh();
             }

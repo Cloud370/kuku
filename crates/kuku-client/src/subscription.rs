@@ -6,6 +6,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::time::{sleep_until, Instant};
 use tokio_stream::StreamExt;
 use wreq::Method;
 
@@ -37,6 +38,8 @@ pub enum Observation {
         turn: Option<u64>,
         /// Provider request associated with the fact, when applicable.
         request_id: Option<String>,
+        /// Tool invocation associated with a durable dispatch, when available.
+        tool_call_id: Option<String>,
         /// Operation code for a runtime-state fact.
         operation: Option<String>,
     },
@@ -63,6 +66,17 @@ pub enum Observation {
     Heartbeat,
 }
 
+/// An observation or an observed change to the subscription's HTTP connection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubscriptionUpdate {
+    /// The service accepted the observation stream.
+    Connected,
+    /// A retryable failure interrupted the stream or an attempt to open it.
+    Reconnecting(String),
+    /// A frame delivered by the subscription.
+    Observation(Observation),
+}
+
 /// A bounded observation reader that resumes from its last delivered committed event.
 pub struct Subscription {
     client: Client,
@@ -72,6 +86,7 @@ pub struct Subscription {
     reader: Option<Reader>,
     reconnect: bool,
     failures: usize,
+    retry_at: Option<Instant>,
 }
 
 impl Subscription {
@@ -88,17 +103,37 @@ impl Subscription {
     /// Read the next nonduplicate observation, reconnecting with bounded backoff when disconnected.
     pub async fn next(&mut self) -> Result<Observation, Error> {
         loop {
+            if let SubscriptionUpdate::Observation(frame) = self.next_update().await? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Read observations along with actual attachment and reconnect attempts for interactive feedback.
+    pub async fn next_update(&mut self) -> Result<SubscriptionUpdate, Error> {
+        loop {
             if self.reader.is_none() {
+                if let Some(at) = self.retry_at {
+                    sleep_until(at).await;
+                    self.retry_at = None;
+                }
                 match self.connect().await {
-                    Ok(reader) => self.reader = Some(reader),
+                    Ok(reader) => {
+                        self.reader = Some(reader);
+                        return Ok(SubscriptionUpdate::Connected);
+                    }
                     Err(error) => {
-                        self.pause(error).await?;
+                        if let Some(update) = self.retry(error, self.failures == 0)? {
+                            return Ok(update);
+                        }
                         continue;
                     }
                 }
-                if std::mem::take(&mut self.reconnect) {
-                    return Ok(Observation::Lagged { skipped: 0 });
-                }
+            }
+            if std::mem::take(&mut self.reconnect) {
+                return Ok(SubscriptionUpdate::Observation(Observation::Lagged {
+                    skipped: 0,
+                }));
             }
             match self
                 .reader
@@ -118,12 +153,14 @@ impl Subscription {
                     if let Observation::Committed { id, .. } = &frame {
                         self.cursor = *id;
                     }
-                    return Ok(frame);
+                    return Ok(SubscriptionUpdate::Observation(frame));
                 }
                 Err(error) => {
                     self.reader = None;
                     self.reconnect = true;
-                    self.pause(error).await?;
+                    if let Some(update) = self.retry(error, true)? {
+                        return Ok(update);
+                    }
                 }
             }
         }
@@ -138,10 +175,11 @@ impl Subscription {
             reader: None,
             reconnect: false,
             failures: 0,
+            retry_at: None,
         }
     }
 
-    async fn pause(&mut self, error: Error) -> Result<(), Error> {
+    fn retry(&mut self, error: Error, report: bool) -> Result<Option<SubscriptionUpdate>, Error> {
         let Some(delay) = RETRY_DELAYS_MS
             .get(self.failures)
             .filter(|_| retryable(&error))
@@ -149,8 +187,8 @@ impl Subscription {
             return Err(error);
         };
         self.failures += 1;
-        tokio::time::sleep(Duration::from_millis(*delay)).await;
-        Ok(())
+        self.retry_at = Some(Instant::now() + Duration::from_millis(*delay));
+        Ok(report.then(|| SubscriptionUpdate::Reconnecting(error.to_string())))
     }
 
     async fn connect(&mut self) -> Result<Reader, Error> {

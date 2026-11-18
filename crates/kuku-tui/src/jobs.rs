@@ -6,7 +6,7 @@ use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, AgentStatus, Client, Command, Connection, ConnectionOptions,
     Error, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk, SessionStatus,
-    Snapshot, Target,
+    Snapshot, SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -62,6 +62,8 @@ pub(crate) enum Update {
     },
     ConnectFailed(Error),
     Loaded(Selection, Box<Snapshot>, HistoryPage),
+    WatchConnected(Selection),
+    WatchReconnecting(Selection, String),
     WatchFailed(Selection, Error),
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
@@ -265,8 +267,25 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
 async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Message>) {
     loop {
         let error = observe(&client, &selection, &sender).await;
-        let retry = matches!(error, Error::Transport(_) | Error::ObservationEnded);
-        if !push(&sender, Update::WatchFailed(selection.clone(), error)).await || !retry {
+        if !matches!(
+            error,
+            Error::Transport(_)
+                | Error::ObservationEnded
+                | Error::HttpStatus(502..=504)
+                | Error::Service {
+                    status: 502..=504,
+                    ..
+                }
+        ) {
+            push(&sender, Update::WatchFailed(selection, error)).await;
+            return;
+        }
+        if !push(
+            &sender,
+            Update::WatchReconnecting(selection.clone(), error.to_string()),
+        )
+        .await
+        {
             return;
         }
         tokio::time::sleep(RECONNECT_DELAY).await;
@@ -275,7 +294,7 @@ async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Messag
 
 async fn observe(client: &Client, selection: &Selection, sender: &mpsc::Sender<Message>) -> Error {
     let target = &selection.target;
-    let snapshot = match client.snapshot(target).await {
+    let snapshot = match client.observation_snapshot(target).await {
         Ok(snapshot) => snapshot,
         Err(error) => return error,
     };
@@ -300,13 +319,18 @@ async fn observe(client: &Client, selection: &Selection, sender: &mpsc::Sender<M
         return Error::ObservationEnded;
     }
     loop {
-        match subscription.next().await {
-            Ok(event) => {
-                if !push(sender, Update::Observation(selection.clone(), event)).await {
-                    return Error::ObservationEnded;
-                }
+        let update = match subscription.next_update().await {
+            Ok(SubscriptionUpdate::Connected) => Update::WatchConnected(selection.clone()),
+            Ok(SubscriptionUpdate::Reconnecting(error)) => {
+                Update::WatchReconnecting(selection.clone(), error)
+            }
+            Ok(SubscriptionUpdate::Observation(event)) => {
+                Update::Observation(selection.clone(), event)
             }
             Err(error) => return error,
+        };
+        if !push(sender, update).await {
+            return Error::ObservationEnded;
         }
     }
 }

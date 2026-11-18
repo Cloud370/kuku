@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuku_client::{
     Acknowledgement, Action, ApiError, Client, Command, HistoryKind, HistoryPage, InputStatus,
-    Observation, PendingStore, Target, Timing,
+    Observation, PendingStore, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -123,6 +123,59 @@ async fn observation_reconnects_with_last_committed_id_and_deduplicates_scanned_
     assert_eq!(30, stream.cursor());
     assert_eq!(&target, stream.target());
     assert_eq!(2, subscriptions.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn interactive_subscription_reports_connection_loss_before_resuming() {
+    let router = Router::new()
+        .route("/sessions/{id}/observe", get(observe))
+        .with_state(Arc::new(AtomicUsize::new(0)));
+    let (client, _server) = start(router).await;
+    let mut stream = client.subscribe(&target(), 20);
+    assert_eq!(
+        SubscriptionUpdate::Connected,
+        stream.next_update().await.unwrap()
+    );
+    assert!(matches!(
+        stream.next_update().await.unwrap(),
+        SubscriptionUpdate::Observation(Observation::Committed { id: 24, .. })
+    ));
+    assert!(matches!(
+        stream.next_update().await.unwrap(),
+        SubscriptionUpdate::Reconnecting(reason) if reason.contains("observation ended")
+    ));
+    assert_eq!(24, stream.cursor());
+    assert_eq!(
+        SubscriptionUpdate::Connected,
+        stream.next_update().await.unwrap()
+    );
+    assert!(matches!(
+        stream.next_update().await.unwrap(),
+        SubscriptionUpdate::Observation(Observation::Lagged { skipped: 0 })
+    ));
+    assert!(matches!(
+        stream.next_update().await.unwrap(),
+        SubscriptionUpdate::Observation(Observation::Committed { id: 30, .. })
+    ));
+}
+
+#[tokio::test]
+async fn authorization_error_does_not_report_a_transport_reconnect() {
+    let router = Router::new().route(
+        "/sessions/{id}/observe",
+        get(|| async {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok":false,"code":"unauthorized","message":"Sign in"})),
+            )
+        }),
+    );
+    let (client, _server) = start(router).await;
+    let mut stream = client.subscribe(&target(), 20);
+    assert!(matches!(
+        stream.next_update().await,
+        Err(kuku_client::Error::Service { status: 401, .. })
+    ));
 }
 
 #[derive(Default)]

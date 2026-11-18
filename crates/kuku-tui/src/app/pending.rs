@@ -2,7 +2,7 @@ use kuku_client::{Acknowledgement, Action, Command, Error, InputStatus, Target};
 
 use crate::jobs::Job;
 
-use super::{Address, App};
+use super::{Address, App, SubmissionStatus};
 
 const MAX_CHECKING: usize = 4;
 
@@ -318,6 +318,13 @@ impl App {
         let rejected = error.definitively_rejected();
         let clear = rejected || save_failure;
         let problem = error.to_string();
+        if !save_failure
+            && address == self.active
+            && matches!(error, Error::Transport(_))
+            && self.panes.get(&address).is_some_and(|pane| !pane.exists)
+        {
+            self.connection_problem = Some(format!("Service connection · {problem} · /reconnect"));
+        }
         let mut restored = false;
         if let Some(pane) = self.panes.get_mut(&address) {
             if matches!(item.command.action, Action::Cancel { .. }) {
@@ -370,17 +377,14 @@ impl App {
                 let initial = !pane.exists;
                 pane.exists = true;
                 pane.sending = false;
+                pane.record_submission(
+                    ack.receipt.event_id,
+                    SubmissionStatus::from_receipt(ack.status),
+                );
                 pane.draft.remember(&text);
                 if pane.title.is_empty() {
                     pane.title = crate::text::shorten(&crate::text::single_line(&text), 68);
                 }
-                let state = match ack.status {
-                    Some(InputStatus::Queued) => "Input durably queued",
-                    Some(InputStatus::Accepted) => "Input accepted",
-                    Some(InputStatus::Withdrawn) => "Input withdrawn",
-                    None => "Input receipt confirmed",
-                };
-                self.message(format!("{state} · {}", item.command.target.agent));
                 if active && initial {
                     self.begin_observing();
                 }
@@ -411,6 +415,14 @@ impl App {
                 self.message("Reply received")
             }
             Action::Withdraw { .. } => {
+                if ack.status.is_some() {
+                    if let Some(pane) = self.panes.get_mut(&address) {
+                        pane.record_submission(
+                            ack.receipt.event_id,
+                            SubmissionStatus::from_receipt(ack.status),
+                        );
+                    }
+                }
                 let message = match ack.status {
                     Some(InputStatus::Accepted) => "Input has already been accepted",
                     Some(InputStatus::Queued) => "Input is still queued",
