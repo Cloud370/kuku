@@ -5,14 +5,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
+use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 use super::observe::ReplyPreview;
+use super::retention::OutputStore;
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
 use super::usage::AgentUsage;
+use super::values::{NamedBinding, ValueState};
 use super::TurnIndex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +66,23 @@ pub(super) enum Record {
         input: Input,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<AgentConfig>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        values: Vec<OutputReference>,
+    },
+    OutputOwned {
+        agent: String,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u64>,
+    },
+    NamedValueSaved {
+        agent: String,
+        binding: NamedBinding,
+    },
+    OutputsPinned {
+        agent: String,
+        turn: u64,
+        ids: Vec<String>,
     },
     InputWithdrawal {
         command: Command,
@@ -165,6 +185,7 @@ pub(super) struct QueuedDelivery {
     pub(super) queued_at: u64,
     pub(super) receipt: Receipt,
     pub(super) input: Input,
+    pub(super) values: Vec<OutputReference>,
 }
 
 #[derive(Debug)]
@@ -238,6 +259,8 @@ pub(super) struct State {
     pub(super) closed: bool,
     pub(super) closed_cursor: u64,
     pub(super) cleanup_failures: BTreeMap<String, String>,
+    pub(super) outputs: OutputStore,
+    pub(super) values: ValueState,
 }
 
 impl State {
@@ -296,11 +319,25 @@ impl State {
                 fingerprint,
                 input,
                 config,
+                values,
             } => {
                 if let Some(config) = config {
                     self.agent_mut(&input.target)?.set_config(config);
                 }
-                self.deliver(event_id, fingerprint, input)?;
+                self.deliver(event_id, fingerprint, input, values)?;
+            }
+            Record::OutputOwned { agent, id, turn } => {
+                self.outputs.claim(&agent, &id);
+                if let Some(turn) = turn {
+                    self.values.pin(agent, turn, vec![id]);
+                }
+            }
+            Record::NamedValueSaved { agent, binding } => {
+                self.outputs.claim(&agent, &binding.value.reference.id);
+                self.values.save(agent, binding);
+            }
+            Record::OutputsPinned { agent, turn, ids } => {
+                self.values.pin(agent, turn, ids);
             }
             Record::InputWithdrawal {
                 command,
@@ -406,6 +443,10 @@ impl State {
                 turn,
                 usage,
             } => {
+                if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
+                    self.values
+                        .release_turn(&address, turn.or(self.agent(&address)?.snapshot.turn));
+                }
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
                 agent.snapshot.status = status;
@@ -440,6 +481,10 @@ impl State {
             } => {
                 if let Some(command) = command {
                     self.remember_command(command, event_id, address.clone());
+                }
+                if !cleanup_pending {
+                    self.values
+                        .release_turn(&address, self.agent(&address)?.snapshot.turn);
                 }
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
@@ -518,7 +563,7 @@ impl State {
                 } else if agent.snapshot.status != AgentStatus::Running {
                     agent.snapshot.status = AgentStatus::Idle;
                 }
-                self.deliver(event_id, fingerprint, input)?;
+                self.deliver(event_id, fingerprint, input, Vec::new())?;
             }
         }
         Ok(())
@@ -613,7 +658,13 @@ impl State {
         }
     }
 
-    fn deliver(&mut self, event_id: u64, fingerprint: String, input: Input) -> Result<()> {
+    fn deliver(
+        &mut self,
+        event_id: u64,
+        fingerprint: String,
+        input: Input,
+        values: Vec<OutputReference>,
+    ) -> Result<()> {
         self.remember(
             input.command_id.clone(),
             fingerprint,
@@ -623,11 +674,13 @@ impl State {
         self.deliveries
             .insert(input.command_id.clone(), InputStatus::Queued);
         let receipt = self.commands[&input.command_id].1.clone();
+        self.values.grant(&input.target, &values);
         let agent = self.agent_mut(&input.target)?;
         agent.inbox.push_back(QueuedDelivery {
             queued_at: event_id,
             receipt,
             input,
+            values,
         });
         agent.update_inbox();
         Ok(())

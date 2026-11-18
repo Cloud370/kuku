@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use kuku::event::EventPayload;
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
-    AgentConfig, AgentStatus, Input, InputSource, OutputChunk, OutputRead, Session, SessionOptions,
+    AgentConfig, AgentStatus, Error, Input, InputSource, NamedValueSource, OutputChunk, OutputRead,
+    Session, SessionOptions,
 };
 
 const MARKER: &str = "OUTPUT_TARGET_标记";
@@ -328,7 +329,10 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
         assert_eq!(InputSource::Host("local".into()), action.source);
         assert_eq!(id, action.args["id"]);
         assert_eq!(8192, action.args["limit"]);
-        assert_eq!(json!(["id"]), action.tool.input_schema["required"]);
+        assert_eq!(
+            json!([{"required":["id"]},{"required":["name"]}]),
+            action.tool.input_schema["oneOf"]
+        );
     }
     session.close().await.unwrap();
     for mock in [page_1, page_2, search, final_response] {
@@ -462,4 +466,66 @@ async fn invalid_output_arguments_and_host_denial_never_expose_outside_output() 
     session.close().await.unwrap();
     requested.assert_hits_async(1).await;
     done.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn naming_command_output_reuses_its_file_and_replaced_body_can_expire() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (session, id) = captured(
+        &server,
+        workspace.path(),
+        data.path(),
+        "retained evidence\n".repeat(9_000).as_bytes(),
+        Arc::new(ReadPolicy::default()),
+    )
+    .await;
+    let dir = session.events_path().parent().unwrap().join("outputs");
+    let original_path = dir.join(format!("{id}.output"));
+    let original_bytes = std::fs::metadata(&original_path).unwrap().len();
+    let named = session
+        .save_named_value(
+            "main",
+            "baseline",
+            NamedValueSource::Output(id.clone()),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(id, named.reference.id);
+    assert_eq!(1, std::fs::read_dir(&dir).unwrap().count());
+    assert_eq!(
+        original_bytes,
+        std::fs::metadata(&original_path).unwrap().len()
+    );
+    let replacement = session
+        .save_named_value(
+            "main",
+            "baseline",
+            NamedValueSource::Text("new baseline".into()),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(original_path.exists());
+    let mut options = SessionOptions::new(workspace.path(), data.path(), common::test_config());
+    options.session_id = Some(session.id().into());
+    options.limits.output_retention_secs = 0;
+    session.close().await.unwrap();
+
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(
+        replacement,
+        reopened.named_value("main", "baseline").unwrap()
+    );
+    assert!(matches!(
+        reopened.read_output(&id, &OutputRead::default()),
+        Err(Error::OutputUnavailable(_))
+    ));
+    assert!(!original_path.exists());
+    assert!(reopened.events(0, 256).unwrap().iter().any(|event| {
+        matches!(&event.payload, EventPayload::ToolResult { structured: Some(facts), .. } if facts["output_ref"]["id"] == id)
+    }));
+    reopened.close().await.unwrap();
 }

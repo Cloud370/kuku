@@ -153,7 +153,7 @@ async fn capture_tool_result(
     registered: RegisteredTool,
     mut result: ToolOutput,
     mut writer: OutputWriter,
-    output: CommandOutputSpec,
+    mut output: CommandOutputSpec,
 ) -> Result<ToolResultEnvelope> {
     write_bytes(&mut writer, result.content.as_bytes()).await?;
     let data = match result.data.take() {
@@ -170,6 +170,7 @@ async fn capture_tool_result(
         None => None,
     };
     let metadata = writer.finish(result.cleanup_incomplete).await?;
+    output.retention.keep();
     let chunk = read_output(
         &output.dir,
         &output.id,

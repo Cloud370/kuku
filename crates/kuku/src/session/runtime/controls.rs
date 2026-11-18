@@ -121,13 +121,20 @@ impl Session {
             .and_then(|agent| {
                 agent
                     .queued_message_position(input_command_id)
-                    .map(|index| &agent.inbox[index].input)
+                    .map(|index| &agent.inbox[index])
             })
             .ok_or_else(|| Error::InputNotQueued(input_command_id.into()))?;
-        if &old.source != source {
+        if &old.input.source != source {
             return Err(Error::InvalidArgument(format!(
                 "input '{input_command_id}' belongs to a different source"
             )));
+        }
+        if super::boundary::input_model_text(text, &old.values).len()
+            > self.inner.options.limits.max_input_bytes
+        {
+            return Err(Error::InvalidArgument(
+                "replacement text and references exceed the configured byte limit".into(),
+            ));
         }
         self.commit(
             &mut state,

@@ -337,7 +337,29 @@ pub(crate) fn read_output(
     request: OutputRead,
 ) -> io::Result<OutputChunk> {
     validate_read(&request)?;
-    let mut file = fs::File::open(output_path(output_dir, output_id)?)?;
+    read_open_output(open_output(output_dir, output_id)?, output_id, request)
+}
+
+pub(crate) fn open_output(output_dir: &Path, output_id: &str) -> io::Result<fs::File> {
+    fs::File::open(output_path(output_dir, output_id)?)
+}
+
+pub(crate) fn capture_metadata(output_dir: &Path, output_id: &str) -> io::Result<CaptureMetadata> {
+    decode_header(&mut open_output(output_dir, output_id)?)
+}
+
+pub(crate) fn framed_bytes(payload: u64) -> u64 {
+    (HEADER_BYTES as u64)
+        .saturating_add(payload)
+        .saturating_add(payload.div_ceil(MAX_FRAME_BYTES as u64) * FRAME_HEADER_BYTES as u64)
+}
+
+pub(crate) fn read_open_output(
+    mut file: fs::File,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    validate_read(&request)?;
     let metadata = decode_header(&mut file)?;
     let mut window = OutputWindow::default();
     let mut logical_offset = 0;
@@ -457,7 +479,12 @@ impl OutputWindow {
     }
 }
 
-fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+pub(crate) fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+    validate_output_id(output_id)?;
+    Ok(output_dir.join(format!("{output_id}.output")))
+}
+
+pub(crate) fn validate_output_id(output_id: &str) -> io::Result<()> {
     if output_id.is_empty()
         || output_id.len() > 128
         || !output_id
@@ -468,7 +495,7 @@ fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
             "output id must contain 1-128 ASCII letters, digits, '-' or '_'",
         ));
     }
-    Ok(output_dir.join(format!("{output_id}.output")))
+    Ok(())
 }
 
 fn encode_header(metadata: &CaptureMetadata) -> io::Result<[u8; HEADER_BYTES]> {
