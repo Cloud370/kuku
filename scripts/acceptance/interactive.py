@@ -10,6 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
+from interactive_rendering import rendering_cases
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request,
@@ -981,6 +982,7 @@ def main():
         configure_statusline(client)
         preserve_draft_after_interrupt(client)
         editable_multiline_paste(client)
+        rendering_cases(options.binary, options.bridge, options.directory)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))
         recover_from_provider_failure(client)

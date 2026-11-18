@@ -13,8 +13,10 @@ const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (
 
 pub(crate) fn terminal_text(text: &str) -> String {
     let mut safe = String::with_capacity(text.len());
-    for character in text.chars() {
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
         match character {
+            '\r' if characters.peek() == Some(&'\n') => {}
             '\n' | '\t' => safe.push(character),
             '\u{0000}'..='\u{001f}' => {
                 safe.push(char::from_u32(0x2400 + u32::from(character)).expect("control picture"));

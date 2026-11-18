@@ -85,10 +85,10 @@ class Desktop:
         self.focus(window)
         command("xdotool", "type", "--clearmodifiers", "--delay", "100", text)
 
-    def screen(self, name):
+    def screen(self, name, *, focused=False):
         time.sleep(0.15)
         snapshot = self.temporary / "snapshot.png"
-        command("scrot", "-z", "--overwrite", snapshot)
+        command("scrot", "-z", *(["-u"] if focused else []), "--overwrite", snapshot)
         with snapshot.open("rb") as stream:
             data = stream.read(SCREENSHOT_LIMIT + 1)
         assert len(data) <= SCREENSHOT_LIMIT and data.startswith(b"\x89PNG\r\n\x1a\n"), (
@@ -235,6 +235,29 @@ def agent_navigation(client, desktop, workspace, session, window):
     return {"screens": screens, "clipboard_bytes": len(raw), "clipboard_sha256": hashlib.sha256(raw).hexdigest()}
 
 
+def phone_layout(client, desktop):
+    workspace = client.workspace("work-phone")
+    state = client.directory / "phone-terminal.json"
+    title = "Kuku Phone Layout"
+    args = ["xfce4-terminal", "--disable-server", f"--title={title}", "--hide-menubar", "--geometry=42x30",
+            "--execute", sys.executable, Path(__file__), "--terminal-child", state]
+    with process(args, env=client.env, cwd=workspace) as terminal:
+        window = eventually("phone terminal", lambda: desktop.window(title))
+        eventually("phone terminal state", state.is_file)
+        grid = terminal_grid(json.loads(state.read_text())["pid"])
+        assert grid["columns"] == 42, grid
+        prompt = "Check disk usage"
+        desktop.type(window, prompt)
+        desktop.key(window, "Return")
+        report = "## 磁盘使用情况\n\n| 盘符 | 卷标 | 使用率 |\n| --- | --- | --- |\n| C: | 系统 | ⚠️ 99.5% |\n| D: | 游戏 | 34% |\n\n磁盘检查完成。"
+        client.provider.next(prompt).text(report)
+        session = client.session(workspace)
+        eventually("phone report to settle", lambda: client.snapshot(workspace, session)["last_output"] == report)
+        complete = desktop.screen("phone-layout", focused=True)
+        close_terminal(desktop, window, terminal, state)
+        return {"grid": grid, "screenshot": complete}
+
+
 def close_terminal(desktop, window, terminal, state):
     desktop.type(window, "/quit")
     desktop.key(window, "Return")
@@ -345,6 +368,7 @@ def exercise(client, desktop, checks):
         checks["markdown_document"] = markdown_layout(client, desktop, workspace, window, pid, MarkdownDocument())
         checks["agent_navigation"] = agent_navigation(client, desktop, workspace, session, window)
 
+        checks["phone"] = phone_layout(client, desktop)
         checks["exit"] = close_terminal(desktop, window, terminal, state)
 
 

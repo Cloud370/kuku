@@ -102,7 +102,11 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
     transcript.apply(interruption.clone(), None);
 
     let rendered = rows(&mut transcript).join("\n");
-    assert!(rendered.contains("Turn 2\nInterrupted\n"));
+    assert!(rendered
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair[0].starts_with("Turn 2  ─") && pair[1] == "Interrupted"));
     assert_eq!(1, rendered.matches("Interrupted body.").count());
     assert!(rendered.contains("Display limit reached"));
     assert_eq!(
@@ -126,7 +130,11 @@ fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
     .unwrap();
     transcript.apply(entry, None);
     let rendered = rows(&mut transcript).join("\n");
-    assert!(rendered.contains("Turn 1\nInterrupted"));
+    assert!(rendered
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair[0].starts_with("Turn 1  ─") && pair[1] == "Interrupted"));
     assert!(transcript.last_reply().is_none());
 }
 
@@ -158,7 +166,7 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
     for width in [17, 72] {
         let view = transcript.project(width, 32);
         let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
-        assert_eq!("Turn 1", plain[0]);
+        assert!(plain[0].starts_with("Turn 1  ─"));
         assert_eq!("│ You (sent)", plain[1]);
         assert_eq!("│ 看一下 e\u{301} 👩‍💻", plain[2]);
         assert_eq!(2, view.row_insets[2]);
@@ -180,7 +188,7 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!("Turn 1", compact[0]);
+    assert!(compact[0].starts_with("Turn 1"));
     assert_eq!("You", compact[1]);
     assert!(compact.iter().any(|row| row == "AI"));
     assert!(compact.iter().any(|row| row == "文件丢失"));
@@ -260,7 +268,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     let settled = transcript.project(60, 20);
     let plain: Vec<_> = settled.lines.iter().map(ToString::to_string).collect();
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
-    assert_eq!("Turn 1", plain[0]);
+    assert!(plain[0].starts_with("Turn 1  ─"));
     assert_eq!("Assistant", plain[1]);
     assert_eq!(
         1,
@@ -305,7 +313,7 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
         1,
         anchored
             .iter()
-            .filter(|row| row.as_str() == "Turn 2")
+            .filter(|row| row.starts_with("Turn 2  ─"))
             .count()
     );
     assert!(!anchored
@@ -334,10 +342,12 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
         .map(ToString::to_string)
         .collect();
     assert_eq!(
-        vec!["Turn 1", "Turn 2"],
+        vec!["1", "2"],
         all.iter()
-            .filter(|row| row.starts_with("Turn "))
-            .map(String::as_str)
+            .filter_map(|row| row
+                .strip_prefix("Turn ")
+                .and_then(|tail| tail.split_once("  ─"))
+                .map(|(number, _)| number))
             .collect::<Vec<_>>()
     );
     assert_eq!("│ You (sent)", all[1]);
@@ -358,11 +368,15 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
     let live = rows(&mut transcript);
     assert_eq!(
         1,
-        live.iter().filter(|row| row.as_str() == "Turn 1").count()
+        live.iter()
+            .filter(|row| row.starts_with("Turn 1  ─"))
+            .count()
     );
     assert_eq!(
         1,
-        live.iter().filter(|row| row.as_str() == "Turn 2").count()
+        live.iter()
+            .filter(|row| row.starts_with("Turn 2  ─"))
+            .count()
     );
 
     let mut settled = response(29, "Second reply".into());
@@ -379,7 +393,7 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
         entries: vec![unknown],
         next_before: None,
     });
-    assert_eq!("Turn", rows(&mut transcript)[0]);
+    assert!(rows(&mut transcript)[0].starts_with("Turn  ─"));
 }
 
 #[test]

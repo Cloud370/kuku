@@ -1,0 +1,111 @@
+"""Exercise reasoning previews and mixed-width scrolling in the installed terminal."""
+
+import json
+
+from interactive_fixture import InstalledClient, Response, StreamPause, eventually
+
+
+def event(name, **fields):
+    body = json.dumps({"type": name, **fields})
+    return f"event: {name}\ndata: {body}\n\n".encode()
+
+
+def rendering_cases(binary, bridge, directory):
+    with InstalledClient(binary, bridge, directory / "reasoning") as client:
+        config = client.home / "config.toml"
+        config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
+                          .replace('think = "off"', 'think = "low"')
+                          .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'))
+        published_reasoning(client)
+        scroll_mixed_table(client)
+
+
+def published_reasoning(client):
+    workspace = client.workspace("work-reasoning")
+    prompt = "Review the public summary"
+    summary = "Checking the totals.\nComparing the published results."
+    answer = "The totals agree."
+    hidden = "opaque-fixture-signature"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        call = client.provider.next(prompt)
+        assert call.request["thinking"]["display"] == "summarized"
+        start = event("message_start", message={"id": call.id, "model": "claude-sonnet-4-6", "content": [],
+                                               "usage": {"input_tokens": 10, "output_tokens": 0}})
+        start += event("content_block_start", index=0, content_block={"type": "redacted_thinking", "data": hidden})
+        start += event("content_block_stop", index=0)
+        public = event("content_block_start", index=1, content_block={"type": "thinking", "thinking": ""})
+        public += event("content_block_delta", index=1, delta={"type": "thinking_delta", "thinking": summary})
+        public += event("content_block_delta", index=1, delta={"type": "signature_delta", "signature": hidden})
+        public += event("content_block_stop", index=1)
+        final = event("content_block_start", index=2, content_block={"type": "text", "text": answer})
+        final += event("content_block_stop", index=2)
+        final += event("message_delta", delta={"stop_reason": "end_turn"}, usage={"output_tokens": 12})
+        final += event("message_stop")
+        waiting, published = StreamPause(), StreamPause()
+        call.response.put_nowait(Response(200, start + public + final, "text/event-stream",
+                                          ((len(start), waiting), (len(start + public), published))))
+        try:
+            assert waiting.arrived.wait(8)
+            screen = terminal.expect("To main · Thinking")["screen"]
+            assert "Thinking summary" not in screen and hidden not in screen
+            waiting.release.set()
+            assert published.arrived.wait(8)
+            compact = terminal.expect("▸ Thinking summary", state="Checking the totals.")["screen"]
+            terminal.click_text(compact, "Thinking summary")
+            expanded = terminal.expect("▾ Thinking summary", state="Comparing the published results.")["screen"]
+            assert hidden not in expanded
+            with client.terminal(workspace) as attached:
+                attached.resume(prompt)
+                restored = attached.expect("Checking the totals.", state="Thinking summary")["screen"]
+                assert hidden not in restored
+                attached.exit_cleanly()
+        finally:
+            waiting.release.set()
+            published.release.set()
+        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "Thinking summary"))["screen"]
+        assert completed.count("Thinking summary") == 1 and hidden not in completed
+        terminal.press("/source\r")
+        source = terminal.expect(answer, state="source")["screen"]
+        assert "Checking the totals." not in source and hidden not in source
+        terminal.exit_cleanly()
+    with client.terminal(workspace) as reopened:
+        reopened.resume(prompt)
+        settled = reopened.expect(answer, also=("▸ Thinking summary", "Checking the totals."))["screen"]
+        reopened.press("\x0f")
+        expanded = reopened.expect("▾ Thinking summary", state="Comparing the published results.")["screen"]
+        assert hidden not in settled and hidden not in expanded
+        print(expanded)
+        reopened.exit_cleanly()
+
+
+def scroll_mixed_table(client):
+    workspace = client.workspace("work-table-scroll")
+    prompt = "Show the disk report"
+    intro = [f"Before table {n:02}" for n in range(16)]
+    tail = [f"After table {n:02}" for n in range(16)]
+    table = "| 盘符 | 卷标 | 使用率 |\n| --- | --- | --- |\n| C: | 系统 | ⚠️ 99.5% |\n| D: | 游戏 | 34% |"
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=22, cols=42)
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        client.provider.next(prompt).text("\n\n".join([*intro, table, *tail]))
+        terminal.expect("▌ Turn 1", state="Finished")
+        terminal.type("preserve draft")
+        def rows():
+            return [line.rstrip() for line in terminal.request("screen")["screen"].splitlines()]
+        saw_border = False
+        for _ in range(22):
+            old = rows()
+            terminal.press("\x1b[<64;10;10M")
+            frame = eventually("the table viewport to scroll", lambda: (r if (r := rows()) != old else None))
+            saw_border |= any("┌" in line for line in frame)
+            assert all("│" not in line for line in frame if "Before table" in line or "After table" in line), frame
+            assert not any(line.strip() in {"│", "┃"} for line in frame), frame
+            if any("Before table 01" in line for line in frame):
+                break
+        assert saw_border and any("preserve draft" in line for line in frame)
+        terminal.press("\x1b[1;5F")
+        terminal.expect("After table 15", state="preserve draft")
+        terminal.exit_cleanly()

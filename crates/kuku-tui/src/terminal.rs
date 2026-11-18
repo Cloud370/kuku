@@ -17,6 +17,7 @@ use ratatui::{CompletedFrame, Terminal};
 use crate::app::{Address, App};
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
+use crate::transcript::Anchor;
 use crate::ui::{self, ActivityClock, ActivityFrame};
 
 #[cfg(windows)]
@@ -160,6 +161,7 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     painted_target: Address,
+    painted_anchor: Option<Anchor>,
     _restore: Restore,
 }
 
@@ -173,6 +175,7 @@ impl Screen {
         Ok(Self {
             terminal,
             painted_target,
+            painted_anchor: None,
             _restore: restore,
         })
     }
@@ -186,13 +189,18 @@ impl Screen {
         if target_changed {
             self.painted_target.clone_from(&app.active);
         }
+        let anchor = app.pane().transcript.reading_anchor();
+        let scrolled = self.painted_anchor.as_ref() != anchor;
+        if scrolled {
+            self.painted_anchor = anchor.cloned();
+        }
         let mut activity_visible = false;
         let render = |frame: &mut ratatui::Frame<'_>| {
             activity_visible = ui::render_at(frame, app, activity);
         };
-        let frame = if target_changed {
+        let frame = if target_changed || scrolled {
             io::stdout().sync_update(|_| {
-                // NOTE: Reset the fullscreen viewport so a previous code surface cannot bleed through CJK cells.
+                // NOTE: A scroll can move a wide glyph across an old table edge that a cell diff considers blank.
                 let area = self.terminal.current_buffer_mut().area;
                 self.terminal.resize(area).map_err(io::Error::other)?;
                 self.terminal.draw(render).map_err(io::Error::other)

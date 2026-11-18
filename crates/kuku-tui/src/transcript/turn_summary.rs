@@ -144,7 +144,9 @@ mod tests {
         assert!(wide[row].starts_with("▌ Turn 1  Stats"));
         assert_eq!(
             1,
-            wide.iter().filter(|row| row.as_str() == "Turn 1").count()
+            wide.iter()
+                .filter(|row| row.starts_with("Turn 1  ─"))
+                .count()
         );
         assert_eq!(None, transcript.detail_at(row));
         assert_eq!(Some(ReplySource::Local(source)), transcript.last_reply());

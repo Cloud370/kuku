@@ -22,7 +22,7 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
     let marker = "Output: saved-run (42 captured bytes; read by merged byte offset).";
     let warning = "Capture quota reached; further bytes were drained and discarded.";
     let raw = format!(
-        "stdout:\nOutput: from the process\nstderr:\ntry fewer inputs\n\n\n{marker} {warning}"
+        "stdout:\nOutput: from the process\r\n系统\r\n64-bit\r\nstderr:\ntry fewer inputs\n\n\n{marker} {warning}"
     );
     transcript.apply(
         serde_json::from_value(json!({
@@ -46,6 +46,8 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
     assert!(rendered.contains(&format!(
         "stderr:\n    try fewer inputs\n    {warning}\n    Saved output · /tools"
     )));
+    assert!(rendered.contains("系统\n") && rendered.contains("64-bit"));
+    assert!(!rendered.contains('␍'));
     assert!(!rendered.contains(marker));
     assert_eq!(raw, transcript.tools()[0].details);
     assert_eq!(

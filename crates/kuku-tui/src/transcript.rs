@@ -47,7 +47,7 @@ enum Key {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Anchor {
+pub(crate) struct Anchor {
     key: Key,
     line: AnchorLine,
 }
@@ -280,6 +280,10 @@ impl Transcript {
     pub(crate) fn show_latest(&mut self) {
         self.reading = None;
         self.restore = None;
+    }
+
+    pub(crate) fn reading_anchor(&self) -> Option<&Anchor> {
+        self.reading.as_ref().map(|reading| &reading.anchor)
     }
 
     pub(crate) fn is_reading(&self) -> bool {
@@ -956,7 +960,15 @@ fn render_turn(turn: TurnHeading, width: usize) -> Line<'static> {
         TurnHeading::Numbered(number) => format!("Turn {number}"),
         TurnHeading::Unnumbered => "Turn".to_owned(),
     };
-    Line::styled(shorten(&label, width), emphasis(MUTED))
+    let mut line = Line::styled(shorten(&label, width), emphasis(crate::theme::USAGE));
+    if width >= line.width() + 6 {
+        let length = width - line.width() - 2;
+        line.push_span(Span::styled(
+            format!("  {}", "─".repeat(length)),
+            Style::new().fg(crate::theme::TURN_RULE),
+        ));
+    }
+    line
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {
