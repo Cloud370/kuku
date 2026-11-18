@@ -73,6 +73,63 @@ On the Vim task, the successful local attempt cost $0.03732. The four published 
 
 Through this cohort, OpenRouter streams reported **$0.585663908** across the pilot, including the reconciled canary. The ledger also counted **$2.359296** in conservative holds for four routing failures and the unpriced 429, totaling **$2.944959908** against its $50 allowance. The separate direct DeepSeek ledger carried **$0.168339876** in estimated charges against $30.
 
+## Follow-up on natural turns
+
+The `round-7` async and Vim trials used the debug SDK example at `b0b3cf2` and ran concurrently. The regex trial ran afterward at `bb5012c`, which added retained Session downloads. Each used the same input files, container image and original grader as its earlier Baseten trial. They requested the same DeepSeek model, `max` reasoning effort and 131,072 output tokens. The Baseten pin, $1.50 cap per case and normal pre-stream retry were in effect. The tasks ran with natural turn completion and original timeouts of 900 seconds for async and regex and 1,200 seconds for Vim. [Machine-readable attempts](frontier-v1.1-sample.json)
+
+| Task | Original checks | SDK finish | Upstream requests | Inference USD | SDK + verifier seconds |
+|---|---:|---|---:|---:|---:|
+| Async cancellation | 6/6 | completed | 35 | 0.073209452 | 283.3 + 26.0 |
+| Large-file Vim edit | 4/5 | completed | 12 | 0.032008052 | 164.0 + 39.3 |
+| Log regex | 1/1 | completed | 18 | 0.062855860 | 245.8 + 21.7 |
+
+| Task | Matching receipts | Cached input | Proxy first output p50 | Generation TPS | SDK CPU seconds | Mean / peak SDK RSS | Container block I/O read / written |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Async cancellation | 35/35 | 91.6% | 1.64 s | 149.9 | 10.39 | 35.2 / 37.0 MiB | 496 kB / 5.54 MB |
+| Large-file Vim edit | 12/12 | 77.5% | 1.36 s | 152.7 | 1.82 | 35.2 / 36.0 MiB | 94.6 MB / 132 MB |
+| Log regex | 18/18 | 84.3% | 1.53 s | 160.4 | 3.86 | 35.0 / 35.4 MiB | 11.7 MB / 1.59 MB |
+
+The delayed receipts confirmed Baseten and matched the stream charges on all 65 requests. First output is the proxy's first meaningful delta. Provider-native TTFT was unavailable. The latest Docker block I/O samples include the tool processes and use Docker's rounded values. The WSL2 kernel had `CONFIG_TASKSTATS` disabled and lacked `/proc/PID/io`, so per-process byte I/O is unknown. The SDK's `getrusage` counters reported zero input and output blocks in all three runs. The closed Sessions retained 834,879, 337,833 and 538,502 file bytes for async, Vim and regex, respectively.
+
+- In round 6, async wrote `run.py` on request 2, received three overwrite refusals and read the same digest three times before overwriting it on request 12. In round 7, the first edit on request 8 used the exact digest confirmed by the full write on request 3, with zero intervening file reads. Later partial edits advanced the digest. The session encountered four `snapshot_stale` results and read back the current digest six times. Overall, it used 35 upstream requests and 10.39 CPU seconds, compared with 18 requests and 4.33 CPU seconds in round 6, which stopped on a pre-stream 429.
+- Vim wrote `apply_macros.vim` on request 9 and received the same digest when it read it on request 11. The grader confirmed byte-equivalent CSV output and macro efficiency. It assigned reward zero because the script's `wq` line lacked the literal colon required by its format check. Round 6 passed all five checks using shell tools for the write. The same-digest read required by an overwrite in the earlier comparison occurred in round 5, on requests 37 through 39.
+- Regex wrote `regex.txt` on request 2 and completed after 18 requests. Its original Baseten round-4 attempt passed the verifier after reaching the 22-request cap. The old trace contains two `fetch_url` calls and a rejected search against a temporary download path outside the workspace. The follow-up used local file and command tools throughout, so it measured natural turn completion while deterministic Session tests cover retained downloads.
+
+The published Pi and Codex trials used the same model in the Runta/Baseten environment. Costs and total times are means per scored attempt. Each local trial represents one observation under its recorded revision and conditions. [Official trial aggregates](frontier-v1.1-sample.json)
+
+| Task | Pi 1.4.0 pass / USD / seconds | Codex CLI 0.164.0 pass / USD / seconds |
+|---|---:|---:|
+| Log date ranges | 4/4 / 0.006900 / 652.3 | 4/4 / 0.011625 / 761.3 |
+| Async cancellation | 4/4 / 0.051175 / 728.0 | 4/4 / 0.031325 / 831.3 |
+| Large-file Vim edit | 1/4 / 0.080175 / 1,459.5 | 3/4 / 0.046725 / 1,049.0 |
+| Log regex | 4/4 / 0.035350 / 648.3 | 4/4 / 0.031950 / 696.3 |
+
+The three new trials added **$0.168073364** in provider-reported inference costs. The pilot OpenRouter ledger then accounted **$3.113033272**, including the historical holds above.
+
+Reproduce a follow-up with a clean checkout of its recorded revision, a unique run ID and the existing OpenRouter ledger and private key file. Use the original case ID, `cancel-async-tasks`, `large-scale-text-editing` or `regex-log`. [FrontierHarness acceptance](../../../docs/en/contributing/testing.md#frontierharness-public-sample)
+
+```sh
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+  --suite frontier --case "$case" --mode live --provider openrouter --upstream baseten \
+  --max-output-tokens 131072 --case-cap-usd 1.50 \
+  --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
+```
+
+Append each result directory as `--attempt CASE RESULT_DIR round-7` after its earlier runs when regenerating the JSON from the frozen official snapshot. Use `--refresh-receipts "$keys"` to retrieve receipts that are missing from the local cache. [Report generator](../frontier_report.py)
+
+## Route output allowance control
+
+The `round-8` log aggregation trial used `1895e01`. It reused the round-4 task files, image and original 900-second timeouts, with the same model, Baseten pin, `max` effort and $1.50 case cap. The launch omitted `--max-output-tokens`. The paid benchmark runner selected 262,144 output tokens from the verified route catalog and reserved up to $0.6291456 for each attempt. The meter and all eight prepared SDK requests recorded 262,144. The SDK leaves the optional output field absent for ordinary requests when callers leave it unset. [Round-8 record](frontier-v1.1-sample.json)
+
+The original grader passed **2/2** and the SDK completed its turn and closed the Session. The SDK took 40.7 seconds and the verifier took 14.9 seconds. Round 4 used 10 upstream requests, 42.4 seconds in the SDK and 12.7 seconds in the verifier. The new attempt received 8 matching Baseten receipts totaling **$0.009204892**.
+
+The meter saw nine local attempts. Attempt five failed to establish an HTTPS connection before the meter could forward the request. The meter returned HTTP 503 and charged zero for that attempt. The SDK recorded a retry of prepared request 5, then continued to normal completion. Its snapshot counted nine attempts, including one without usage. The durable log contained eight logical requests and one retry. The original selector compared the nine attempts with the eight logical requests and rejected the evidence. The corrected inspector passed on the retained SDK and Session files with streaming and paid output checks enabled. The JSON preserves the original `sdk_evidence` failure and the grader's reward.
+
+The eight streams had 83.6% cached input, proxy first output of 1.32 seconds at p50 and 155.3 generation tokens per second. The SDK used 0.73 CPU seconds and averaged 34.9 MiB RSS with a 35.1 MiB peak. The latest container block I/O was 6.41 MB read and 700 kB written. The SDK's `getrusage` reported zero input and output blocks. Per-process byte I/O and provider-native TTFT were unavailable. The closed Session retained 212,568 file bytes.
+
+Replay the command above with `--case log-summary-date-ranges` at `1895e01` and omit `--max-output-tokens`. Append its result as `--attempt log-summary-date-ranges RESULT_DIR round-8` when regenerating the JSON. The four follow-up trials added **$0.177278256** in provider-reported charges. The pilot OpenRouter ledger accounted **$3.122238164**, including the earlier conservative holds.
+
 ## Turn completion in peer implementations
 
 The source checkouts below illustrate design choices. Their revisions can differ from the versions used by the published leaderboard.
