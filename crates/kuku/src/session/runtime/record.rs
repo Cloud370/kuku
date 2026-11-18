@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::event::{EventPayload, StoredEvent};
 use crate::{Error, Result};
 
-use super::observe::TurnIndex;
+use super::observe::{ReplyPreview, TurnIndex};
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
@@ -146,6 +146,7 @@ pub(super) struct AgentState {
     pub(super) inbox: VecDeque<PendingInput>,
     pub(super) accepted: Vec<PendingInput>,
     question_replies: HashSet<String>,
+    pub(super) reply_preview: Option<ReplyPreview>,
     pub(super) permission_reply: Option<(String, bool)>,
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
@@ -236,6 +237,7 @@ impl State {
                         inbox: VecDeque::new(),
                         accepted: Vec::new(),
                         question_replies: HashSet::new(),
+                        reply_preview: None,
                         permission_reply: None,
                         active_epoch: None,
                         stopped_at: None,
@@ -282,6 +284,7 @@ impl State {
             }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;
+                agent.reply_preview = None;
                 if agent.permission_reply.is_none() || agent.snapshot.active_config.is_none() {
                     agent.set_active_config(Some(agent.snapshot.config.clone()));
                 }
@@ -339,6 +342,7 @@ impl State {
                 usage,
             } => {
                 let agent = self.agent_mut(&address)?;
+                agent.reply_preview = None;
                 agent.snapshot.status = status;
                 if status != AgentStatus::Waiting {
                     agent.snapshot.execution_id = None;
@@ -372,6 +376,7 @@ impl State {
                     self.remember_command(command, event_id, address.clone());
                 }
                 let agent = self.agent_mut(&address)?;
+                agent.reply_preview = None;
                 agent.snapshot.status = AgentStatus::Stopped;
                 if !cleanup_pending {
                     agent.snapshot.execution_id = None;
@@ -409,6 +414,7 @@ impl State {
             }
             Record::PermissionWaiting { address, request } => {
                 let agent = self.agent_mut(&address)?;
+                agent.reply_preview = None;
                 agent.snapshot.status = AgentStatus::Waiting;
                 agent.snapshot.permission = Some(request);
                 agent.permission_reply = None;

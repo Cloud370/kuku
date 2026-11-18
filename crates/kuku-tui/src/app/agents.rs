@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 
-use kuku_client::{AgentSettlement, AgentStatus, AgentSummary, Observation, Snapshot};
+use kuku_client::{
+    AgentProgress, AgentSettlement, AgentStatus, AgentSummary, Observation, Snapshot,
+};
 use serde_json::Value;
 
 use crate::text::cap;
@@ -164,6 +166,7 @@ struct TrackedAgent {
     phase_cursor: u64,
     progress: ExecutionProgress,
     preview: String,
+    snapshot_prefix: bool,
 }
 
 impl TrackedAgent {
@@ -177,6 +180,7 @@ impl TrackedAgent {
             phase_cursor: cursor,
             progress: ExecutionProgress::default(),
             preview: String::new(),
+            snapshot_prefix: false,
         }
     }
 
@@ -185,7 +189,10 @@ impl TrackedAgent {
         agent.settled = summary.turn.is_some();
         agent.failed = summary.last_error_preview.is_some();
         agent.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
-        if summary.status != AgentStatus::Running {
+        if let Some(AgentProgress::Streaming { preview }) = &summary.progress {
+            agent.preview = excerpt(Some(preview));
+            agent.snapshot_prefix = true;
+        } else if summary.status != AgentStatus::Running {
             agent.preview = excerpt(
                 summary
                     .last_error_preview
@@ -204,15 +211,13 @@ impl TrackedAgent {
             && self.status == AgentStatus::Running
             && summary.execution_id == self.execution
         {
-            self.state_cursor = cursor;
             if summary.progress.is_some()
-                && self.activity() == Activity::Running
-                && cursor >= self.phase_cursor
+                && (cursor > self.phase_cursor
+                    || cursor == self.phase_cursor && self.activity() == Activity::Running)
             {
-                self.phase_cursor = cursor;
-                self.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
-                return true;
+                return self.replace(Self::from_summary(summary, cursor));
             }
+            self.state_cursor = cursor;
             return false;
         }
         self.replace(Self::from_summary(summary, cursor))
@@ -305,7 +310,7 @@ impl TrackedAgent {
         self.phase_cursor = cursor;
         self.progress.live(event);
         match event["type"].as_str() {
-            Some("text") => {
+            Some("text") if !self.snapshot_prefix => {
                 if let Some(text) = event["content"].as_str() {
                     let suffix = cap(text, PREVIEW_BYTES - self.preview.len());
                     self.preview.push_str(suffix);
@@ -321,6 +326,7 @@ impl TrackedAgent {
     fn clear_preview(&mut self) -> bool {
         let changed = !self.preview.is_empty();
         self.preview.clear();
+        self.snapshot_prefix = false;
         changed
     }
 

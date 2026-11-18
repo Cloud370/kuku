@@ -26,7 +26,7 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
-pub use observe::{Observation, SessionObserver, TurnIndex};
+pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
     InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,
@@ -406,7 +406,12 @@ impl Session {
 
     /// Subscribe with a durable cursor and a bounded transient streaming channel.
     pub fn observe(&self, after: u64) -> SessionObserver {
-        SessionObserver::new(self.clone(), after)
+        SessionObserver::new(self.clone(), after, None)
+    }
+
+    /// Follow the Session with the selected Agent's current reply prefix, if it is streaming.
+    pub fn observe_agent(&self, after: u64, address: &str) -> SessionObserver {
+        SessionObserver::new(self.clone(), after, Some(address.to_owned()))
     }
 
     /// Reply once to the exact pending authorization and resume its bound action.

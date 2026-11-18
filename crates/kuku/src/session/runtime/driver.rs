@@ -218,7 +218,8 @@ impl Session {
                                 usage,
                             },
                         )?;
-                        self.publish(
+                        self.publish_locked(
+                            &mut state,
                             address,
                             execution,
                             turn,

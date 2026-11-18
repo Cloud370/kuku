@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kuku_client::{
-    new_id, Action, AgentConfig, Command, Error, HistoryEntry, HistoryKind, HistoryPage,
+    new_id, Action, AgentConfig, AgentStatus, Command, Error, HistoryKind, HistoryPage,
     ModelSelection, Observation, Snapshot, Target, Timing, UsageTotals,
 };
 
@@ -99,6 +99,7 @@ pub(crate) struct Pane {
     request_usage_floor: u64,
     last_event: u64,
     live_floor: u64,
+    latest_reply_cursor: u64,
     retired_execution_floor: u64,
     execution: Option<u64>,
     refresh_due: Option<SnapshotRefresh>,
@@ -229,43 +230,6 @@ impl Pane {
             .cleaning_up
             .then(|| Instant::now() + CLEANUP_REFRESH);
         self.snapshot = Some(snapshot);
-    }
-
-    fn observe_execution(
-        &mut self,
-        id: u64,
-        kind: &str,
-        operation: Option<&str>,
-        entry: Option<&HistoryEntry>,
-        tool_call_id: Option<String>,
-    ) {
-        if id <= self.retired_execution_floor || self.execution.is_some_and(|active| id < active) {
-            return;
-        }
-        match operation {
-            Some("execution_started") => {
-                if self.execution != Some(id) {
-                    self.progress = ExecutionProgress::default();
-                }
-                self.execution = Some(id);
-                self.live_floor = id;
-            }
-            Some("turn_settled") => {
-                self.execution = None;
-                self.progress = ExecutionProgress::default();
-                self.transcript.clear_preview();
-                self.live_floor = id;
-                self.retired_execution_floor = id;
-            }
-            _ => {}
-        }
-        if matches!(
-            kind,
-            "runtime.step_prepared" | "model.response" | "model.error"
-        ) {
-            self.live_floor = id;
-        }
-        self.progress.committed(kind, entry, tool_call_id);
     }
 }
 
@@ -807,7 +771,7 @@ impl App {
         }
     }
 
-    fn loaded(&mut self, snapshot: Box<Snapshot>, page: HistoryPage) {
+    fn loaded(&mut self, mut snapshot: Box<Snapshot>, page: HistoryPage) {
         let active = &self.active;
         if snapshot.session_id != active.session
             || snapshot.agent.address != active.agent
@@ -824,6 +788,7 @@ impl App {
         let progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
         pane.last_event = snapshot.cursor;
         pane.live_floor = snapshot.cursor;
+        pane.latest_reply_cursor = 0;
         pane.retired_execution_floor = snapshot
             .execution_id()
             .map_or(snapshot.cursor, |execution| execution.saturating_sub(1));
@@ -843,9 +808,17 @@ impl App {
         {
             pane.record_submission(entry.id, SubmissionStatus::Accepted);
         }
+        let reply = snapshot.reply_preview.take().filter(|reply| {
+            snapshot.agent.status == AgentStatus::Running
+                && snapshot.execution_id() == Some(reply.execution_id)
+                && snapshot.agent.turn == Some(reply.turn)
+        });
         pane.set_snapshot(snapshot);
         pane.progress = progress;
         pane.transcript.replace_recent(page);
+        if let Some(reply) = reply {
+            pane.apply_reply_preview(reply);
+        }
         if pane.history_in_flight.is_none() {
             if let Some(request) = pane.transcript.restore_request() {
                 pane.history_in_flight = Some(request);
@@ -937,7 +910,7 @@ impl App {
                         pane.execution = Some(execution_id);
                         pane.progress = ExecutionProgress::default();
                     }
-                    pane.progress.live(&event);
+                    pane.note_live_reply(cursor, &event);
                     pane.transcript
                         .live(execution_id, turn, turn_number, &event);
                 }
@@ -989,7 +962,10 @@ impl App {
         pane.refresh_in_flight = false;
         let refresh_due = pane.refresh_due.take();
         match result {
-            Ok(snapshot) => pane.set_snapshot(snapshot),
+            Ok(mut snapshot) => {
+                snapshot.reply_preview = None;
+                pane.set_snapshot(snapshot);
+            }
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }
         if let Some(refresh) = refresh_due {

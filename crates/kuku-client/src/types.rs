@@ -175,6 +175,11 @@ pub struct AgentSettlement {
 pub enum AgentProgress {
     /// A prepared model request has no committed response yet.
     WaitingForModel,
+    /// Another Agent was streaming at this snapshot's boundary.
+    Streaming {
+        /// Bounded text captured from the beginning of this request, if emitted.
+        preview: String,
+    },
     /// One or more dispatched tool calls have no committed result yet.
     RunningTools {
         /// Identities of the unfinished calls found within the history window.
@@ -210,6 +215,8 @@ pub struct Snapshot {
     pub cleaning_up: bool,
     /// Bounded execution history for a new observer, when requested and available.
     pub progress: Option<AgentProgress>,
+    /// Selected Agent's live reply at this snapshot cursor, when already streaming.
+    pub reply_preview: Option<ReplyPreview>,
 }
 
 impl Snapshot {
@@ -217,6 +224,21 @@ impl Snapshot {
     pub fn execution_id(&self) -> Option<u64> {
         self.agent.execution_id
     }
+}
+
+/// A bounded prefix of the selected Agent's active reply.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReplyPreview {
+    /// Identity of the execution currently producing the preview.
+    pub execution_id: u64,
+    /// Durable Turn identity.
+    pub turn: u64,
+    /// One-based Turn display number.
+    pub turn_number: Option<u64>,
+    /// Observed text from the beginning of the current request.
+    pub text: String,
+    /// Further text already exists past the preview limit.
+    pub truncated: bool,
 }
 
 /// A displayable durable entry distinct from uncommitted streaming previews.

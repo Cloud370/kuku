@@ -842,6 +842,11 @@ fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error:
     let Error::Provider { kind, message, .. } = error else {
         return;
     };
+    if let Some(execution) = streaming.pending.query.runtime_execution {
+        if let Ok(session) = super::provider::runtime_session(&streaming.pending, execution) {
+            session.discard_reply_preview(streaming.conversation.as_str(), execution);
+        }
+    }
     let _ = append_model_error(
         &streaming.pending.events_path,
         &streaming.conversation,

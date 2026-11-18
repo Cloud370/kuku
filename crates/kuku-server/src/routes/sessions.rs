@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use kuku::adapter::inspect_model;
 use kuku::event::{EventPayload, EventStore};
-use kuku::session::{AgentSnapshot, AgentStatus, Session, SessionStatus};
+use kuku::session::{AgentSnapshot, AgentStatus, ReplyPreviews, Session, SessionStatus};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -136,13 +136,22 @@ pub(super) async fn snapshot(
     let address = query.agent.as_deref().unwrap_or("main");
     let manager = manager(&state).await;
     let mut open = manager.open_session(&target.path);
-    let view = match &open {
-        Some(session) => session.agent_view(address),
+    let read_open = |session: &Session| {
+        if query.progress {
+            session.agent_view_with_replies(address)
+        } else {
+            session
+                .agent_view(address)
+                .map(|view| (view, ReplyPreviews::default()))
+        }
+    };
+    let (view, mut replies) = match &open {
+        Some(session) => read_open(session),
         None => {
-            let read = Session::read_view(&target.path, address);
+            let read = Session::read_view(&target.path, address)
+                .map(|view| (view, ReplyPreviews::default()));
             open = manager.open_session(&target.path);
-            open.as_ref()
-                .map_or(read, |session| session.agent_view(address))
+            open.as_ref().map_or(read, read_open)
         }
     }
     .map_err(agent_error)?;
@@ -157,7 +166,9 @@ pub(super) async fn snapshot(
         .iter()
         .map(|agent| {
             let mut summary = agent_summary(agent);
-            if let Some(progress) = progress.remove(agent.address.as_str()) {
+            if let Some(preview) = replies.peers.remove(&agent.address) {
+                summary["progress"] = json!({"phase":"streaming","preview":preview});
+            } else if let Some(progress) = progress.remove(agent.address.as_str()) {
                 summary["progress"] = progress;
             }
             summary
@@ -175,6 +186,12 @@ pub(super) async fn snapshot(
     });
     if let Some(progress) = selected_progress {
         value["progress"] = progress;
+    }
+    if let (Some(session), Some(reply)) = (&open, replies.selected) {
+        value["reply_preview"] = serde_json::to_value(&reply).map_err(kuku::Error::from)?;
+        if let Some(number) = session.turn_number(address, reply.turn) {
+            value["reply_preview"]["turn_number"] = json!(number);
+        }
     }
     let effective = view
         .snapshot

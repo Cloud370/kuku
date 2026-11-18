@@ -1,14 +1,62 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
+use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::query::UiEvent;
 use crate::Result;
 
-use super::record::{validate_key, Record};
-use super::{load_state, AgentSnapshot, AgentView, InputStatus, PendingInput, Receipt, Session};
+use super::record::{validate_key, Record, State};
+use super::{
+    load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
+};
+
+const REPLY_PREVIEW_BYTES: usize = 64 * 1024;
+const PEER_PREVIEW_BYTES: usize = 512;
+
+/// An in-memory prefix of the active model reply, containing only observed text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplyPreview {
+    /// Execution owning the current model request.
+    pub execution_id: u64,
+    /// Turn of the active model request.
+    pub turn: u64,
+    /// UTF-8 prefix from the start of this request's reply.
+    pub text: String,
+    /// The reply already exceeded the preview's byte limit.
+    pub truncated: bool,
+}
+
+impl ReplyPreview {
+    fn new(execution_id: u64, turn: u64) -> Self {
+        Self {
+            execution_id,
+            turn,
+            text: String::new(),
+            truncated: false,
+        }
+    }
+
+    fn append(&mut self, text: &str) {
+        if self.truncated {
+            return;
+        }
+        let end = text.floor_char_boundary(text.len().min(REPLY_PREVIEW_BYTES - self.text.len()));
+        self.text.push_str(&text[..end]);
+        self.truncated = end < text.len();
+    }
+}
+
+/// Active reply previews captured with one Session cursor.
+#[derive(Debug, Default)]
+pub struct ReplyPreviews {
+    /// The selected Agent's active reply.
+    pub selected: Option<ReplyPreview>,
+    /// Bounded excerpts for the other streaming Agents, indexed by address.
+    pub peers: HashMap<String, String>,
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct LiveObservation {
@@ -49,6 +97,15 @@ pub enum Observation {
         /// Non-durable runtime update.
         event: Box<UiEvent>,
     },
+    /// Current active reply at an Agent-specific attachment boundary.
+    ReplyPreview {
+        /// Stable address producing this reply.
+        agent: String,
+        /// Latest committed cursor when the prefix and subscription were captured together.
+        after: u64,
+        /// The replacement prefix. Subsequent live events carry new deltas only.
+        reply: Box<ReplyPreview>,
+    },
     /// Slow consumption dropped transient updates while durable facts remain available.
     Lagged { skipped: u64 },
 }
@@ -59,6 +116,8 @@ pub struct SessionObserver {
     cursor: u64,
     page: VecDeque<StoredEvent>,
     live: broadcast::Receiver<LiveObservation>,
+    preview_agent: Option<String>,
+    preview: Option<Observation>,
 }
 
 /// Per-Agent display numbers derived from the committed acceptance of new Turns.
@@ -115,6 +174,31 @@ impl Session {
             self.current_cursor()?
         };
         state.view(address, cursor)
+    }
+
+    /// Return an Agent's durable view and active replies at the same observer boundary.
+    pub fn agent_view_with_replies(&self, address: &str) -> Result<(AgentView, ReplyPreviews)> {
+        let state = self.inner.state.lock().unwrap();
+        let cursor = if state.closed {
+            state.closed_cursor
+        } else {
+            self.current_cursor()?
+        };
+        let view = state.view(address, cursor)?;
+        let previews = ReplyPreviews {
+            selected: reply_preview(&state, address).cloned(),
+            peers: state
+                .agents
+                .iter()
+                .filter(|(peer, _)| peer.as_str() != address)
+                .filter_map(|(peer, _)| {
+                    let text = &reply_preview(&state, peer)?.text;
+                    let end = text.floor_char_boundary(text.len().min(PEER_PREVIEW_BYTES));
+                    Some((peer.clone(), text[..end].to_owned()))
+                })
+                .collect(),
+        };
+        Ok((view, previews))
     }
 
     /// Return a selected agent and the latest durable cursor in one observation.
@@ -177,7 +261,51 @@ impl Session {
     }
 
     pub(super) fn publish(&self, address: &str, execution_id: u64, turn: u64, event: UiEvent) {
+        let mut state = self.inner.state.lock().unwrap();
+        self.publish_locked(&mut state, address, execution_id, turn, event);
+    }
+
+    pub(crate) fn discard_reply_preview(&self, address: &str, execution_id: u64) {
+        let mut state = self.inner.state.lock().unwrap();
+        if let Some(agent) = state.agents.get_mut(address) {
+            if agent.snapshot.execution_id == Some(execution_id) {
+                agent.reply_preview = None;
+            }
+        }
+    }
+
+    pub(super) fn publish_locked(
+        &self,
+        state: &mut State,
+        address: &str,
+        execution_id: u64,
+        turn: u64,
+        event: UiEvent,
+    ) {
         if let Ok(after) = self.current_cursor() {
+            if let Some(agent) = state.agents.get_mut(address).filter(|agent| {
+                agent.snapshot.status == AgentStatus::Running
+                    && agent.snapshot.execution_id == Some(execution_id)
+                    && agent.snapshot.turn == Some(turn)
+            }) {
+                match &event {
+                    UiEvent::TextDelta { text } if !text.is_empty() => {
+                        agent
+                            .reply_preview
+                            .get_or_insert_with(|| ReplyPreview::new(execution_id, turn))
+                            .append(text);
+                    }
+                    UiEvent::ThinkingDelta { text } if !text.is_empty() => {
+                        agent
+                            .reply_preview
+                            .get_or_insert_with(|| ReplyPreview::new(execution_id, turn));
+                    }
+                    UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => {
+                        agent.reply_preview = None;
+                    }
+                    _ => {}
+                }
+            }
             let _ = self.inner.live.send(LiveObservation {
                 agent: address.into(),
                 execution_id,
@@ -197,6 +325,15 @@ impl Session {
     }
 }
 
+fn reply_preview<'a>(state: &'a State, address: &str) -> Option<&'a ReplyPreview> {
+    let agent = state.agents.get(address)?;
+    agent.reply_preview.as_ref().filter(|reply| {
+        agent.snapshot.status == AgentStatus::Running
+            && agent.snapshot.execution_id == Some(reply.execution_id)
+            && agent.snapshot.turn == Some(reply.turn)
+    })
+}
+
 impl SessionObserver {
     /// Return the last durable event delivered by this observer.
     pub fn cursor(&self) -> u64 {
@@ -212,9 +349,13 @@ impl SessionObserver {
             self.cursor = event.id;
             return Ok(Some(Observation::Committed(Box::new(event))));
         }
+        if let Some(preview) = self.preview.take() {
+            return Ok(Some(preview));
+        }
         match self.live.try_recv() {
             Ok(live) => Ok(Some(live.into())),
             Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                self.reattach();
                 Ok(Some(Observation::Lagged { skipped }))
             }
             Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
@@ -247,6 +388,9 @@ impl SessionObserver {
             if !self.page.is_empty() {
                 continue;
             }
+            if let Some(preview) = self.preview.take() {
+                return Ok(Some(preview));
+            }
             if self.session.inner.state.lock().unwrap().closed {
                 return Ok(None);
             }
@@ -254,21 +398,51 @@ impl SessionObserver {
                 _ = &mut notified => {}
                 result = self.live.recv() => match result {
                     Ok(live) => return Ok(Some(live.into())),
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => return Ok(Some(Observation::Lagged { skipped })),
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        self.reattach();
+                        return Ok(Some(Observation::Lagged { skipped }));
+                    }
                     Err(broadcast::error::RecvError::Closed) => return Ok(None),
                 }
             }
         }
     }
 
-    pub(super) fn new(session: Session, cursor: u64) -> Self {
-        let live = session.inner.live.subscribe();
+    pub(super) fn new(session: Session, cursor: u64, preview_agent: Option<String>) -> Self {
+        let (live, preview) = Self::attach(&session, preview_agent.as_deref());
         Self {
             session,
             cursor,
             page: VecDeque::new(),
             live,
+            preview_agent,
+            preview,
         }
+    }
+
+    fn reattach(&mut self) {
+        if self.preview_agent.is_some() {
+            (self.live, self.preview) = Self::attach(&self.session, self.preview_agent.as_deref());
+        }
+    }
+
+    fn attach(
+        session: &Session,
+        address: Option<&str>,
+    ) -> (broadcast::Receiver<LiveObservation>, Option<Observation>) {
+        let Some(address) = address else {
+            return (session.inner.live.subscribe(), None);
+        };
+        let state = session.inner.state.lock().unwrap();
+        let live = session.inner.live.subscribe();
+        let preview = reply_preview(&state, address).and_then(|reply| {
+            Some(Observation::ReplyPreview {
+                agent: address.into(),
+                after: session.current_cursor().ok()?,
+                reply: Box::new(reply.clone()),
+            })
+        });
+        (live, preview)
     }
 }
 
@@ -276,7 +450,18 @@ impl SessionObserver {
 mod tests {
     use serde_json::json;
 
-    use super::{EventPayload, EventStore, Record, TurnIndex};
+    use super::{EventPayload, EventStore, Record, ReplyPreview, TurnIndex, REPLY_PREVIEW_BYTES};
+
+    #[test]
+    fn live_reply_retains_a_utf8_prefix_and_stops_at_the_first_missing_byte() {
+        let mut reply = ReplyPreview::new(3, 4);
+        reply.append(&"x".repeat(REPLY_PREVIEW_BYTES - 1));
+        reply.append("界");
+        reply.append("a");
+        assert_eq!(REPLY_PREVIEW_BYTES - 1, reply.text.len());
+        assert!(reply.text.ends_with('x'));
+        assert!(reply.truncated);
+    }
 
     #[test]
     fn admitted_turns_are_numbered_per_agent_from_persisted_records() {

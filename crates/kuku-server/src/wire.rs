@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use kuku::event::{EventPayload, StoredEvent};
 use kuku::session::{
-    AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt,
+    AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
 use kuku::UiEvent;
 use serde::{Deserialize, Serialize};
@@ -362,6 +362,24 @@ pub(crate) fn agent_activity_frame(
         _ => return None,
     };
     Some(live_payload(event, agent, execution_id, turn, cursor))
+}
+
+pub(crate) fn reply_preview_frame(
+    agent: &str,
+    cursor: u64,
+    reply: &ReplyPreview,
+    turn_number: Option<u64>,
+) -> Value {
+    let event = json!({
+        "type": "reply_preview",
+        "content": reply.text,
+        "truncated": reply.truncated,
+    });
+    let mut frame = live_payload(event, agent, reply.execution_id, reply.turn, cursor);
+    if let Some(number) = turn_number {
+        frame["turn_number"] = json!(number);
+    }
+    frame
 }
 
 fn live_payload(event: Value, agent: &str, execution_id: u64, turn: u64, cursor: u64) -> Value {

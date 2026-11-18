@@ -299,7 +299,7 @@ fn assert_slow_observer_catches_up(observer: &mut SessionObserver, journal: &[St
     while let Some(observation) = observer.try_next().unwrap() {
         match observation {
             Observation::Committed(event) => committed.push(event.id),
-            Observation::Live { .. } => retained += 1,
+            Observation::Live { .. } | Observation::ReplyPreview { .. } => retained += 1,
             Observation::Lagged { skipped: count } => skipped += count,
         }
     }

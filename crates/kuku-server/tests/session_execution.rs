@@ -22,7 +22,9 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(20);
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_peer() {
     let text = "界".repeat(400);
-    let (port, begin, finish, provider) = paused_peer_reply(&text).await;
+    let between = " text produced between snapshot and attach.";
+    let tail = " Final delta after attaching.";
+    let (port, begin, additional, finish, provider) = paused_peer_reply(&text, between, tail).await;
     let mut server = TestServer::start(mock_provider::make_test_config(port)).await;
     let id = "peer-preview";
     server
@@ -66,7 +68,52 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     assert_eq!(text.as_str(), selected["event"]["content"]);
     let preview = &text[..text.floor_char_boundary(512)];
     assert_eq!(preview, related["event"]["content"]);
+
+    let snapshot = activity_snapshot(&server, id, "reviewer").await;
+    assert_eq!(text.as_str(), snapshot["reply_preview"]["text"]);
+    assert_eq!(
+        peer["execution_id"],
+        snapshot["reply_preview"]["execution_id"]
+    );
+    assert_eq!(1, snapshot["reply_preview"]["turn_number"]);
+    assert_eq!(false, snapshot["reply_preview"]["truncated"]);
+    let parent_again = activity_snapshot(&server, id, "main").await;
+    assert!(parent_again["reply_preview"].is_null());
+    assert_eq!(
+        json!({"phase":"streaming","preview":preview}),
+        agent_summary(&parent_again, "reviewer")["progress"]
+    );
+    let after = snapshot["cursor"].as_u64().unwrap();
+    additional.send(()).unwrap();
+    let middle = seek_frame(&mut reviewer, &mut reviewer_buffer, text_frame).await;
+    assert_eq!(between, middle["event"]["content"]);
+    drop(reviewer);
+
+    let mut reattached = observe_agent_activity(&server, id, "reviewer", after)
+        .await
+        .bytes_stream();
+    let mut reattached_buffer = Vec::new();
+    let prefix = seek_frame(&mut reattached, &mut reattached_buffer, |frame| {
+        frame["agent"] == "reviewer" && frame["event"]["type"] == "reply_preview"
+    })
+    .await;
+    assert_eq!(format!("{text}{between}"), prefix["event"]["content"]);
+    assert_eq!(
+        snapshot["reply_preview"]["execution_id"],
+        prefix["execution_id"]
+    );
+    assert_eq!(snapshot["reply_preview"]["turn"], prefix["turn"]);
     finish.send(()).unwrap();
+
+    let next = seek_frame(&mut reattached, &mut reattached_buffer, text_frame).await;
+    assert_eq!(tail, next["event"]["content"]);
+    let full = format!("{text}{between}{tail}");
+    let committed = seek_frame(&mut reattached, &mut reattached_buffer, |frame| {
+        frame["agent"] == "reviewer" && frame["entry"]["type"] == "assistant"
+    })
+    .await;
+    assert_eq!(full, committed["entry"]["text"]);
+    drop(reattached);
 
     let end = seek_frame(&mut parent, &mut parent_buffer, |frame| {
         frame["agent"] == "reviewer" && frame["operation"] == "turn_settled"
@@ -76,7 +123,7 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     assert_eq!(preview, end["settlement"]["output"]);
     assert!(end["entry"].is_null());
     drop(parent);
-    drop(reviewer);
+    assert!(activity_snapshot(&server, id, "reviewer").await["reply_preview"].is_null());
     server.restart().await;
     let reopened = server.snapshot(id, "main").await;
     let peer = agent_summary(&reopened, "reviewer");
@@ -88,20 +135,32 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
 
 async fn paused_peer_reply(
     text: &str,
+    between: &str,
+    tail: &str,
 ) -> (
     u16,
+    oneshot::Sender<()>,
     oneshot::Sender<()>,
     oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
     let response = text_response(text);
     let split = response.find("event: content_block_stop").unwrap();
+    let delta = |text: &str| {
+        format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+        )
+    };
     let (begin, wait_for_begin) = oneshot::channel();
+    let (additional, wait_for_additional) = oneshot::channel();
     let (finish, wait_for_finish) = oneshot::channel();
     let pending = Arc::new(Mutex::new(Some((
         response[..split].to_owned(),
-        response[split..].to_owned(),
+        delta(between),
+        format!("{}{}", delta(tail), &response[split..]),
         wait_for_begin,
+        wait_for_additional,
         wait_for_finish,
     ))));
     let app = Router::new().route(
@@ -110,13 +169,17 @@ async fn paused_peer_reply(
             let pending = pending.clone();
             async move {
                 let body = if body.contains("hold peer stream") {
-                    let (first, rest, begin, finish) = pending.lock().await.take().unwrap();
+                    let (first, middle, rest, begin, additional, finish) =
+                        pending.lock().await.take().unwrap();
                     let (send, read) = mpsc::channel(1);
                     tokio::spawn(async move {
                         if begin.await.is_ok() {
                             let _ = send
                                 .send(Ok::<_, std::convert::Infallible>(Bytes::from(first)))
                                 .await;
+                        }
+                        if additional.await.is_ok() {
+                            let _ = send.send(Ok(Bytes::from(middle))).await;
                         }
                         if finish.await.is_ok() {
                             let _ = send.send(Ok(Bytes::from(rest))).await;
@@ -133,7 +196,7 @@ async fn paused_peer_reply(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (port, begin, finish, handle)
+    (port, begin, additional, finish, handle)
 }
 
 async fn observe_agent_activity(

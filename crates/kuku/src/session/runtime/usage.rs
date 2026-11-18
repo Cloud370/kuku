@@ -179,6 +179,12 @@ impl Session {
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
         for payload in payloads {
             let event = writer.append(payload)?;
+            if matches!(
+                event.payload.kind_name(),
+                "runtime.step_prepared" | "runtime.model_retry" | "model.response" | "model.error"
+            ) {
+                state.agent_mut(address)?.reply_preview = None;
+            }
             reduce_model_fact(&mut state, &event.payload)?;
         }
         Ok(())

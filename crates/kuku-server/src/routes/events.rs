@@ -20,7 +20,10 @@ use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::{RunManager, TurnLookup};
-use crate::wire::{agent_activity_frame, committed_frame, event_agent, history_entry, live_frame};
+use crate::wire::{
+    agent_activity_frame, committed_frame, event_agent, history_entry, live_frame,
+    reply_preview_frame,
+};
 use crate::AppState;
 
 const HISTORY_DEFAULT_LIMIT: usize = 40;
@@ -250,7 +253,10 @@ async fn follow(
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if let Some(session) = manager.open_session(&target.path) {
-            let mut observer = session.observe(after);
+            let mut observer = match agent.filter(|_| include_agent_activity) {
+                Some(address) => session.observe_agent(after, address),
+                None => session.observe(after),
+            };
             loop {
                 let observation = tokio::select! {
                     _ = send.closed() => return Ok(()),
@@ -299,6 +305,14 @@ async fn follow(
                     }
                     Observation::Lagged { skipped } => {
                         Some(json!({"type":"lagged","skipped":skipped}))
+                    }
+                    Observation::ReplyPreview {
+                        agent,
+                        after,
+                        reply,
+                    } => {
+                        let turn_number = session.turn_number(&agent, reply.turn);
+                        Some(reply_preview_frame(&agent, after, &reply, turn_number))
                     }
                 };
                 if let Some(frame) = frame {

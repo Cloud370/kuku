@@ -164,6 +164,18 @@ impl Transcript {
                     }
                 }
             }
+            Some("reply_preview") => {
+                if let Some(text) = event["content"].as_str() {
+                    self.replace_reply_preview(
+                        execution,
+                        turn,
+                        turn_number,
+                        text.to_owned(),
+                        event["truncated"].as_bool().unwrap_or_default(),
+                    );
+                }
+            }
+            Some("model_request" | "model_recovery") => self.clear_reply_preview(),
             Some("tool_start" | "tool_output" | "tool_end") => {
                 if let Some(id) = event["id"].as_str() {
                     let key = Key::Tool {
@@ -185,6 +197,40 @@ impl Transcript {
         }
         if self.recent.records.len() > count {
             self.recent.limit_live();
+        }
+    }
+
+    pub(crate) fn replace_reply_preview(
+        &mut self,
+        execution: u64,
+        turn: Option<u64>,
+        turn_number: Option<u64>,
+        mut text: String,
+        truncated: bool,
+    ) {
+        if self.current_execution != Some(execution) {
+            self.clear_preview();
+            self.current_execution = Some(execution);
+        }
+        if text.is_empty() {
+            self.clear_reply_preview();
+            return;
+        }
+        if text.len() > MAX_BODY_BYTES || truncated {
+            text.truncate(text.floor_char_boundary(MAX_BODY_BYTES.min(text.len())));
+            text.push_str(DISPLAY_LIMIT_NOTICE);
+        }
+        let key = Key::Preview(execution);
+        let record = self
+            .recent
+            .record_or_insert(key, turn, turn_number, || Body::Assistant(String::new()));
+        record.body = Body::Assistant(text);
+        record.rendered = None;
+    }
+
+    pub(crate) fn clear_reply_preview(&mut self) {
+        if let Some(execution) = self.current_execution {
+            self.recent.remove(&Key::Preview(execution));
         }
     }
 

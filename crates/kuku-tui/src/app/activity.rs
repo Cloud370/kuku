@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use kuku_client::{Action, AgentProgress, AgentStatus, HistoryEntry, InputStatus};
+use kuku_client::{Action, AgentProgress, AgentStatus, HistoryEntry, InputStatus, ReplyPreview};
 use serde_json::Value;
 
 use super::{App, Pane, PendingStage};
@@ -98,6 +98,10 @@ impl ExecutionProgress {
                 waiting_for_model: true,
                 ..Self::default()
             },
+            Some(AgentProgress::Streaming { .. }) => Self {
+                streaming: true,
+                ..Self::default()
+            },
             Some(AgentProgress::RunningTools { tool_call_ids }) => Self {
                 tools: tool_call_ids.iter().cloned().collect(),
                 ..Self::default()
@@ -117,7 +121,7 @@ impl ExecutionProgress {
         tool_call_id: Option<String>,
     ) {
         match kind {
-            "runtime.step_prepared" => {
+            "runtime.step_prepared" | "runtime.model_retry" => {
                 *self = Self {
                     waiting_for_model: true,
                     ..Self::default()
@@ -157,6 +161,7 @@ impl ExecutionProgress {
             {
                 self.streaming = true;
             }
+            Some("reply_preview") => self.streaming = true,
             _ => {}
         }
     }
@@ -296,6 +301,76 @@ impl App {
 }
 
 impl Pane {
+    pub(super) fn observe_execution(
+        &mut self,
+        id: u64,
+        kind: &str,
+        operation: Option<&str>,
+        entry: Option<&HistoryEntry>,
+        tool_call_id: Option<String>,
+    ) {
+        if id <= self.retired_execution_floor || self.execution.is_some_and(|active| id < active) {
+            return;
+        }
+        match operation {
+            Some("execution_started") => {
+                if self.execution != Some(id) {
+                    self.progress = ExecutionProgress::default();
+                }
+                self.execution = Some(id);
+                self.live_floor = id;
+            }
+            Some("turn_settled") => {
+                self.execution = None;
+                self.progress = ExecutionProgress::default();
+                self.transcript.clear_preview();
+                self.live_floor = id;
+                self.retired_execution_floor = id;
+            }
+            Some("agent_stopped" | "permission_waiting") => {
+                self.live_floor = id;
+                self.progress.clear_stream();
+                self.transcript.clear_reply_preview();
+            }
+            _ => {}
+        }
+        if matches!(
+            kind,
+            "runtime.step_prepared" | "runtime.model_retry" | "model.response" | "model.error"
+        ) {
+            self.live_floor = id;
+            if id <= self.latest_reply_cursor {
+                return;
+            }
+            if kind != "model.response" {
+                self.transcript.clear_reply_preview();
+            }
+        }
+        self.progress.committed(kind, entry, tool_call_id);
+    }
+
+    pub(super) fn note_live_reply(&mut self, cursor: u64, event: &Value) {
+        if matches!(
+            event["type"].as_str(),
+            Some("text" | "thinking" | "reply_preview" | "model_request" | "model_recovery")
+        ) {
+            self.latest_reply_cursor = self.latest_reply_cursor.max(cursor);
+        }
+        self.progress.live(event);
+    }
+
+    pub(super) fn apply_reply_preview(&mut self, reply: ReplyPreview) {
+        self.latest_reply_cursor = self.live_floor;
+        self.progress.streaming = true;
+        self.transcript.replace_reply_preview(
+            reply.execution_id,
+            Some(reply.turn),
+            reply.turn_number,
+            reply.text,
+            reply.truncated,
+        );
+    }
+
     pub(crate) fn activity(&self) -> Activity {
         if self.stopping
             || self
@@ -440,6 +515,94 @@ mod tests {
                 "event":{"type":"text","content":"First tokens"},
             }),
         );
+    }
+
+    #[test]
+    fn selected_reply_preview_survives_attachment_and_replaces_matching_deltas() {
+        let mut app = connected();
+        app.select(
+            Address::new(app.active.session.clone(), "reviewer".into()),
+            true,
+            String::new(),
+        );
+        let mut current = snapshot(
+            &app,
+            8,
+            "running",
+            Some(5),
+            0,
+            json!({"phase":"waiting_for_model"}),
+            None,
+        );
+        current.reply_preview = Some(
+            serde_json::from_value(json!({
+                "execution_id":5,"turn":5,"turn_number":1,"text":"First reply","truncated":false
+            }))
+            .unwrap(),
+        );
+        loaded(&mut app, current, Vec::new());
+        let text = |app: &mut App| {
+            app.pane_mut()
+                .transcript
+                .project(80, 12)
+                .lines
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(Activity::Streaming, app.pane().activity());
+        assert_eq!(1, text(&mut app).matches("First reply").count());
+
+        observe(
+            &mut app,
+            json!({
+                "type":"live","agent":"reviewer","execution_id":5,"cursor":9,"turn":5,"turn_number":1,
+                "event":{"type":"reply_preview","content":"First reply with more","truncated":false}
+            }),
+        );
+        observe(
+            &mut app,
+            json!({
+                "type":"live","agent":"reviewer","execution_id":5,"cursor":9,"turn":5,"turn_number":1,
+                "event":{"type":"text","content":" text"}
+            }),
+        );
+        let body = text(&mut app);
+        assert!(body.contains("First reply with more text"));
+        assert_eq!(1, body.matches("First reply").count());
+
+        observe(
+            &mut app,
+            json!({
+                "type":"committed","agent":"reviewer","id":10,"kind":"model.response"
+            }),
+        );
+        observe(
+            &mut app,
+            json!({
+                "type":"committed","agent":"reviewer","id":11,"kind":"message.assistant",
+                "entry":{"type":"assistant","id":11,"agent":"reviewer","turn":5,"turn_number":1,
+                    "text":"First reply with more text"}
+            }),
+        );
+        observe(
+            &mut app,
+            json!({
+                "type":"committed","agent":"reviewer","id":12,"kind":"runtime.step_prepared"
+            }),
+        );
+        observe(
+            &mut app,
+            json!({
+                "type":"live","agent":"reviewer","execution_id":5,"cursor":9,"turn":5,
+                "event":{"type":"reply_preview","content":"Obsolete previous request","truncated":false}
+            }),
+        );
+        assert_eq!(Activity::WaitingForModel, app.pane().activity());
+        let settled = text(&mut app);
+        assert_eq!(1, settled.matches("First reply with more text").count());
+        assert!(!settled.contains("Obsolete"));
     }
 
     fn committed(app: &mut App, id: u64, kind: &str, details: Value) {

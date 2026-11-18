@@ -41,8 +41,8 @@ pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 pub use session::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
     InputStatus, InputTiming, ModelUsageSample, Observation, OutputChunk, OutputRead,
-    OutputSegment, OutputStream, PendingInput, QuestionRequest, Receipt, RuntimeLimits, Session,
-    SessionObserver, SessionOptions, UsageTotals, Withdrawal,
+    OutputSegment, OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview,
+    RuntimeLimits, Session, SessionObserver, SessionOptions, UsageTotals, Withdrawal,
 };
 
 #[cfg(test)]
