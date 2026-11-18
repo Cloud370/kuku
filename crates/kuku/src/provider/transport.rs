@@ -43,6 +43,7 @@ pub(crate) async fn send_prepared(
         message: format!("could not resolve connection credentials: {error}"),
         status: None,
         provider_request_id: None,
+        retry_after: None,
         retryable: false,
     })?;
     let headers = request_headers(config, prepared, &api_key)?;
@@ -86,6 +87,11 @@ pub(crate) async fn send_prepared(
         );
     }
     if !status.is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| super::error::retry_after(value, std::time::SystemTime::now()));
         let request_id = response
             .headers()
             .get("x-request-id")
@@ -99,6 +105,12 @@ pub(crate) async fn send_prepared(
             body.replace(&api_key, "<redacted>")
         };
         let mut failure = classify_http_error(status.as_u16(), &body);
+        failure.retry_after = retry_after;
+        if let Some(delay) = retry_after {
+            failure
+                .message
+                .push_str(&format!(" (Retry-After: {}s)", delay.as_secs_f64().ceil()));
+        }
         failure.provider_request_id = request_id;
         return Err(failure);
     }

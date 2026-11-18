@@ -86,7 +86,7 @@ cargo run -p kuku --example session_task -- \
 
 默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB 和 128 条临时观察。`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置，超额工作在发送前拒绝。默认值为 `None`。`RuntimeLimits.max_output_tokens_per_request` 可限制每个 Agent 的有效输出 token。选择和准备记录提供有效值。`session_task --max-output-tokens` 同时设置宿主上限与主 Agent 选择。零值或不支持的边界会导致校验失败。预览至少 1 KiB，以保留完整引用和标志。
 
-`RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告允许的重试次数。
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。流尚未打开时，SDK 可以对暂时性传输或 HTTP 错误重试一次，包括临时限流的 HTTP 429。上游明确报告额度耗尽时结束本次尝试。SDK 遵循有效的 `Retry-After`，要求等待超过一分钟时将等待时长告知调用方并交还控制。重试沿用已准备请求，并计入调用方的请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告允许的重试次数。
 
 日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 

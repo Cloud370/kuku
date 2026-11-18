@@ -1777,6 +1777,7 @@ dependencies = [
  "futures-core",
  "home",
  "htmd",
+ "httpdate",
  "httpmock",
  "libc",
  "lru",

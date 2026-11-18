@@ -20,6 +20,7 @@ tokio-stream = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "parsing"] }
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream"] }
 wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
+httpdate = "1"
 sha2 = "0.10"
 base64 = "0.22"
 regex = "1"

@@ -78,6 +78,7 @@ pub(crate) fn invalid_request(message: &str) -> ProviderFailure {
         message: message.into(),
         status: None,
         provider_request_id: None,
+        retry_after: None,
         retryable: false,
     }
 }

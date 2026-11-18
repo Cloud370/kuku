@@ -102,6 +102,39 @@ async fn example_inherits_retry_policy_and_bounds_attempts_only_when_requested()
     provider.assert_hits_async(4).await;
 }
 
+#[tokio::test]
+async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() {
+    let server = MockServer::start_async().await;
+    let root = tempfile::tempdir().unwrap();
+    prepare(root.path(), &server, "finish the task");
+    for (header, body, attempts) in [
+        ("0", r#"{"error":{"code":"rate_limit_exceeded"}}"#, 2),
+        ("0", r#"{"error":{"code":"insufficient_quota"}}"#, 1),
+        ("120", r#"{"error":{"code":"rate_limit_exceeded"}}"#, 1),
+    ] {
+        let mut provider = server
+            .mock_async(move |when, then| {
+                when.method(POST).path("/chat/completions");
+                then.status(429).header("retry-after", header).body(body);
+            })
+            .await;
+        let output = format!("rate-{attempts}-{header}.json");
+        let report = run_example(root.path(), &output, &[], false).await;
+        provider.assert_hits_async(attempts).await;
+        assert_eq!(
+            attempts,
+            report["agent"]["usage"]["model_requests"].as_u64().unwrap() as usize
+        );
+        if header == "120" {
+            assert!(report["error"]
+                .as_str()
+                .unwrap()
+                .contains("Retry-After: 120s"));
+        }
+        provider.delete_async().await;
+    }
+}
+
 fn prepare(root: &Path, server: &MockServer, prompt: &str) {
     fs::create_dir(root.join("workspace")).unwrap();
     fs::write(root.join("config.toml"), config(server)).unwrap();

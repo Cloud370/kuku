@@ -226,5 +226,6 @@ pub(crate) struct ProviderFailure {
     pub(crate) message: String,
     pub(crate) status: Option<u16>,
     pub(crate) provider_request_id: Option<String>,
+    pub(crate) retry_after: Option<std::time::Duration>,
     pub(crate) retryable: bool,
 }

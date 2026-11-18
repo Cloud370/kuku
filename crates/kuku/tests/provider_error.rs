@@ -34,7 +34,9 @@ mod provider {
     }
 }
 
-use provider::error::classify_http_error;
+use std::time::{Duration, UNIX_EPOCH};
+
+use provider::error::{classify_http_error, retry_after};
 use provider::types::ProviderFailureKind;
 
 #[test]
@@ -44,6 +46,33 @@ fn rate_limit_http_error_is_retryable() {
     assert_eq!(failure.kind, ProviderFailureKind::RateLimited);
     assert!(failure.retryable);
     assert_eq!(failure.status, Some(429));
+}
+
+#[test]
+fn exhausted_quota_and_temporary_rate_limit_remain_distinct() {
+    for body in [
+        r#"{"error":{"code":"insufficient_quota"}}"#,
+        r#"{"error":{"type":"insufficient_quota","code":429}}"#,
+    ] {
+        assert!(!classify_http_error(429, body).retryable);
+    }
+    assert!(classify_http_error(429, r#"{"error":{"code":"rate_limit_exceeded"}}"#).retryable);
+}
+
+#[test]
+fn retry_after_accepts_seconds_and_http_dates() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_760_000_000);
+    let after = Duration::from_secs(12);
+    assert_eq!(Some(after), retry_after("12", now));
+    assert_eq!(
+        Some(after),
+        retry_after(&httpdate::fmt_http_date(now + after), now)
+    );
+    assert_eq!(
+        Some(Duration::ZERO),
+        retry_after(&httpdate::fmt_http_date(now - after), now)
+    );
+    assert_eq!(None, retry_after("probably soon", now));
 }
 
 #[test]
