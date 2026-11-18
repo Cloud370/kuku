@@ -139,6 +139,10 @@ class FrontierReportTests(unittest.TestCase):
             local_evidence(first, False)
             local_evidence(another, False)
             local_evidence(rerun, True, ledger=True)
+            historic_result = rerun / 'live' / 'result.json'
+            historic = json.loads(historic_result.read_text())
+            historic['sdk_evidence']['limits'] = {'max_steps': 22}
+            write_json(historic_result, historic)
             write_json(rerun / 'result.json', {'tree': {'commit': GIT_COMMIT, 'branch': SECRET}})
             report = build_report(official_feed(), [
                 [CASES[0], first], [CASES[1], another], [CASES[0], rerun], [CASES[1], another, 'guarded'],
@@ -157,6 +161,8 @@ class FrontierReportTests(unittest.TestCase):
             self.assertEqual(two['provenance'], {'sdk_binary_sha256': SDK_SHA, 'checkout_commit': GIT_COMMIT})
             self.assertEqual(two['configuration']['max_requests'], 2)
             self.assertEqual(two['configuration']['max_output_tokens'], 8192)
+            self.assertEqual(two['configuration']['max_steps'], 22)
+            self.assertNotIn('max_steps', one['configuration'])
             self.assertEqual(two['tools']['tool_errors'], 1)
             self.assertEqual(two['tools']['non_ok_results'], 2)
             self.assertEqual(two['usage']['finish_reasons'], {'other': 1, 'stop': 1})
@@ -175,6 +181,41 @@ class FrontierReportTests(unittest.TestCase):
                 build_report(official_feed(), [['openssl-selfsigned-cert', first]])
             with self.assertRaisesRegex(EvidenceError, 'local meter request does not match'):
                 build_report(official_feed(), [[CASES[2], first]])
+
+    def test_final_provider_failure_uses_same_actor_and_turn(self):
+        for error_kind, reason, error_turn, sdk_error_kind, interrupt_reason in (
+            ('rate_limited', 'rate_limited', 5, 'rate_limited', 'rate_limited'),
+            ('transport', 'transport', 5, 'transport', 'transport'),
+            ('transport', SECRET, 4, 'other', 'other'),
+            (SECRET, SECRET, 5, 'other', 'other'),
+        ):
+            with self.subTest(error_kind=error_kind, reason=reason, error_turn=error_turn):
+                with tempfile.TemporaryDirectory() as temporary:
+                    case = CASES[0]
+                    directory = Path(temporary) / case
+                    local_evidence(directory, True)
+                    live = directory / 'live'
+                    events = next((live / 'session-data').glob('p/*/sessions/*/events.jsonl'))
+                    records = [
+                        {'kind': 'model.error', 'conversation': 'main', 'turn': error_turn,
+                         'error_kind': error_kind, 'message': SECRET},
+                        {'kind': 'turn.interrupted', 'conversation': 'main', 'turn': 5, 'reason': reason},
+                        {'kind': 'model.error', 'conversation': SECRET, 'turn': 5, 'error_kind': 'authentication'},
+                        {'kind': 'turn.completed', 'conversation': SECRET, 'turn': 5},
+                        {'kind': 'runtime.operation', 'record': {
+                            'operation': 'turn_settled', 'address': 'main', 'turn': 5,
+                            'status': 'interrupted', 'error': 'provider error: ' + SECRET,
+                        }},
+                    ]
+                    events.write_text(''.join(json.dumps(event) + '\n' for event in records), encoding='utf-8')
+                    attempt = build_report(official_feed(), [[case, directory]])['local_attempts'][0]
+                    result = attempt['result']
+                    self.assertTrue(result['task_passed'])
+                    self.assertEqual(result['terminal_event'], 'turn.interrupted')
+                    self.assertEqual(result['interrupt_reason'], interrupt_reason)
+                    self.assertTrue(result['durable_turn_settled'])
+                    self.assertEqual(result['sdk_error_kind'], sdk_error_kind)
+                    self.assertNotIn(SECRET, json.dumps(attempt))
 
     def test_openrouter_reports_partial_receipts_and_paired_cache_without_assuming_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:

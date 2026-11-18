@@ -1,4 +1,5 @@
 import concurrent.futures
+from contextlib import closing
 from decimal import Decimal
 from email.message import Message
 import http.client
@@ -13,6 +14,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+from urllib.parse import urlsplit
 
 from frontier import CaseMeter, MODEL_VERSION, ROUTER_MODEL, TOKEN_VARIABLE, WIRE_BYTES, run_live
 from interactive_fixture import local_request, serve
@@ -95,7 +97,7 @@ class FrontierTests(unittest.TestCase):
                     self.assertEqual(forward.call_count, 1)
                 finally:
                     release.set()
-                self.assertEqual(sorted(future.result().status for future in futures), [200, 429, 429])
+                self.assertEqual(sorted(future.result().status for future in futures), [200, 403, 403])
         self.assertEqual(meter.accounting()["unknown_requests"], 1)
         self.assertEqual([row["reason"] for row in meter.rejections], ["case USD cap", "case USD cap"])
 
@@ -106,7 +108,7 @@ class FrontierTests(unittest.TestCase):
                     "model_received": DIRECT.model, "usage": dict(prompt_tokens=100, completion_tokens=100,
                                                                     prompt_cache_hit_tokens=60, prompt_cache_miss_tokens=40)}
 
-        for request_limit, last_status in ((None, 200), (48, 429)):
+        for request_limit, last_status in ((None, 200), (48, 403)):
             with self.subTest(request_limit=request_limit):
                 meter = self.meter(requests=request_limit)
                 with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
@@ -152,7 +154,7 @@ class FrontierTests(unittest.TestCase):
             return observation
 
         with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
-            self.assertEqual([request(endpoint, DIRECT, DIRECT_PAYLOAD).status for _ in range(4)], [502, 200, 200, 429])
+            self.assertEqual([request(endpoint, DIRECT, DIRECT_PAYLOAD).status for _ in range(4)], [502, 200, 200, 403])
         accounting = meter.accounting()
         self.assertEqual(accounting["upstream_requests"], 2)
         self.assertEqual(accounting["no_upstream_charge_requests"], 1)
@@ -198,7 +200,7 @@ class FrontierTests(unittest.TestCase):
                 meter.disarm()
                 release.set()
                 self.assertEqual(future.result().status, 200)
-            self.assertEqual(request(endpoint, DIRECT, DIRECT_PAYLOAD).status, 429)
+            self.assertEqual(request(endpoint, DIRECT, DIRECT_PAYLOAD).as_json(403)["error"]["code"], "case_closed")
         self.assertEqual(meter.attempts[0]["status"], "cancelled")
         self.assertEqual(meter.attempts[0]["basis"], "request_upper_bound")
         self.assertEqual(meter.spent, DIRECT.request_ceiling(131072))
@@ -275,6 +277,61 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(row["upstream_error"]["kind"], "account_data_policy")
         self.assertEqual(row["upstream_error"]["code"], 404)
         self.assertEqual(row["basis"], "request_upper_bound")
+
+    def test_upstream_retryable_http_errors_relay_only_allowlisted_data(self):
+        http_date = "Sun, 06 Nov 1994 08:49:37 GMT"
+        obsolete_date = "Sunday, 06-Nov-94 08:49:37 GMT"
+        asctime_date = "Sun Nov  6 08:49:37 1994"
+        for status, headers, quota, retry_after in (
+            (429, ["7"], {}, "7"),
+            (503, [http_date], {}, http_date),
+            (503, [obsolete_date], {}, obsolete_date),
+            (503, [asctime_date], {}, asctime_date),
+            (429, ["10"], {"metadata": {"provider_code": "insufficient_quota"}}, "10"),
+            (429, ["2", "3"], {"code": "insufficient_quota"}, None),
+            (429, ["-1"], {}, None),
+            (503, ["Sun, 33 Nov 1994 08:49:37 GMT"], {}, None),
+            (503, ["1\r\nX-Private: " + KEY], {}, None),
+        ):
+            with self.subTest(status=status, headers=headers, quota=quota):
+                meter = self.meter(ROUTER)
+                private = "invalid model id with private request data " + KEY
+                reply = BytesIO(json.dumps({"error": {"code": status, "message": private, **quota}}).encode())
+                reply.status = status
+                reply.headers = Message()
+                reply.headers["Content-Type"] = "application/json"
+                reply.headers["X-Private"] = TOKEN
+                for delay in headers:
+                    reply.headers["Retry-After"] = delay
+                connection = mock.Mock()
+                connection.getresponse.return_value = reply
+                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+                    address = urlsplit(endpoint)
+                    with closing(http.client.HTTPConnection(address.hostname, address.port, timeout=3)) as downstream:
+                        downstream.request("POST", ROUTER.path, body=json.dumps(ROUTER_PAYLOAD), headers={
+                            "Content-Type": "application/json", "Authorization": "Bearer " + TOKEN,
+                        })
+                        response = downstream.getresponse()
+                        body = response.read()
+                    denied = request(endpoint, ROUTER, ROUTER_PAYLOAD)
+                self.assertEqual(response.status, status)
+                self.assertEqual(response.getheader("Content-Type"), "application/json")
+                self.assertEqual(response.getheader("Retry-After"), retry_after)
+                self.assertIsNone(response.getheader("X-Private"))
+                error = json.loads(body)["error"]
+                self.assertEqual(error["code"], "insufficient_quota" if quota else status)
+                self.assertEqual(denied.as_json(403)["error"]["code"], "case_budget_exhausted")
+                self.assertEqual(connection.request.call_count, 1)
+                row, = meter.attempts
+                kind = "insufficient_quota" if quota else {429: "rate_limited", 503: "provider_unavailable"}[status]
+                self.assertEqual(row["upstream_error"], {**error, "kind": kind})
+                self.assertEqual(row.get("retry_after"), retry_after)
+                self.assertEqual(row["basis"], "request_upper_bound")
+                self.assertEqual(meter.spent, ROUTER.request_ceiling(131072))
+                self.assertEqual(meter.accounting()["unknown_requests"], 1)
+                for hidden in (KEY, TOKEN, private):
+                    self.assertNotIn(hidden.encode(), body)
+                    self.assertNotIn(hidden, meter.evidence.read_text())
 
     def test_complete_openrouter_stream_settles_cost_when_receipt_is_not_visible(self):
         meter = self.meter(ROUTER)
@@ -381,7 +438,7 @@ class FrontierTests(unittest.TestCase):
             self.assertEqual(ledger.committed(json.loads(ledger.path.read_text())), 1.5)
             barrier.wait(2)
             on_sdk_finished()
-            self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD, token).status, 429)
+            self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD, token).status, 403)
             return {"passed": True, "cleanup_passed": True, "runtime_files": {"session_task": "b" * 64}}
 
         def run(output):

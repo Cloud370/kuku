@@ -2,6 +2,7 @@
 
 import contextlib
 from decimal import Decimal, ROUND_CEILING
+from email.utils import parsedate_to_datetime
 import errno
 import hmac
 import http.client
@@ -53,6 +54,21 @@ UPSTREAM_ERRORS = (
     (r"invalid model(?: id)?|model not found", "invalid_model", "The provider did not recognize the model"),
     (r"max(?:imum)? context length|context length exceeded", "context_limit", "The provider rejected the context length"),
 )
+UPSTREAM_HTTP_ERRORS = {
+    429: ("rate_limited", "The upstream provider rate limited this request"),
+    503: ("provider_unavailable", "The upstream provider is temporarily unavailable"),
+}
+LOCAL_LIMIT_CODES = {"case closed": "case_closed", "request limit": "request_limit",
+                     "case USD cap": "case_budget_exhausted"}
+DAY = r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
+LONG_DAY = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+TIME_OF_DAY = r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+HTTP_DATE = re.compile(
+    rf"(?:{DAY}, [0-9]{{2}} {MONTH} [0-9]{{4}} {TIME_OF_DAY} GMT"
+    rf"|{LONG_DAY}, [0-9]{{2}}-{MONTH}-[0-9]{{2}} {TIME_OF_DAY} GMT"
+    rf"|{DAY} {MONTH} (?:[0-9]{{2}}| [0-9]) {TIME_OF_DAY} [0-9]{{4}})"
+)
 RECEIPT_SOURCES = {"response_id": 1, "response_generation_id": 2, "metadata": 3, "header": 4}
 OPAQUE_ID = re.compile(r"[A-Za-z0-9._-]{1,160}")
 
@@ -67,25 +83,61 @@ def unique_object(pairs):
 
 
 def upstream_error(reply):
-    result = {"code": reply.status, "kind": "http_error", "message": "The upstream HTTP request failed"}
+    kind, wording = UPSTREAM_HTTP_ERRORS.get(reply.status, ("http_error", "The upstream HTTP request failed"))
+    result = {"code": reply.status, "kind": kind, "message": wording}
     if reply.headers.get_content_type() != "application/json":
         return result
     try:
         body = reply.read(8193)
         if len(body) > 8192:
             return result
-        error = json.loads(body).get("error", {})
+        payload = json.loads(body, object_pairs_hook=unique_object)
+        error = payload.get("error", {})
         message = error.get("message")
     except (AttributeError, OSError, TypeError, ValueError, RecursionError, http.client.HTTPException):
         return result
+    metadata = error.get("metadata")
+    provider_code = metadata.get("provider_code") if isinstance(metadata, dict) else None
+    quota_codes = (error.get("code"), error.get("type"), error.get("error_type"), payload.get("error_type"), provider_code)
+    if "insufficient_quota" in quota_codes:
+        return {"code": "insufficient_quota", "kind": "insufficient_quota",
+                "message": "The upstream provider reports insufficient quota"}
     if type(error.get("code")) is int and 400 <= error["code"] <= 599:
         result["code"] = error["code"]
-    if isinstance(message, str):
+    if reply.status not in UPSTREAM_HTTP_ERRORS and isinstance(message, str):
         for pattern, kind, wording in UPSTREAM_ERRORS:
             if re.search(pattern, message, re.IGNORECASE):
                 result.update(kind=kind, message=wording)
                 break
     return result
+
+
+def retry_after_header(reply):
+    values = reply.headers.get_all("Retry-After", [])
+    if len(values) != 1:
+        return None
+    value = values[0].strip(" \t")
+    if re.fullmatch(r"[0-9]+", value):
+        return value
+    if not HTTP_DATE.fullmatch(value):
+        return None
+    try:
+        parsedate_to_datetime(value)
+    except (ValueError, OverflowError):
+        return None
+    return value
+
+
+def send_json_error(client, status, code, message, *, retry_after=None):
+    body = json.dumps({"error": {"code": code, "message": message}}, separators=(",", ":")).encode()
+    with contextlib.suppress(OSError):
+        client.send_response(status)
+        client.send_header("Content-Type", "application/json")
+        client.send_header("Content-Length", str(len(body)))
+        if retry_after is not None:
+            client.send_header("Retry-After", retry_after)
+        client.end_headers()
+        client.wfile.write(body)
 
 
 def text_input(items, router):
@@ -247,7 +299,7 @@ class CaseMeter(RequestBoundary):
             def deny(self, status, reason):
                 with meter.lock:
                     meter.reject(reason)
-                self.send_error(status, reason)
+                send_json_error(self, status, LOCAL_LIMIT_CODES.get(reason, status), reason)
 
             def do_POST(self):
                 authorizations = self.headers.get_all("Authorization", [])
@@ -306,7 +358,7 @@ class CaseMeter(RequestBoundary):
         with self.serial:
             row, reason = self.admit(length, output)
             if row is None:
-                return client.deny(429, reason)
+                return client.deny(403, reason)
             try:
                 observation = self.transfer(client, body)
                 with self.lock:
@@ -382,13 +434,7 @@ class CaseMeter(RequestBoundary):
                     observation["proxy_http_status"] = 503
                     reason = ("could not connect to upstream provider" if observation["status"] == "connection_failed"
                               else "upstream transport failed before response headers")
-                    failure_body = json.dumps({"error": {"message": reason}}, separators=(",", ":")).encode()
-                    with contextlib.suppress(OSError):
-                        client.send_response(503)
-                        client.send_header("Content-Type", "application/json")
-                        client.send_header("Content-Length", str(len(failure_body)))
-                        client.end_headers()
-                        client.wfile.write(failure_body)
+                    send_json_error(client, 503, 503, reason)
             finally:
                 with self.lock:
                     self.active_socket = None
@@ -422,9 +468,11 @@ class CaseMeter(RequestBoundary):
         observation["http_status"] = reply.status
         if reply.status != 200:
             observation["status"] = "http_error"
-            observation["upstream_error"] = upstream_error(reply)
-            with contextlib.suppress(OSError):
-                client.send_error(reply.status, observation["upstream_error"]["message"])
+            error = observation["upstream_error"] = upstream_error(reply)
+            delay = retry_after_header(reply) if reply.status in UPSTREAM_HTTP_ERRORS else None
+            if delay is not None:
+                observation["retry_after"] = delay
+            send_json_error(client, reply.status, error["code"], error["message"], retry_after=delay)
             return
         if reply.headers.get_content_type() != "text/event-stream":
             observation["status"] = "unexpected_content_type"
@@ -468,7 +516,7 @@ class CaseMeter(RequestBoundary):
     def account(self, row, observation):
         route = self.route
         router = route.router
-        relay_fields = ("http_status", "proxy_http_status", "response_ended", "seconds", "status", "upstream_error")
+        relay_fields = ("http_status", "proxy_http_status", "response_ended", "seconds", "status", "upstream_error", "retry_after")
         row.update({field: observation[field] for field in relay_fields if field in observation})
         if observation.get("response_status") in RESPONSE_STATUS:
             row["response_status"] = observation["response_status"]

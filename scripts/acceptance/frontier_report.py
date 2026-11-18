@@ -33,7 +33,9 @@ FINISH_REASONS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filt
 FAILURE_KINDS = {'runtime', 'infrastructure', 'sdk_evidence', 'artifact_retention', 'agent_task', 'cleanup', 'provider_boundary'}
 TOOL_STATUSES = {'ok', 'error', 'blocked', 'cancelled'}
 TURN_EVENTS = {'turn.completed', 'turn.interrupted', 'turn.cancelled'}
-INTERRUPT_REASONS = FINISH_REASONS | {'cancelled', 'canceled', 'timeout', 'step_limit', 'request_limit'}
+PROVIDER_ERROR_KINDS = {'authentication', 'rate_limited', 'context_too_large', 'invalid_request',
+                        'provider_unavailable', 'transport', 'internal', 'unknown'}
+INTERRUPT_REASONS = FINISH_REASONS | PROVIDER_ERROR_KINDS | {'cancelled', 'canceled', 'timeout', 'step_limit', 'request_limit'}
 HARNESSES = 22
 ATTEMPTS_PER_TASK = 4
 ROUND_LABEL = re.compile(r'(?:first|rerun|round|guidance|guarded)(?:-[1-9][0-9]{0,2})?|(?:output|context)[1-9][0-9]{0,3}k')
@@ -619,6 +621,7 @@ def session_summary(live, sdk):
     calls = 0
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
+    provider_error_turn, provider_error_kind = None, None
     try:
         with candidates[0].open(encoding='utf-8') as source:
             for line in source:
@@ -627,17 +630,28 @@ def session_summary(live, sdk):
                     calls += 1
                 if event.get('kind') == 'tool.result':
                     statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
-                kind = allowed(event.get('kind'), TURN_EVENTS)
-                if kind is not None:
-                    observed.update(terminal_event=kind, interrupt_reason=None)
-                    if kind == 'turn.interrupted':
-                        observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
+                event_agent = event.get('conversation') or event.get('agent') or 'main'
+                if event_agent == agent:
+                    kind = allowed(event.get('kind'), TURN_EVENTS)
+                    if kind is not None:
+                        observed.update(terminal_event=kind, interrupt_reason=None)
+                        if kind == 'turn.interrupted':
+                            observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
+                    if event.get('kind') == 'model.error':
+                        provider_error_turn = count(event.get('turn'))
+                        provider_error_kind = allowed(event.get('error_kind'), PROVIDER_ERROR_KINDS)
+                    elif kind == 'turn.interrupted' and observed['interrupt_reason'] in PROVIDER_ERROR_KINDS:
+                        provider_error_turn = count(event.get('turn'))
+                        provider_error_kind = observed['interrupt_reason']
                 operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
                 if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
                     error = operation.get('error')
                     error_kind = None
                     if isinstance(error, str):
                         error_kind = 'invalid_argument' if error.startswith('invalid argument: ') else 'other'
+                        if (error.startswith('provider error: ') and provider_error_turn is not None
+                                and provider_error_turn == count(operation.get('turn'))):
+                            error_kind = provider_error_kind or 'other'
                     observed.update(durable_turn_settled=True,
                                     settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
                                     sdk_error_kind=error_kind,
@@ -784,7 +798,7 @@ def local_attempt(case, directory, ordinal, label, receipt_key=None):
             'sdk_context_tokens': count(limits.get('sdk_context_tokens', sdk_limits.get('max_context_tokens'))),
             'provider_context_tokens': count(limits.get('provider_context_tokens')),
             'agent_timeout_sec': count(limits.get('agent_timeout_sec')),
-            'max_steps': count(sdk_limits.get('max_steps')),
+            **({'max_steps': count(sdk_limits['max_steps'])} if 'max_steps' in sdk_limits else {}),
             'automatic_retries': count(sdk_limits.get('automatic_retries')),
             'max_agents': count(sdk_limits.get('max_agents')),
         },
