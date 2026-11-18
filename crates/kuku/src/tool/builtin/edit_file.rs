@@ -1,14 +1,15 @@
-use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
 
 use crate::event::StoredEvent;
+use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, read_file_as_utf8, resolve_path, text_match_offsets,
-    write_atomically, WriteSnapshot,
+    content_hash, expected_version, mutation_preview, plural, publish_file, read_file_as_utf8,
+    require_version, resolve_path, snapshot_stale_error, text_match_offsets, ExecutorRead,
+    WriteEvidence, WriteSnapshotLookup,
 };
 
 mod change;
@@ -36,59 +37,85 @@ pub(crate) fn edit_file(
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
 ) -> ToolResultEnvelope {
+    edit_file_with_evidence(
+        args,
+        workspace,
+        WriteEvidence::Model {
+            conversation,
+            events: prior_events,
+        },
+    )
+}
+
+pub(crate) fn edit_file_for_executor(
+    args: &Value,
+    workspace: &Path,
+    reads: &[ExecutorRead],
+) -> ToolResultEnvelope {
+    edit_file_with_evidence(args, workspace, WriteEvidence::Executor(reads))
+}
+
+fn edit_file_with_evidence(
+    args: &Value,
+    workspace: &Path,
+    evidence: WriteEvidence<'_>,
+) -> ToolResultEnvelope {
     let request = match edit_file_request(args) {
         Ok(request) => request,
+        Err(result) => return result,
+    };
+    let expected = match expected_version(args) {
+        Ok(expected) => expected,
         Err(result) => return result,
     };
     let resolved = match resolve_path(workspace, &request.path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
-    if !resolved.path.is_file() {
-        return ToolResultEnvelope::error(
-            format!("failed: not a file: {}", request.path),
-            format!("path is not a file: {}", request.path),
-        );
-    }
-
-    let (content, bytes) = match read_file_as_utf8(&resolved.path) {
-        Ok(result) => result,
+    let content = match read_file_as_utf8(&resolved.path) {
+        Ok(content) => content,
         Err(err) => return err,
     };
+    let current_hash = content_hash(content.as_bytes());
+    if let Err(result) = require_version(&resolved.relative, expected, Some(&current_hash)) {
+        return result;
+    }
     let text_candidates = edit_text_candidates(
         &content,
         request.old_text.as_str(),
         request.new_text.as_str(),
     );
-    let current_hash = content_hash(&bytes);
     let mut authorized_candidates = Vec::new();
     let mut stale_snapshot = None;
     let mut saw_fresh_authorization = false;
     let mut rejection = ToolErrorReason::SnapshotRequired;
     for (index, candidate) in text_candidates.iter().enumerate() {
-        match find_write_snapshot(
-            prior_events,
-            conversation,
+        match evidence.find(
             &resolved.path,
             request.replace_all,
             Some(&candidate.old_text),
-            Some(&current_hash),
+            &current_hash,
         ) {
-            super::common::WriteSnapshotLookup::Found(snapshot) => {
+            WriteSnapshotLookup::Found(snapshot) => {
                 if snapshot.content_hash == current_hash {
-                    saw_fresh_authorization = true;
                     let offsets = text_match_offsets(&content, &candidate.old_text);
+                    let all_matches = offsets.len();
+                    let offsets = snapshot.restrict_matches(&content, &candidate.old_text, offsets);
                     if !offsets.is_empty() {
                         authorized_candidates.push(AuthorizedEditCandidate {
                             candidate_index: index,
                             offsets,
                         });
+                    } else if all_matches == 0 {
+                        saw_fresh_authorization = true;
+                    } else {
+                        rejection = ToolErrorReason::OldTextNotVisible;
                     }
                 } else if stale_snapshot.is_none() {
                     stale_snapshot = Some(snapshot);
                 }
             }
-            super::common::WriteSnapshotLookup::Rejected(reason) => rejection = reason,
+            WriteSnapshotLookup::Rejected(reason) => rejection = reason,
         }
     }
     if authorized_candidates.is_empty() {
@@ -99,7 +126,7 @@ pub(crate) fn edit_file(
             );
         }
         if let Some(snapshot) = stale_snapshot {
-            return snapshot_stale_error(&resolved.relative, &snapshot);
+            return snapshot_stale_error(&resolved.relative, snapshot.event_id);
         }
         return snapshot_lookup_error(&resolved.relative, rejection);
     }
@@ -118,41 +145,40 @@ pub(crate) fn edit_file(
         );
     }
 
-    let edited = replace_authorized_candidates(&content, &text_candidates, &authorized_candidates);
-    if let Err(error) = write_atomically(&resolved.path, edited.as_bytes()) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error writing file: {}", resolved.relative),
-        );
-    }
-
+    let (edited, replacement_count) =
+        replace_authorized_candidates(&content, &text_candidates, &authorized_candidates);
     let change = change::summarize(&content, &edited);
-    let raw_text_after = edited;
-    let bytes_written = raw_text_after.len();
-    let content_hash_after = content_hash(raw_text_after.as_bytes());
-    let canonical_path = fs::canonicalize(&resolved.path)
-        .unwrap_or_else(|_| resolved.path.clone())
-        .to_string_lossy()
-        .into_owned();
+    let publication = match publish_file(&resolved.path, Some(&current_hash), edited.as_bytes()) {
+        Ok(publication) => publication,
+        Err(error) => return error.result(&resolved.relative),
+    };
+    let content_hash_after = content_hash(edited.as_bytes());
+    let mut fields = serde_json::json!({
+        "replacement_count": replacement_count,
+        "change": change,
+        "content_hash": content_hash_after,
+    });
+    if evidence.is_model() {
+        mutation_preview(&edited, &mut fields);
+    }
     let summary = format!(
         "edited {}, {replacement_count} replacement{}",
         resolved.relative,
         plural(replacement_count)
     );
-    ToolResultEnvelope::ok(
-        summary.clone(),
+    publication.result(
+        FileMutationFacts {
+            kind: FileMutationKind::FileEdit,
+            path: resolved.relative,
+            canonical_path: resolved.path.to_string_lossy().into_owned(),
+            commit_state: FileCommitState::Committed,
+            content_hash_before: Some(current_hash),
+            content_hash_after: Some(content_hash_after),
+            bytes_written: Some(edited.len()),
+            bytes_removed: None,
+        },
         summary,
-        serde_json::json!({
-            "kind": "file_edit",
-            "path": resolved.relative,
-            "canonical_path": canonical_path,
-            "replacement_count": replacement_count,
-            "change": change,
-            "bytes_written": bytes_written,
-            "content_hash": content_hash_after,
-            "content_hash_after": content_hash_after,
-            "raw_text_after": raw_text_after,
-        }),
+        fields,
     )
 }
 
@@ -175,22 +201,11 @@ fn snapshot_lookup_error(relative: &str, reason: ToolErrorReason) -> ToolResultE
     )
 }
 
-fn snapshot_stale_error(relative: &str, snapshot: &WriteSnapshot) -> ToolResultEnvelope {
-    ToolResultEnvelope::error_with_reason(
-        format!(
-            "failed: {relative} changed since event {}",
-            snapshot.event_id
-        ),
-        format!("file changed since it was read; read {relative} again before editing"),
-        ToolErrorReason::SnapshotStale,
-    )
-}
-
 fn replace_authorized_candidates(
     content: &str,
     candidates: &[EditTextCandidate],
     authorized: &[AuthorizedEditCandidate],
-) -> String {
+) -> (String, usize) {
     let mut replacements = authorized
         .iter()
         .flat_map(|authorized_candidate| {
@@ -208,13 +223,18 @@ fn replace_authorized_candidates(
 
     let mut edited = String::with_capacity(content.len());
     let mut cursor = 0;
+    let mut replacement_count = 0;
     for (start, end, replacement) in replacements {
+        if start < cursor {
+            continue;
+        }
         edited.push_str(&content[cursor..start]);
         edited.push_str(replacement);
         cursor = end;
+        replacement_count += 1;
     }
     edited.push_str(&content[cursor..]);
-    edited
+    (edited, replacement_count)
 }
 
 fn edit_text_candidates(content: &str, old_text: &str, new_text: &str) -> Vec<EditTextCandidate> {
@@ -721,7 +741,7 @@ mod tests {
 
         let current = b"alpha\r\nbeta\r\nalpha\nbeta\n";
         std::fs::write(dir.path().join("README.md"), current).unwrap();
-        let fresh_snapshot = read_snapshot_event(
+        let mut fresh_snapshot = read_snapshot_event(
             18,
             dir.path(),
             "README.md",
@@ -730,6 +750,13 @@ mod tests {
             "alpha\nbeta\n",
             "3\talpha\n4\tbeta",
         );
+        if let crate::event::EventPayload::ToolResult {
+            structured: Some(data),
+            ..
+        } = &mut fresh_snapshot.payload
+        {
+            data["start_line"] = 3.into();
+        }
 
         let result = edit_file(
             &serde_json::json!({
@@ -861,6 +888,95 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
             "alpha\nhidden\nalpha\n"
+        );
+    }
+
+    #[test]
+    fn executor_edit_targets_observed_occurrence_and_reports_committed_versions() {
+        let dir = workspace();
+        let original = "same\nhidden\nsame\n";
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let (_, read) = crate::tool::builtin::read_file_for_executor(
+            &serde_json::json!({"path":"README.md","offset":3,"limit":1}),
+            dir.path(),
+            80,
+        );
+        let read = read.unwrap();
+
+        let result = edit_file_for_executor(
+            &serde_json::json!({
+                "path":"README.md", "old_text":"same", "new_text":"visible",
+                "expected_version": read.content_hash
+            }),
+            dir.path(),
+            std::slice::from_ref(&read),
+        );
+
+        assert_eq!("ok", result.status);
+        let expected = "same\nhidden\nvisible\n";
+        assert_eq!(
+            expected,
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap()
+        );
+        let facts =
+            FileMutationFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();
+        assert_eq!(FileCommitState::Committed, facts.commit_state);
+        assert_eq!(
+            Some(content_hash(original.as_bytes())),
+            facts.content_hash_before
+        );
+        assert_eq!(
+            Some(content_hash(expected.as_bytes())),
+            facts.content_hash_after
+        );
+        assert!(result.structured.unwrap().get("raw_text_after").is_none());
+    }
+
+    #[test]
+    fn inexact_executor_scope_cannot_edit_content_outside_its_byte_ranges() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("README.md"), "observe\nprivate\n").unwrap();
+        let (_, read) = crate::tool::builtin::read_file_for_executor(
+            &serde_json::json!({"path":"README.md","limit":1}),
+            dir.path(),
+            80,
+        );
+        let result = edit_file_for_executor(
+            &serde_json::json!({"path":"README.md","old_text":"private","new_text":"changed"}),
+            dir.path(),
+            &[read.unwrap()],
+        );
+        assert_eq!("error", result.status);
+        assert_eq!(
+            "old_text_not_visible",
+            result.structured.unwrap()["reason_code"]
+        );
+        assert_eq!(
+            "observe\nprivate\n",
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap()
+        );
+    }
+
+    #[test]
+    fn mixed_line_ending_replacements_choose_leftmost_nonoverlapping_match() {
+        let dir = workspace();
+        let original = "x\r\nx\nx\n";
+        std::fs::write(dir.path().join("README.md"), original).unwrap();
+        let (_, read) = crate::tool::builtin::read_file_for_executor(
+            &serde_json::json!({"path":"README.md"}),
+            dir.path(),
+            80,
+        );
+        let result = edit_file_for_executor(
+            &serde_json::json!({"path":"README.md","old_text":"x\nx","new_text":"changed","replace_all":true}),
+            dir.path(),
+            &[read.unwrap()],
+        );
+        assert_eq!("ok", result.status);
+        assert_eq!(1, result.structured.unwrap()["replacement_count"]);
+        assert_eq!(
+            "changed\nx\n",
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap()
         );
     }
 }

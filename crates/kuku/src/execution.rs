@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+mod file;
+mod receipt;
+
+pub use receipt::{WorkspaceActionDetails, WorkspaceActionReceipt, WorkspaceActionState};
+
+pub use file::{FileCommitState, FileMutationFacts, FileMutationKind};
+
 /// An explicitly selected interpreter for platform-specific command syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

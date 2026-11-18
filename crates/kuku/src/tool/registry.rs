@@ -71,6 +71,21 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             "read",
         ),
         tool(
+            "stat_file",
+            "Check whether a workspace path is a file, directory, special entry or missing. Use version=true to calculate the SHA-256 version of a file.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path within the workspace."},
+                    "version": {"type": "boolean", "description": "Compute content_hash for regular files. Defaults to false."}
+                },
+                "required": ["path"]
+            }),
+            true,
+            1_000,
+            "read",
+        ),
+        tool(
             "edit_file",
             "Make a precise replacement in an existing file. The file must have been read in the current session before editing.",
             serde_json::json!({
@@ -80,6 +95,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
                     "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash returned by read_file for the version to edit."},
                     "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
                 "required": ["path", "old_text", "new_text"]
@@ -96,12 +112,29 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "content": {"type": "string", "description": "Complete file content."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash returned by read_file for the version to overwrite."},
                     "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
                 "required": ["path", "content"]
             }),
             false,
             20_000,
+            "edit",
+        ),
+        tool(
+            "remove_file",
+            "Remove one regular workspace file using an expected version or a full prior read of its current version. Use the file's own path.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the regular file inside the workspace."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash from stat_file(version=true) or read_file."},
+                    "brief": {"type": "string", "description": "Why this file is being removed, in 3-5 words."}
+                },
+                "required": ["path"]
+            }),
+            false,
+            1_000,
             "edit",
         ),
         tool(
@@ -262,8 +295,10 @@ mod tests {
                 "find_files",
                 "read_file",
                 "search_text",
+                "stat_file",
                 "edit_file",
                 "write_file",
+                "remove_file",
                 "remember_memory",
                 "forget_memory",
                 "run_command",
@@ -300,7 +335,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 12);
+        assert_eq!(builtin_registry(false, false).len() + 1, names.len());
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -309,7 +344,6 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 11);
     }
 
     #[test]
@@ -319,7 +353,7 @@ mod tests {
         assert!(names.contains(&"use_skill".to_string()));
         assert!(names.contains(&"list_skills".to_string()));
         assert!(names.contains(&"search_skills".to_string()));
-        assert_eq!(names.len(), 14);
+        assert_eq!(builtin_registry(false, false).len() + 3, names.len());
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

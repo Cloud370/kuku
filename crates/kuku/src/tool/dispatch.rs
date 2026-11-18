@@ -36,9 +36,11 @@ pub(crate) async fn dispatch(
             builtin::read_file(args, workspace, conversation, prior_events, result_event_id)
         }
         "search_text" => builtin::search_text(args, workspace),
+        "stat_file" => builtin::stat_file(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
         "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
-        "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
+        "edit_file" | "write_file" | "remove_file" | "remember_memory" | "forget_memory"
+        | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
             ToolResultEnvelope::blocked(
@@ -50,6 +52,7 @@ pub(crate) async fn dispatch(
         }
         "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events),
         "write_file" => builtin::write_file(args, workspace, conversation, prior_events),
+        "remove_file" => builtin::remove_file(args, workspace, conversation, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,

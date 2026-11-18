@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{glob_match, is_default_excluded_dir, join_bounded_strings, relative_path};
+use super::common::{
+    bounded_lines, glob_match, is_default_excluded_dir, join_bounded_strings, relative_path,
+    resolve_path, workspace_path_blocked,
+};
 
 const FIND_FILES_MAX_CHARS: usize = 8_000;
 
@@ -15,38 +18,23 @@ pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
     let max_depth = args
         .get("max_depth")
         .and_then(Value::as_u64)
-        .map(|v| v as u32)
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
         .unwrap_or(u32::MAX);
-    let workspace = match workspace.canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            return ToolResultEnvelope::error(
-                "failed: workspace not found",
-                "workspace path does not exist",
-            )
-        }
+    let root = match resolve_path(workspace, path) {
+        Ok(root) => root,
+        Err(result) => return result,
     };
-    let root = match workspace.join(path).canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            return ToolResultEnvelope::error(
-                format!("failed: path not found: {path}"),
-                format!("path does not exist: {path}"),
-            )
-        }
-    };
-
-    if !root.starts_with(&workspace) {
-        return ToolResultEnvelope::blocked(
-            format!("blocked: path outside workspace: {path}"),
-            format!("path is outside the workspace: {path}"),
-        );
-    }
 
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     if let Err(error) = collect_entries(
-        &root, &workspace, pattern, max_depth, 0, &mut files, &mut dirs,
+        &root.path,
+        &root.workspace,
+        pattern,
+        max_depth,
+        0,
+        &mut files,
+        &mut dirs,
     ) {
         return ToolResultEnvelope::error(
             format!("failed: {error}"),
@@ -63,15 +51,11 @@ pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
     entries.append(&mut files);
 
     let entry_count = entries.len();
-    let (mut model_content, truncated) = join_bounded_strings(
+    let (model_content, truncated) = join_bounded_strings(
         &entries,
         FIND_FILES_MAX_CHARS,
         "(Showing shallowest entries first. Use pattern or max_depth to focus.)",
     );
-    if entries.is_empty() {
-        model_content.clear();
-    }
-
     let summary = if truncated {
         format!("found {entry_count} entries under {path}, results truncated")
     } else {
@@ -82,6 +66,7 @@ pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
         "path": path,
         "pattern": pattern,
         "entry_count": entry_count,
+        "entries": bounded_lines(&entries, FIND_FILES_MAX_CHARS),
     });
 
     if truncated {
@@ -113,6 +98,10 @@ fn collect_entries(
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
         let path = entry.path();
+        let relative = relative_path(&path, workspace);
+        if workspace_path_blocked(&relative) {
+            continue;
+        }
 
         if file_type.is_dir() {
             if is_default_excluded_dir(&file_name_str) {
@@ -122,8 +111,7 @@ fn collect_entries(
                 None => (true, true),
                 Some(p) if !p.contains('/') => (false, true),
                 Some(p) => {
-                    let rel = relative_path(&path, workspace);
-                    let dir = format!("{rel}/");
+                    let dir = format!("{relative}/");
                     let wildcard_prefix = p.split('*').next().unwrap_or("");
                     let dominated = if wildcard_prefix.is_empty() {
                         !p.contains("**")
@@ -134,10 +122,7 @@ fn collect_entries(
                 }
             };
             if add_dir {
-                if let Ok(relative) = path.strip_prefix(workspace) {
-                    let rel = relative.to_string_lossy().replace('\\', "/");
-                    dirs.push(format!("{rel}/"));
-                }
+                dirs.push(format!("{relative}/"));
             }
             if recurse {
                 collect_entries(&path, workspace, pattern, max_depth, depth + 1, files, dirs)?;
@@ -195,7 +180,12 @@ mod tests {
         assert!(lines.contains(&"docs/tools.md"));
         assert!(lines.contains(&"src/main.rs"));
         assert!(!result.model_content.contains(".git"));
-        assert!(result.structured.unwrap()["entry_count"].as_u64().unwrap() >= 3);
+        let structured = result.structured.unwrap();
+        assert!(structured["entry_count"].as_u64().unwrap() >= 3);
+        assert!(structured["entries"]
+            .as_array()
+            .unwrap()
+            .contains(&"docs/tools.md".into()));
     }
 
     #[test]
