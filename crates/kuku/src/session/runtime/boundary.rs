@@ -39,7 +39,7 @@ impl Session {
         let config = update_model_selection(&agent.snapshot);
         let config = config
             .map(|config| -> Result<_> {
-                let max_output_tokens = self.resolve_model(&config)?.max_output_tokens;
+                self.resolve_model(&config)?;
                 self.commit(
                     &mut state,
                     Record::StepConfigured {
@@ -47,10 +47,7 @@ impl Session {
                         config: config.clone(),
                     },
                 )?;
-                Ok(AgentConfig {
-                    max_output_tokens: Some(max_output_tokens),
-                    ..config
-                })
+                Ok(config)
             })
             .transpose()?;
         let source = self.accept_steering(&mut state, address, turn, &inputs)?;

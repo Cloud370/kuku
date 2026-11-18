@@ -15,7 +15,7 @@ default_model = "balanced"
 #
 # think: "off" (fastest) → "low" → "medium" → "high" (deepest reasoning)
 # context_window: max input tokens the model accepts (check your provider's limits)
-# max_output_tokens: max tokens the model can generate in one response
+# max_output_tokens: optional on Chat and Responses; native Anthropic Messages requires a value
 
 # strong: deep reasoning for complex analysis, architecture, and debugging.
 [model.strong]
@@ -23,7 +23,7 @@ provider = "anthropic"
 model = "claude-sonnet-4-6"
 think = "high"
 context_window = 200000
-max_output_tokens = 64000
+max_output_tokens = 128000
 purpose = "deep reasoning, complex analysis"
 
 # balanced: general-purpose everyday tasks (default tier).
@@ -32,7 +32,7 @@ provider = "anthropic"
 model = "claude-sonnet-4-6"
 think = "medium"
 context_window = 200000
-max_output_tokens = 48000
+max_output_tokens = 128000
 purpose = "general purpose, everyday tasks"
 
 # light: fast, cheap tasks — summaries, formatting, simple lookups.
@@ -41,7 +41,7 @@ provider = "anthropic"
 model = "claude-haiku-4-5-20251001"
 think = "off"
 context_window = 200000
-max_output_tokens = 32000
+max_output_tokens = 64000
 purpose = "quick simple tasks, summaries"
 
 # ── Providers ─────────────────────────────────────────────────────────────────

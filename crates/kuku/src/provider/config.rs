@@ -15,6 +15,7 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) base_url: Option<String>,
     pub(crate) api_key: Option<String>,
     pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) max_output_tokens_per_request: Option<u32>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) config: Option<Config>,
@@ -95,6 +96,32 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             "connection '{name}': routing options require an OpenRouter profile"
         )));
     }
+    let requires_output_limit = kind == ProviderKind::Anthropic
+        && !matches!(
+            capabilities.profile,
+            crate::config::ProviderProfile::DeepSeek | crate::config::ProviderProfile::OpenRouter
+        );
+    let output_tier = if requires_output_limit {
+        tier
+    } else {
+        settings_tier
+    };
+    let max_output_tokens = input
+        .max_output_tokens
+        .or_else(|| output_tier.and_then(|tier| tier.max_output_tokens))
+        .into_iter()
+        .chain(input.max_output_tokens_per_request)
+        .min();
+    if max_output_tokens == Some(0) {
+        return Err(Error::InvalidArgument(
+            "max_output_tokens must be positive".into(),
+        ));
+    }
+    if max_output_tokens.is_none() && requires_output_limit {
+        return Err(Error::MissingProviderConfig(format!(
+            "connection '{name}': Anthropic Messages requires max_tokens. Set max_output_tokens for model '{model}' on the tier or request, or provide a host output limit."
+        )));
+    }
     Ok(ResolvedProvider {
         connection_name: name,
         kind,
@@ -102,10 +129,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         base_url,
         api_key,
         max_context_tokens: tier.map(|tier| tier.context_window).unwrap_or(200_000),
-        max_output_tokens: input
-            .max_output_tokens
-            .or_else(|| tier.map(|tier| tier.max_output_tokens))
-            .unwrap_or(48_000),
+        max_output_tokens,
         think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,

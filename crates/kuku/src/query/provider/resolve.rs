@@ -17,6 +17,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
         base_url: pending.query.base_url.clone(),
         api_key: pending.query.api_key.clone(),
         max_output_tokens: pending.query.max_output_tokens,
+        max_output_tokens_per_request: pending.query.runtime_limits.max_output_tokens_per_request,
         config: Some((*pending.config).clone()),
         connection: pending.query.connection.clone(),
         reasoning_effort: pending.query.reasoning_effort.clone(),

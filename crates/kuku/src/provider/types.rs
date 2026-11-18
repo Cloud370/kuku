@@ -78,7 +78,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
-    pub(crate) max_output_tokens: u32,
+    pub(crate) max_output_tokens: Option<u32>,
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
@@ -95,7 +95,7 @@ impl Default for ResolvedProvider {
             base_url: "http://localhost".into(),
             api_key: SecretString::new(""),
             max_context_tokens: 200_000,
-            max_output_tokens: 4096,
+            max_output_tokens: None,
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
@@ -118,7 +118,7 @@ pub struct ProviderSettings {
     pub service_tier: Option<String>,
 }
 
-/// Native settings declared for the configured endpoint and model.
+/// Capabilities declared for the configured endpoint and model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.

@@ -530,7 +530,7 @@ fn append_dynamic(
         resolved
             .max_context_tokens
             .saturating_sub(resolved.think_level.overhead_tokens()),
-        Some(resolved.max_output_tokens),
+        resolved.max_output_tokens,
         input_tokens,
     );
     let config = pending.config.handoff();

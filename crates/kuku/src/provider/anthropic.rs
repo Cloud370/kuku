@@ -14,8 +14,6 @@ use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
-const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
-
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_stop";
 
 pub(crate) fn messages_url(base_url: &str) -> String {
@@ -53,7 +51,6 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let mut body = json!({
         "model": request.model,
         "messages": messages,
-        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS as u32),
         "stream": false,
         "cache_control": cache_control_ephemeral(),
         "system": [{
@@ -62,6 +59,9 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         }],
     });
 
+    if let Some(max_tokens) = request.max_output_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }

@@ -354,7 +354,9 @@ impl Session {
         if let Some(tier) = &config.tier {
             query = query.tier(tier);
         }
-        query = query.max_output_tokens(self.resolve_model(&config)?.max_output_tokens);
+        if let Some(max_output_tokens) = config.max_output_tokens {
+            query = query.max_output_tokens(max_output_tokens);
+        }
         if let Some(prompts_dir) = &self.inner.options.prompts_dir {
             query = query.prompts_dir(prompts_dir);
         }

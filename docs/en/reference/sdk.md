@@ -76,7 +76,6 @@ cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
   --connection deepseek --reasoning-effort low \
-  --max-output-tokens 32768 --max-context-tokens 131072 \
   --output /path/to/result.json
 ```
 
@@ -84,7 +83,9 @@ Use `--session-id` to reopen and `--command-id` to retry delivery after losing a
 
 ## Limits and accounting
 
-The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, 512 KiB per prepared request, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, a 16 KiB first preview, and 128 transient observations. `RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns, resets on reopen, and rejects excess work before dispatch. Its default is `None`. `RuntimeLimits.max_output_tokens_per_request` optionally caps each Agent's resolved output tokens. Selection and preparation records expose the effective value. `session_task --max-output-tokens` sets this host ceiling as well as the primary Agent's selection. Zero or unsupported bounds fail validation. Output previews require at least 1 KiB for a complete reference and flags.
+The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, 512 KiB per prepared request, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, a 16 KiB first preview, and 128 transient observations. Output previews require at least 1 KiB for a complete reference and flags.
+
+`RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns and resets on reopen. `RuntimeLimits.max_output_tokens_per_request` optionally sets a host-wide ceiling on each response. Both default to `None`. An explicit Agent output setting overrides the tier setting. The host ceiling applies to every Agent. In Rust, `TierConfig.max_output_tokens`, `AgentSelection.max_output_tokens`, and `ModelSelection.max_output_tokens` are `Option<u32>`. An absent effective value delegates to the provider on protocols that allow it. The preparation record contains the value used for that request. `session_task --max-output-tokens N` sets both the host ceiling and the primary Agent's setting. See [model configuration](config.md#modelname).
 
 `RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK can retry a transient transport or HTTP error once before the stream opens, including a temporary HTTP 429. An explicit quota exhaustion ends the attempt. The SDK respects a valid `Retry-After` and returns control with the requested delay when it exceeds one minute. Each retry reuses the prepared request and counts toward the caller's request budget. Set the option to false or pass `session_task --no-provider-retry` to disable it. The example reports the permitted retry count under `limits.automatic_retries`.
 

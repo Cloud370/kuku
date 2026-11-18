@@ -206,7 +206,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         resolved_config
             .max_context_tokens
             .saturating_sub(thinking_overhead),
-        Some(resolved_config.max_output_tokens),
+        resolved_config.max_output_tokens,
         estimated_input,
     );
 
@@ -562,7 +562,7 @@ fn build_runtime_blocks(
         resolved_config
             .max_context_tokens
             .saturating_sub(thinking_overhead),
-        Some(resolved_config.max_output_tokens),
+        resolved_config.max_output_tokens,
         estimated_input,
     );
 

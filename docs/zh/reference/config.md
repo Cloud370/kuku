@@ -43,10 +43,12 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 | `reasoning_effort` | string | 原生思考值，覆盖 `think` |
 | `service_tier` | string | 独立于思考设置的原生服务选项 |
 | `context_window` | integer | 最大输入 token 数 |
-| `max_output_tokens` | integer | 最大输出 token 数 |
+| `max_output_tokens` | 正整数，可省略 | 此 tier 的单次生成上限。供应商把推理 token 计入输出时，上限也包含推理 |
 | `purpose` | string | 面向人的 tier 摘要 |
 
 默认 tier 为 `strong`、`balanced` 和 `light`。
+
+Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthropic 原生 Messages 要求数值，内置 Sonnet 和 Haiku 预设在 TOML 中提供。自定义 Messages 连接可从 tier、Agent 或宿主获得所需数值。旧配置中显式设置的限额继续在对应 tier 生效。单次响应还受剩余上下文约束。
 
 ## `provider.<name>`
 

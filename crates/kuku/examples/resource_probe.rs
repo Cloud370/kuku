@@ -129,7 +129,7 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     tier.model = "resource-fixture".into();
     tier.think = kuku::config::ThinkLevel::Off;
     tier.context_window = 131_072;
-    tier.max_output_tokens = 32_768;
+    tier.max_output_tokens = Some(32_768);
     config.plugin.enabled = false;
     config.handoff.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);

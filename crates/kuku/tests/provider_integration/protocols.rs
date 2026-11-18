@@ -332,59 +332,78 @@ async fn openai_chat_second_length_interrupts_after_one_recovery() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn openai_responses_length_recovery_keeps_original_input_prefix() {
-    let env = TestEnv::new();
-    let server = MockServer::start();
-    let first = server.mock(|when, then| {
-        when.method(POST)
-            .path("/responses")
-            .matches(is_original_request)
-            .body_contains(r#""max_output_tokens":37"#);
-        then.status(200).body(responses_sse(
-            "resp_length",
-            "partial",
-            concat!(
-                "event: response.incomplete\n",
-                "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_length\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":37}}}\n\n",
-            ),
-        ));
-    });
-    let second = server.mock(|when, then| {
-        when.method(POST)
-            .path("/responses")
-            .body_contains("finish the responses task")
-            .body_contains("previous model attempt reached its output limit")
-            .body_contains(r#""max_output_tokens":37"#);
-        then.status(200).body(responses_sse(
-            "resp_recovered",
-            "completed",
-            concat!(
-                "event: response.completed\n",
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":6}}}\n\n",
-            ),
-        ));
-    });
+async fn openai_responses_length_recovery_keeps_original_input_and_optional_limit() {
+    for (prefix, limit) in [("/recovery-limited", Some(37)), ("/recovery-default", None)] {
+        let env = TestEnv::new();
+        let server = MockServer::start();
+        let path = format!("{prefix}/responses");
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(is_original_request)
+                .matches(common::capture_http_request);
+            then.status(200).body(responses_sse(
+                "resp_length",
+                "partial",
+                concat!(
+                    "event: response.incomplete\n",
+                    "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_length\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":37}}}\n\n",
+                ),
+            ));
+        });
+        let second = server.mock(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains("finish the responses task")
+                .body_contains("previous model attempt reached its output limit")
+                .matches(common::capture_http_request);
+            then.status(200).body(responses_sse(
+                "resp_recovered",
+                "completed",
+                concat!(
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":6}}}\n\n",
+                ),
+            ));
+        });
 
-    let output = query("finish the responses task")
-        .provider(Provider::OpenAiResponses)
-        .model("test-responses")
-        .base_url(server.base_url())
-        .api_key("responses-key")
-        .max_output_tokens(37)
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+        let mut config = test_config();
+        let tier = config.tiers.get_mut("balanced").unwrap();
+        tier.max_output_tokens = None;
+        if limit.is_some() {
+            tier.context_window = 10_000;
+        }
+        let mut request = query("finish the responses task")
+            .provider(Provider::OpenAiResponses)
+            .model("test-responses")
+            .base_url(server.url(prefix))
+            .api_key("responses-key")
+            .config(config);
+        if let Some(limit) = limit {
+            request = request.max_output_tokens(limit);
+        }
+        let output = request.run().await.unwrap();
 
-    first.assert();
-    second.assert();
-    assert_eq!("completed", output.text);
-    assert_eq!(2, output.model_request_count);
-    assert_eq!(Some(43), output.usage.and_then(|usage| usage.output_tokens));
-    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. })));
+        first.assert();
+        second.assert();
+        let requests = common::take_http_requests(&path);
+        assert_eq!(2, requests.len());
+        let expected = limit.map(|value| serde_json::json!(value));
+        for body in requests {
+            assert_eq!(expected.as_ref(), body.get("max_output_tokens"));
+        }
+        assert_eq!("completed", output.text);
+        assert_eq!(2, output.model_request_count);
+        assert_eq!(Some(43), output.usage.and_then(|usage| usage.output_tokens));
+        let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+        assert!(events.iter().any(
+            |event| matches!(event.payload, EventPayload::ModelRecovery {
+            failed_max_output_tokens,
+            retry_max_output_tokens,
+            ..
+        } if failed_max_output_tokens == limit && retry_max_output_tokens == limit)
+        ));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

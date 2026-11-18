@@ -21,7 +21,7 @@ fn options(server: &MockServer, workspace: &Path, data: &Path) -> (SessionOption
     tier.provider = "openai".into();
     tier.model = "context-fixture".into();
     tier.think = kuku::config::ThinkLevel::Off;
-    tier.max_output_tokens = 128;
+    tier.max_output_tokens = Some(128);
     tier.context_window = 16_384;
     config.handoff.enabled = false;
     config.plugin.enabled = false;

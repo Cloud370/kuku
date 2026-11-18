@@ -43,10 +43,12 @@ Required and optional fields:
 | `reasoning_effort` | string | Native reasoning value; overrides `think` |
 | `service_tier` | string | Native service option, independent of reasoning |
 | `context_window` | integer | Max input tokens |
-| `max_output_tokens` | integer | Max output tokens |
+| `max_output_tokens` | positive integer, optional | Generation ceiling for this tier, including reasoning tokens when the provider counts them as output |
 | `purpose` | string | Human-readable tier summary |
 
 Default tiers are `strong`, `balanced`, and `light`.
+
+On Chat and Responses, omit `max_output_tokens` to use the upstream default. Native Anthropic Messages requires a numeric value. The bundled Sonnet and Haiku presets set it in TOML. A custom Messages connection can take its value from its tier, the Agent or the host. Existing numeric settings continue to apply to their tier. The available context can further limit each response.
 
 ## `provider.<name>`
 

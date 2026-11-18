@@ -244,7 +244,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
             base_url: "https://example.test".to_string(),
             api_key: SecretString::new("test-key"),
             max_context_tokens: 1000,
-            max_output_tokens: 1000,
+            max_output_tokens: Some(1000),
             think_level: crate::config::ThinkLevel::Off,
             thinking: crate::config::ResolvedThinking::default(),
             ..Default::default()

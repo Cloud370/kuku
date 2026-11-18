@@ -93,7 +93,7 @@ fn preflight_context(
                 .expect("resolved runtime exists")
                 .config,
         ),
-        Some(base.max_output_tokens()),
+        base.max_output_tokens(),
         Some(estimated_input),
     );
     let suffix_tokens = conservative_suffix_tokens(base.recovery_asset().text.len())?;
@@ -225,13 +225,14 @@ async fn dispatch_recovery(
 
 fn interrupt(mut pending: PendingRun, reason: &str) -> Result<PendingStep> {
     let message = if reason == "length" && pending.recovery_count > 0 {
-        let max_output_tokens = pending
+        let limit = pending
             .request_base
             .as_ref()
-            .map(super::request::OwnedRequestBase::max_output_tokens)
-            .unwrap_or_default();
+            .and_then(super::request::OwnedRequestBase::max_output_tokens)
+            .map(|limit| format!("max_output_tokens={limit}"))
+            .unwrap_or_else(|| "the provider's output limit".to_string());
         format!(
-            "model reached max_output_tokens={max_output_tokens} after recovery attempt {}/{}; the turn remains incomplete",
+            "model reached {limit} after recovery attempt {}/{}; the turn remains incomplete",
             pending.recovery_count, MAX_RECOVERY_ATTEMPTS
         )
     } else {

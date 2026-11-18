@@ -111,7 +111,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     if args.contains_key("help") {
         println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
         println!("--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry.");
-        println!("--max-output-tokens optionally caps each model request. By default the SDK resolves the model's output allowance.");
+        println!("--max-output-tokens optionally caps each model request. Omit it to use the selected tier or provider default.");
         println!("--max-request-bytes caps the serialized provider request. It defaults to the SDK's request byte limit.");
         return Ok(true);
     }

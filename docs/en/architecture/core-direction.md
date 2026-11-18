@@ -14,6 +14,8 @@ Give reliability, low resource use, and low human/model cognitive cost equal wei
 
 The default Harness follows the user’s intended stage of work, including exploration, drafts and delivery. Evaluation callers own benchmark budgets, scoring and unattended scheduling. A normal turn follows the conversation and tool results to completion. A caller with an execution budget can enforce it independently.
 
+Leave the generation limit to the provider when its protocol allows omission. An Agent or host can set an explicit ceiling. Presets for protocols that require a limit supply it in configuration.
+
 ## Preserve from kuku
 
 - **Keep behavioral Prompt text in versioned assets/templates**, outside Rust execution branches and tool implementations. Structured runtime facts are not themselves Prompt templates.

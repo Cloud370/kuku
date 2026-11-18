@@ -208,8 +208,8 @@ pub struct AgentSelection {
     pub model: String,
     /// Configured context window; serialized request bytes have an additional hard limit.
     pub context_window_tokens: u32,
-    /// Effective output-token maximum.
-    pub max_output_tokens: u32,
+    /// Configured output limit sent with the request, if any.
+    pub max_output_tokens: Option<u32>,
     /// Requested and effective reasoning/service settings.
     pub settings: ProviderSettings,
     /// Declared provider capabilities.
@@ -229,20 +229,20 @@ pub struct ModelSelection {
     pub model: String,
     /// Configured context window; requests have a separate serialized byte limit.
     pub context_window_tokens: u32,
-    /// Effective output-token maximum.
-    pub max_output_tokens: u32,
+    /// Configured output limit sent with the request, if any.
+    pub max_output_tokens: Option<u32>,
     /// Requested and effective reasoning and service settings.
     pub settings: ProviderSettings,
     /// Declared capabilities of the selected route.
     pub capabilities: ProviderCapabilities,
 }
 
-/// Inspect an explicit model route or tier without dispatching work or resolving credentials.
+/// Inspect model settings available locally without dispatching work or resolving credentials.
 pub fn inspect_model(
     config: &crate::config::Config,
     selection: &crate::session::AgentConfig,
 ) -> Result<ModelSelection> {
-    let resolved = crate::session::runtime::resolve_agent_model(config, selection)?;
+    let resolved = crate::session::runtime::resolve_agent_model(config, selection, None)?;
     Ok(ModelSelection {
         connection: resolved.connection_name,
         protocol: protocol(resolved.kind),

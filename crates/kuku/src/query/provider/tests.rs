@@ -16,7 +16,7 @@ fn handoff_trigger_requires_known_token_headroom() {
 
 #[test]
 fn handoff_trigger_uses_known_token_headroom() {
-    let headroom = compute_context_headroom(200_000, Some(64_000), Some(125_000));
+    let headroom = compute_context_headroom(200_000, Some(64_000), Some(150_000));
 
     assert!(should_trigger_handoff(&headroom, 0.7));
 }

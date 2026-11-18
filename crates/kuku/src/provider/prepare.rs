@@ -146,9 +146,7 @@ fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
     }
     if config.kind == ProviderKind::OpenAiCompatible {
         body["stream_options"] = json!({"include_usage": true});
-        if config.capabilities.profile == ProviderProfile::OpenAi
-            && config.model.starts_with("gpt-5")
-        {
+        if config.capabilities.profile == ProviderProfile::OpenAi {
             if let Some(max_tokens) = body
                 .as_object_mut()
                 .and_then(|body| body.remove("max_tokens"))
