@@ -953,7 +953,7 @@ def markdown_document(client, document=None, reference=False):
             source = frames["source"]
             assert all(marker in source for marker in (document.heading, document.table, "```python", document.draft)), source
             toggle_source(terminal)
-            restored = terminal.expect(preview, state="Finished")["screen"]
+            restored = terminal.expect("╭─ python ", state="Finished", also=(document.draft, preview))["screen"]
             assert document.draft in restored, restored
             check_preview(restored, complete=True)
             terminal.press("\x03")
