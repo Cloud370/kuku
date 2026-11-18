@@ -31,18 +31,20 @@ const CACHED_PANES: usize = 4;
 enum SnapshotRefresh {
     Current,
     AfterCommit(u64),
+    Progress,
 }
 
 impl SnapshotRefresh {
     fn needed(self, snapshot: Option<&Snapshot>) -> bool {
         match self {
-            Self::Current => true,
+            Self::Current | Self::Progress => true,
             Self::AfterCommit(id) => snapshot.is_none_or(|snapshot| snapshot.cursor < id),
         }
     }
 
     fn merge(self, other: Self) -> Self {
         match (self, other) {
+            (Self::Progress, _) | (_, Self::Progress) => Self::Progress,
             (Self::AfterCommit(first), Self::AfterCommit(second)) => {
                 Self::AfterCommit(first.max(second))
             }
@@ -927,7 +929,8 @@ impl App {
                         pane.progress = ExecutionProgress::default();
                     }
                     pane.progress.live(&event);
-                    pane.transcript.live(execution_id, turn, turn_number, &event);
+                    pane.transcript
+                        .live(execution_id, turn, turn_number, &event);
                 }
             }
             Observation::Lagged { .. } => {
@@ -935,7 +938,7 @@ impl App {
                 pane.transcript.clear_preview();
                 let cursor = pane.last_event;
                 self.related_agents.invalidate(cursor);
-                self.refresh();
+                self.request_refresh(SnapshotRefresh::Progress);
             }
             Observation::Heartbeat => {}
         }
@@ -957,7 +960,13 @@ impl App {
             pane.refresh_due = Some(pane.refresh_due.map_or(refresh, |due| due.merge(refresh)));
         } else {
             pane.refresh_in_flight = true;
-            self.effects.push(Job::Refresh(self.selection()));
+            let selection = self.selection();
+            self.effects.push(match refresh {
+                SnapshotRefresh::Progress => Job::RefreshProgress(selection),
+                SnapshotRefresh::Current | SnapshotRefresh::AfterCommit(_) => {
+                    Job::Refresh(selection)
+                }
+            });
         }
     }
 

@@ -51,9 +51,10 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
         |frame: &Value| frame["agent"] == "reviewer" && frame["kind"] == "runtime.step_prepared";
     seek_frame(&mut parent, &mut parent_buffer, step).await;
     seek_frame(&mut reviewer, &mut reviewer_buffer, step).await;
-    let running = server.snapshot(id, "main").await;
+    let running = activity_snapshot(&server, id, "main").await;
     let peer = agent_summary(&running, "reviewer");
     assert_eq!("running", peer["status"]);
+    assert_eq!("waiting_for_model", peer["progress"]["phase"]);
     assert!(peer["last_output_preview"].is_null());
     begin.send(()).unwrap();
 
@@ -182,6 +183,20 @@ fn agent_summary<'a>(snapshot: &'a Value, address: &str) -> &'a Value {
         .iter()
         .find(|agent| agent["address"] == address)
         .unwrap()
+}
+
+async fn activity_snapshot(server: &TestServer, session: &str, agent: &str) -> Value {
+    let response = server
+        .session_request(
+            session,
+            "snapshot",
+            &[("agent", agent), ("progress", "true")],
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(200, response.status());
+    response.json().await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -339,6 +354,17 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             snapshot["agent"]
         );
     }
+    server.submit(id, json!({"type":"create_agent","command_id":"second-observer","agent":"observer","config":{}})).await;
+    let peer = activity_snapshot(&server, id, "observer").await;
+    assert!(peer.get("progress").is_none());
+    assert_eq!(
+        "running_tools",
+        agent_summary(&peer, "main")["progress"]["phase"]
+    );
+    assert_eq!(
+        json!(["gated-tool"]),
+        agent_summary(&peer, "main")["progress"]["tool_call_ids"]
+    );
     let queued = server.submit(id, json!({"type":"send","command_id":"later-turn","text":"next-turn-message","timing":"next_turn"})).await;
     let inserted = server.submit(id, json!({"type":"send","command_id":"steering","text":"steering-message","timing":"steer"})).await;
     assert_eq!("queued", queued["status"]);

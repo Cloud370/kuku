@@ -148,6 +148,8 @@ pub struct AgentSummary {
     pub last_output_preview: Option<String>,
     /// Short excerpt of the most recent durable failure, when available.
     pub last_error_preview: Option<String>,
+    /// Bounded execution history for this Agent, when requested and available.
+    pub progress: Option<AgentProgress>,
 }
 
 /// State and output recorded when one Agent's turn settles.
@@ -163,8 +165,8 @@ pub struct AgentSettlement {
     pub error: Option<String>,
 }
 
-/// Latest identifiable execution phase inferred from the selected Agent's committed history.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Latest identifiable execution phase inferred from an Agent's committed history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum AgentProgress {
     /// A prepared model request has no committed response yet.

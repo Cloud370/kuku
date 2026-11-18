@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
@@ -146,7 +146,23 @@ pub(super) async fn snapshot(
         }
     }
     .map_err(agent_error)?;
-    let agents: Vec<_> = view.agents.iter().map(agent_summary).collect();
+    let mut progress = if query.progress {
+        execution_progress(&target.path, &view.agents, view.cursor)?
+    } else {
+        HashMap::new()
+    };
+    let selected_progress = progress.remove(address);
+    let agents: Vec<_> = view
+        .agents
+        .iter()
+        .map(|agent| {
+            let mut summary = agent_summary(agent);
+            if let Some(progress) = progress.remove(agent.address.as_str()) {
+                summary["progress"] = progress;
+            }
+            summary
+        })
+        .collect();
     let mut value = json!({
         "ok":true,
         "session_id":id,
@@ -157,10 +173,8 @@ pub(super) async fn snapshot(
         "pending":view.pending_inputs,
         "selection":null,
     });
-    if query.progress {
-        if let Some(progress) = execution_progress(&target.path, &view.snapshot, view.cursor)? {
-            value["progress"] = progress;
-        }
+    if let Some(progress) = selected_progress {
+        value["progress"] = progress;
     }
     let effective = view
         .snapshot
@@ -189,51 +203,87 @@ pub(super) async fn snapshot(
     Ok(Json(value))
 }
 
-fn execution_progress(path: &FsPath, agent: &AgentSnapshot, cursor: u64) -> Result<Option<Value>> {
-    let Some(execution) = agent
-        .execution_id
-        .filter(|_| agent.status == AgentStatus::Running)
-    else {
-        return Ok(None);
+fn execution_progress<'a>(
+    path: &FsPath,
+    agents: &'a [AgentSnapshot],
+    cursor: u64,
+) -> Result<HashMap<&'a str, Value>> {
+    let mut scans: HashMap<_, _> = agents
+        .iter()
+        .filter_map(|agent| {
+            let execution = agent
+                .execution_id
+                .filter(|_| agent.status == AgentStatus::Running)?;
+            Some((
+                agent.address.as_str(),
+                ProgressScan {
+                    execution,
+                    ..ProgressScan::default()
+                },
+            ))
+        })
+        .collect();
+    let Some(earliest) = scans.values().map(|scan| scan.execution).min() else {
+        return Ok(HashMap::new());
     };
-    let count = cursor.saturating_sub(execution).min(PROGRESS_WINDOW as u64) as usize;
+    let count = cursor.saturating_sub(earliest).min(PROGRESS_WINDOW as u64) as usize;
     let events = EventStore::read_page_before(path, Some(cursor.saturating_add(1)), count)?;
-    let mut settled = HashSet::new();
-    let mut running = Vec::new();
-    let mut prepared = false;
     for event in events.into_iter().rev() {
-        if event.id <= execution {
-            break;
+        if let Some(scan) = event_agent(&event.payload).and_then(|address| scans.get_mut(address)) {
+            scan.observe(event.id, event.payload);
         }
-        if event_agent(&event.payload) != Some(agent.address.as_str()) {
-            continue;
+    }
+    Ok(scans
+        .into_iter()
+        .filter_map(|(address, scan)| Some((address, scan.projection()?)))
+        .collect())
+}
+
+#[derive(Default)]
+struct ProgressScan {
+    execution: u64,
+    complete: bool,
+    prepared: bool,
+    settled: HashSet<String>,
+    running: Vec<String>,
+}
+
+impl ProgressScan {
+    fn observe(&mut self, cursor: u64, payload: EventPayload) {
+        if self.complete || cursor <= self.execution {
+            return;
         }
-        match event.payload {
+        match payload {
             EventPayload::ToolResult { tool_call_id, .. } => {
-                settled.insert(tool_call_id);
+                self.settled.insert(tool_call_id);
             }
             EventPayload::Unknown(record) if record["kind"] == "runtime.tool_dispatched" => {
                 if let Some(id) = record["tool_call_id"].as_str() {
-                    if !settled.contains(id) {
-                        running.push(id.to_owned());
+                    if !self.settled.contains(id) {
+                        self.running.push(id.to_owned());
                     }
                 }
             }
             EventPayload::Unknown(record) if record["kind"] == "runtime.step_prepared" => {
-                prepared = true;
-                break;
+                self.prepared = true;
+                self.complete = true;
             }
-            EventPayload::ModelResponse { .. } | EventPayload::ModelError { .. } => break,
+            EventPayload::ModelResponse { .. } | EventPayload::ModelError { .. } => {
+                self.complete = true;
+            }
             _ => {}
         }
     }
-    Ok(if !running.is_empty() {
-        Some(json!({"phase":"running_tools","tool_call_ids":running}))
-    } else if prepared {
-        Some(json!({"phase":"waiting_for_model"}))
-    } else {
-        None
-    })
+
+    fn projection(self) -> Option<Value> {
+        if !self.running.is_empty() {
+            Some(json!({"phase":"running_tools","tool_call_ids":self.running}))
+        } else if self.prepared {
+            Some(json!({"phase":"waiting_for_model"}))
+        } else {
+            None
+        }
+    }
 }
 
 fn selection(

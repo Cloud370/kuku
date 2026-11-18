@@ -602,7 +602,7 @@ mod tests {
             original.clone(),
             Observation::Lagged { skipped: 0 },
         ));
-        assert!(matches!(app.effects.as_slice(), [Job::Refresh(_)]));
+        assert!(matches!(app.effects.as_slice(), [Job::RefreshProgress(_)]));
         let delayed = usage_snapshot(&app, 13, Some(120));
         app.select(
             Address::new(main.session.clone(), "reviewer".into()),

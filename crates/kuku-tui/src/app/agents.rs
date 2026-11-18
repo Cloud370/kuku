@@ -180,6 +180,7 @@ impl TrackedAgent {
         let mut agent = Self::new(summary.status, summary.execution_id, cursor);
         agent.settled = summary.turn.is_some();
         agent.failed = summary.last_error_preview.is_some();
+        agent.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
         if summary.status != AgentStatus::Running {
             agent.preview = excerpt(
                 summary
@@ -200,6 +201,14 @@ impl TrackedAgent {
             && summary.execution_id == self.execution
         {
             self.state_cursor = cursor;
+            if summary.progress.is_some()
+                && self.activity() == Activity::Running
+                && cursor >= self.phase_cursor
+            {
+                self.phase_cursor = cursor;
+                self.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
+                return true;
+            }
             return false;
         }
         self.replace(Self::from_summary(summary, cursor))
@@ -339,7 +348,7 @@ fn excerpt(text: Option<&str>) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use kuku_client::{HistoryPage, Observation, Snapshot};
+    use kuku_client::{AgentProgress, HistoryPage, Observation, Snapshot};
     use serde_json::{json, Value};
 
     use super::{Activity, AgentActivity, PREVIEW_BYTES};
@@ -506,6 +515,14 @@ mod tests {
         app.update(Update::WatchConnected(original.clone()));
         app.update(Update::Refreshed(original.clone(), Ok(stale)));
         assert!(reviewer(&app).is_none());
+
+        let mut running_tools = snapshot(&app, 11, "running", Some(8), Some("old output"));
+        running_tools.agents[0].progress = Some(AgentProgress::RunningTools {
+            tool_call_ids: vec!["verify".into()],
+        });
+        app.update(Update::Refreshed(original.clone(), Ok(running_tools)));
+        assert_eq!(Activity::RunningTools, reviewer(&app).unwrap().status);
+        assert_eq!(None, reviewer(&app).unwrap().preview);
 
         let settled = snapshot(&app, 13, "idle", None, Some("durable reply"));
         app.update(Update::Refreshed(original.clone(), Ok(settled)));

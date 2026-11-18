@@ -40,6 +40,7 @@ pub(crate) enum Job {
     Observe(Selection),
     StopObserving,
     Refresh(Selection),
+    RefreshProgress(Selection),
     History(Selection, HistoryRequest),
     Find(Ticket, Search),
     ClosePicker,
@@ -207,6 +208,13 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
     match job {
         Job::Refresh(selection) => {
             let result = client.snapshot(&selection.target).await.map(Box::new);
+            Update::Refreshed(selection, result)
+        }
+        Job::RefreshProgress(selection) => {
+            let result = client
+                .observation_snapshot(&selection.target)
+                .await
+                .map(Box::new);
             Update::Refreshed(selection, result)
         }
         Job::History(selection, request) => {

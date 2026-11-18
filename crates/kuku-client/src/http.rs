@@ -247,7 +247,7 @@ impl Client {
         .await
     }
 
-    /// Get a snapshot with recent committed execution progress for attaching an observer.
+    /// Get a snapshot with bounded committed execution progress for Agents in the Session.
     pub async fn observation_snapshot(&self, target: &Target) -> Result<Snapshot, Error> {
         #[derive(Serialize)]
         struct Query<'a> {
