@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::log::{
@@ -233,7 +234,10 @@ impl Query {
                 &conversation,
                 turn,
                 &self.prompt,
-                self.message_from.as_ref(),
+                self.message_from
+                    .as_ref()
+                    .map(ConversationAddress::as_str)
+                    .or_else(|| self.input_source.agent_address()),
                 self.via_tool_call_id.as_deref(),
             )?;
 

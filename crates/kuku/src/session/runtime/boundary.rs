@@ -72,16 +72,12 @@ impl Session {
         };
         let source = first.input.source.clone();
         self.accept(state, address, inputs, Some(turn))?;
-        let from = match &source {
-            InputSource::Agent(address) => Some(address.clone()),
-            InputSource::Host(_) | InputSource::External(_) => None,
-        };
         EventStore::open(self.events_path())?.append(EventPayload::MessageUser {
             turn,
             ts: timestamp()?,
             conversation: address.into(),
             text: input_text(inputs),
-            from,
+            from: source.agent_address().map(str::to_owned),
             via_tool_call_id: None,
         })?;
         Ok(Some(source))

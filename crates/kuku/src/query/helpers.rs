@@ -229,7 +229,7 @@ pub(super) fn append_message_user_with_sender(
     conversation: &ConversationAddress,
     turn: u64,
     text: &str,
-    from: Option<&ConversationAddress>,
+    from: Option<&str>,
     via_tool_call_id: Option<&str>,
 ) -> Result<()> {
     append_event(
@@ -239,7 +239,7 @@ pub(super) fn append_message_user_with_sender(
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             text: text.to_string(),
-            from: from.map(|address| address.as_str().to_string()),
+            from: from.map(str::to_owned),
             via_tool_call_id: via_tool_call_id.map(ToOwned::to_owned),
         },
     )

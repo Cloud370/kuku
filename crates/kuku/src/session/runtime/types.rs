@@ -150,6 +150,15 @@ pub enum InputSource {
     External(String),
 }
 
+impl InputSource {
+    pub(crate) fn agent_address(&self) -> Option<&str> {
+        match self {
+            Self::Agent(address) => Some(address),
+            Self::Host(_) | Self::External(_) => None,
+        }
+    }
+}
+
 /// Whether delivery also requests advancement of an idle recipient.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
