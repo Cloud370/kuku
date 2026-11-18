@@ -207,7 +207,8 @@ def exercise(client, desktop, checks):
                           "clipboard_text": REPLY, "screenshot": desktop.screen("07-reply-copied")}
         client.provider.assert_idle(duration=0.25)
 
-        desktop.key(window, "ctrl+c")
+        desktop.type(window, "/quit")
+        desktop.key(window, "Return")
         assert terminal.wait(timeout=10) == 0
         code = json.loads(state.read_text(encoding="utf-8"))["exit_code"]
         assert code == 0, f"Kuku exited with {code}"

@@ -2,6 +2,7 @@ use kuku_client::{OutputChunk, OutputStream};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
+use crate::keys::Shortcut;
 use crate::markup::{render_diff, render_literal, wrap, ACCENT, MUTED};
 use crate::transcript::ToolView;
 
@@ -129,7 +130,15 @@ impl OutputViewer {
             );
         }
         let Some(chunk) = &self.chunk else {
-            return Line::styled("PgUp/PgDn Scroll · Esc Close", Style::default().fg(MUTED));
+            return Line::styled(
+                format!(
+                    "{}/{} Scroll · {} Close",
+                    Shortcut::PAGE_UP.label,
+                    Shortcut::PAGE_DOWN.label,
+                    Shortcut::ESCAPE.label,
+                ),
+                Style::default().fg(MUTED),
+            );
         };
         let state = if chunk.cleanup_incomplete {
             " · cleanup incomplete"
@@ -142,8 +151,14 @@ impl OutputViewer {
         };
         Line::styled(
             format!(
-                "{}–{} / {} bytes{state} · PgUp/PgDn · R Refresh · Esc",
-                chunk.offset, chunk.next_offset, chunk.total_bytes
+                "{}–{} / {} bytes{state} · {}/{} · {} Refresh · {}",
+                chunk.offset,
+                chunk.next_offset,
+                chunk.total_bytes,
+                Shortcut::PAGE_UP.label,
+                Shortcut::PAGE_DOWN.label,
+                Shortcut::REFRESH_OUTPUT.label,
+                Shortcut::ESCAPE.label,
             ),
             Style::default().fg(ACCENT),
         )

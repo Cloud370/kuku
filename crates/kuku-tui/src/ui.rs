@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Modal, Pane};
 use crate::editor::Editor;
 use crate::jobs::agent_status;
+use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap, ACCENT, MUTED};
 use crate::menu::{Picker, PickerKind, Prompt};
 use crate::output::OutputViewer;
@@ -42,12 +43,12 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     render_transcript(frame, transcript, app);
     frame.render_widget(Paragraph::new(banner), banner_area);
-    let composer_title =
-        if app.active.agent.width() + "Message ".width() + 4 <= usize::from(editor.width) {
-            format!("Message {}", app.active.agent)
-        } else {
-            format!("To {}", app.active.agent)
-        };
+    let composer_title = format!("You · draft to {}", app.active.agent);
+    let composer_title = if composer_title.width() + 4 <= usize::from(editor.width) {
+        composer_title
+    } else {
+        format!("Draft · {}", app.active.agent)
+    };
     let composer_focused = app.modal.is_none();
     let focus_style = if composer_focused { Color::Cyan } else { MUTED };
     let composer = panel(&composer_title, focus_style, editor);
@@ -59,7 +60,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
         inner,
         &mut app.pane_mut().draft,
         composer_focused,
-        "Type a prompt · / Actions",
+        &format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label),
     );
     render_status(frame, status, app);
     let main_areas = [transcript, banner_area, inner, status];
@@ -98,7 +99,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         view.lines = welcome(app, width, height);
     }
     if !view.following {
-        let reading = "Reading · Ctrl+End latest";
+        let reading = format!("Reading · {} latest", Shortcut::LATEST.label);
         let gap = 3;
         let width = usize::from(header.width);
         if width > reading.width() + gap {
@@ -114,7 +115,10 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             );
         } else {
             frame.render_widget(
-                Paragraph::new(Line::styled("Reading · Ctrl+End", emphasis(ACCENT))),
+                Paragraph::new(Line::styled(
+                    format!("Reading · {}", Shortcut::LATEST.label),
+                    emphasis(ACCENT),
+                )),
                 header,
             );
         }
@@ -129,6 +133,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 fn welcome(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     let pane = app.pane();
+    let help;
     let (text, color) = if let Some(error) = &app.connection_problem {
         (error.as_str(), Color::Yellow)
     } else if app.connecting {
@@ -140,7 +145,13 @@ fn welcome(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     } else if pane.exists {
         ("Send a message to this Agent.", MUTED)
     } else {
-        ("Enter sends the first prompt. Shift+Enter or Ctrl+J adds a line.\n/resume opens a saved conversation.", MUTED)
+        help = format!(
+            "{} sends the first prompt. {} or {} adds a line.\n/resume opens a saved conversation.",
+            Shortcut::ENTER.label,
+            Shortcut::NEW_LINE.label,
+            Shortcut::CONTROL_NEW_LINE.label,
+        );
+        (help.as_str(), MUTED)
     };
     wrap(render_literal(text, Style::default().fg(color)), width)
         .into_iter()
@@ -223,15 +234,17 @@ fn waiting(pane: &Pane, agent: &str) -> Option<String> {
     let snapshot = pane.snapshot.as_ref()?;
     if let Some(question) = &snapshot.agent.question {
         Some(format!(
-            "Waiting · {} · F2 Reply\n{}",
+            "Waiting · {} · {} Reply\n{}",
             single_line(agent),
+            Shortcut::REPLY.label,
             question.text
         ))
     } else {
         snapshot.agent.permission.as_ref().map(|permission| {
             format!(
-                "Waiting · {} · F2 Review authorization\n{}",
+                "Waiting · {} · {} Review authorization\n{}",
                 single_line(agent),
+                Shortcut::REPLY.label,
                 permission.summary
             )
         })
@@ -446,13 +459,24 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             Style::default().fg(Color::Red),
         )
     } else {
-        let help = match picker.kind {
-            PickerKind::Server | PickerKind::Permission => {
-                "PgUp/PgDn Details · ↑↓ Select · Enter Confirm · Esc Close"
-            }
-            _ => "↑↓ Select · Enter Open · Esc Close",
+        let select = format!("{}{} Select", Shortcut::UP.label, Shortcut::DOWN.label);
+        let confirm = format!(
+            "{} Confirm · {} Close",
+            Shortcut::ENTER.label,
+            Shortcut::ESCAPE.label
+        );
+        let help = if picker.kind.completes_text() {
+            format!("{select} · {} Complete · {confirm}", Shortcut::TAB.label)
+        } else if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) {
+            format!(
+                "{}/{} Details · {select} · {confirm}",
+                Shortcut::PAGE_UP.label,
+                Shortcut::PAGE_DOWN.label,
+            )
+        } else {
+            format!("{select} · {confirm}")
         };
-        Line::styled(shorten(help, width), Style::default().fg(MUTED))
+        Line::styled(shorten(&help, width), Style::default().fg(MUTED))
     };
     frame.render_widget(Paragraph::new(footer_text), footer);
     (width.max(1), count, header_rows)
@@ -489,7 +513,14 @@ fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (us
     render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
     frame.render_widget(
         Paragraph::new(Line::styled(
-            "Enter Confirm · PgUp/PgDn Details · Esc Close",
+            format!(
+                "{} Confirm · {} Clear · {}/{} Details · {} Close",
+                Shortcut::ENTER.label,
+                Shortcut::CLEAR.label,
+                Shortcut::PAGE_UP.label,
+                Shortcut::PAGE_DOWN.label,
+                Shortcut::ESCAPE.label,
+            ),
             Style::default().fg(MUTED),
         )),
         help,
@@ -737,7 +768,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!("中文\nfirst\nlast e\u{301}\nx", app.pane().draft.text());
         let view = screen(&mut app, 29, 13);
-        assert!(view.contains("Message main"));
+        assert!(view.contains("You · draft to main"));
         assert!(view.contains("last e\u{301}"));
         assert!(view.contains("Offline"));
     }
@@ -784,7 +815,7 @@ mod tests {
             },
         ));
         let other = screen(&mut app, 79, 22);
-        assert!(other.contains("Message reviewer"));
+        assert!(other.contains("You · draft to reviewer"));
         assert!(other.contains("review-notes"));
         assert!(!other.contains("obsolete main stream"));
         app.select(main, true, "Example".into());

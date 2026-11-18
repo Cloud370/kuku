@@ -9,6 +9,7 @@ use ratatui::buffer::Buffer;
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search};
+use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
@@ -51,11 +52,7 @@ impl App {
 
     fn key(&mut self, key: KeyEvent) {
         self.text_selection.clear();
-        if control(key, 'c') {
-            self.exit();
-            return;
-        }
-        if key.code == KeyCode::Esc && self.modal.take().is_some() {
+        if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
             self.effects.push(Job::ClosePicker);
             return;
         }
@@ -110,25 +107,18 @@ impl App {
 
     fn composer_key(&mut self, key: KeyEvent) {
         let page = self.transcript_area.1.saturating_sub(1).max(1) as isize;
-        match key.code {
-            KeyCode::F(1) => self.command_menu(),
-            KeyCode::F(2) => self.open_reply(),
-            KeyCode::Esc => self.interrupt(),
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.pane_mut().draft.insert("\n")
-            }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.send(Timing::NextTurn)
-            }
-            KeyCode::Enter => self.send(Timing::Steer),
-            KeyCode::PageUp => self.scroll(-page),
-            KeyCode::PageDown => self.scroll(page),
-            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.pane_mut().transcript.show_latest()
-            }
-            KeyCode::Char('r') if control(key, 'r') => self.reconnect(),
-            KeyCode::Char('l') if control(key, 'l') => self.perform(CommandMenu::Model),
-            KeyCode::Char('o') if control(key, 'o') => {
+        match key {
+            key if Shortcut::ACTIONS.matches(key) => self.command_menu(),
+            key if Shortcut::REPLY.matches(key) => self.open_reply(),
+            key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
+            key if Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
+            key if Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
+            key if Shortcut::PAGE_UP.matches(key) => self.scroll(-page),
+            key if Shortcut::PAGE_DOWN.matches(key) => self.scroll(page),
+            key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
+            key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
+            key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::TOOL_DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.message(if expanded {
                     "Tool details expanded · /tools for saved output"
@@ -136,22 +126,22 @@ impl App {
                     "Tool details collapsed"
                 });
             }
-            KeyCode::Char('p') if control(key, 'p') => self.pane_mut().draft.recall(-1),
-            KeyCode::Char('n') if control(key, 'n') => self.pane_mut().draft.recall(1),
-            KeyCode::Char('/') if is_text(key) && self.pane().draft.text().is_empty() => {
+            key if control(key, 'p') => self.pane_mut().draft.recall(-1),
+            key if control(key, 'n') => self.pane_mut().draft.recall(1),
+            key if key.code == KeyCode::Char('/')
+                && is_text(key)
+                && self.pane().draft.text().is_empty() =>
+            {
                 self.command_menu()
             }
-            KeyCode::Char('@')
-                if is_text(key) && self.pane().draft.completion_range().is_empty() =>
+            key if key.code == KeyCode::Char('@')
+                && is_text(key)
+                && self.pane().draft.completion_range().is_empty() =>
             {
                 let offset = self.pane().draft.cursor();
                 self.open_paths(offset..offset, String::new());
             }
-            KeyCode::Tab
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
+            key if Shortcut::TAB.matches(key) => {
                 let draft = &self.pane().draft;
                 let range = draft.completion_range();
                 let query = draft.text()[range.clone()]
@@ -172,29 +162,30 @@ impl App {
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
         };
-        match key.code {
-            KeyCode::Enter | KeyCode::Tab => {
+        match key {
+            key if Shortcut::ENTER.matches(key) => {
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
-                    self.modal = None;
-                    self.effects.push(Job::ClosePicker);
                     self.choose(kind, choice);
                 }
             }
-            KeyCode::Up => picker.move_by(-1),
-            KeyCode::Down => picker.move_by(1),
-            KeyCode::PageUp
-                if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
+            key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
+                self.complete_picker();
+            }
+            key if Shortcut::UP.matches(key) => picker.move_by(-1),
+            key if Shortcut::DOWN.matches(key) => picker.move_by(1),
+            key if Shortcut::PAGE_UP.matches(key)
+                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(-details_page);
             }
-            KeyCode::PageDown
-                if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
+            key if Shortcut::PAGE_DOWN.matches(key)
+                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(details_page);
             }
-            KeyCode::PageUp => picker.move_by(-page),
-            KeyCode::PageDown => picker.move_by(page),
+            key if Shortcut::PAGE_UP.matches(key) => picker.move_by(-page),
+            key if Shortcut::PAGE_DOWN.matches(key) => picker.move_by(page),
             _ if picker.kind.searchable()
                 && edit(&mut picker.query, key, self.modal_editor_width, false) =>
             {
@@ -205,13 +196,35 @@ impl App {
         }
     }
 
+    fn complete_picker(&mut self) {
+        let Some(Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        match (&picker.kind, picker.selected_choice()) {
+            (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
+                let completed = format!("/{}", command.name());
+                if picker.query.text() != completed {
+                    picker.query.set_text(completed);
+                    picker.selected = 0;
+                    self.search(false);
+                }
+            }
+            (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
+            | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
+                let kind = picker.kind.clone();
+                self.choose(kind, choice);
+            }
+            _ => {}
+        }
+    }
+
     fn prompt_key(&mut self, key: KeyEvent) {
         let Some(Modal::Prompt(prompt)) = &mut self.modal else {
             return;
         };
         let page = self.modal_info_rows.max(1) as isize;
-        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-            let amount = if key.code == KeyCode::PageUp {
+        if Shortcut::PAGE_UP.matches(key) || Shortcut::PAGE_DOWN.matches(key) {
+            let amount = if Shortcut::PAGE_UP.matches(key) {
                 -page
             } else {
                 page
@@ -219,7 +232,7 @@ impl App {
             prompt.instructions_top = prompt.instructions_top.saturating_add_signed(amount);
             return;
         }
-        if key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT) {
+        if Shortcut::ENTER.matches(key) {
             if prompt.editor.text().trim().is_empty() {
                 return;
             }
@@ -259,12 +272,12 @@ impl App {
             return;
         };
         let page = viewer.page_size() as isize;
-        let offset = match key.code {
-            KeyCode::PageUp => viewer.scroll(-page),
-            KeyCode::PageDown => viewer.scroll(page),
-            KeyCode::Up => viewer.scroll(-1),
-            KeyCode::Down => viewer.scroll(1),
-            KeyCode::Char('r') => viewer.retry(),
+        let offset = match key {
+            key if Shortcut::PAGE_UP.matches(key) => viewer.scroll(-page),
+            key if Shortcut::PAGE_DOWN.matches(key) => viewer.scroll(page),
+            key if Shortcut::UP.matches(key) => viewer.scroll(-1),
+            key if Shortcut::DOWN.matches(key) => viewer.scroll(1),
+            key if Shortcut::REFRESH_OUTPUT.matches(key) => viewer.retry(),
             _ => None,
         };
         if let Some(offset) = offset {
@@ -273,7 +286,12 @@ impl App {
     }
 
     fn command_menu(&mut self) {
-        self.picker(PickerKind::Commands, Choice::commands());
+        self.picker(PickerKind::Commands, Choice::commands()).header = format!(
+            "Editor · {} Clear draft · {}/{} New line",
+            Shortcut::CLEAR.label,
+            Shortcut::NEW_LINE.label,
+            Shortcut::CONTROL_NEW_LINE.label,
+        );
         self.search(true);
     }
 
@@ -336,6 +354,8 @@ impl App {
     }
 
     fn choose(&mut self, picker: PickerKind, choice: ChoiceKind) {
+        self.modal = None;
+        self.effects.push(Job::ClosePicker);
         match choice {
             ChoiceKind::Command(command) => self.perform(command),
             ChoiceKind::Skill(skill) => {
@@ -796,11 +816,14 @@ fn is_text(key: KeyEvent) -> bool {
 }
 
 fn edit(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool) -> bool {
+    if Shortcut::CLEAR.matches(key) {
+        return !editor.take_text().is_empty();
+    }
+    if multiline && (Shortcut::NEW_LINE.matches(key) || Shortcut::CONTROL_NEW_LINE.matches(key)) {
+        editor.insert("\n");
+        return true;
+    }
     match key.code {
-        KeyCode::Char('j') if multiline && control(key, 'j') => editor.insert("\n"),
-        KeyCode::Enter if multiline && key.modifiers.contains(KeyModifiers::SHIFT) => {
-            editor.insert("\n")
-        }
         KeyCode::Backspace
             if key
                 .modifiers
@@ -815,7 +838,7 @@ fn edit(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool) -> bo
         KeyCode::Char(character) if is_text(key) => {
             editor.insert(character.encode_utf8(&mut [0; 4]))
         }
-        KeyCode::Tab if multiline => editor.insert(TAB),
+        KeyCode::Tab if multiline && Shortcut::TAB.matches(key) => editor.insert(TAB),
         _ => {
             move_cursor(editor, key, width, multiline);
             return false;
@@ -840,5 +863,141 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
         KeyCode::Up if multiline => editor.vertical(width, -1),
         KeyCode::Down if multiline => editor.vertical(width, 1),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use kuku_client::Action;
+
+    use crate::app::{App, Modal};
+    use crate::jobs::{Job, Search, Update};
+    use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+
+    fn connected_app() -> App {
+        let workspace = PathBuf::from("/workspace");
+        let mut app = App::new(workspace.clone(), None);
+        app.update(Update::Connected {
+            endpoint: "http://127.0.0.1:6789".into(),
+            workspace,
+        });
+        app.effects.clear();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn control_c_clears_the_focused_editor_and_keeps_the_client_open() {
+        let mut app = connected_app();
+        let clear = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        app.paste("draft to keep");
+        press(&mut app, KeyCode::F(1));
+        app.paste("resume");
+        app.effects.clear();
+        app.key(clear);
+        assert!(
+            matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text().is_empty())
+        );
+        assert!(
+            matches!(app.effects.as_slice(), [Job::Find(_, Search::Skills(query))] if query.is_empty())
+        );
+        assert_eq!("draft to keep", app.pane().draft.text());
+        press(&mut app, KeyCode::Esc);
+
+        app.prompt(PromptKind::Agent, "New agent", "Enter the address");
+        app.paste("reviewer");
+        app.key(clear);
+        assert!(
+            matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text().is_empty())
+        );
+        assert_eq!("draft to keep", app.pane().draft.text());
+        press(&mut app, KeyCode::Esc);
+
+        app.effects.clear();
+        app.key(clear);
+        app.key(clear);
+        assert!(app.pane().draft.text().is_empty());
+        assert!(app.effects.is_empty());
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn tab_completes_a_slash_action_and_enter_runs_it_with_the_draft_intact() {
+        let mut app = connected_app();
+        app.paste("draft to keep");
+        press(&mut app, KeyCode::F(1));
+        app.paste("qui");
+        press(&mut app, KeyCode::Tab);
+        assert!(
+            matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/quit")
+        );
+        assert_eq!("draft to keep", app.pane().draft.text());
+        assert!(!app.quit);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn tab_inserts_paths_and_skills_in_the_draft() {
+        let mut app = connected_app();
+        let path = Choice::new("Cargo.toml", "", ChoiceKind::Path("Cargo.toml".into()));
+        app.paste("inspect Car");
+        let range = app.pane().draft.completion_range();
+        app.picker(PickerKind::Paths(range), vec![path]);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!("inspect Cargo.toml ", app.pane().draft.text());
+        assert!(app.modal.is_none());
+
+        let skill = Choice::new("/skill:review", "", ChoiceKind::Skill("review".into()));
+        app.picker(PickerKind::Commands, vec![skill]);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!("/skill:review inspect Cargo.toml ", app.pane().draft.text());
+        assert!(app.modal.is_none());
+        assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn tab_leaves_action_choices_open_and_enter_confirms_the_highlighted_choice() {
+        let mut app = connected_app();
+        let choose_permission = |allow| ChoiceKind::Permission {
+            request_id: "permit-1".into(),
+            allow,
+        };
+        for (kind, choice) in [
+            (PickerKind::Models, ChoiceKind::Tier("review".into())),
+            (PickerKind::Queue, ChoiceKind::Withdraw("queued-1".into())),
+            (PickerKind::Server, ChoiceKind::Restart),
+            (PickerKind::Permission, choose_permission(false)),
+        ] {
+            app.picker(kind, vec![Choice::new("Selected", "", choice)]);
+            press(&mut app, KeyCode::Tab);
+            assert!(matches!(app.modal, Some(Modal::Picker(_))));
+            assert!(app.effects.is_empty());
+        }
+
+        app.picker(
+            PickerKind::Permission,
+            vec![
+                Choice::new("Deny", "", choose_permission(false)),
+                Choice::new("Allow", "", choose_permission(true)),
+            ],
+        );
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.effects.as_slice(),
+            [Job::ClosePicker, Job::Save(command)] if matches!(
+                &command.action,
+                Action::ReplyPermission { request_id, allow: true } if request_id == "permit-1"
+            )
+        ));
     }
 }

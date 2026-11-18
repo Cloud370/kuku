@@ -3,6 +3,7 @@ use std::ops::Range;
 use kuku_client::Target;
 
 use crate::editor::Editor;
+use crate::keys::Shortcut;
 use crate::transcript::ToolView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,26 +73,38 @@ impl CommandMenu {
         }
     }
 
-    fn description(self) -> &'static str {
-        match self {
-            Self::New => "Open a fresh draft",
-            Self::Resume => "Find a conversation in this workspace",
-            Self::Agents => "Choose or create a recipient",
-            Self::Queue => "Send on the next Turn · Alt+Enter",
-            Self::Withdraw => "Withdraw input still in the queue",
-            Self::Advance => "Continue queued work",
-            Self::Interrupt => "Interrupt this execution · Esc",
-            Self::Reply => "Answer or decide a pending request · F2",
-            Self::Pending => "Check, retry or discard unconfirmed commands",
-            Self::Model => "Choose a configured model route · Ctrl+L",
-            Self::Thinking => "Choose the model's reasoning setting",
-            Self::Copy => "Copy the latest reply",
-            Self::Tools => "Browse saved tools and output · Ctrl+O toggles details",
-            Self::Server => "Inspect the connected service",
-            Self::Reconnect => "Reconnect and check unconfirmed commands · Ctrl+R",
-            Self::Restart => "Restart the managed local service",
-            Self::Web => "Open this target in the browser",
-            Self::Quit => "Leave the terminal · Ctrl+C",
+    fn description(self) -> String {
+        let (description, shortcut) = match self {
+            Self::New => ("Open a fresh draft", None),
+            Self::Resume => ("Find a conversation in this workspace", None),
+            Self::Agents => ("Choose or create a recipient", None),
+            Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
+            Self::Withdraw => ("Withdraw input still in the queue", None),
+            Self::Advance => ("Continue queued work", None),
+            Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
+            Self::Reply => ("Answer or decide a pending request", Some(Shortcut::REPLY)),
+            Self::Pending => ("Check, retry or discard unconfirmed commands", None),
+            Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
+            Self::Thinking => ("Choose the model's reasoning setting", None),
+            Self::Copy => ("Copy the latest reply", None),
+            Self::Tools => {
+                return format!(
+                    "Browse tools and saved output · {} toggles previews",
+                    Shortcut::TOOL_DETAILS.label
+                );
+            }
+            Self::Server => ("Inspect the connected service", None),
+            Self::Reconnect => (
+                "Reconnect and check unconfirmed commands",
+                Some(Shortcut::RECONNECT),
+            ),
+            Self::Restart => ("Restart the managed local service", None),
+            Self::Web => ("Open this target in the browser", None),
+            Self::Quit => ("Leave the terminal", None),
+        };
+        match shortcut {
+            Some(shortcut) => format!("{description} · {}", shortcut.label),
+            None => description.to_owned(),
         }
     }
 }
@@ -220,6 +233,10 @@ impl PickerKind {
                 | Self::Models
                 | Self::Tools
         )
+    }
+
+    pub(crate) fn completes_text(&self) -> bool {
+        matches!(self, Self::Commands | Self::Paths(_))
     }
 }
 

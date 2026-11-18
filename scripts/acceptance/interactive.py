@@ -208,6 +208,25 @@ def editable_multiline_paste(client):
     prompt = "原生终端草稿 e\u0301 👩‍💻\nsecond line\nthird line\nfourth line"
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
+        discarded = "draft to clear with Ctrl+C"
+        terminal.type(discarded)
+        terminal.press("\x03\x03")
+        view = terminal.expect("Type a prompt")
+        assert view["exit_code"] is None and discarded not in view["screen"]
+
+        terminal.press("/qui\t")
+
+        def completed_quit():
+            view = terminal.request("screen")
+            assert view["exit_code"] is None, "Tab must leave the client open"
+            return view["screen"].count("/quit") == 2
+
+        eventually("Tab to complete /quit in the open actions menu", completed_quit)
+        terminal.press("\x03")
+        terminal.expect("Search…")
+        terminal.press("\x1b")
+        terminal.expect("Type a prompt")
+
         assert terminal.request("screen")["bracketed_paste"], "The client must request bracketed paste"
         terminal.press(f"\x1b[200~{paste}\x1b[201~")
         terminal.expect("fourth lineX")
@@ -224,7 +243,7 @@ def editable_multiline_paste(client):
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)
         terminal.exit_cleanly()
-    print("Native multiline paste stayed editable and sent only after Enter with normalized line breaks.")
+    print("Ctrl+C cleared the focused input, Tab completed /quit, and multiline paste stayed editable until Enter.")
 
 
 def wait_restart_and_recover_crash(client, workspace, session, title):

@@ -353,7 +353,9 @@ def exercise(client, desktop, workspace, state, checks):
     else:
         checks["ime"] = {"status": "unavailable", "reason": "Microsoft Pinyin is not configured"}
 
-    desktop.press(VK_CONTROL, ord("C"))
+    desktop.press(VK_OEM_SLASH)
+    desktop.spell("quit")
+    desktop.press(VK_RETURN)
 
     def exit_state():
         receipt = read_state(state)

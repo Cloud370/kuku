@@ -8,6 +8,7 @@ mod app;
 mod editor;
 mod interaction;
 mod jobs;
+mod keys;
 mod markup;
 mod menu;
 mod output;

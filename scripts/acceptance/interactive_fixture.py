@@ -240,7 +240,7 @@ class Terminal:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
     def exit_cleanly(self):
-        self.press("\x03")
+        self.press("\x1bOPquit\r")
 
         def restored():
             value = self.request("screen")
