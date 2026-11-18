@@ -1,11 +1,13 @@
+use std::path::Path;
+
+use kuku_client::{FileCommitState, FileMutationFacts};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::markup::{file_source, render_diff, render_markdown, wrap_bounded};
 use crate::text::{cap, single_line};
-use crate::theme::{ACCENT, MUTED};
-use std::path::Path;
+use crate::theme::{ACCENT, MUTED, WARNING};
 
 use super::{
     join_details, Row, Tool, ToolDetails, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES,
@@ -21,12 +23,14 @@ impl Tool {
     ) -> Vec<Row> {
         let frame = crate::theme::CardFrame::new(width);
         let path = self.invocation();
-        let title = join_details([
-            self.title().as_ref(),
-            self.state.label().0,
-            single_line(path).as_str(),
-        ]);
-        let mut rows = vec![Row::plain(frame.title(&title, ACCENT))];
+        let status = if change.unconfirmed {
+            "applied · durability unconfirmed"
+        } else {
+            self.state.label().0
+        };
+        let title = join_details([self.title().as_ref(), status, single_line(path).as_str()]);
+        let color = if change.unconfirmed { WARNING } else { ACCENT };
+        let mut rows = vec![Row::plain(frame.title(&title, color))];
         let mut clipped = false;
         if details != ToolDetails::Collapsed {
             let limit = if details == ToolDetails::Inspection {
@@ -63,14 +67,17 @@ pub(super) struct FileChange {
     tool: &'static str,
     preview: String,
     pub(super) stats: String,
+    pub(super) unconfirmed: bool,
     diff: bool,
     truncated: bool,
 }
 
 impl FileChange {
     pub(super) fn from_result(result: &Value, truncated: bool) -> Option<Self> {
+        let kind = result["kind"].as_str()?;
         let content = result["raw_text_after"].as_str();
-        match result["kind"].as_str()? {
+        let truncated = truncated || result["raw_text_after_truncated"] == true;
+        let mut change = match kind {
             "file_write" => {
                 let stats = result["line_count"].as_u64().map_or_else(
                     || "Written".to_owned(),
@@ -95,12 +102,22 @@ impl FileChange {
                     change["preview_truncated"].as_bool().unwrap_or(false),
                 ))
             }
+            "file_remove" => {
+                let stats = result["bytes_removed"].as_u64().map_or_else(
+                    || "Removed".to_owned(),
+                    |bytes| format!("{bytes} {} removed", plural(bytes, "byte", "bytes")),
+                );
+                Some(Self::new("remove_file", None, stats, false, false))
+            }
             _ => None,
-        }
+        }?;
+        change.unconfirmed = FileMutationFacts::from_structured(result)
+            .is_ok_and(|facts| facts.commit_state == FileCommitState::PublishedUnconfirmed);
+        Some(change)
     }
 
-    pub(super) fn is_for(&self, tool: &str) -> bool {
-        self.tool == tool
+    pub(super) fn tool(&self) -> &'static str {
+        self.tool
     }
 
     pub(super) fn diff(&self) -> Option<&str> {
@@ -153,6 +170,7 @@ impl FileChange {
             tool,
             preview: head.to_owned(),
             stats,
+            unconfirmed: false,
             diff,
             truncated: truncated || head.len() != content.len(),
         }

@@ -203,12 +203,17 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app
-            .pane()
-            .draft
-            .text()
-            .is_empty()
-            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        let pane = app.pane();
+        let placeholder = pane.draft.text().is_empty().then(|| {
+            if pane.value_attachments.is_empty() {
+                format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label)
+            } else {
+                format!(
+                    "Type a prompt or press {} to send attached values",
+                    Shortcut::ENTER.label
+                )
+            }
+        });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     frame.render_widget(Paragraph::new(footer), status);
@@ -328,6 +333,17 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     let pane = app.pane();
     let mut lines = waiting(app, width);
+    if !pane.value_attachments.is_empty() {
+        let names: Vec<_> = pane
+            .value_attachments
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        lines.push(Line::styled(
+            shorten(&format!("Attached · {} · /values", names.join(", ")), width),
+            Style::new().fg(ACCENT),
+        ));
+    }
     if let Some(problem) = app.service_problem() {
         lines.extend(
             problem
@@ -437,8 +453,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         }
         Modal::Prompt(prompt) => {
             let height = match prompt.kind {
-                PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
-                PromptKind::Question { .. } | PromptKind::QueuedInput { .. } => PICKER_HEIGHT,
+                PromptKind::Agent | PromptKind::Model { .. } | PromptKind::SaveValue { .. } => {
+                    SHORT_PROMPT_HEIGHT
+                }
+                PromptKind::Question { .. }
+                | PromptKind::QueuedInput { .. }
+                | PromptKind::SavePaste => PICKER_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);

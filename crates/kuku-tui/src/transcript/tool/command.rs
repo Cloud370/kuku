@@ -1,67 +1,148 @@
+use kuku_client::{CommandExecutionFacts, CommandInvocation, CommandShell, CommandTermination};
 use ratatui::style::Color;
 use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::text::{cap, single_line};
-use crate::theme::{CardFrame, SURFACE_TEXT};
+use crate::text::single_line;
+use crate::theme::{CardFrame, ERROR, SUCCESS, SURFACE_TEXT, WARNING};
 
-use super::{capped, Outcome, Row, Tool, MAX_DETAIL_BYTES};
+use super::{arguments_json, capped, Row, Tool, MAX_DETAIL_BYTES};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
-    complete: bool,
-    body_end: usize,
-    pub(super) notes: String,
+    facts: CommandExecutionFacts,
 }
 
 impl CommandPreview {
-    pub(super) fn from_result(
-        content: Option<&str>,
-        structured: &Value,
-        output_id: Option<&str>,
-        truncated: bool,
-    ) -> Option<Self> {
+    pub(super) fn from_result(structured: &Value) -> Option<Box<Self>> {
         if structured["kind"].as_str() != Some("command_result") {
             return None;
         }
-        let bytes = structured["output_ref"]["bytes"].as_u64()?;
-        let id = output_id?;
-        let reference =
-            format!("\n\nOutput: {id} ({bytes} captured bytes; read by merged byte offset).");
-        let (body, notes) = content?.rsplit_once(&reference)?;
-        if notes.contains(['\n', '\r']) || (!notes.is_empty() && !notes.starts_with(' ')) {
-            return None;
-        }
-        Some(Self {
-            complete: !truncated
-                && structured["capture_complete"] != false
-                && structured["preview_truncated"] != true,
-            body_end: cap(body.trim_end_matches(['\r', '\n']), MAX_DETAIL_BYTES).len(),
-            notes: capped(Some(notes.trim_start()), MAX_DETAIL_BYTES),
-        })
+        let facts = CommandExecutionFacts::from_structured(structured).ok()?;
+        Some(Box::new(Self { facts }))
     }
 
-    pub(super) fn body<'a>(&self, result: &'a str, concise: bool) -> &'a str {
-        let text = &result[..self.body_end];
-        if concise && !text.contains("\nstderr:\n") && !text.contains("\nstdout:\n") {
-            text.strip_prefix("stdout:\n")
-                .or_else(|| text.strip_prefix("stderr:\n"))
-                .unwrap_or(text)
-        } else {
-            text
+    pub(super) fn label(&self) -> (&'static str, Color) {
+        match self.facts.termination {
+            CommandTermination::Exited => match self.facts.exit_code {
+                Some(0) if self.attention() => ("ok with warnings", WARNING),
+                Some(0) => ("ok", SUCCESS),
+                Some(_) => ("failed", ERROR),
+                None if self.facts.signal.is_some() => ("terminated", WARNING),
+                None => ("exit status unavailable", WARNING),
+            },
+            CommandTermination::TimedOut => ("timed out", WARNING),
+            CommandTermination::Cancelled => ("cancelled", WARNING),
+            CommandTermination::ProgramMissing => ("program missing", ERROR),
+            CommandTermination::StartFailed => ("could not start", ERROR),
         }
     }
-}
 
-impl Outcome {
-    pub(super) fn concise_command(&self) -> bool {
-        self.command_preview
-            .as_ref()
-            .is_some_and(|preview| preview.complete && preview.notes.is_empty())
-            && self.status == "ok"
+    pub(super) fn invocation(&self) -> String {
+        match &self.facts.invocation {
+            CommandInvocation::Program { program, args } => {
+                let args = serde_json::to_value(args).unwrap_or_default();
+                render_program(program, &args)
+            }
+            CommandInvocation::Shell { shell, command } => {
+                render_shell(shell_name(*shell), command)
+            }
+        }
+    }
+
+    pub(super) fn exit_code(&self) -> Option<i64> {
+        self.facts.exit_code.map(i64::from)
+    }
+
+    pub(super) fn signal(&self) -> Option<i32> {
+        self.facts.signal
+    }
+
+    pub(super) fn body(&self) -> &str {
+        let body = self.facts.output_preview.trim_end_matches(['\r', '\n']);
+        if self.concise() && self.facts.stdout_bytes == 0 {
+            return body.strip_prefix("stderr:\n").unwrap_or(body);
+        }
+        body
+    }
+
+    pub(super) fn concise(&self) -> bool {
+        self.facts.termination == CommandTermination::Exited
             && self
+                .facts
                 .exit_code
-                .is_some_and(|code| code != 0 || !self.attention)
+                .is_some_and(|code| code != 0 || !self.attention())
+            && self.notes().is_empty()
+            && self.facts.reported_tests.is_empty()
+    }
+
+    pub(super) fn summary(&self) -> String {
+        self.facts
+            .reported_tests
+            .iter()
+            .map(|report| {
+                format!(
+                    "{:?} reported {} passed, {} failed, {} skipped",
+                    report.format, report.passed, report.failed, report.skipped,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    pub(super) fn notes(&self) -> String {
+        let mut notes = Vec::new();
+        if self.facts.quota_truncated {
+            notes.push("Capture truncated at the byte limit");
+        } else if !self.facts.capture_complete {
+            notes.push("Capture incomplete");
+        }
+        if self.facts.cleanup_incomplete {
+            notes.push("Process or pipe cleanup incomplete");
+        }
+        if self.facts.output_preview_truncated {
+            notes.push("Output preview truncated");
+        }
+        if self.facts.lossy_utf8 {
+            notes.push("Display replaced invalid UTF-8");
+        }
+        notes.join("\n")
+    }
+
+    pub(super) fn evidence(&self) -> String {
+        let mut lines = vec![format!(
+            "{} ms · {} stdout bytes · {} stderr bytes",
+            self.facts.duration_ms, self.facts.stdout_bytes, self.facts.stderr_bytes,
+        )];
+        lines.push(format!("Directory · {}", self.facts.cwd));
+        if let Some(error) = &self.facts.start_error {
+            lines.push(error.clone());
+        }
+        let notes = self.notes();
+        if !notes.is_empty() {
+            lines.push(notes);
+        }
+        for report in &self.facts.reported_tests {
+            if let Some(failure) = &report.first_failure {
+                lines.push(format!("First reported failure · {failure}"));
+            }
+            lines.extend(report.evidence.iter().cloned());
+            if report.evidence_truncated {
+                lines.push("Test report evidence truncated".into());
+            }
+        }
+        lines.join("\n")
+    }
+
+    fn attention(&self) -> bool {
+        !self.facts.capture_complete
+            || self.facts.cleanup_incomplete
+            || self.facts.stderr_lines > 0
+            || self
+                .facts
+                .reported_tests
+                .iter()
+                .any(|report| report.failed > 0)
     }
 }
 
@@ -74,14 +155,16 @@ impl Tool {
         };
         Row::plain(frame.title(&single_line(title), SURFACE_TEXT))
     }
+}
 
-    pub(super) fn shell_command(&self) -> &str {
-        self.state
-            .outcome()
-            .filter(|outcome| !outcome.invocation.is_empty())
-            .map_or(self.invocation.as_str(), |outcome| {
-                outcome.invocation.as_str()
-            })
+pub(super) fn invocation(args: &Value) -> String {
+    if let Some(program) = args["program"].as_str() {
+        render_program(program, &args["args"])
+    } else if let (Some(shell), Some(command)) = (args["shell"].as_str(), args["command"].as_str())
+    {
+        render_shell(shell, command)
+    } else {
+        String::new()
     }
 }
 
@@ -98,4 +181,32 @@ pub(super) fn finish(
     rows.push(Row::plain(frame.status_foot(&status, color)));
     rows.push(Row::plain(Line::default()));
     rows
+}
+
+fn render_program(program: &str, args: &Value) -> String {
+    let program = capped(Some(program), MAX_DETAIL_BYTES);
+    if !args.as_array().is_some_and(|args| !args.is_empty()) {
+        return program;
+    }
+    capped(
+        Some(&format!("{program} {}", arguments_json(args))),
+        MAX_DETAIL_BYTES,
+    )
+}
+
+fn render_shell(shell: &str, command: &str) -> String {
+    let shell = single_line(&capped(Some(shell), MAX_DETAIL_BYTES / 2));
+    let command = capped(Some(command), MAX_DETAIL_BYTES / 2);
+    format!("{shell} · {command}")
+}
+
+fn shell_name(shell: CommandShell) -> &'static str {
+    match shell {
+        CommandShell::Sh => "sh",
+        CommandShell::Bash => "bash",
+        CommandShell::Zsh => "zsh",
+        CommandShell::Cmd => "cmd",
+        CommandShell::Powershell => "powershell",
+        CommandShell::Pwsh => "pwsh",
+    }
 }

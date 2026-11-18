@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::Action;
+use kuku_client::{Action, NamedValue, NamedValueKind, NamedValueSource, OutputReference};
 use serde_json::json;
 
 use crate::app::{App, Modal};
@@ -21,6 +21,58 @@ fn connected_app() -> App {
 
 fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn naming_a_paste_before_any_prompt_saves_text_and_attaches_the_exact_reference() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("save");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if matches!(prompt.kind, PromptKind::SavePaste))
+    );
+
+    let input = "preserve these\n中文 values";
+    app.paste(input);
+    press(&mut app, KeyCode::Enter);
+    app.paste("baseline");
+    press(&mut app, KeyCode::Enter);
+    let mut jobs = std::mem::take(&mut app.effects);
+    let Some(Job::SaveValue(selection, save)) = jobs.pop() else {
+        panic!("the paste needs a value save");
+    };
+    assert!(!jobs.iter().any(|job| matches!(job, Job::Save(_))));
+    assert_eq!("baseline", save.name);
+    assert_eq!(NamedValueSource::Text(input.into()), save.source);
+    assert!(save.create.is_some());
+    assert_eq!(input, app.pane().draft.text());
+
+    let reference = OutputReference {
+        id: "saved-paste".into(),
+        offset: 0,
+        bytes: input.len() as u64,
+    };
+    let value = NamedValue {
+        name: save.name,
+        kind: NamedValueKind::Text,
+        reference: reference.clone(),
+    };
+    app.update(Update::ValueSaved(
+        selection,
+        Some(input.into()),
+        Ok(value.clone()),
+    ));
+    assert!(app.pane().exists);
+    assert!(app.pane().draft.text().is_empty());
+
+    app.open_value(value);
+    press(&mut app, KeyCode::Enter);
+    app.paste("Review the attached facts");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.effects.last(), Some(Job::Save(command))
+        if matches!(&command.action, Action::Send { text, create: None, values, .. }
+            if text == "Review the attached facts" && *values == [reference])));
 }
 
 #[test]

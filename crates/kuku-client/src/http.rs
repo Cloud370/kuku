@@ -10,8 +10,8 @@ use wreq::{Method, RequestBuilder, Response};
 use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
-    Acknowledgement, AgentSummary, ApiError, Command, EventPage, HistoryPage, OutputChunk,
-    SessionSummary, Snapshot, Subscription, Target,
+    Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryPage,
+    NamedValue, NamedValueSource, OutputChunk, SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -411,6 +411,7 @@ impl Client {
         #[derive(Serialize)]
         struct Query<'a> {
             workspace: &'a Path,
+            agent: &'a str,
             offset: u64,
             max_bytes: usize,
             search: Option<&'a str>,
@@ -424,6 +425,7 @@ impl Client {
                 ["sessions", &target.session_id, "outputs", output_id],
                 &Query {
                     workspace: &target.workspace,
+                    agent: &target.agent,
                     offset,
                     max_bytes,
                     search,
@@ -431,6 +433,53 @@ impl Client {
             )
             .await?;
         Ok(response.output)
+    }
+
+    /// List the names and immutable references retained by the selected Agent.
+    pub async fn named_values(&self, target: &Target) -> Result<Vec<NamedValue>, Error> {
+        #[derive(Deserialize)]
+        struct Values {
+            values: Vec<NamedValue>,
+        }
+        let result: Values = self
+            .get(
+                ["sessions", &target.session_id, "values"],
+                &TargetQuery::new(target),
+            )
+            .await?;
+        Ok(result.values)
+    }
+
+    /// Save text, data, or an existing output under a Session name.
+    pub async fn save_named_value(
+        &self,
+        target: &Target,
+        name: &str,
+        source: &NamedValueSource,
+        replace: bool,
+        create: Option<&AgentConfig>,
+    ) -> Result<NamedValue, Error> {
+        #[derive(Serialize)]
+        struct SaveValue<'a> {
+            #[serde(flatten)]
+            target: TargetQuery<'a>,
+            source: &'a NamedValueSource,
+            replace: bool,
+            create: Option<&'a AgentConfig>,
+        }
+        self.json(
+            self.request(
+                Method::PUT,
+                ["sessions", &target.session_id, "values", name],
+            )
+            .json(&SaveValue {
+                target: TargetQuery::new(target),
+                source,
+                replace,
+                create,
+            }),
+        )
+        .await
     }
 
     /// Build a same-origin browser link for the selected workspace and conversation.

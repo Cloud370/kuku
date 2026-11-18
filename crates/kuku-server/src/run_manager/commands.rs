@@ -1,3 +1,4 @@
+use kuku::execution::OutputReference;
 use kuku::session::{AgentConfig, AgentStatus, Input, InputStatus, Receipt, Session};
 use sha2::{Digest, Sha256};
 
@@ -26,7 +27,10 @@ impl RunManager {
         }
         let original_input = input
             .as_ref()
-            .map(|input| open.session.input_receipt(input))
+            .map(|input| {
+                open.session
+                    .input_receipt_with_values(input, command.values())
+            })
             .transpose()?
             .flatten();
         if replay_only {
@@ -51,6 +55,7 @@ impl RunManager {
                 create,
                 config_patch,
                 create_agent_if_missing,
+                values,
                 ..
             } => send(
                 &open.session,
@@ -59,6 +64,7 @@ impl RunManager {
                 config_patch.as_deref(),
                 create_agent_if_missing,
                 replayed,
+                &values,
             ),
             Command::CreateAgent { config } => {
                 open.session.create_agent(command_id, address, *config)
@@ -155,9 +161,10 @@ fn send(
     patch: Option<&AgentConfig>,
     create_agent_if_missing: bool,
     replayed: bool,
+    values: &[OutputReference],
 ) -> kuku::Result<Receipt> {
     if replayed {
-        return session.send(input);
+        return session.send_with_values(input, values);
     }
     let address = input.target.clone();
     let current = session.agent(&address);
@@ -173,8 +180,12 @@ fn send(
     }
     let current = session.agent(&address)?;
     match patch.filter(|_| create.is_none()) {
-        Some(patch) => session.send_configured(input, merge_config(current.config, patch.clone())),
-        None => session.send(input),
+        Some(patch) => session.send_configured_with_values(
+            input,
+            merge_config(current.config, patch.clone()),
+            values,
+        ),
+        None => session.send_with_values(input, values),
     }
 }
 

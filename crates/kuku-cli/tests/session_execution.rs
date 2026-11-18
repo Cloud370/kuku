@@ -179,20 +179,17 @@ async fn stop_managed(home: &Path) {
 async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_model_failure() {
     let primary = MockServer::start_async().await;
     let secondary = MockServer::start_async().await;
-    let delay = std::time::Duration::from_millis(600);
-    mock_round_delayed(
+    mock_round(
         &primary,
         0,
         json!([{"type":"tool_use","id":"read","name":"read_file","input":{"path":"fixture.txt"}}]),
         "tool_use",
-        delay,
     );
-    mock_round_delayed(
+    mock_round(
         &primary,
         1,
         json!([{"type":"text","text":"First line.\nSecond line."}]),
         "end_turn",
-        delay,
     );
     secondary.mock(|when, then| {
         when.method(Method::POST).path("/v1/messages");
@@ -230,12 +227,16 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
     );
     let records = json_lines(&success);
     assert_eq!("started", records[0]["event"]);
-    for kind in ["tool_call", "tool_result"] {
-        assert!(
-            records.iter().any(|record| record["type"] == kind),
-            "missing {kind} record in {records:?}"
-        );
-    }
+    let tools: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record["type"].as_str(), Some("tool_call" | "tool_result")))
+        .collect();
+    assert_eq!(2, tools.len(), "{records:?}");
+    assert_eq!("tool_call", tools[0]["type"]);
+    assert_eq!("fixture.txt", tools[0]["args"]["path"]);
+    assert_eq!("tool_result", tools[1]["type"]);
+    assert_eq!("file_content", tools[1]["structured"]["kind"]);
+    assert_eq!("fixture data\n", tools[1]["structured"]["raw_text"]);
     let final_result = records.last().unwrap();
     assert_eq!("completed", final_result["event"]);
     assert_eq!("First line.\nSecond line.", final_result["response"]);

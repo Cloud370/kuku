@@ -11,10 +11,10 @@ use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
-use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
-use crate::transcript::{ReplySource, ToolView};
+use crate::transcript::ReplySource;
 
+mod inspect;
 mod pointer;
 
 const MOUSE_SCROLL_LINES: isize = 3;
@@ -148,7 +148,10 @@ impl App {
         let editing = self.composer_focused();
         match key {
             key if Shortcut::CLEAR.matches(key) => {
-                if self.pane_mut().draft.take_text().is_empty() && key.kind == KeyEventKind::Press {
+                let pane = self.pane_mut();
+                let empty = pane.draft.take_text().is_empty() && pane.value_attachments.is_empty();
+                pane.value_attachments.clear();
+                if empty && key.kind == KeyEventKind::Press {
                     self.exit();
                 }
             }
@@ -287,7 +290,20 @@ impl App {
             return;
         }
         if Shortcut::ENTER.matches(key) {
-            if prompt.editor.text().trim().is_empty() {
+            let empty = if matches!(prompt.kind, PromptKind::SavePaste) {
+                prompt.editor.text().is_empty()
+            } else {
+                prompt.editor.text().trim().is_empty()
+            };
+            if empty {
+                return;
+            }
+            if let PromptKind::SaveValue { output_id } = &prompt.kind {
+                let output_id = output_id.clone();
+                let name = prompt.editor.text().to_owned();
+                if self.save_value(&name, output_id) {
+                    self.modal = None;
+                }
                 return;
             }
             if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
@@ -322,6 +338,8 @@ impl App {
                         text: content.to_owned(),
                     },
                 ),
+                PromptKind::SavePaste => self.name_paste(content.to_owned()),
+                PromptKind::SaveValue { .. } => unreachable!("saved value handled above"),
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
             }
         } else {
@@ -334,6 +352,12 @@ impl App {
         let Some(Modal::Output(viewer)) = &mut self.modal else {
             return;
         };
+        if Shortcut::NAME_OUTPUT.matches(key) {
+            if let Some(id) = viewer.tool.output_id.clone() {
+                self.prompt_value_name(Some(id));
+            }
+            return;
+        }
         let page = viewer.page_size() as isize;
         let offset = match key {
             key if Shortcut::PAGE_UP.matches(key) => viewer.scroll(-page),
@@ -485,6 +509,10 @@ impl App {
                 }
             }
             ChoiceKind::Tool(tool) => self.show_output(tool),
+            ChoiceKind::Value(value) => self.open_value(value),
+            ChoiceKind::AttachValue(value) => self.attach_value(value),
+            ChoiceKind::ReadValue(value) => self.read_value(value),
+            ChoiceKind::ClearValues => self.clear_values(),
             ChoiceKind::Restart => self.restart(),
         }
     }
@@ -529,6 +557,8 @@ impl App {
             CommandMenu::Notes => self.read_latest_notes(),
             CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
+            CommandMenu::Save => self.open_value_save(),
+            CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),
             CommandMenu::Reconnect => self.reconnect(),
             CommandMenu::Restart => self.restart(),
@@ -702,55 +732,6 @@ impl App {
     fn copy_text(&mut self, text: String) {
         self.pane_mut().pending_reply_copy = None;
         self.effects.push(Job::Copy(text));
-    }
-
-    fn open_tools(&mut self) {
-        let tools = self
-            .pane()
-            .transcript
-            .tools()
-            .into_iter()
-            .map(|tool| {
-                let name = if tool.name.is_empty() {
-                    "Tool"
-                } else {
-                    &tool.name
-                };
-                let detail = if tool.output_id.is_some() {
-                    format!("Saved output · {}", tool.summary)
-                } else {
-                    tool.summary.clone()
-                };
-                Choice::new(name, detail, ChoiceKind::Tool(tool.clone()))
-            })
-            .collect();
-        self.picker(PickerKind::Tools, tools);
-    }
-
-    fn open_details(&mut self) {
-        let choices = self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .into_iter()
-            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
-            .collect();
-        self.picker(PickerKind::Details, choices);
-    }
-
-    fn show_output(&mut self, tool: ToolView) {
-        let id = self.modal_id();
-        self.modal = Some(Modal::Output(Box::new(OutputViewer::new(id, tool))));
-        self.read_output(0);
-    }
-
-    fn read_output(&mut self, offset: u64) {
-        if let Some(Modal::Output(viewer)) = &self.modal {
-            if let Some(id) = &viewer.tool.output_id {
-                self.effects
-                    .push(Job::Output(self.selection(), viewer.id, id.clone(), offset));
-            }
-        }
     }
 
     fn open_server(&mut self) {

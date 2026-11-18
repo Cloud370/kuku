@@ -385,13 +385,20 @@ impl App {
             return;
         };
         let target = item.command.target;
-        if let Action::Send { text, create, .. } = item.command.action {
+        if let Action::Send {
+            text,
+            create,
+            values,
+            ..
+        } = item.command.action
+        {
             let address = Address::from_target(&target);
             self.select(address, create.is_none(), String::new());
             let pane = self.pane_mut();
             if create.is_some() {
                 pane.creation_rejected = true;
             }
+            pane.restore_values(values);
             self.append_to_draft(&text);
             self.message("Restored rejected text to draft");
         }
@@ -546,11 +553,18 @@ impl App {
             if let Action::Cancel { execution_id } = item.command.action {
                 pane.finish_interrupt(execution_id);
             }
-            if let Action::Send { text, create, .. } = &item.command.action {
+            if let Action::Send {
+                text,
+                create,
+                values,
+                ..
+            } = &item.command.action
+            {
                 pane.sending = false;
                 pane.creation_rejected |= rejected && create.is_some();
                 if clear && pane.draft.text().is_empty() {
                     pane.draft.set_text(text.clone());
+                    pane.restore_values(values.clone());
                     restored = true;
                 }
             }

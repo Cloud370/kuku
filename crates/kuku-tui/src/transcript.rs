@@ -266,13 +266,14 @@ impl Transcript {
             .iter()
             .rev()
             .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
+                Body::Tool(tool) => Some(tool),
                 Body::User { .. }
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
                 | Body::Notice(..)
                 | Body::TurnSummary => None,
             })
+            .flat_map(|tool| std::iter::once(tool.view()).chain(tool.output_views()))
             .collect()
     }
 
@@ -534,7 +535,7 @@ pub(crate) struct TranscriptView {
     pub(crate) tool_hint: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ToolView {
     pub(crate) name: String,
     pub(crate) summary: String,
@@ -542,6 +543,7 @@ pub(crate) struct ToolView {
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
+    pub(crate) evidence: String,
 }
 
 #[derive(Debug)]

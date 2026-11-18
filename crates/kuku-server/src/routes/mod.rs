@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{FromRequestParts, Query};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Query};
 use axum::http::request::Parts;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use kuku::SessionOptions;
 use serde::de::DeserializeOwned;
@@ -17,6 +17,7 @@ mod commands;
 mod events;
 mod models;
 mod sessions;
+mod values;
 mod workspaces;
 
 pub mod health;
@@ -31,6 +32,11 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         .route("/sessions/{id}/observe", get(events::observe))
         .route("/sessions/{id}/events", get(events::events))
         .route("/sessions/{id}/outputs/{output_id}", get(events::output))
+        .route("/sessions/{id}/values", get(values::list))
+        .route(
+            "/sessions/{id}/values/{name}",
+            put(values::save).layer(DefaultBodyLimit::disable()),
+        )
         .route("/sessions/{id}/commands", post(commands::submit))
         .route(
             "/sessions/{id}/receipts/{command_id}",

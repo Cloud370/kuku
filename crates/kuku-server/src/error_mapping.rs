@@ -64,6 +64,8 @@ impl From<kuku::Error> for ApiError {
                 (StatusCode::CONFLICT, "session_creation_conflict")
             }
             Error::ExecutionNotActive(_) => (StatusCode::CONFLICT, "execution_not_active"),
+            Error::OutputUnavailable(_) => (StatusCode::NOT_FOUND, error.code()),
+            Error::OutputQuotaExceeded { .. } => (StatusCode::INSUFFICIENT_STORAGE, error.code()),
             Error::PermissionRequestNotPending(_) | Error::QuestionRequestNotPending(_) => {
                 (StatusCode::CONFLICT, "reply_not_pending")
             }

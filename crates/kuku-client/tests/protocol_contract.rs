@@ -109,6 +109,7 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
         action: Action::Send {
             text: "Inspect the workspace".into(),
             timing: Timing::Steer,
+            values: Vec::new(),
             bootstrap_skill: None,
             create: Some(Box::default()),
             config_patch: None,

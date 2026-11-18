@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use kuku::event::{EventPayload, StoredEvent};
+use kuku::execution::OutputReference;
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
@@ -29,6 +30,8 @@ pub(crate) enum Command {
         text: String,
         #[serde(default)]
         timing: SendTiming,
+        #[serde(default)]
+        values: Vec<OutputReference>,
         bootstrap_skill: Option<String>,
         create: Option<Box<AgentConfig>>,
         config_patch: Option<Box<AgentConfig>>,
@@ -70,6 +73,14 @@ impl Command {
             create.as_deref()
         } else {
             None
+        }
+    }
+
+    pub(crate) fn values(&self) -> &[OutputReference] {
+        if let Self::Send { values, .. } = self {
+            values
+        } else {
+            &[]
         }
     }
 

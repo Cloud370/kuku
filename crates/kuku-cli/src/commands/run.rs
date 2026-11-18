@@ -160,6 +160,7 @@ async fn prepare_run(
         action: Action::Send {
             text: text.clone(),
             timing: Timing::Steer,
+            values: Vec::new(),
             bootstrap_skill: bootstrap_skill.clone(),
             create: is_creation.then(|| Box::new(config.clone())),
             config_patch: (!is_creation).then(|| Box::new(config)),
@@ -212,6 +213,7 @@ async fn replay_run(
                 action: Action::Send {
                     text,
                     timing: Timing::Steer,
+                    values: Vec::new(),
                     bootstrap_skill,
                     create: None,
                     config_patch: None,
@@ -319,7 +321,9 @@ async fn settle(
         .client
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
-    while !is_settled(&settled, receipt_cursor) {
+    while !is_settled(&settled, receipt_cursor)
+        || (stream_json && observer.cursor() < settled.cursor)
+    {
         let event = tokio::select! {
             result = observer.next() => result?,
             signal = tokio::signal::ctrl_c() => {
@@ -333,9 +337,19 @@ async fn settle(
         };
         match event {
             Observation::Committed {
-                id, state_changed, ..
-            } if state_changed && id > settled.cursor => {
-                settled = connection.client.snapshot(target).await?;
+                id,
+                entry,
+                state_changed,
+                ..
+            } => {
+                if let (Some(renderer), Some(entry)) = (&mut renderer, entry) {
+                    if entry.agent == target.agent {
+                        renderer.committed(&entry)?;
+                    }
+                }
+                if state_changed && id > settled.cursor {
+                    settled = connection.client.snapshot(target).await?;
+                }
             }
             Observation::Live { agent, event, .. } if agent == target.agent => {
                 if let Some(renderer) = renderer.as_mut() {
@@ -348,7 +362,7 @@ async fn settle(
                 }
                 settled = connection.client.snapshot(target).await?;
             }
-            Observation::Committed { .. } | Observation::Live { .. } | Observation::Heartbeat => {}
+            Observation::Live { .. } | Observation::Heartbeat => {}
         }
     }
     if let Some(renderer) = renderer.filter(|renderer| renderer.needs_preview()) {

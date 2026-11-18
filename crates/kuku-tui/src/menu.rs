@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kuku_client::Target;
+use kuku_client::{NamedValue, Target};
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
@@ -28,6 +28,8 @@ pub(crate) enum CommandMenu {
     Notes,
     Details,
     Tools,
+    Save,
+    Values,
     Server,
     Reconnect,
     Restart,
@@ -56,6 +58,8 @@ impl CommandMenu {
         Self::Notes,
         Self::Details,
         Self::Tools,
+        Self::Save,
+        Self::Values,
         Self::Server,
         Self::Reconnect,
         Self::Restart,
@@ -84,6 +88,8 @@ impl CommandMenu {
             Self::Notes => "notes",
             Self::Details => "details",
             Self::Tools => "tools",
+            Self::Save => "save",
+            Self::Values => "values",
             Self::Server => "server",
             Self::Reconnect => "reconnect",
             Self::Restart => "restart",
@@ -121,6 +127,8 @@ impl CommandMenu {
                 );
             }
             Self::Tools => ("Browse tools and saved output", None),
+            Self::Save => ("Name pasted text or the current draft", None),
+            Self::Values => ("Browse and attach saved values", None),
             Self::Server => ("Inspect the connected service", None),
             Self::Reconnect => (
                 "Reconnect and check unconfirmed commands",
@@ -171,6 +179,10 @@ pub(crate) enum ChoiceKind {
     },
     Detail(DetailKey),
     Tool(ToolView),
+    Value(NamedValue),
+    AttachValue(NamedValue),
+    ReadValue(NamedValue),
+    ClearValues,
     Restart,
 }
 
@@ -193,6 +205,8 @@ impl ChoiceKind {
                     | CommandMenu::Source
                     | CommandMenu::Details
                     | CommandMenu::Tools
+                    | CommandMenu::Save
+                    | CommandMenu::Values
                     | CommandMenu::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
@@ -203,6 +217,9 @@ impl ChoiceKind {
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
                 | Self::Tool(_)
+                | Self::Value(_)
+                | Self::AttachValue(_)
+                | Self::ReadValue(_)
         )
     }
 }
@@ -267,6 +284,8 @@ pub(crate) enum PickerKind {
     Permission,
     Details,
     Tools,
+    Values,
+    ValueActions,
     Server,
 }
 
@@ -286,6 +305,8 @@ impl PickerKind {
             Self::Permission => "Authorization required",
             Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
+            Self::Values => "Saved values",
+            Self::ValueActions => "Saved value",
             Self::Server => "Service status",
         }
     }
@@ -302,6 +323,7 @@ impl PickerKind {
                 | Self::Queue
                 | Self::Details
                 | Self::Tools
+                | Self::Values
         )
     }
 
@@ -420,7 +442,8 @@ impl Picker {
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
-                !matches!(self.kind, PickerKind::Models) || choice.matches(&query)
+                !matches!(self.kind, PickerKind::Models | PickerKind::Values)
+                    || choice.matches(&query)
             }))
             .collect();
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
@@ -484,11 +507,16 @@ pub(crate) enum PromptKind {
     Model { connection: String },
     Question { request_id: String },
     QueuedInput { input_command_id: String },
+    SavePaste,
+    SaveValue { output_id: Option<String> },
 }
 
 impl PromptKind {
     pub(crate) fn multiline(&self) -> bool {
-        matches!(self, Self::Question { .. } | Self::QueuedInput { .. })
+        matches!(
+            self,
+            Self::Question { .. } | Self::QueuedInput { .. } | Self::SavePaste
+        )
     }
 }
 

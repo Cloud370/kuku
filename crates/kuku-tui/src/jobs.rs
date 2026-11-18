@@ -5,8 +5,9 @@ use std::time::Duration;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
-    HistoryKind, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk,
-    SessionStatus, Snapshot, SubscriptionUpdate, Target,
+    HistoryKind, HistoryPage, ModelCatalog, ModelSelection, NamedValue, NamedValueKind,
+    NamedValueSource, Observation, OutputChunk, SessionStatus, Snapshot, SubscriptionUpdate,
+    Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -31,7 +32,15 @@ pub(crate) enum Search {
     Paths(String),
     Sessions(String),
     Models,
+    Values(Target),
     Server,
+}
+
+pub(crate) struct ValueSave {
+    pub(crate) name: String,
+    pub(crate) source: NamedValueSource,
+    pub(crate) replace: bool,
+    pub(crate) create: Option<AgentConfig>,
 }
 
 pub(crate) enum Job {
@@ -44,6 +53,7 @@ pub(crate) enum Job {
     Find(Ticket, Search),
     ClosePicker,
     Save(Command),
+    SaveValue(Selection, Box<ValueSave>),
     Send(Command),
     Check(Command),
     Discard(Command),
@@ -71,6 +81,7 @@ pub(crate) enum Update {
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
     Saved(Command, Result<(), Error>),
+    ValueSaved(Selection, Option<String>, Result<NamedValue, Error>),
     Sent(String, Result<Acknowledgement, Error>),
     Checked(String, Result<Option<Acknowledgement>, Error>),
     Discarded(String, Result<(), Error>),
@@ -228,6 +239,23 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             let save = command.clone();
             let result = tokio::task::spawn_blocking(move || connection.pending.save(&save)).await;
             Update::Saved(command, disk_result(result))
+        }
+        Job::SaveValue(selection, save) => {
+            let result = client
+                .save_named_value(
+                    &selection.target,
+                    &save.name,
+                    &save.source,
+                    save.replace,
+                    save.create.as_ref(),
+                )
+                .await;
+            let text = if let NamedValueSource::Text(text) = save.source {
+                Some(text)
+            } else {
+                None
+            };
+            Update::ValueSaved(selection, text, result)
         }
         Job::Send(command) => {
             let result = connection.pending.submit_saved(client, &command).await;
@@ -441,9 +469,37 @@ async fn find(
                 .collect()
         }
         Search::Models => return Ok(model_choices(client.models().await?)),
+        Search::Values(target) => {
+            let choices: Vec<_> = client
+                .named_values(&target)
+                .await?
+                .into_iter()
+                .map(value_choice)
+                .collect();
+            let header = if choices.is_empty() {
+                "No saved values · /save to name pasted text".into()
+            } else {
+                String::new()
+            };
+            return Ok((choices, header));
+        }
         Search::Server => unreachable!("handled above"),
     };
     Ok((choices, String::new()))
+}
+
+fn value_choice(value: NamedValue) -> Choice {
+    let kind = match value.kind {
+        NamedValueKind::Text => "Text",
+        NamedValueKind::Json => "JSON",
+        NamedValueKind::Bytes => "Bytes",
+        NamedValueKind::Output => "Saved output",
+    };
+    Choice::new(
+        value.name.clone(),
+        format!("{kind} · {} bytes", value.reference.bytes),
+        ChoiceKind::Value(value),
+    )
 }
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {

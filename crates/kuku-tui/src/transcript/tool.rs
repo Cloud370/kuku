@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use kuku_client::{HistoryEntry, HistoryKind, Receipt};
+use kuku_client::{HistoryEntry, HistoryKind};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
@@ -8,17 +8,19 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
+use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SURFACE_TEXT, WARNING};
 
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
 
 mod command;
 mod file_change;
+mod outcome;
+mod script;
 mod session;
 
-use command::CommandPreview;
 use file_change::FileChange;
+use outcome::{Outcome, State};
 use session::{is_session_read, query_target, Observation};
 
 const MAX_DETAIL_BYTES: usize = 12 * 1024;
@@ -162,13 +164,21 @@ impl Tool {
     pub(super) fn view(&self) -> ToolView {
         let outcome = self.state.outcome();
         ToolView {
-            name: self.name.clone(),
+            name: self.name().to_owned(),
             summary: self.summary().to_owned(),
             invocation: self.invocation().to_owned(),
             details: self.result().to_owned(),
             diff: self.diff().unwrap_or_default().to_owned(),
             output_id: outcome.and_then(|outcome| outcome.output_id.clone()),
+            evidence: outcome.map_or_else(String::new, Outcome::evidence),
         }
+    }
+
+    pub(super) fn output_views(&self) -> Vec<ToolView> {
+        self.state
+            .outcome()
+            .and_then(|outcome| outcome.script.as_ref())
+            .map_or_else(Vec::new, |script| script.outputs())
     }
 
     pub(super) fn agent_card(&self) -> Option<AgentCard<'_>> {
@@ -230,7 +240,7 @@ impl Tool {
 
     pub(super) fn detail_choice(&self) -> (String, String) {
         let title = self.title();
-        let status = self.state.label().0;
+        let status = self.status_label().0;
         if let Some(caption) = self.session_caption() {
             let detail = self.session_detail();
             let summary = join_details([caption, detail.as_str()]);
@@ -294,6 +304,11 @@ impl Tool {
         if let Some(change) = self.file_change() {
             return self.render_change(change, width, inset, details);
         }
+        if let Some(outcome) = self.state.outcome() {
+            if let Some(script) = &outcome.script {
+                return self.render_script(script, &outcome.status, width, inset, details);
+            }
+        }
         if !inspecting {
             if let Some(caption) = self.session_caption() {
                 let mut rows = self.render_header(width, heading_inset, inset, Some(caption));
@@ -339,7 +354,7 @@ impl Tool {
             .as_ref()
             .map_or(width, crate::theme::CardFrame::content_width);
         let inset = if frame.is_some() { 0 } else { inset };
-        let concise = !inspecting && outcome.is_some_and(Outcome::concise_command);
+        let concise = !inspecting && command.is_some_and(|preview| preview.concise());
         let mut rows = if let Some(frame) = &frame {
             vec![self.command_heading(frame)]
         } else {
@@ -355,12 +370,12 @@ impl Tool {
             ));
             return finish_card(rows);
         }
-        let invocation = if frame.is_some() {
-            self.shell_command()
-        } else {
-            self.invocation()
-        };
-        let summary = self.summary();
+        let invocation = self.invocation();
+        let command_summary = command.map(|preview| preview.summary());
+        let summary = command_summary
+            .as_deref()
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or_else(|| self.summary());
         if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
             rows.extend(render_preview(
                 invocation,
@@ -394,10 +409,7 @@ impl Tool {
             let result = if let Some(diff) = self.diff() {
                 render_excerpt(diff, render_diff)
             } else {
-                let text = command.map_or_else(
-                    || self.result(),
-                    |preview| preview.body(self.result(), concise),
-                );
+                let text = command.map_or_else(|| self.result(), |preview| preview.body());
                 if text.is_empty() || text == summary || (frame.is_none() && text == invocation) {
                     Vec::new()
                 } else {
@@ -412,15 +424,6 @@ impl Tool {
                 MAX_RESULT_ROWS
             };
             rows.extend(render_rows(result, width, limit, inset));
-            if let Some(preview) = command {
-                rows.extend(render_preview(
-                    &preview.notes,
-                    WARNING,
-                    width,
-                    MAX_WARNING_ROWS,
-                    inset,
-                ));
-            }
             if !concise && outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
                 rows.extend(render_preview(
                     "Saved output · /tools",
@@ -430,6 +433,15 @@ impl Tool {
                     inset,
                 ));
             }
+        }
+        if let Some(preview) = command {
+            rows.extend(render_preview(
+                &preview.notes(),
+                WARNING,
+                width,
+                MAX_WARNING_ROWS,
+                inset,
+            ));
         }
         match frame {
             Some(frame) => command::finish(frame, rows, self.status_label()),
@@ -473,7 +485,7 @@ impl Tool {
         outcome
             .change
             .as_ref()
-            .filter(|value| value.is_for(&self.name))
+            .filter(|value| self.name.is_empty() || value.tool() == self.name)
     }
 
     fn observation(&self) -> Option<&Observation> {
@@ -513,10 +525,26 @@ impl Tool {
     }
 
     fn title(&self) -> Cow<'_, str> {
-        if self.name.is_empty() && self.read_path().is_some() {
-            tool_title("read_file")
+        tool_title(self.name())
+    }
+
+    fn name(&self) -> &str {
+        if !self.name.is_empty() {
+            return &self.name;
+        }
+        let Some(outcome) = self.state.outcome() else {
+            return "";
+        };
+        if outcome.command_preview.is_some() {
+            "run_command"
+        } else if outcome.script.is_some() {
+            "workspace_script"
+        } else if let Some(change) = &outcome.change {
+            change.tool()
+        } else if outcome.file_read.is_some() {
+            "read_file"
         } else {
-            tool_title(&self.name)
+            ""
         }
     }
 
@@ -535,12 +563,19 @@ impl Tool {
     fn status_label(&self) -> (String, Color) {
         let (status, color) = self.state.label();
         let status = shorten(&single_line(status), 24);
-        let exit = self
-            .state
-            .outcome()
-            .and_then(|outcome| outcome.exit_code)
-            .map_or_else(String::new, |exit| format!(" · exit {exit}"));
-        (format!("{status}{exit}"), color)
+        let mut status = status;
+        if let Some(outcome) = self.state.outcome() {
+            if let Some(exit) = outcome.exit_code {
+                status.push_str(&format!(" · exit {exit}"));
+            } else if let Some(signal) = outcome
+                .command_preview
+                .as_ref()
+                .and_then(|command| command.signal())
+            {
+                status.push_str(&format!(" · signal {signal}"));
+            }
+        }
+        (status, color)
     }
 
     fn render_header(
@@ -608,7 +643,7 @@ impl Tool {
         if self.invocation.is_empty()
             || matches!(
                 self.name.as_str(),
-                "run_command" | "read_file" | "write_file" | "edit_file"
+                "run_command" | "read_file" | "write_file" | "edit_file" | "remove_file"
             )
         {
             if let Some(outcome) = self
@@ -680,8 +715,16 @@ pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
         "search_text" => "Search text",
         "write_file" => "Write file",
         "edit_file" => "Edit file",
+        "remove_file" => "Remove file",
         "run_command" => "Run command",
+        "workspace_script" => "Workspace script",
         "read_output" => "Read saved output",
+        "create_output" => "Start output",
+        "append_output" => "Append output",
+        "finish_output" => "Save output",
+        "save_value" => "Save value",
+        "list_values" => "List saved values",
+        "stat_file" => "Inspect file",
         "fetch_url" => "Download URL",
         "fetch_web" => "Fetch web page",
         "query_session" => "Query Session",
@@ -699,191 +742,12 @@ pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
     })
 }
 
-#[derive(Debug, Clone, Default)]
-enum State {
-    #[default]
-    Requested,
-    Running,
-    Reported(Outcome),
-    Recorded(Outcome),
-}
-
-impl State {
-    fn outcome(&self) -> Option<&Outcome> {
-        match self {
-            Self::Requested | Self::Running => None,
-            Self::Reported(outcome) | Self::Recorded(outcome) => Some(outcome),
-        }
-    }
-
-    fn label(&self) -> (&str, Color) {
-        match self {
-            Self::Requested => ("requested", MUTED),
-            Self::Running => ("running", ACCENT),
-            Self::Reported(outcome) | Self::Recorded(outcome) => match outcome.status.as_str() {
-                "ok" if outcome.exit_code.is_some_and(|code| code != 0) => ("failed", ERROR),
-                "ok" if outcome.attention => ("ok with warnings", WARNING),
-                "ok" => ("ok", SUCCESS),
-                "error" => ("error", ERROR),
-                "blocked" | "cancelled" => (&outcome.status, WARNING),
-                "" => ("finished", MUTED),
-                status => (status, MUTED),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Outcome {
-    status: String,
-    summary: String,
-    invocation: String,
-    content: String,
-    diff: String,
-    exit_code: Option<i64>,
-    output_id: Option<String>,
-    command_preview: Option<CommandPreview>,
-    file_read: Option<FileRead>,
-    receipt: Option<Receipt>,
-    observation: Option<Observation>,
-    change: Option<FileChange>,
-    attention: bool,
-}
-
-impl Outcome {
-    fn from_fields(fields: &Map<String, Value>, fallback_summary: Option<&str>) -> Self {
-        let get = |key| fields.get(key).and_then(Value::as_str);
-        let structured = fields
-            .get("structured")
-            .or_else(|| fields.get("result"))
-            .unwrap_or(&Value::Null);
-        let content = get("model_content");
-        let summary = get("summary").or(fallback_summary);
-        let succeeded = get("status") == Some("ok");
-        let output_id = get("output_id")
-            .or_else(|| structured["output_id"].as_str())
-            .or_else(|| structured["output_ref"]["id"].as_str());
-        let truncated = fields
-            .get("truncated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let attention = [
-            "cleanup_incomplete",
-            "quota_truncated",
-            "output_persistence_failed",
-            "timed_out",
-            "cancelled",
-        ]
-        .into_iter()
-        .any(|key| structured[key].as_bool() == Some(true))
-            || structured["capture_complete"].as_bool() == Some(false)
-            || structured["stderr_lines"]
-                .as_u64()
-                .is_some_and(|lines| lines > 0);
-        Self {
-            status: capped(get("status"), MAX_LABEL_BYTES),
-            summary: capped(summary, MAX_DETAIL_BYTES),
-            invocation: capped(
-                structured["command"]
-                    .as_str()
-                    .or_else(|| structured["path"].as_str()),
-                MAX_DETAIL_BYTES,
-            ),
-            content: capped(content, MAX_DETAIL_BYTES),
-            diff: capped(
-                structured["diff"].as_str().or_else(|| get("diff")),
-                MAX_DETAIL_BYTES,
-            ),
-            exit_code: structured["exit_code"].as_i64(),
-            output_id: output_id.map(str::to_owned),
-            command_preview: CommandPreview::from_result(content, structured, output_id, truncated),
-            file_read: FileRead::from_result(structured, truncated),
-            receipt: succeeded.then(|| agent_receipt(structured)).flatten(),
-            observation: succeeded
-                .then(|| {
-                    Observation::from_result(
-                        structured,
-                        summary.unwrap_or_default(),
-                        content.unwrap_or_default(),
-                        truncated,
-                    )
-                })
-                .flatten(),
-            change: succeeded
-                .then(|| FileChange::from_result(structured, truncated))
-                .flatten(),
-            attention,
-        }
-    }
-}
-
-fn agent_receipt(structured: &Value) -> Option<Receipt> {
-    let agent = structured["agent"].as_str()?;
-    let command_id = structured["command_id"].as_str()?;
-    let event_id = structured["event_id"].as_u64()?;
-    if agent.is_empty() || command_id.is_empty() || event_id == 0 {
-        return None;
-    }
-    Some(Receipt {
-        agent: agent.to_owned(),
-        command_id: command_id.to_owned(),
-        event_id,
-    })
-}
-
-#[derive(Debug, Clone)]
-struct FileRead {
-    start: u64,
-    count: u64,
-    total: u64,
-    cached: bool,
-    truncated: bool,
-}
-
-impl FileRead {
-    fn from_result(structured: &Value, truncated: bool) -> Option<Self> {
-        if structured["kind"].as_str() != Some("file_content") {
-            return None;
-        }
-        Some(Self {
-            start: structured["start_line"].as_u64()?,
-            count: structured["line_count"].as_u64()?,
-            total: structured["total_lines"].as_u64()?,
-            cached: structured["cached"].as_bool().unwrap_or(false),
-            truncated,
-        })
-    }
-
-    fn caption(&self) -> String {
-        let Self {
-            start,
-            count,
-            total,
-            cached,
-            truncated,
-        } = *self;
-        let mut caption = match (total, count) {
-            (0, _) => "empty file".to_owned(),
-            (_, 0) => format!("no lines at {start} of {total}"),
-            (_, 1) => format!("line {start} of {total}"),
-            _ => {
-                let end = start.saturating_add(count - 1);
-                format!("lines {start}–{end} of {total}")
-            }
-        };
-        if cached {
-            caption.push_str(" · cached");
-        }
-        if truncated {
-            caption.push_str(" · truncated");
-        }
-        caption
-    }
-}
-
 fn invocation(tool: &str, args: &Value) -> String {
     if tool == "query_session" {
         return query_target(args);
+    }
+    if tool == "run_command" {
+        return command::invocation(args);
     }
     let get = |key| {
         args.get(key)
@@ -903,8 +767,7 @@ fn invocation(tool: &str, args: &Value) -> String {
     }
     let key = match tool {
         "list_agents" => Some("wait_for"),
-        "run_command" => Some("command"),
-        "edit_file" | "read_file" | "write_file" => Some("path"),
+        "edit_file" | "read_file" | "write_file" | "remove_file" => Some("path"),
         "fetch_url" | "fetch_web" => Some("url"),
         _ => None,
     };

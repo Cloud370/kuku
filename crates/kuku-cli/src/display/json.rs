@@ -52,6 +52,8 @@ pub enum OutputLine {
         output: Option<String>,
         truncated: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
+        structured: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
     },
     #[serde(rename = "permission_ask")]
@@ -196,8 +198,16 @@ impl OutputLine {
             summary,
             output,
             truncated,
+            structured: None,
             conversation: None,
         }
+    }
+
+    pub(crate) fn with_structured(mut self, value: Option<serde_json::Value>) -> Self {
+        if let Self::ToolResult { structured, .. } = &mut self {
+            *structured = value;
+        }
+        self
     }
 
     pub fn permission_ask(request_id: String, tool: String, risk: String, summary: String) -> Self {
@@ -246,6 +256,7 @@ impl OutputLine {
                 summary,
                 output,
                 truncated,
+                structured,
                 ..
             } => OutputLine::ToolResult {
                 tool_call_id,
@@ -253,6 +264,7 @@ impl OutputLine {
                 summary,
                 output,
                 truncated,
+                structured,
                 conversation,
             },
             OutputLine::PermissionAsk {
