@@ -180,6 +180,7 @@ impl Session {
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
         for payload in payloads {
             let event = writer.append(payload)?;
+            state.turns.observe(&event, None);
             if matches!(
                 event.payload.kind_name(),
                 "runtime.step_prepared" | "runtime.model_retry" | "model.response" | "model.error"

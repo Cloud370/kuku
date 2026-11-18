@@ -319,6 +319,7 @@ impl Session {
                         turn,
                         text: preview.map_or_else(String::new, |preview| preview.text.clone()),
                         truncated: preview.is_some_and(|preview| preview.truncated),
+                        usage: agent.pending_usage(),
                     }
                 });
             let command = expected.map(|(command, _)| command);

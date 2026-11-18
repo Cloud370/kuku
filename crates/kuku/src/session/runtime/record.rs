@@ -7,12 +7,13 @@ use sha2::{Digest, Sha256};
 use crate::event::{EventPayload, StoredEvent};
 use crate::{Error, Result};
 
-use super::observe::{ReplyPreview, TurnIndex};
+use super::observe::ReplyPreview;
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
 use super::usage::AgentUsage;
+use super::TurnIndex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Command {
@@ -36,6 +37,7 @@ pub(super) struct InterruptedExecution {
     pub(super) text: String,
     #[serde(default)]
     pub(super) truncated: bool,
+    pub(super) usage: UsageTotals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +263,8 @@ impl State {
                             admitted_task: None,
                             queued_task: None,
                             turn: None,
+                            turn_started_at_ms: None,
+                            turn_elapsed_ms: None,
                             execution_id: None,
                             last_output: None,
                             last_error: None,
@@ -393,7 +397,6 @@ impl State {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
                 }
                 agent.snapshot.last_error = None;
-                self.turns.accepted(address, event_id, turn);
             }
             Record::TurnSettled {
                 address,
@@ -561,15 +564,28 @@ impl State {
 
     pub(super) fn view(&self, address: &str, cursor: u64) -> Result<AgentView> {
         Ok(AgentView {
-            snapshot: self.agent(address)?.snapshot.clone(),
-            agents: self
-                .agents
-                .values()
-                .map(|agent| agent.snapshot.clone())
-                .collect(),
+            snapshot: self.snapshot(address)?,
+            agents: self.snapshots(),
             cursor,
             pending_inputs: self.pending_inputs(address)?,
         })
+    }
+
+    pub(super) fn snapshot(&self, address: &str) -> Result<AgentSnapshot> {
+        Ok(self.timed_snapshot(&self.agent(address)?.snapshot))
+    }
+
+    pub(super) fn snapshots(&self) -> Vec<AgentSnapshot> {
+        self.agents
+            .values()
+            .map(|agent| self.timed_snapshot(&agent.snapshot))
+            .collect()
+    }
+
+    fn timed_snapshot(&self, current: &AgentSnapshot) -> AgentSnapshot {
+        let mut snapshot = current.clone();
+        self.turns.time_snapshot(&mut snapshot);
+        snapshot
     }
 
     pub(super) fn mark_interrupted(&mut self) {

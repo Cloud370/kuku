@@ -385,6 +385,21 @@ pub struct ModelUsageSample {
     pub elapsed_us: Option<u64>,
 }
 
+/// Statistics for one completed or interrupted Agent Turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnSummary {
+    /// Wall-clock milliseconds from first admission to terminal settlement, if recorded.
+    pub elapsed_ms: Option<u64>,
+    /// Total input tokens when all attempts reported them.
+    pub input_tokens: Option<u64>,
+    /// Total output tokens when all attempts reported them.
+    pub output_tokens: Option<u64>,
+    /// Token-weighted cache-read percentage over attempts with paired counts.
+    pub cache_hit_percent: Option<f64>,
+    /// Number of committed tool calls, including calls waiting for authorization.
+    pub tool_calls: u64,
+}
+
 /// Queryable state of an agent without consuming its output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSnapshot {
@@ -407,6 +422,12 @@ pub struct AgentSnapshot {
     pub queued_task: Option<String>,
     /// Latest turn number, when any work was accepted.
     pub turn: Option<u64>,
+    /// Unix time in milliseconds at the latest Turn's first admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_at_ms: Option<u64>,
+    /// Final wall time for the latest Turn, present only after terminal settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_elapsed_ms: Option<u64>,
     /// Durable identity of the observed execution, including a pending wait or cleanup.
     #[serde(default)]
     pub execution_id: Option<u64>,

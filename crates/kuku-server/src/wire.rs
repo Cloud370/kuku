@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::run_manager::TurnLookup;
+
 #[derive(Deserialize)]
 pub(crate) struct CommandRequest {
     pub(crate) workspace: PathBuf,
@@ -182,11 +184,9 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
     })
 }
 
-pub(crate) fn history_entry(
-    event: &StoredEvent,
-    display_number: impl FnOnce(&str, u64) -> Option<u64>,
-) -> Option<Value> {
+pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<Value> {
     let agent = event_agent(&event.payload).unwrap_or("main");
+    let mut summary = None;
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
             turn, text, from, ..
@@ -244,22 +244,39 @@ pub(crate) fn history_entry(
             reason,
             stop_event_id: None,
             ..
-        } => {
+        } if !turns.explicitly_stopped(agent, *turn) => {
             json!({"type":"status","turn":turn,"status":"cancelled","text":reason})
         }
-        EventPayload::TurnInterrupted { turn, reason, .. } => {
+        EventPayload::TurnInterrupted { turn, reason, .. }
+            if !turns.explicitly_stopped(agent, *turn) =>
+        {
             json!({"type":"status","turn":turn,"status":"interrupted","text":reason})
         }
         EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
-            interaction_entry(&value["record"])?
+            let record = &value["record"];
+            match record["operation"].as_str()? {
+                "turn_settled" => {
+                    summary = Some(turns.summary_at(event.id)?);
+                    json!({"type":"turn_summary"})
+                }
+                "agent_stopped" => {
+                    summary = turns.summary_at(event.id);
+                    interaction_entry(record)?
+                }
+                _ => interaction_entry(record)?,
+            }
         }
         _ => return None,
     };
     entry["id"] = json!(event.id);
     entry["agent"] = json!(agent);
+    if let Some((turn, summary)) = summary {
+        entry["turn"] = json!(turn);
+        entry["turn_summary"] = json!(summary);
+    }
     if let Some(number) = entry["turn"]
         .as_u64()
-        .and_then(|turn| display_number(agent, turn))
+        .and_then(|turn| turns.number(agent, turn))
     {
         entry["turn_number"] = json!(number);
     }
@@ -270,7 +287,7 @@ pub(crate) fn committed_frame(
     event: &StoredEvent,
     target: Option<&str>,
     include_agent_activity: bool,
-    display_number: impl FnOnce(&str, u64) -> Option<u64>,
+    turns: &TurnLookup,
 ) -> Value {
     let kind = event.payload.kind_name();
     let agent = event_agent(&event.payload);
@@ -280,7 +297,7 @@ pub(crate) fn committed_frame(
     }
     let matches = target.is_none_or(|target| agent.unwrap_or("main") == target);
     if matches {
-        if let Some(entry) = history_entry(event, display_number) {
+        if let Some(entry) = history_entry(event, turns) {
             value["entry"] = entry;
         }
         match &event.payload {
@@ -322,10 +339,20 @@ pub(crate) fn committed_frame(
             if matches {
                 match record["operation"].as_str() {
                     Some("inputs_accepted") => {
-                        value["delivery"] = json!({"status":"accepted","input_ids":record["input_ids"]});
+                        value["delivery"] =
+                            json!({"status":"accepted","input_ids":record["input_ids"]});
+                        if record["turn"].is_null() {
+                            value["turn"] = json!(event.id);
+                            if let Some(start) =
+                                turns.started_at_ms(agent.unwrap_or("main"), event.id)
+                            {
+                                value["turn_started_at_ms"] = json!(start);
+                            }
+                        }
                     }
                     Some("input_withdrawal") if record["status"] == "withdrawn" => {
-                        value["delivery"] = json!({"status":"withdrawn","input_id":record["input_command_id"]});
+                        value["delivery"] =
+                            json!({"status":"withdrawn","input_id":record["input_command_id"]});
                     }
                     Some("input_replacement") => {
                         value["delivery"] = json!({

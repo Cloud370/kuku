@@ -25,8 +25,8 @@ pub use runtime::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
     InputStatus, InputTiming, ModelUsageSample, Observation, OutputChunk, OutputRead,
     OutputSegment, OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview,
-    ReplyPreviews, RuntimeLimits, Session, SessionObserver, SessionOptions, TurnIndex, UsageTotals,
-    Withdrawal,
+    ReplyPreviews, RuntimeLimits, Session, SessionObserver, SessionOptions, TurnIndex, TurnSummary,
+    UsageTotals, Withdrawal,
 };
 
 pub use id::{new_session_id, validate_session_id};

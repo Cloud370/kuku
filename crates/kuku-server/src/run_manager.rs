@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use kuku::event::EventStore;
-use kuku::session::{Input, Session, SessionOptions, TurnIndex};
+use kuku::session::{Input, Session, SessionOptions, TurnIndex, TurnSummary};
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::error_mapping::{ApiError, Result};
@@ -49,6 +48,27 @@ impl TurnLookup {
         match self {
             Self::Live(session) => session.turn_number(agent, turn),
             Self::Closed(index) => index.number(agent, turn),
+        }
+    }
+
+    pub(crate) fn started_at_ms(&self, agent: &str, turn: u64) -> Option<u64> {
+        match self {
+            Self::Live(session) => session.turn_started_at_ms(agent, turn),
+            Self::Closed(index) => index.started_at_ms(agent, turn),
+        }
+    }
+
+    pub(crate) fn summary_at(&self, event_id: u64) -> Option<(u64, TurnSummary)> {
+        match self {
+            Self::Live(session) => session.turn_summary_at(event_id),
+            Self::Closed(index) => index.summary_at(event_id),
+        }
+    }
+
+    pub(crate) fn explicitly_stopped(&self, agent: &str, turn: u64) -> bool {
+        match self {
+            Self::Live(session) => session.turn_explicitly_stopped(agent, turn),
+            Self::Closed(index) => index.explicitly_stopped(agent, turn),
         }
     }
 }
@@ -153,15 +173,14 @@ impl RunManager {
         session
     }
 
-    pub(crate) fn turn_lookup(&self, path: &Path) -> Result<TurnLookup> {
+    pub(crate) fn turn_lookup(&self, path: &Path, minimum_cursor: u64) -> Result<TurnLookup> {
         if let Some(session) = self.open_session(path) {
             return Ok(TurnLookup::Live(session));
         }
         let mut cache = self.inner.closed_turns.lock().unwrap();
-        let cursor = EventStore::read_head(path)?;
         if let Some(cached) = cache
             .as_ref()
-            .filter(|cached| cached.path == path && cached.cursor == cursor)
+            .filter(|cached| cached.path == path && cached.cursor >= minimum_cursor)
         {
             return Ok(TurnLookup::Closed(cached.index.clone()));
         }

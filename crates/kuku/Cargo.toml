@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }
-time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset"] }
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "parsing"] }
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream"] }
 wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 sha2 = "0.10"

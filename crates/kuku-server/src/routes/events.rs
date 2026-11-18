@@ -106,11 +106,16 @@ pub(super) async fn history(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     validate_limit(limit)?;
-    let turns = manager(&state).await.turn_lookup(&target.path)?;
+    let cursor = EventStore::read_head(&target.path)?;
+    let before = match cursor.checked_add(1) {
+        Some(end) => Some(query.before.map_or(end, |before| before.min(end))),
+        None => query.before,
+    };
+    let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
     let (entries, next_before) = history_page(
         &target.path,
         query.agent.as_deref().unwrap_or("main"),
-        query.before,
+        before,
         limit,
         &turns,
     )?;
@@ -224,7 +229,7 @@ fn history_page(
         }
         for event in page.into_iter().rev() {
             let entry = (event_agent(&event.payload).unwrap_or("main") == agent)
-                .then(|| history_entry(&event, |address, turn| turns.number(address, turn)))
+                .then(|| history_entry(&event, turns))
                 .flatten();
             if let Some(entry) = entry {
                 let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
@@ -303,6 +308,7 @@ async fn follow(
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if let Some(session) = manager.open_session(&target.path) {
+            let turns = TurnLookup::Live(session.clone());
             let mut observer = match agent.filter(|_| include_agent_activity) {
                 Some(address) => session.observe_agent(after, address),
                 None => session.observe(after),
@@ -328,7 +334,7 @@ async fn follow(
                             &event,
                             agent,
                             include_agent_activity,
-                            |address, turn| session.turn_number(address, turn),
+                            &turns,
                         ))
                     }
                     Observation::Live {
@@ -376,14 +382,11 @@ async fn follow(
         } else {
             target.require_exists()?;
             let events = EventStore::read_page(&target.path, after, READ_PAGE_SIZE)?;
-            if !events.is_empty() {
-                let turns = manager.turn_lookup(&target.path)?;
+            if let Some(last) = events.last() {
+                let turns = manager.turn_lookup(&target.path, last.id)?;
                 for event in events {
                     after = event.id;
-                    let frame =
-                        committed_frame(&event, agent, include_agent_activity, |address, turn| {
-                            turns.number(address, turn)
-                        });
+                    let frame = committed_frame(&event, agent, include_agent_activity, &turns);
                     if !write_frame(send, frame).await {
                         return Ok(());
                     }

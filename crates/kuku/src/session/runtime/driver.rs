@@ -402,6 +402,7 @@ impl Session {
             .cloned()
             .or_else(|| cancellation_error.as_ref().map(ToString::to_string));
         let usage = agent.pending_usage();
+        let turn = agent.snapshot.turn.filter(|_| !agent.accepted.is_empty());
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -413,7 +414,7 @@ impl Session {
                 },
                 output: None,
                 error: cleanup,
-                turn: None,
+                turn,
                 usage,
             },
         )?;
@@ -449,6 +450,7 @@ impl Session {
         }
         let (DriveFailure::Execution(error) | DriveFailure::Cleanup(error)) = failure;
         let usage = agent.pending_usage();
+        let turn = agent.snapshot.turn.filter(|_| !agent.accepted.is_empty());
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -456,7 +458,7 @@ impl Session {
                 status: AgentStatus::Interrupted,
                 output: None,
                 error: Some(error.to_string()),
-                turn: None,
+                turn,
                 usage,
             },
         )?;

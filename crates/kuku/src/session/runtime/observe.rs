@@ -4,13 +4,14 @@ use std::path::Path;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::event::{EventPayload, EventStore, StoredEvent};
+use crate::event::{EventStore, StoredEvent};
 use crate::query::{ModelPhase, UiEvent};
 use crate::Result;
 
-use super::record::{validate_key, Record, State};
+use super::record::{validate_key, State};
 use super::{
     load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
+    TurnSummary,
 };
 
 const REPLY_PREVIEW_BYTES: usize = 64 * 1024;
@@ -134,49 +135,35 @@ pub struct SessionObserver {
     preview: Option<Observation>,
 }
 
-/// Per-Agent display numbers derived from the committed acceptance of new Turns.
-#[derive(Debug, Default)]
-pub struct TurnIndex {
-    by_agent: HashMap<String, Vec<u64>>,
-}
-
-impl TurnIndex {
-    /// Read Turn numbers and their source cursor without opening a Session.
-    pub fn read(events_path: &Path) -> Result<(Self, u64)> {
-        let mut index = Self::default();
-        let cursor = EventStore::visit_path(events_path, |event| {
-            if !matches!(&event.payload, EventPayload::Unknown(payload)
-                if payload["kind"] == "runtime.operation"
-                    && payload["record"]["operation"] == "inputs_accepted")
-            {
-                return Ok(());
-            }
-            if let Some(Record::InputsAccepted { address, turn, .. }) = Record::from_event(&event)?
-            {
-                index.accepted(address, event.id, turn);
-            }
-            Ok(())
-        })?;
-        Ok((index, cursor))
-    }
-
-    /// Return the one-based display number for a known Turn belonging to an Agent.
-    pub fn number(&self, address: &str, turn: u64) -> Option<u64> {
-        let position = self.by_agent.get(address)?.binary_search(&turn).ok()?;
-        Some(position as u64 + 1)
-    }
-
-    pub(super) fn accepted(&mut self, address: String, event_id: u64, existing_turn: Option<u64>) {
-        if existing_turn.is_none() {
-            self.by_agent.entry(address).or_default().push(event_id);
-        }
-    }
-}
-
 impl Session {
     /// Return the one-based display number for a committed Agent Turn identity.
     pub fn turn_number(&self, address: &str, turn: u64) -> Option<u64> {
         self.inner.state.lock().unwrap().turns.number(address, turn)
+    }
+
+    /// Return the durable first-admission time for a specific Agent Turn.
+    pub fn turn_started_at_ms(&self, address: &str, turn: u64) -> Option<u64> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .turns
+            .started_at_ms(address, turn)
+    }
+
+    /// Find the statistics anchored to a committed terminal event.
+    pub fn turn_summary_at(&self, event_id: u64) -> Option<(u64, TurnSummary)> {
+        self.inner.state.lock().unwrap().turns.summary_at(event_id)
+    }
+
+    /// Return whether an explicit stop ended the selected Turn.
+    pub fn turn_explicitly_stopped(&self, address: &str, turn: u64) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .turns
+            .explicitly_stopped(address, turn)
     }
 
     /// Return a selected agent's state, queued deliveries, and the matching journal cursor.
@@ -221,7 +208,7 @@ impl Session {
         } else {
             self.current_cursor()?
         };
-        Ok((state.agent(address)?.snapshot.clone(), cursor))
+        Ok((state.snapshot(address)?, cursor))
     }
 
     /// Read a closed session's selected snapshot and pending inputs without opening runtime resources.
@@ -466,7 +453,9 @@ mod tests {
     use crate::query::ModelPhase;
     use serde_json::json;
 
-    use super::{EventPayload, EventStore, Record, ReplyPreview, TurnIndex, REPLY_PREVIEW_BYTES};
+    use super::super::{record::Record, TurnIndex};
+    use super::{EventStore, ReplyPreview, REPLY_PREVIEW_BYTES};
+    use crate::event::EventPayload;
 
     #[test]
     fn live_reply_retains_a_utf8_prefix_and_stops_at_the_first_missing_byte() {

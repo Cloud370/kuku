@@ -497,17 +497,27 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             ));
         }
 
-        for tool_call in &tool_calls {
-            store.append(EventPayload::ToolCall {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-                conversation: Some(pending.conversation.as_str().to_string()),
-                tool_call_id: tool_call.id.clone(),
-                request_id: request_id.clone(),
-                index: tool_call.index,
-                tool: tool_call.name.clone(),
-                args: tool_call.args.clone(),
-            })?;
+        let ts = now_timestamp()?;
+        let facts = tool_calls.iter().map(|tool_call| EventPayload::ToolCall {
+            turn: pending.turn,
+            ts: ts.clone(),
+            conversation: Some(pending.conversation.as_str().to_string()),
+            tool_call_id: tool_call.id.clone(),
+            request_id: request_id.clone(),
+            index: tool_call.index,
+            tool: tool_call.name.clone(),
+            args: tool_call.args.clone(),
+        });
+        if let Some(execution) = pending.query.runtime_execution {
+            super::provider::runtime_session(&pending, execution)?.commit_model_facts(
+                pending.conversation.as_str(),
+                execution,
+                facts,
+            )?;
+        } else {
+            for fact in facts {
+                store.append(fact)?;
+            }
         }
     }
 

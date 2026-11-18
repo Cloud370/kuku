@@ -8,6 +8,7 @@ mod observe;
 mod receipts;
 mod record;
 mod selection;
+mod turns;
 mod types;
 mod usage;
 
@@ -26,11 +27,12 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
-pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver, TurnIndex};
+pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
+pub use turns::TurnIndex;
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
     InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,
-    RuntimeLimits, SessionOptions, UsageTotals, Withdrawal,
+    RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
 };
 
 use record::{fingerprint, validate_address, validate_key, Command, Record, State};
@@ -335,36 +337,18 @@ impl Session {
 
     /// Return an agent's derived state without affecting execution or observations.
     pub fn agent(&self, address: &str) -> Result<AgentSnapshot> {
-        Ok(self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .agent(address)?
-            .snapshot
-            .clone())
+        self.inner.state.lock().unwrap().snapshot(address)
     }
 
     /// Return all retained agents in stable address order.
     pub fn agents(&self) -> Vec<AgentSnapshot> {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .agents
-            .values()
-            .map(|agent| agent.snapshot.clone())
-            .collect()
+        self.inner.state.lock().unwrap().snapshots()
     }
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
         let (state, _) = load_state(events_path)?;
-        Ok(state
-            .agents
-            .into_values()
-            .map(|agent| agent.snapshot)
-            .collect())
+        Ok(state.snapshots())
     }
 
     /// Read retained command output by bounded range, search, or incremental cursor.
@@ -638,6 +622,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
         let event = writer.append(record.payload()?)?;
+        state.turns.observe(&event, Some(&record));
         state.reduce(event.id, record)?;
         Ok(event.id)
     }
@@ -660,7 +645,9 @@ fn load_state(events_path: &Path) -> Result<(State, u64)> {
 }
 
 fn reduce_event(state: &mut State, event: StoredEvent) -> Result<()> {
-    if let Some(record) = Record::from_event(&event)? {
+    let record = Record::from_event(&event)?;
+    state.turns.observe(&event, record.as_ref());
+    if let Some(record) = record {
         state.reduce(event.id, record)?;
     }
     usage::reduce_model_fact(state, &event.payload)
