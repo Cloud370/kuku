@@ -399,7 +399,7 @@ async fn find(
                     };
                     Choice::new(
                         &title,
-                        format!("{state} · {} · {} Turns", session.mtime, session.turn_count),
+                        format!("{} · {state} · {} · {} Turns", session.session_id.chars().take(8).collect::<String>(), session.mtime, session.turn_count),
                         ChoiceKind::Session {
                             id: session.session_id,
                             title: title.clone(),
