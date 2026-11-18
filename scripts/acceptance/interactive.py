@@ -195,6 +195,7 @@ def two_workspaces_and_disconnect(client):
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
         busy_protocol_upgrade(client, workspace, original)
+        left.exit_cleanly("\x03")
 
     client.assert_current_service(original)
     client.release_tool(workspace)
@@ -361,7 +362,7 @@ def editable_multiline_paste(client):
         terminal.expect("New session", state="Ready")
         discarded = "draft to clear with Ctrl+C"
         terminal.type(discarded)
-        terminal.press("\x03\x03")
+        terminal.press("\x03")
         view = terminal.expect("Type a prompt")
         assert view["exit_code"] is None and discarded not in view["screen"]
 
@@ -404,8 +405,8 @@ def editable_multiline_paste(client):
         print(phone)
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)
-        terminal.exit_cleanly()
-    print("Ctrl+C cleared the focused input, Tab completed /quit, and multiline paste stayed editable until Enter.")
+        terminal.exit_cleanly("\x03")
+    print("Ctrl+C cleared the draft and exited the empty composer, Tab completed /quit, and multiline paste stayed editable until Enter.")
 
 
 def wait_restart_and_recover_crash(client, workspace, session, title):

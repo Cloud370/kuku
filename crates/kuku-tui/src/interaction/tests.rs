@@ -163,7 +163,7 @@ fn control_o_expands_and_collapses_agent_previews_together() {
 }
 
 #[test]
-fn control_c_clears_the_focused_editor_and_keeps_the_client_open() {
+fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
     let mut app = connected_app();
     let clear = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.paste("draft to keep");
@@ -175,6 +175,8 @@ fn control_c_clears_the_focused_editor_and_keeps_the_client_open() {
     assert!(
         matches!(app.effects.as_slice(), [Job::Find(_, Search::Skills(query))] if query.is_empty())
     );
+    app.key(clear);
+    assert!(!app.quit);
     assert_eq!("draft to keep", app.pane().draft.text());
     press(&mut app, KeyCode::Esc);
 
@@ -182,15 +184,23 @@ fn control_c_clears_the_focused_editor_and_keeps_the_client_open() {
     app.paste("reviewer");
     app.key(clear);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text().is_empty()));
+    app.key(clear);
+    assert!(!app.quit);
     assert_eq!("draft to keep", app.pane().draft.text());
     press(&mut app, KeyCode::Esc);
 
     app.effects.clear();
     app.key(clear);
-    app.key(clear);
     assert!(app.pane().draft.text().is_empty());
-    assert!(app.effects.is_empty());
     assert!(!app.quit);
+    app.key(KeyEvent {
+        kind: crossterm::event::KeyEventKind::Repeat,
+        ..clear
+    });
+    assert!(!app.quit);
+    app.key(clear);
+    assert!(app.quit);
+    assert!(app.effects.is_empty());
 }
 
 #[test]

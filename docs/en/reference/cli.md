@@ -44,7 +44,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 | Key or action | Behavior |
 |---|---|
-| Ctrl+C | Clear the focused input. An empty editor stays open. |
+| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside a dialog, clear the focused input. |
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |

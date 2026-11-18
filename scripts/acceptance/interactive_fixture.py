@@ -547,8 +547,8 @@ class Terminal:
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
-    def exit_cleanly(self):
-        self.press("\x1bOPquit\r")
+    def exit_cleanly(self, keys="\x1bOPquit\r"):
+        self.press(keys)
 
         def restored():
             value = self.request("screen")

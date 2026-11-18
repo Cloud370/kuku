@@ -134,6 +134,11 @@ impl App {
         }
         let editing = self.composer_focused();
         match key {
+            key if Shortcut::CLEAR.matches(key) => {
+                if self.pane_mut().draft.take_text().is_empty() && key.kind == KeyEventKind::Press {
+                    self.exit();
+                }
+            }
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
                 self.command_menu()
             }
@@ -332,7 +337,7 @@ impl App {
 
     fn command_menu(&mut self) {
         self.picker(PickerKind::Commands, Choice::commands()).header = format!(
-            "Editor · {} Clear draft · {}/{} New line",
+            "Editor · {} Clear or exit · {}/{} New line",
             Shortcut::CLEAR.label,
             Shortcut::NEW_LINE.label,
             Shortcut::CONTROL_NEW_LINE.label,
