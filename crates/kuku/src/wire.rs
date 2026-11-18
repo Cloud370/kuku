@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::query::UiEvent;
+use crate::query::{ModelPhase, UiEvent};
 
 /// Converts a UiEvent to its wire format representation.
 ///
@@ -16,6 +16,11 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "thinking",
             "content": text,
         })),
+        UiEvent::ModelProgress { phase } => Some(json!({"type":match phase {
+            ModelPhase::Thinking => "thinking",
+            ModelPhase::Streaming => "streaming",
+            ModelPhase::ToolArguments => "tool_arguments",
+        }})),
         UiEvent::ToolStart {
             id,
             tool,

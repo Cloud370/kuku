@@ -109,6 +109,8 @@ fn tool_stream_state(
         stream: Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))),
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
+        model_phase: None,
+        provider_replay: Vec::new(),
         stop_reason: None,
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),

@@ -21,8 +21,8 @@ use super::helpers::{
 use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
+    RunState, SlotEvent, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -62,8 +62,7 @@ impl Run {
         self.cancel_token.clone()
     }
 
-    /// Cancel the current run. Streaming is aborted, pending permissions are denied,
-    /// and the cancelled model.response enters history.
+    /// Cancel the current run, abort streaming, and close pending permissions.
     pub fn cancel(&mut self) {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
@@ -310,8 +309,9 @@ impl Run {
         match poll {
             Err(error) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
-                record_streaming_provider_error_facts(&streaming, &error);
+                let persisted = record_streaming_provider_error_facts(&streaming, &error);
                 streaming.pending.flush_runtime_logs();
+                persisted?;
                 Err(error)
             }
             Ok(Some(event)) => {
@@ -398,21 +398,39 @@ impl Run {
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
                             if !user_text.is_empty() {
+                                streaming.model_phase = Some(ModelPhase::Streaming);
                                 streaming.accumulated_text.push_str(&user_text);
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
                         }
                         continue;
                     }
+                    if !text.is_empty() {
+                        streaming.model_phase = Some(ModelPhase::Streaming);
+                    }
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
+                }
+                ProviderChunk::Reasoning => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    streaming
+                        .thinking_start
+                        .get_or_insert_with(std::time::Instant::now);
+                    if let Some(event) = streaming.model_progress(ModelPhase::Thinking) {
+                        return Ok(Some(event));
+                    }
                 }
                 ProviderChunk::ThinkingDelta { text } => {
                     if streaming.stop_reason.is_some() {
                         streaming.terminal_stream_invalid = true;
                     }
-                    if streaming.thinking_start.is_none() {
-                        streaming.thinking_start = Some(std::time::Instant::now());
+                    if !text.is_empty() {
+                        streaming
+                            .thinking_start
+                            .get_or_insert_with(std::time::Instant::now);
+                        streaming.model_phase = Some(ModelPhase::Thinking);
                     }
                     streaming.accumulated_thinking.push_str(&text);
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
@@ -438,6 +456,11 @@ impl Run {
                         index,
                     });
                     streaming.tool_arg_buffers.push((index, String::new()));
+                    if !streaming.tool_stream_invalid {
+                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                            return Ok(Some(event));
+                        }
+                    }
                 }
                 ProviderChunk::ToolCallArgDelta { index, fragment } => {
                     if streaming.stop_reason.is_some() {
@@ -452,6 +475,7 @@ impl Run {
                     if !has_single_start || streaming.tool_call_completions.contains(&index) {
                         streaming.tool_stream_invalid = true;
                     }
+                    let has_fragment = !fragment.is_empty();
                     if let Some((_, buf)) = streaming
                         .tool_arg_buffers
                         .iter_mut()
@@ -460,6 +484,14 @@ impl Run {
                         buf.push_str(&fragment);
                     } else {
                         streaming.tool_arg_buffers.push((index, fragment));
+                    }
+                    if has_fragment && !streaming.tool_stream_invalid {
+                        if let Some(start) = streaming.thinking_start.take() {
+                            streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                        }
+                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                            return Ok(Some(event));
+                        }
                     }
                 }
                 ProviderChunk::ToolCallStop { index } => {
@@ -529,11 +561,16 @@ impl Run {
                     }
                 }
                 ProviderChunk::Replay { protocol, value } => {
-                    EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+                    let replay = EventPayload::Unknown(serde_json::json!({
                         "kind": "runtime.provider_replay", "ts": now_timestamp()?,
                         "agent": streaming.conversation.as_str(), "turn": streaming.pending.turn,
                         "request_id": streaming.request_id, "protocol": protocol, "value": value,
-                    })))?;
+                    }));
+                    if streaming.pending.query.runtime_execution.is_some() {
+                        streaming.provider_replay.push(replay);
+                    } else {
+                        EventStore::open(&streaming.pending.events_path)?.append(replay)?;
+                    }
                 }
                 ProviderChunk::Report { report } => {
                     EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
@@ -838,29 +875,54 @@ impl Run {
     }
 }
 
-fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error: &Error) {
+fn record_streaming_provider_error_facts(
+    streaming: &StreamingChunkState,
+    error: &Error,
+) -> Result<()> {
     let Error::Provider { kind, message, .. } = error else {
-        return;
+        return Ok(());
     };
+    let kind = provider_failure_event_kind(*kind);
+    let turn = streaming.pending.turn;
     if let Some(execution) = streaming.pending.query.runtime_execution {
-        if let Ok(session) = super::provider::runtime_session(&streaming.pending, execution) {
-            session.discard_reply_preview(streaming.conversation.as_str(), execution);
-        }
+        let address = streaming.conversation.as_str();
+        return super::provider::runtime_session(&streaming.pending, execution)?
+            .commit_model_facts(
+                address,
+                execution,
+                [
+                    EventPayload::ModelError {
+                        conversation: Some(address.into()),
+                        turn,
+                        ts: now_timestamp()?,
+                        request_id: streaming.request_id.clone(),
+                        kind: kind.into(),
+                        message: message.clone(),
+                    },
+                    EventPayload::TurnInterrupted {
+                        conversation: address.into(),
+                        turn,
+                        ts: now_timestamp()?,
+                        reason: kind.into(),
+                    },
+                ],
+            );
     }
     let _ = append_model_error(
         &streaming.pending.events_path,
         &streaming.conversation,
-        streaming.pending.turn,
+        turn,
         streaming.request_id.clone(),
-        provider_failure_event_kind(*kind),
+        kind,
         message,
     );
     let _ = append_turn_interrupted(
         &streaming.pending.events_path,
         &streaming.conversation,
-        streaming.pending.turn,
-        provider_failure_event_kind(*kind),
+        turn,
+        kind,
     );
+    Ok(())
 }
 
 fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {

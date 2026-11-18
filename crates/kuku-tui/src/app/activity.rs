@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use kuku_client::{Action, AgentProgress, AgentStatus, HistoryEntry, InputStatus, ReplyPreview};
+use kuku_client::{
+    Action, AgentProgress, AgentStatus, HistoryEntry, InputStatus, ModelPhase, ReplyPreview,
+};
 use serde_json::Value;
 
 use super::{App, Pane, PendingStage};
@@ -57,6 +59,7 @@ pub(crate) enum Activity {
     RetryingModel,
     Thinking,
     Streaming,
+    ToolArguments,
     RunningTools,
     Waiting,
     Stopping,
@@ -77,6 +80,7 @@ impl Activity {
             Self::RetryingModel => "Retrying model",
             Self::Thinking => "Thinking",
             Self::Streaming => "Streaming reply",
+            Self::ToolArguments => "Writing tool arguments",
             Self::RunningTools => "Running tools",
             Self::Waiting => "Waiting",
             Self::Stopping => "Stopping",
@@ -91,7 +95,7 @@ impl Activity {
 #[derive(Debug, Default)]
 pub(super) struct ExecutionProgress {
     request: ModelRequest,
-    output: ModelOutput,
+    output: Option<ModelPhase>,
     tools: HashSet<String>,
 }
 
@@ -103,14 +107,6 @@ enum ModelRequest {
     Retrying,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-enum ModelOutput {
-    #[default]
-    None,
-    Thinking,
-    Streaming,
-}
-
 impl ExecutionProgress {
     pub(super) fn from_snapshot(progress: Option<&AgentProgress>) -> Self {
         match progress {
@@ -118,8 +114,16 @@ impl ExecutionProgress {
                 request: ModelRequest::Waiting,
                 ..Self::default()
             },
+            Some(AgentProgress::Thinking) => Self {
+                output: Some(ModelPhase::Thinking),
+                ..Self::default()
+            },
             Some(AgentProgress::Streaming { .. }) => Self {
-                output: ModelOutput::Streaming,
+                output: Some(ModelPhase::Streaming),
+                ..Self::default()
+            },
+            Some(AgentProgress::ToolArguments) => Self {
+                output: Some(ModelPhase::ToolArguments),
                 ..Self::default()
             },
             Some(AgentProgress::RunningTools { tool_call_ids }) => Self {
@@ -131,7 +135,7 @@ impl ExecutionProgress {
     }
 
     pub(super) fn clear_stream(&mut self) {
-        self.output = ModelOutput::None;
+        self.output = None;
     }
 
     pub(super) fn committed(
@@ -191,17 +195,20 @@ impl ExecutionProgress {
                     .get("content")
                     .is_none_or(|value| value.as_str().is_some_and(|text| !text.is_empty())) =>
             {
-                self.output = ModelOutput::Thinking;
+                self.output = Some(ModelPhase::Thinking);
             }
-            Some("reply_preview") if event["thinking"].as_bool() == Some(true) => {
-                self.output = ModelOutput::Thinking;
+            Some("tool_arguments") => self.output = Some(ModelPhase::ToolArguments),
+            Some("reply_preview") => {
+                if let Ok(phase) = serde_json::from_value(event["phase"].clone()) {
+                    self.output = Some(phase);
+                }
             }
-            Some("text" | "reply_preview")
+            Some("text")
                 if event["content"]
                     .as_str()
                     .is_some_and(|text| !text.is_empty()) =>
             {
-                self.output = ModelOutput::Streaming;
+                self.output = Some(ModelPhase::Streaming);
             }
             _ => {}
         }
@@ -211,12 +218,13 @@ impl ExecutionProgress {
         if !self.tools.is_empty() {
             return Activity::RunningTools;
         }
-        match (&self.output, &self.request) {
-            (ModelOutput::Streaming, _) => Activity::Streaming,
-            (ModelOutput::Thinking, _) => Activity::Thinking,
-            (ModelOutput::None, ModelRequest::Waiting) => Activity::WaitingForModel,
-            (ModelOutput::None, ModelRequest::Retrying) => Activity::RetryingModel,
-            (ModelOutput::None, ModelRequest::None) => Activity::Running,
+        match (self.output, &self.request) {
+            (Some(ModelPhase::Streaming), _) => Activity::Streaming,
+            (Some(ModelPhase::Thinking), _) => Activity::Thinking,
+            (Some(ModelPhase::ToolArguments), _) => Activity::ToolArguments,
+            (None, ModelRequest::Waiting) => Activity::WaitingForModel,
+            (None, ModelRequest::Retrying) => Activity::RetryingModel,
+            (None, ModelRequest::None) => Activity::Running,
         }
     }
 }
@@ -398,7 +406,14 @@ impl Pane {
     pub(super) fn note_live_reply(&mut self, cursor: u64, event: &Value) {
         if matches!(
             event["type"].as_str(),
-            Some("text" | "thinking" | "reply_preview" | "model_request" | "model_recovery")
+            Some(
+                "text"
+                    | "thinking"
+                    | "tool_arguments"
+                    | "reply_preview"
+                    | "model_request"
+                    | "model_recovery"
+            )
         ) {
             self.latest_reply_cursor = self.latest_reply_cursor.max(cursor);
         }
@@ -407,9 +422,7 @@ impl Pane {
 
     pub(super) fn apply_reply_preview(&mut self, reply: ReplyPreview) {
         self.latest_reply_cursor = self.live_floor;
-        if !reply.text.is_empty() {
-            self.progress.output = ModelOutput::Streaming;
-        }
+        self.progress.output = Some(reply.phase);
         self.transcript.replace_reply_preview(
             reply.execution_id,
             Some(reply.turn),
@@ -600,6 +613,8 @@ mod tests {
             json!({"type":"thinking", "content":"legacy reasoning marker"}),
         );
         assert_eq!(Activity::Thinking, app.pane().activity());
+        think(&mut app, 9, json!({"type":"tool_arguments"}));
+        assert_eq!(Activity::ToolArguments, app.pane().activity());
         let screen = app.pane_mut().transcript.project(80, 12);
         assert!(screen
             .lines
@@ -627,12 +642,13 @@ mod tests {
             "running",
             Some(5),
             0,
-            json!({"phase":"waiting_for_model"}),
+            json!({"phase":"thinking"}),
             None,
         );
         current.reply_preview = Some(
             serde_json::from_value(json!({
-                "execution_id":5,"turn":5,"turn_number":1,"text":"First reply","truncated":false
+                "execution_id":5,"turn":5,"turn_number":1,"text":"First reply",
+                "truncated":false,"phase":"thinking"
             }))
             .unwrap(),
         );
@@ -647,16 +663,18 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        assert_eq!(Activity::Streaming, app.pane().activity());
+        assert_eq!(Activity::Thinking, app.pane().activity());
         assert_eq!(1, text(&mut app).matches("First reply").count());
 
         observe(
             &mut app,
             json!({
                 "type":"live","agent":"reviewer","execution_id":5,"cursor":9,"turn":5,"turn_number":1,
-                "event":{"type":"reply_preview","content":"First reply with more","truncated":false}
+                "event":{"type":"reply_preview","content":"First reply with more","truncated":false,
+                    "phase":"tool_arguments"}
             }),
         );
+        assert_eq!(Activity::ToolArguments, app.pane().activity());
         observe(
             &mut app,
             json!({
@@ -664,6 +682,7 @@ mod tests {
                 "event":{"type":"text","content":" text"}
             }),
         );
+        assert_eq!(Activity::Streaming, app.pane().activity());
         let body = text(&mut app);
         assert!(body.contains("First reply with more text"));
         assert_eq!(1, body.matches("First reply").count());
@@ -692,7 +711,8 @@ mod tests {
             &mut app,
             json!({
                 "type":"live","agent":"reviewer","execution_id":5,"cursor":9,"turn":5,
-                "event":{"type":"reply_preview","content":"Obsolete previous request","truncated":false}
+                "event":{"type":"reply_preview","content":"Obsolete previous request","truncated":false,
+                    "phase":"streaming"}
             }),
         );
         assert_eq!(Activity::WaitingForModel, app.pane().activity());

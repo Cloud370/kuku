@@ -4,7 +4,8 @@ use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
 use super::record::{
-    fingerprint, timestamp, validate_address, validate_key, Command, Record, State,
+    fingerprint, timestamp, validate_address, validate_key, Command, InterruptedExecution, Record,
+    State,
 };
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
@@ -169,6 +170,7 @@ impl Session {
         let mut dispatched = BTreeSet::new();
         let mut started = false;
         let mut terminal = false;
+        let mut stop_event_id = None;
         loop {
             let page = EventStore::read_page(self.events_path(), cursor, 128)?;
             if page.is_empty() {
@@ -176,6 +178,9 @@ impl Session {
             }
             for event in page {
                 cursor = event.id;
+                if event.payload.is_explicit_stop(address, turn) {
+                    stop_event_id = Some(event.id);
+                }
                 match event.payload {
                     EventPayload::ToolCall {
                         turn: target,
@@ -243,6 +248,7 @@ impl Session {
                 ts: timestamp()?,
                 conversation: address.into(),
                 reason: "user_cancelled".into(),
+                stop_event_id,
             })?;
         }
         Ok(())
@@ -287,28 +293,47 @@ impl Session {
             }
             let agent = state.agent(address)?;
             let epoch = agent.active_epoch;
-            let mut failure = if epoch.is_none() {
-                agent
-                    .snapshot
-                    .permission
-                    .as_ref()
-                    .and_then(|request| self.settle_cancelled_turn(address, request.turn).err())
-            } else {
-                None
-            };
+            let waiting_turn = agent
+                .snapshot
+                .permission
+                .as_ref()
+                .filter(|_| epoch.is_none())
+                .map(|request| request.turn);
+            let interruption = agent
+                .snapshot
+                .execution_id
+                .filter(|_| agent.snapshot.status != AgentStatus::Stopped)
+                .map(|execution_id| {
+                    let turn = agent.snapshot.turn.filter(|_| !agent.accepted.is_empty());
+                    let preview = agent.reply_preview.as_ref().filter(|preview| {
+                        preview.execution_id == execution_id && Some(preview.turn) == turn
+                    });
+                    InterruptedExecution {
+                        execution_id,
+                        turn,
+                        text: preview.map_or_else(String::new, |preview| preview.text.clone()),
+                        truncated: preview.is_some_and(|preview| preview.truncated),
+                    }
+                });
             let command = expected.map(|(command, _)| command);
             let key = command.as_ref().map(|command| command.command_id.clone());
-            if let Err(error) = self.commit(
-                &mut state,
-                Record::AgentStopped {
-                    address: address.into(),
-                    command,
-                    cleanup_pending: epoch.is_some(),
-                },
-            ) {
-                failure.get_or_insert(error);
+            let stopped = self
+                .commit(
+                    &mut state,
+                    Record::AgentStopped {
+                        address: address.into(),
+                        command,
+                        cleanup_pending: epoch.is_some(),
+                        interruption,
+                    },
+                )
+                .err();
+            if stopped.is_some() {
                 state.agent_mut(address)?.snapshot.status = AgentStatus::Stopped;
             }
+            let failed_cleanup =
+                waiting_turn.and_then(|turn| self.settle_cancelled_turn(address, turn).err());
+            let failure = stopped.or(failed_cleanup);
             let workers = self.inner.workers.lock().unwrap();
             let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
                 let _ = worker.cancel.send(true);

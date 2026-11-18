@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use kuku::adapter::inspect_model;
 use kuku::event::{EventPayload, EventStore};
+use kuku::query::ModelPhase;
 use kuku::session::{AgentSnapshot, AgentStatus, ReplyPreviews, Session, SessionStatus};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -160,15 +161,24 @@ pub(super) async fn snapshot(
     } else {
         HashMap::new()
     };
-    let selected_progress = progress.remove(address);
+    let selected_progress = replies
+        .selected
+        .as_ref()
+        .map(|reply| provider_progress(reply.phase, ""))
+        .or(progress.remove(address));
     let agents: Vec<_> = view
         .agents
         .iter()
         .map(|agent| {
             let mut summary = agent_summary(agent);
-            if let Some(preview) = replies.peers.remove(&agent.address) {
-                summary["progress"] = json!({"phase":"streaming","preview":preview});
-            } else if let Some(progress) = progress.remove(agent.address.as_str()) {
+            let progress = if agent.address == address {
+                selected_progress.clone()
+            } else if let Some(preview) = replies.peers.remove(&agent.address) {
+                Some(provider_progress(preview.phase, &preview.text))
+            } else {
+                progress.remove(agent.address.as_str())
+            };
+            if let Some(progress) = progress {
                 summary["progress"] = progress;
             }
             summary
@@ -218,6 +228,14 @@ pub(super) async fn snapshot(
         );
     }
     Ok(Json(value))
+}
+
+fn provider_progress(phase: ModelPhase, preview: &str) -> Value {
+    if phase == ModelPhase::Streaming {
+        json!({"phase":phase,"preview":preview})
+    } else {
+        json!({"phase":phase})
+    }
 }
 
 fn execution_progress<'a>(

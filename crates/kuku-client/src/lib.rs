@@ -12,6 +12,7 @@ pub use connection::{Connection, ConnectionOptions};
 pub use http::{Client, Error, Health};
 pub use kuku::adapter::ModelSelection;
 pub use kuku::event::StoredEvent;
+pub use kuku::query::ModelPhase;
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
     InputTiming, OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput,

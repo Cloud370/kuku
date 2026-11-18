@@ -19,8 +19,8 @@ mod types;
 pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
 
 pub use types::{
-    ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput, ToolEvent,
-    ToolKind, ToolSummary, UiEvent,
+    ModelPhase, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,
+    ToolEvent, ToolKind, ToolSummary, UiEvent,
 };
 
 /// Start building a new query for the given prompt.

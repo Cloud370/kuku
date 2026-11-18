@@ -346,6 +346,7 @@ async fn follow(
                                 turn,
                                 after,
                                 session.turn_number(&source, turn),
+                                include_agent_activity,
                             )
                         } else if include_agent_activity {
                             agent_activity_frame(&event, &source, execution_id, turn, after)

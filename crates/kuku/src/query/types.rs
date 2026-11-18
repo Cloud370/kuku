@@ -184,6 +184,18 @@ pub struct ModelRecoveryInfo {
     pub max_attempts: u8,
 }
 
+/// Activity observed in the current model response stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPhase {
+    /// The provider has emitted reasoning activity.
+    Thinking,
+    /// Visible response text is arriving.
+    Streaming,
+    /// The provider is preparing a tool call.
+    ToolArguments,
+}
+
 /// Host-facing runtime event stream.
 ///
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
@@ -195,6 +207,9 @@ pub enum UiEvent {
     },
     ThinkingDelta {
         text: String,
+    },
+    ModelProgress {
+        phase: ModelPhase,
     },
     ToolStart {
         id: String,
@@ -496,6 +511,8 @@ pub(super) struct StreamingChunkState {
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
+    pub(super) model_phase: Option<ModelPhase>,
+    pub(super) provider_replay: Vec<crate::event::EventPayload>,
     pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
@@ -515,6 +532,12 @@ pub(super) struct StreamingChunkState {
 pub(super) struct RequestTiming {
     pub(super) started: std::time::Instant,
     pub(super) elapsed_us: Option<u64>,
+}
+
+impl StreamingChunkState {
+    pub(super) fn model_progress(&mut self, phase: ModelPhase) -> Option<UiEvent> {
+        (self.model_phase.replace(phase) != Some(phase)).then_some(UiEvent::ModelProgress { phase })
+    }
 }
 
 use super::handoff::HandoffDetector;

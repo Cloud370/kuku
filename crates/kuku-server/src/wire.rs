@@ -196,15 +196,10 @@ pub(crate) fn history_entry(
         EventPayload::ModelResponse {
             turn,
             text,
-            thinking,
             request_id,
             ..
-        } if !text.is_empty()
-            || thinking
-                .as_ref()
-                .is_some_and(|thinking| !thinking.is_empty()) =>
-        {
-            json!({"type":"assistant","turn":turn,"text":text,"thinking":thinking,"request_id":request_id})
+        } if !text.is_empty() => {
+            json!({"type":"assistant","turn":turn,"text":text,"request_id":request_id})
         }
         EventPayload::ModelError {
             turn,
@@ -244,7 +239,12 @@ pub(crate) fn history_entry(
             "structured":structured,
             "output_id":structured.as_ref().and_then(output_id),
         }),
-        EventPayload::TurnCancelled { turn, reason, .. } => {
+        EventPayload::TurnCancelled {
+            turn,
+            reason,
+            stop_event_id: None,
+            ..
+        } => {
             json!({"type":"status","turn":turn,"status":"cancelled","text":reason})
         }
         EventPayload::TurnInterrupted { turn, reason, .. } => {
@@ -366,8 +366,14 @@ pub(crate) fn live_frame(
     turn: u64,
     cursor: u64,
     turn_number: Option<u64>,
+    activity_only_reasoning: bool,
 ) -> Option<Value> {
-    let mut frame = live_payload(event_value(event)?, agent, execution_id, turn, cursor);
+    let event = if activity_only_reasoning {
+        selected_event_value(event)?
+    } else {
+        event_value(event)?
+    };
+    let mut frame = live_payload(event, agent, execution_id, turn, cursor);
     if let Some(number) = turn_number {
         frame["turn_number"] = json!(number);
     }
@@ -382,9 +388,13 @@ pub(crate) fn agent_activity_frame(
     cursor: u64,
 ) -> Option<Value> {
     let event = match event {
-        UiEvent::TextDelta { text } => json!({"type":"text","content":agent_preview(text)}),
-        UiEvent::ThinkingDelta { text } => json!({"type":"thinking","content":agent_preview(text)}),
-        UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => event_value(event)?,
+        UiEvent::TextDelta { text } if !text.is_empty() => {
+            json!({"type":"text","content":agent_preview(text)})
+        }
+        UiEvent::ThinkingDelta { .. }
+        | UiEvent::ModelProgress { .. }
+        | UiEvent::ModelRequest { .. }
+        | UiEvent::ModelRecovery { .. } => selected_event_value(event)?,
         _ => return None,
     };
     Some(live_payload(event, agent, execution_id, turn, cursor))
@@ -398,6 +408,7 @@ pub(crate) fn reply_preview_frame(
 ) -> Value {
     let event = json!({
         "type": "reply_preview",
+        "phase": reply.phase,
         "content": reply.text,
         "truncated": reply.truncated,
     });
@@ -455,7 +466,25 @@ fn interaction_entry(record: &Value) -> Option<Value> {
             "request_id":record["request_id"],
             "allow":record["allow"],
         })),
+        "agent_stopped" if record["interruption"].is_object() => {
+            let stopped = &record["interruption"];
+            Some(json!({
+                "type":"status",
+                "status":"interrupted",
+                "execution_id":stopped["execution_id"],
+                "turn":stopped["turn"],
+                "text":stopped["text"],
+                "truncated":stopped["truncated"].as_bool().unwrap_or(false),
+            }))
+        }
         _ => None,
+    }
+}
+
+fn selected_event_value(event: &UiEvent) -> Option<Value> {
+    match event {
+        UiEvent::ThinkingDelta { text } => (!text.is_empty()).then(|| json!({"type":"thinking"})),
+        _ => event_value(event),
     }
 }
 

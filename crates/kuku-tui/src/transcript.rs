@@ -125,15 +125,17 @@ impl Transcript {
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
         self.latest_reply.observe(&entry);
-        let assistant = entry.kind == HistoryKind::Assistant;
+        let previous_preview = if entry.kind == HistoryKind::Assistant {
+            execution.or(self.current_execution)
+        } else {
+            interruption_execution(&entry)
+        };
         let record = Record::from_entry(entry);
-        if assistant {
-            if let Some(execution) = execution.or(self.current_execution) {
-                let key = Key::Preview(execution);
-                self.recent.remove(&key);
-                if let Some(reading) = &mut self.reading {
-                    reading.settle_preview(&key, record.as_ref());
-                }
+        if let Some(execution) = previous_preview {
+            let key = Key::Preview(execution);
+            self.recent.remove(&key);
+            if let Some(reading) = &mut self.reading {
+                reading.settle_preview(&key, record.as_ref());
             }
         }
         let Some(record) = record else { return };
@@ -311,7 +313,10 @@ impl Transcript {
             .rev()
             .filter_map(|record| match &record.body {
                 Body::Tool(tool) => Some(tool.view()),
-                Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => None,
+                Body::User { .. }
+                | Body::Assistant(_)
+                | Body::Interrupted(_)
+                | Body::Notice(..) => None,
             })
             .collect()
     }
@@ -621,7 +626,7 @@ struct RenderCache {
 impl Record {
     fn from_entry(entry: HistoryEntry) -> Option<Self> {
         let mut key = Key::Event(entry.id);
-        let text = capped(entry.text.as_deref(), MAX_BODY_BYTES);
+        let mut text = capped(entry.text.as_deref(), MAX_BODY_BYTES);
         let body = match entry.kind {
             HistoryKind::User => Body::User {
                 sender: entry
@@ -652,6 +657,14 @@ impl Record {
                     None => "Recorded",
                 };
                 Body::Notice("Decision", decision.to_owned(), ACCENT)
+            }
+            HistoryKind::Status if interruption_execution(&entry).is_some() => {
+                if entry.details.get("truncated").and_then(Value::as_bool) == Some(true)
+                    && !text.ends_with(DISPLAY_LIMIT_NOTICE)
+                {
+                    text.push_str(DISPLAY_LIMIT_NOTICE);
+                }
+                Body::Interrupted(text)
             }
             HistoryKind::Status => {
                 if entry.details.get("status").and_then(Value::as_str) == Some("interrupted") {
@@ -697,7 +710,9 @@ impl Record {
     fn tool(&self) -> Option<&Tool> {
         match &self.body {
             Body::Tool(tool) => Some(tool),
-            Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => None,
+            Body::User { .. } | Body::Assistant(_) | Body::Interrupted(_) | Body::Notice(..) => {
+                None
+            }
         }
     }
 
@@ -709,10 +724,15 @@ impl Record {
             agents,
             items,
         } = layout;
-        if let (AssistantView::Source, Body::Assistant(text)) = (assistant, &self.body) {
+        let source_body = match (assistant, &self.body) {
+            (AssistantView::Source, Body::Assistant(text)) => Some((text, false)),
+            (AssistantView::Source, Body::Interrupted(text)) => Some((text, true)),
+            _ => None,
+        };
+        if let Some((text, interrupted)) = source_body {
             let source = &mut self.rendered.source;
             if source.as_ref().is_none_or(|(cached, _)| *cached != width) {
-                *source = Some((width, render_assistant_source(text, width)));
+                *source = Some((width, render_assistant_source(text, width, interrupted)));
             }
             return (
                 &self.key,
@@ -729,7 +749,7 @@ impl Record {
                 );
                 (card, mode, facts)
             }
-            Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => {
+            Body::User { .. } | Body::Assistant(_) | Body::Interrupted(_) | Body::Notice(..) => {
                 (None, ToolDetails::Expanded, None)
             }
         };
@@ -755,6 +775,13 @@ impl Record {
                 Body::Assistant(text) => render_record(
                     if width >= 9 { "Assistant" } else { "AI" },
                     MUTED,
+                    render_markdown(text, width, MAX_VISUAL_ROWS),
+                    width,
+                    0,
+                ),
+                Body::Interrupted(text) => render_record(
+                    "Interrupted",
+                    WARNING,
                     render_markdown(text, width, MAX_VISUAL_ROWS),
                     width,
                     0,
@@ -789,8 +816,18 @@ enum Body {
         text: String,
     },
     Assistant(String),
+    Interrupted(String),
     Notice(&'static str, String, Color),
     Tool(Box<Tool>),
+}
+
+fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
+    if entry.kind == HistoryKind::Status
+        && entry.details.get("status").and_then(Value::as_str) == Some("interrupted")
+    {
+        return entry.details.get("execution_id")?.as_u64();
+    }
+    None
 }
 
 #[derive(Debug)]

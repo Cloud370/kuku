@@ -181,6 +181,8 @@ async fn dispatch_recovery(
             stream,
             accumulated_text: String::new(),
             accumulated_thinking: String::new(),
+            model_phase: None,
+            provider_replay: Vec::new(),
             stop_reason: None,
             tool_calls: Vec::new(),
             tool_arg_buffers: Vec::new(),

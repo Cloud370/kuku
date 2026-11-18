@@ -481,6 +481,17 @@ mod tests {
         observe(&mut app, live_frame(8, 9, "extremely long stream"));
         assert_eq!(revision, app.related_agents.revision());
 
+        observe(
+            &mut app,
+            json!({
+                "type":"live", "agent":"reviewer", "execution_id":8, "cursor":9,
+                "event":{"type":"tool_arguments"},
+            }),
+        );
+        let arguments = reviewer(&app).unwrap();
+        assert_eq!(Activity::ToolArguments, arguments.status);
+        assert_eq!(PREVIEW_BYTES, arguments.preview.unwrap().len());
+
         committed(&mut app, "model.response", 10, json!({}));
         committed(
             &mut app,

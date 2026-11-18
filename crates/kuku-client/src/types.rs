@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, InputStatus, PermissionRequest,
-    QuestionRequest, QueuedInput, Receipt, StoredEvent,
+    AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, InputStatus, ModelPhase,
+    PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
 };
 
 /// The exact server-side workspace, Session, and Agent selected by a caller.
@@ -176,13 +176,17 @@ pub struct AgentSettlement {
     pub error: Option<String>,
 }
 
-/// Latest identifiable execution phase inferred from an Agent's committed history.
+/// Latest identifiable phase from an Agent's durable execution or live provider activity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum AgentProgress {
     /// A prepared model request has no committed response yet.
     WaitingForModel,
-    /// Another Agent was streaming at this snapshot's boundary.
+    /// The provider has emitted reasoning activity for the current request.
+    Thinking,
+    /// The provider is preparing a tool call that has not been dispatched.
+    ToolArguments,
+    /// Visible reply text was streaming at this snapshot's boundary.
     Streaming {
         /// Bounded text captured from the beginning of this request, if emitted.
         preview: String,
@@ -222,7 +226,7 @@ pub struct Snapshot {
     pub cleaning_up: bool,
     /// Bounded execution history for a new observer, when requested and available.
     pub progress: Option<AgentProgress>,
-    /// Selected Agent's live reply at this snapshot cursor, when already streaming.
+    /// Selected Agent's observed provider progress at this snapshot cursor.
     pub reply_preview: Option<ReplyPreview>,
 }
 
@@ -242,6 +246,8 @@ pub struct ReplyPreview {
     pub turn: u64,
     /// One-based Turn display number.
     pub turn_number: Option<u64>,
+    /// Most recent provider activity in this request.
+    pub phase: ModelPhase,
     /// Observed text from the beginning of the current request.
     pub text: String,
     /// Further text already exists past the preview limit.

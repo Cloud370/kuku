@@ -1,4 +1,6 @@
 mod common;
+#[path = "session_execution/interruptions.rs"]
+mod interruptions;
 
 use std::env;
 use std::fs;

@@ -455,6 +455,7 @@ fn execution(app: &App) -> Option<Segment> {
         | Activity::RetryingModel
         | Activity::Thinking
         | Activity::Streaming
+        | Activity::ToolArguments
         | Activity::RunningTools
         | Activity::Stopped => (EXECUTION, Priority::Active),
         Activity::Waiting | Activity::Stopping | Activity::Configuration => {

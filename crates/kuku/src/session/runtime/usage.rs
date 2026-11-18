@@ -170,9 +170,7 @@ impl Session {
         payloads: impl IntoIterator<Item = EventPayload>,
     ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
-        if state.agent(address)?.snapshot.execution_id != Some(execution) {
-            return Err(Error::ExecutionNotActive(execution));
-        }
+        self.executing_agent(&state, address, execution)?;
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()

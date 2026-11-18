@@ -51,7 +51,7 @@ impl PaintSchedule {
 
 fn apply_update(app: &mut App, update: Update, paint: &mut PaintSchedule) {
     let delta = matches!(&update, Update::Observation(_, Observation::Live { event, .. })
-        if matches!(event["type"].as_str(), Some("text" | "thinking" | "tool_output")));
+        if matches!(event["type"].as_str(), Some("text" | "thinking" | "tool_arguments" | "tool_output")));
     app.update(update);
     paint.request(!delta);
 }

@@ -199,6 +199,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         request_id,
         accumulated_text,
         accumulated_thinking,
+        provider_replay,
         stop_reason,
         tool_calls,
         tool_arg_buffers,
@@ -281,7 +282,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         super::provider::runtime_session(&pending, execution)?.commit_model_facts(
             pending.conversation.as_str(),
             execution,
-            [measurement, response],
+            provider_replay.into_iter().chain([measurement, response]),
         )?;
     } else {
         EventStore::open(&pending.events_path)?.append(response)?;

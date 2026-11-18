@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
-use crate::query::UiEvent;
+use crate::query::{ModelPhase, UiEvent};
 use crate::Result;
 
 use super::record::{validate_key, Record, State};
@@ -16,13 +16,15 @@ use super::{
 const REPLY_PREVIEW_BYTES: usize = 64 * 1024;
 const PEER_PREVIEW_BYTES: usize = 512;
 
-/// An in-memory prefix of the active model reply, containing only observed text.
+/// Observed phase and visible reply prefix of the current model request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReplyPreview {
     /// Execution owning the current model request.
     pub execution_id: u64,
     /// Turn of the active model request.
     pub turn: u64,
+    /// Most recent provider activity at the observation boundary.
+    pub phase: ModelPhase,
     /// UTF-8 prefix from the start of this request's reply.
     pub text: String,
     /// The reply already exceeded the preview's byte limit.
@@ -30,10 +32,11 @@ pub struct ReplyPreview {
 }
 
 impl ReplyPreview {
-    fn new(execution_id: u64, turn: u64) -> Self {
+    fn new(execution_id: u64, turn: u64, phase: ModelPhase) -> Self {
         Self {
             execution_id,
             turn,
+            phase,
             text: String::new(),
             truncated: false,
         }
@@ -47,6 +50,17 @@ impl ReplyPreview {
         self.text.push_str(&text[..end]);
         self.truncated = end < text.len();
     }
+
+    fn excerpt(&self) -> Self {
+        let end = self
+            .text
+            .floor_char_boundary(self.text.len().min(PEER_PREVIEW_BYTES));
+        Self {
+            text: self.text[..end].to_owned(),
+            truncated: self.truncated || end < self.text.len(),
+            ..*self
+        }
+    }
 }
 
 /// Active reply previews captured with one Session cursor.
@@ -54,8 +68,8 @@ impl ReplyPreview {
 pub struct ReplyPreviews {
     /// The selected Agent's active reply.
     pub selected: Option<ReplyPreview>,
-    /// Bounded excerpts for the other streaming Agents, indexed by address.
-    pub peers: HashMap<String, String>,
+    /// Phases and shorter excerpts for peer Agents, indexed by address.
+    pub peers: HashMap<String, ReplyPreview>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,9 +206,7 @@ impl Session {
                 .iter()
                 .filter(|(peer, _)| peer.as_str() != address)
                 .filter_map(|(peer, _)| {
-                    let text = &reply_preview(&state, peer)?.text;
-                    let end = text.floor_char_boundary(text.len().min(PEER_PREVIEW_BYTES));
-                    Some((peer.clone(), text[..end].to_owned()))
+                    Some((peer.clone(), reply_preview(&state, peer)?.excerpt()))
                 })
                 .collect(),
         };
@@ -265,15 +277,6 @@ impl Session {
         self.publish_locked(&mut state, address, execution_id, turn, event);
     }
 
-    pub(crate) fn discard_reply_preview(&self, address: &str, execution_id: u64) {
-        let mut state = self.inner.state.lock().unwrap();
-        if let Some(agent) = state.agents.get_mut(address) {
-            if agent.snapshot.execution_id == Some(execution_id) {
-                agent.reply_preview = None;
-            }
-        }
-    }
-
     pub(super) fn publish_locked(
         &self,
         state: &mut State,
@@ -282,30 +285,42 @@ impl Session {
         turn: u64,
         event: UiEvent,
     ) {
-        if let Ok(after) = self.current_cursor() {
-            if let Some(agent) = state.agents.get_mut(address).filter(|agent| {
+        if matches!(
+            event,
+            UiEvent::TextDelta { .. }
+                | UiEvent::ThinkingDelta { .. }
+                | UiEvent::ModelProgress { .. }
+                | UiEvent::ModelRequest { .. }
+                | UiEvent::ModelRecovery { .. }
+        ) {
+            let Some(agent) = state.agents.get_mut(address).filter(|agent| {
                 agent.snapshot.status == AgentStatus::Running
                     && agent.snapshot.execution_id == Some(execution_id)
                     && agent.snapshot.turn == Some(turn)
-            }) {
-                match &event {
-                    UiEvent::TextDelta { text } if !text.is_empty() => {
-                        agent
-                            .reply_preview
-                            .get_or_insert_with(|| ReplyPreview::new(execution_id, turn))
-                            .append(text);
-                    }
-                    UiEvent::ThinkingDelta { text } if !text.is_empty() => {
-                        agent
-                            .reply_preview
-                            .get_or_insert_with(|| ReplyPreview::new(execution_id, turn));
-                    }
-                    UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => {
-                        agent.reply_preview = None;
-                    }
-                    _ => {}
+            }) else {
+                return;
+            };
+            let phase = match &event {
+                UiEvent::TextDelta { text } if !text.is_empty() => Some(ModelPhase::Streaming),
+                UiEvent::ThinkingDelta { text } if !text.is_empty() => Some(ModelPhase::Thinking),
+                UiEvent::ModelProgress { phase } => Some(*phase),
+                UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => {
+                    agent.reply_preview = None;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(phase) = phase {
+                let preview = agent
+                    .reply_preview
+                    .get_or_insert_with(|| ReplyPreview::new(execution_id, turn, phase));
+                preview.phase = phase;
+                if let UiEvent::TextDelta { text } = &event {
+                    preview.append(text);
                 }
             }
+        }
+        if let Ok(after) = self.current_cursor() {
             let _ = self.inner.live.send(LiveObservation {
                 agent: address.into(),
                 execution_id,
@@ -448,13 +463,14 @@ impl SessionObserver {
 
 #[cfg(test)]
 mod tests {
+    use crate::query::ModelPhase;
     use serde_json::json;
 
     use super::{EventPayload, EventStore, Record, ReplyPreview, TurnIndex, REPLY_PREVIEW_BYTES};
 
     #[test]
     fn live_reply_retains_a_utf8_prefix_and_stops_at_the_first_missing_byte() {
-        let mut reply = ReplyPreview::new(3, 4);
+        let mut reply = ReplyPreview::new(3, 4, ModelPhase::Streaming);
         reply.append(&"x".repeat(REPLY_PREVIEW_BYTES - 1));
         reply.append("界");
         reply.append("a");

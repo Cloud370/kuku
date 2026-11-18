@@ -224,6 +224,7 @@ pub enum EventPayload {
         conversation: String,
         turn: u64,
         reason: String,
+        stop_event_id: Option<u64>,
     },
     TurnInterrupted {
         ts: String,
@@ -265,6 +266,13 @@ impl Serialize for EventPayload {
 }
 
 impl EventPayload {
+    pub(crate) fn is_explicit_stop(&self, address: &str, turn: u64) -> bool {
+        matches!(self, Self::Unknown(value) if value["kind"] == "runtime.operation"
+            && value["record"]["operation"] == "agent_stopped"
+            && value["record"]["address"] == address
+            && value["record"]["interruption"]["turn"] == turn)
+    }
+
     pub fn kind_name(&self) -> &str {
         match self {
             Self::ContextSources { .. } => "context.sources",
@@ -503,6 +511,7 @@ impl EventPayload {
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
                 reason: string_field(object, "reason")?,
+                stop_event_id: optional_u64_field(object, "stop_event_id"),
             }),
             "turn.interrupted" => Some(Self::TurnInterrupted {
                 ts: string_field(object, "ts")?,
@@ -945,14 +954,21 @@ impl EventPayload {
                 conversation,
                 turn,
                 reason,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "turn.cancelled",
-                "conversation": conversation,
-                "turn": turn,
-                "reason": reason,
-            })),
+                stop_event_id,
+            } => {
+                let mut value = serde_json::json!({
+                    "id": id,
+                    "ts": ts,
+                    "kind": "turn.cancelled",
+                    "conversation": conversation,
+                    "turn": turn,
+                    "reason": reason,
+                });
+                if let Some(stop) = stop_event_id {
+                    value["stop_event_id"] = serde_json::json!(stop);
+                }
+                Ok(value)
+            }
             Self::TurnInterrupted {
                 ts,
                 conversation,

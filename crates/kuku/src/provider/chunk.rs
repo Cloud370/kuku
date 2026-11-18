@@ -6,7 +6,9 @@ pub enum ProviderChunk {
     StreamStart { request_id: String },
     /// A text content fragment.
     TextDelta { text: String },
-    /// A thinking/reasoning content fragment.
+    /// The provider reported reasoning activity without displayable text.
+    Reasoning,
+    /// A provider-published reasoning summary fragment.
     ThinkingDelta { text: String },
     Replay {
         protocol: crate::config::ProviderFormat,

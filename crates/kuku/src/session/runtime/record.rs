@@ -29,6 +29,16 @@ pub(super) struct CreationClaim {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct InterruptedExecution {
+    pub(super) execution_id: u64,
+    pub(super) turn: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(super) text: String,
+    #[serde(default)]
+    pub(super) truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(super) enum Record {
     SessionClaimed {
@@ -91,6 +101,8 @@ pub(super) enum Record {
         command: Option<Command>,
         #[serde(default)]
         cleanup_pending: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interruption: Option<InterruptedExecution>,
     },
     AgentResumed {
         address: String,
@@ -414,6 +426,7 @@ impl State {
                 address,
                 command,
                 cleanup_pending,
+                ..
             } => {
                 if let Some(command) = command {
                     self.remember_command(command, event_id, address.clone());

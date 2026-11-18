@@ -61,6 +61,7 @@ impl ObservedActivity {
             | Activity::RetryingModel
             | Activity::Thinking
             | Activity::Streaming
+            | Activity::ToolArguments
             | Activity::RunningTools
             | Activity::Stopping => (EXECUTION, true),
             Activity::Waiting | Activity::Configuration | Activity::Stopped => (WARNING, false),

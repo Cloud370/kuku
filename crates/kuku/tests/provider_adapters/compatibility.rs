@@ -219,6 +219,7 @@ async fn collect_response(
             ProviderChunk::InvalidToolStream => panic!("fixture produced an invalid tool stream"),
             ProviderChunk::ServerError { code, message } => panic!("{code}: {message}"),
             ProviderChunk::StreamStart { .. }
+            | ProviderChunk::Reasoning
             | ProviderChunk::ContentBlockStop { .. }
             | ProviderChunk::StreamUsage { .. }
             | ProviderChunk::StopReason { .. } => {}

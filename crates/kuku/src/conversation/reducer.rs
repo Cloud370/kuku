@@ -346,6 +346,7 @@ mod tests {
                 conversation: conversation.into(),
                 turn,
                 reason: "cancelled".into(),
+                stop_event_id: None,
             },
         )
     }

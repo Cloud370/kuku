@@ -83,6 +83,53 @@ fn durable_response_replaces_its_live_preview() {
 }
 
 #[test]
+fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
+    let previous = response(2, "Last complete reply".into());
+    let interruption: HistoryEntry = serde_json::from_value(json!({
+        "id":9,"agent":"main","turn":7,"turn_number":2,"execution_id":8,
+        "type":"status","status":"interrupted","text":"Interrupted **body**.","truncated":true,
+    }))
+    .unwrap();
+    let mut transcript = Transcript::default();
+    transcript.apply(previous.clone(), None);
+    transcript.live(
+        8,
+        Some(7),
+        Some(2),
+        &json!({"type":"text","content":"Interrupted **body**."}),
+    );
+    transcript.apply(interruption.clone(), None);
+
+    let rendered = rows(&mut transcript).join("\n");
+    assert!(rendered.contains("Turn 2\nInterrupted\n"));
+    assert_eq!(1, rendered.matches("Interrupted body.").count());
+    assert!(rendered.contains("Display limit reached"));
+    assert_eq!(
+        Some(ReplySource::Local("Last complete reply")),
+        transcript.last_reply()
+    );
+    transcript.replace_recent(HistoryPage {
+        entries: vec![previous, interruption],
+        next_before: None,
+    });
+    assert_eq!(rendered, rows(&mut transcript).join("\n"));
+}
+
+#[test]
+fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
+    let mut transcript = Transcript::default();
+    let entry: HistoryEntry = serde_json::from_value(json!({
+        "id":9,"agent":"main","turn":7,"turn_number":1,"execution_id":8,
+        "type":"status","status":"interrupted"
+    }))
+    .unwrap();
+    transcript.apply(entry, None);
+    let rendered = rows(&mut transcript).join("\n");
+    assert!(rendered.contains("Turn 1\nInterrupted"));
+    assert!(transcript.last_reply().is_none());
+}
+
+#[test]
 fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
     let mut transcript = Transcript::default();
     let mut question = response(1, "看一下 e\u{301} 👩‍💻".into());

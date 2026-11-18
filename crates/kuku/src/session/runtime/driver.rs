@@ -266,6 +266,7 @@ impl Session {
                     }
                     UiEvent::TextDelta { .. }
                     | UiEvent::ThinkingDelta { .. }
+                    | UiEvent::ModelProgress { .. }
                     | UiEvent::ToolStart { .. }
                     | UiEvent::ToolOutput { .. }
                     | UiEvent::ToolEnd { .. }
@@ -285,10 +286,7 @@ impl Session {
         epoch: u64,
         failure: DriveFailure,
     ) -> Result<()> {
-        let error = match &failure {
-            DriveFailure::Execution(error) | DriveFailure::Cleanup(error) => error,
-        };
-        self.settle_failure(address, epoch, error)
+        self.settle_failure(address, epoch, &failure)
             .map_err(|error| self.remember_settlement_failure(error))?;
         match failure {
             DriveFailure::Execution(_) => Ok(()),
@@ -437,12 +435,20 @@ impl Session {
         cancellation_error.map_or(Ok(()), Err)
     }
 
-    fn settle_failure(&self, address: &str, epoch: u64, error: &Error) -> Result<()> {
+    fn settle_failure(&self, address: &str, epoch: u64, failure: &DriveFailure) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
-        if state.agent_mut(address)?.active_epoch != Some(epoch) {
+        let agent = state.agent(address)?;
+        if agent.active_epoch != Some(epoch) {
             return Ok(());
         }
-        let usage = state.agents[address].pending_usage();
+        if agent.snapshot.status == AgentStatus::Stopped
+            && matches!(failure, DriveFailure::Execution(_))
+        {
+            drop(state);
+            return self.settle_cancelled(address, epoch);
+        }
+        let (DriveFailure::Execution(error) | DriveFailure::Cleanup(error)) = failure;
+        let usage = agent.pending_usage();
         self.commit(
             &mut state,
             Record::TurnSettled {
