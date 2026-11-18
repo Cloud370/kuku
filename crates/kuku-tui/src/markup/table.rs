@@ -85,13 +85,12 @@ impl Table {
 
     fn render_grid(self, columns: &[usize], limit: usize) -> Vec<Line<'static>> {
         let mut lines = vec![render_border(columns, ["┌", "┬", "┐"])];
-        let separator = render_border(columns, ["├", "┼", "┤"]);
         for (row_index, row) in self.rows.into_iter().enumerate() {
             if lines.len() == limit {
                 return lines;
             }
-            if row_index > 0 {
-                lines.push(separator.clone());
+            if row_index == 1 {
+                lines.push(render_border(columns, ["├", "┼", "┤"]));
             }
             let remaining = limit - lines.len();
             lines.extend(render_grid_row(

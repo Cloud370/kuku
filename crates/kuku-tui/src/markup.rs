@@ -70,6 +70,7 @@ pub(crate) fn wrap_bounded(
         let mut parts = Vec::new();
         let mut occupied = 0;
         for span in line.spans {
+            let style = line.style.patch(span.style);
             for grapheme in span.content.graphemes(true) {
                 let mut cells = grapheme.width();
                 let grapheme = if cells > width {
@@ -85,7 +86,7 @@ pub(crate) fn wrap_bounded(
                     wrapped.push(Line::from(std::mem::take(&mut parts)));
                     occupied = 0;
                 }
-                append(&mut parts, grapheme, span.style);
+                append(&mut parts, grapheme, style);
                 occupied += cells;
             }
         }
@@ -331,8 +332,8 @@ fn append(parts: &mut Vec<Span<'static>>, text: &str, style: Style) {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Modifier;
-    use ratatui::text::Line;
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
     use unicode_width::UnicodeWidthStr;
 
     use super::{render_markdown, wrap_bounded};
@@ -360,6 +361,16 @@ mod tests {
         line.match_indices('│')
             .map(|(index, _)| line[..index].width())
             .collect()
+    }
+
+    #[test]
+    fn wrapped_lines_keep_role_emphasis_and_span_colors() {
+        let line = Line::from(vec![Span::styled("甲乙", Style::new().fg(ACCENT))])
+            .style(Style::new().add_modifier(Modifier::BOLD));
+        for row in super::wrap(vec![line], 2) {
+            assert!(row.spans[0].style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(row.spans[0].style.fg, Some(ACCENT));
+        }
     }
 
     #[test]
