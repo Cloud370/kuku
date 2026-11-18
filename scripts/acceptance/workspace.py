@@ -76,7 +76,8 @@ def mock_result(call, identity):
 
 
 def report_from_chunk(chunk):
-    if not chunk.get("complete") or chunk.get("has_more") or chunk.get("capture_truncated"):
+    if (not chunk.get("complete") or chunk.get("has_more") or chunk.get("capture_truncated")
+            or chunk.get("cleanup_incomplete") or chunk.get("filtered")):
         return None
     try:
         return json.loads("".join(segment["text"] for segment in chunk["segments"]))
@@ -142,6 +143,7 @@ def turn_evidence(entries, turn):
         elif row["type"] == "tool_result":
             call = calls[identity]
             call.update(status=row["status"], result=row.get("structured") or {},
+                        summary=(row.get("summary") or "")[:440],
                         preview_bytes=len((row.get("model_content") or "").encode()))
     return list(calls.values())
 
@@ -359,14 +361,27 @@ def is_replay(command):
     return False
 
 
+def script_failures(tools):
+    return [
+        {"call_id": entry["call_id"], "status": entry["status"], "summary": entry.get("summary"),
+         "completed_actions": [action["tool"] for action in entry["result"].get("actions", [])
+                               if action["status"] == "ok"],
+         "later_successful_calls": [later["name"] for later in tools[index + 1:] if later["status"] == "ok"]}
+        for index, entry in enumerate(tools)
+        if entry["name"] == "workspace_script" and entry["status"] not in (None, "ok")
+    ]
+
+
 def verify_analysis(turn, workspace, evidence):
     tools = turn["tools"]
     actions = list(tool_actions(tools))
     commands = [action["result"] for action in actions if action["result"].get("kind") == "command_result"]
     replay = [row for row in commands if row["invocation"]["mode"] == "program" and is_replay(row)]
-    script = [tool for tool in tools if tool["name"] == "workspace_script" and tool["status"] == "ok"]
-    named = [tool["result"] for tool in tools if tool["name"] == "save_value" and tool["status"] == "ok"
-             and tool["args"].get("name") == VALUE_NAME]
+    scripts = [tool for tool in tools if tool["name"] == "workspace_script"]
+    named_reference = saved_report_reference(turn)
+    named = [action["result"] for action in actions if action.get("name", action.get("tool")) == "save_value"
+             and action["status"] == "ok" and action["result"].get("name") == VALUE_NAME]
+    turn["script_failures"] = script_failures(tools)
     turn["checks"] = checks = {
         "report_matches_known_records": read_artifact(workspace, evidence, REPORT) == EXPECTED,
         "one_replay": len(replay) == 1,
@@ -378,9 +393,11 @@ def verify_analysis(turn, workspace, evidence):
             and replay[0]["stdout_bytes"] > 500000 and replay[0]["preview_truncated"],
         "embedded_script_read_entire_capture": len(replay) == 1 and any(
             tool["result"]["kind"] == "workspace_script_result" and read_all_captured_output(tool, replay[0]["output_ref"])
-            for tool in script
+            for tool in scripts
         ),
-        "named_report_committed": len(named) == 1 and bool(named[0].get("reference", {}).get("id")),
+        "named_report_committed": named_reference is not None and any(
+            value.get("reference") == named_reference for value in named
+        ),
     }
     return checks
 
@@ -398,10 +415,8 @@ def saved_report_reads(tools, reference):
         return []
     reads = []
     for tool in tools:
-        if tool["status"] != "ok":
-            continue
         result = tool["result"]
-        direct = (tool["name"] == "read_output" and tool["args"].get("name") == VALUE_NAME
+        direct = (tool["name"] == "read_output" and tool["status"] == "ok" and tool["args"].get("name") == VALUE_NAME
                   and result.get("output_id") == reference["id"] and report_from_chunk(result) == EXPECTED)
         scripted = tool["name"] == "workspace_script" and read_all_captured_output(tool, reference)
         if direct or scripted:
@@ -413,6 +428,7 @@ def verify_reopen(turns, workspace, evidence):
     first, reopened = turns
     actions = list(tool_actions(reopened["tools"]))
     reads = saved_report_reads(reopened["tools"], saved_report_reference(first))
+    reopened["script_failures"] = script_failures(reopened["tools"])
     reopened["saved_report_reads"] = reads
     reopened["checks"] = checks = {
         "same_session_after_close": reopened["session_id"] == first["session_id"] and reopened["number"] is not None

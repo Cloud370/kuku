@@ -142,8 +142,10 @@ class AcceptanceTests(unittest.TestCase):
         action = {"tool": "read_output", "status": "ok", "result": page}
         tool = {"name": "workspace_script", "status": "ok", "call_id": "script-read",
                 "args": {"code": "return 1"}, "result": {"actions": [action]}}
-        self.assertEqual(saved_report_reads([tool], reference),
-                         [{"tool": "workspace_script", "call_id": "script-read", "reference": reference}])
+        expected = [{"tool": "workspace_script", "call_id": "script-read", "reference": reference}]
+        self.assertEqual(saved_report_reads([tool], reference), expected)
+        tool["status"] = "error"
+        self.assertEqual(saved_report_reads([tool], reference), expected)
         page["next_offset"] = 7
         self.assertEqual(saved_report_reads([tool], reference), [])
         page["next_offset"] = 8
