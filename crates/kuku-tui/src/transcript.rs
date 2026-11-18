@@ -52,7 +52,7 @@ struct Anchor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnchorLine {
     Turn,
-    Group,
+    Group(usize),
     Body(usize),
 }
 
@@ -450,13 +450,15 @@ impl Transcript {
                 skip = skip.saturating_sub(1);
             }
             if let Some(group) = block.group {
-                if skip == 0 && lines.len() < height {
-                    let row = group.render(width);
-                    visible.push(VisibleDetail::group(lines.len(), block.key, group));
-                    lines.push(row.line);
+                let first = lines.len();
+                for row in group.rows.iter().skip(skip).take(height - first) {
+                    lines.push(row.line.clone());
                     row_insets.push(row.inset);
                 }
-                skip = skip.saturating_sub(1);
+                skip = skip.saturating_sub(group.rows.len());
+                if first < lines.len() {
+                    visible.push(VisibleDetail::group(first..lines.len(), block.key, group));
+                }
             }
             let first = lines.len();
             for row in block.rows.iter().skip(skip).take(height - lines.len()) {

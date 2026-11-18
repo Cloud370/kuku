@@ -8,10 +8,16 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, ACCENT, ERROR, MUTED, SUCCESS, WARNING};
+use crate::theme::{emphasis, panel, ACCENT, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
 
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
+
+mod file_change;
+mod session;
+
+use file_change::FileChange;
+use session::{is_session_read, query_target, Observation};
 
 const MAX_DETAIL_BYTES: usize = 12 * 1024;
 const MAX_LABEL_BYTES: usize = 256;
@@ -23,6 +29,8 @@ const MAX_FILE_ROWS: usize = 3;
 const MAX_WARNING_ROWS: usize = 3;
 const MAX_INSPECTION_ROWS: usize = 12;
 const MAX_ARGUMENT_ROWS: usize = 5;
+const MAX_CHANGE_ROWS: usize = 4;
+const MAX_OBSERVATION_ROWS: usize = 2;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Tool {
@@ -30,7 +38,6 @@ pub(super) struct Tool {
     invocation: String,
     arguments: String,
     start_summary: String,
-    requested_change: String,
     progress: String,
     state: State,
     agent_request: Option<AgentRequest>,
@@ -55,16 +62,10 @@ impl Tool {
         let invocation = invocation(&name, args);
         let arguments = arguments_json(args);
         let agent_request = AgentRequest::from_call(&name, args);
-        let requested_change = if name == "edit_file" {
-            edit_preview(args).unwrap_or_default()
-        } else {
-            String::new()
-        };
         Self {
             name,
             invocation,
             arguments,
-            requested_change,
             agent_request,
             ..Self::default()
         }
@@ -79,9 +80,6 @@ impl Tool {
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
-        }
-        if !incoming.requested_change.is_empty() {
-            self.requested_change = incoming.requested_change;
         }
         if incoming.agent_request.is_some() {
             self.agent_request = incoming.agent_request;
@@ -184,15 +182,21 @@ impl Tool {
         let State::Recorded(outcome) = &self.state else {
             return None;
         };
-        (!self.name.is_empty()
-            && !matches!(
-                self.name.as_str(),
-                "create_agent" | "send_message" | "list_agents" | "ask_user"
-            )
-            && outcome.status == "ok"
+        (matches!(
+            self.name.as_str(),
+            "read_file" | "find_files" | "search_text" | "list_agents" | "query_session"
+        ) && outcome.status == "ok"
             && outcome.exit_code.is_none_or(|code| code == 0)
-            && !outcome.attention)
-            .then_some(self.name.as_str())
+            && !outcome.attention
+            && !self.observation().is_some_and(|value| value.attention))
+        .then_some(self.name.as_str())
+    }
+
+    pub(super) fn agent_listing(&self) -> Option<(&str, &str)> {
+        let observation = self
+            .observation()
+            .filter(|value| value.is_for("list_agents"))?;
+        Some((&observation.caption, &observation.detail))
     }
 
     pub(super) fn read_path(&self) -> Option<&str> {
@@ -206,6 +210,11 @@ impl Tool {
     pub(super) fn detail_choice(&self) -> (String, String) {
         let title = self.title();
         let status = self.state.label().0;
+        if let Some(caption) = self.session_caption() {
+            let detail = self.session_detail();
+            let summary = join_details([caption, detail.as_str()]);
+            return (title.into_owned(), shorten(&summary, 110));
+        }
         let subject = if self.invocation().is_empty() {
             self.summary()
         } else {
@@ -229,23 +238,45 @@ impl Tool {
         let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
         let caption = self.file_caption();
         if details == ToolDetails::GroupMember {
-            let target =
-                caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES)));
+            let target = self.session_caption().map_or_else(
+                || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
+                |summary| join_details([self.invocation.as_str(), summary]),
+            );
             let columns = width.saturating_sub(usize::from(heading_inset));
             let mut label = self.title().into_owned();
             if !target.is_empty() {
                 label.push_str(&format!(" · {target}"));
             }
             let caption = shorten(&label, columns);
-            let mut rows: Vec<_> = render_rows(
+            let rows = render_rows(
                 vec![Line::styled(caption, emphasis(ACCENT))],
                 width,
                 1,
                 heading_inset,
             )
             .collect();
-            rows.push(Row::plain(Line::default()));
-            return rows;
+            return finish_card(rows);
+        }
+        if let Some(change) = self.file_change() {
+            return self.render_change(change, width, heading_inset, inset, details);
+        }
+        if !inspecting {
+            if let Some(caption) = self.session_caption() {
+                let mut rows = self.render_header(width, heading_inset, inset, Some(caption));
+                let color = if self.observation().is_some_and(|value| value.attention) {
+                    WARNING
+                } else {
+                    SURFACE_TEXT
+                };
+                rows.extend(render_preview(
+                    &self.session_detail(),
+                    color,
+                    width,
+                    MAX_OBSERVATION_ROWS,
+                    inset,
+                ));
+                return finish_card(rows);
+            }
         }
         let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
         if !inspecting && self.is_missing_read() {
@@ -256,8 +287,7 @@ impl Tool {
                 MAX_SUMMARY_ROWS,
                 inset,
             ));
-            rows.push(Row::plain(Line::default()));
-            return rows;
+            return finish_card(rows);
         }
         let invocation = self.invocation();
         let summary = self.summary();
@@ -272,32 +302,16 @@ impl Tool {
         }
         if caption.is_none() && (!expanded || summary != invocation) {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
-            rows.extend(render_preview(summary, Color::Reset, width, limit, inset));
+            rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
         }
         if inspecting {
-            let name = single_line(&self.name);
-            if self.arguments.is_empty() {
-                if !name.is_empty() {
-                    rows.extend(render_preview(
-                        &format!("Tool ID · {name}"),
-                        MUTED,
-                        width,
-                        2,
-                        inset,
-                    ));
-                }
-            } else {
-                let label = if name.is_empty() {
-                    "Requested arguments".to_owned()
-                } else {
-                    format!("Requested arguments · {name}")
-                };
-                rows.extend(render_preview(&label, MUTED, width, 2, inset));
+            self.render_arguments(&mut rows, width, inset);
+            if self.session_caption().is_some() && !self.result().is_empty() {
                 rows.extend(render_preview(
-                    &self.arguments,
-                    Color::Reset,
+                    "Raw result · /tools",
+                    MUTED,
                     width,
-                    MAX_ARGUMENT_ROWS,
+                    1,
                     inset,
                 ));
             }
@@ -345,8 +359,108 @@ impl Tool {
                 ));
             }
         }
-        rows.push(Row::plain(Line::default()));
-        rows
+        finish_card(rows)
+    }
+
+    fn render_arguments(&self, rows: &mut Vec<Row>, width: usize, inset: u16) {
+        let name = single_line(&self.name);
+        if self.arguments.is_empty() {
+            if !name.is_empty() {
+                rows.extend(render_preview(
+                    &format!("Tool ID · {name}"),
+                    MUTED,
+                    width,
+                    2,
+                    inset,
+                ));
+            }
+            return;
+        }
+        let label = if name.is_empty() {
+            "Requested arguments".to_owned()
+        } else {
+            format!("Requested arguments · {name}")
+        };
+        rows.extend(render_preview(&label, MUTED, width, 2, inset));
+        rows.extend(render_preview(
+            &self.arguments,
+            SURFACE_TEXT,
+            width,
+            MAX_ARGUMENT_ROWS,
+            inset,
+        ));
+    }
+
+    fn render_change(
+        &self,
+        change: &FileChange,
+        width: usize,
+        heading_inset: u16,
+        inset: u16,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let path = shorten(&single_line(self.invocation()), 52);
+        let mut rows = self.render_header(
+            width,
+            heading_inset,
+            inset,
+            (!path.is_empty()).then_some(path.as_str()),
+        );
+        if details != ToolDetails::Collapsed {
+            let limit = if details == ToolDetails::Inspection {
+                MAX_INSPECTION_ROWS
+            } else {
+                MAX_CHANGE_ROWS
+            };
+            rows.extend(render_rows(change.lines(), width, limit, inset));
+        }
+        rows.extend(render_rows(vec![change.footer()], width, 2, inset));
+        if details == ToolDetails::Inspection {
+            self.render_arguments(&mut rows, width, inset);
+        }
+        finish_card(rows)
+    }
+
+    fn file_change(&self) -> Option<&FileChange> {
+        let State::Recorded(outcome) = &self.state else {
+            return None;
+        };
+        outcome
+            .change
+            .as_ref()
+            .filter(|value| value.is_for(&self.name))
+    }
+
+    fn observation(&self) -> Option<&Observation> {
+        self.state
+            .outcome()?
+            .observation
+            .as_ref()
+            .filter(|value| self.name.is_empty() || value.is_for(&self.name))
+    }
+
+    fn session_caption(&self) -> Option<&str> {
+        let outcome = self
+            .state
+            .outcome()
+            .filter(|outcome| outcome.status == "ok")?;
+        if let Some(observation) = self.observation() {
+            return Some(&observation.caption);
+        }
+        if !is_session_read(&self.name) {
+            return None;
+        }
+        let fallback = if outcome.content.is_empty() {
+            "Result details unavailable"
+        } else {
+            "Result available · /tools"
+        };
+        Some(fallback)
+    }
+
+    fn session_detail(&self) -> String {
+        let detail = self.observation().map_or("", |value| value.detail.as_str());
+        join_details([self.invocation.as_str(), detail])
     }
 
     fn title(&self) -> Cow<'_, str> {
@@ -406,7 +520,7 @@ impl Tool {
         if let Some(caption) = separate_caption {
             rows.extend(render_preview(
                 caption,
-                Color::Reset,
+                SURFACE_TEXT,
                 width,
                 MAX_INVOCATION_ROWS,
                 detail_inset,
@@ -438,7 +552,12 @@ impl Tool {
     }
 
     fn invocation(&self) -> &str {
-        if self.invocation.is_empty() || matches!(self.name.as_str(), "run_command" | "read_file") {
+        if self.invocation.is_empty()
+            || matches!(
+                self.name.as_str(),
+                "run_command" | "read_file" | "write_file" | "edit_file"
+            )
+        {
             if let Some(outcome) = self
                 .state
                 .outcome()
@@ -474,14 +593,30 @@ impl Tool {
 
     fn diff(&self) -> Option<&str> {
         let outcome = self.state.outcome()?;
-        if !outcome.diff.is_empty() {
-            Some(&outcome.diff)
-        } else if outcome.status == "ok" && !self.requested_change.is_empty() {
-            Some(&self.requested_change)
-        } else {
-            None
-        }
+        self.file_change()
+            .and_then(FileChange::diff)
+            .or_else(|| (!outcome.diff.is_empty()).then_some(outcome.diff.as_str()))
     }
+}
+
+pub(super) fn style_card(rows: &mut [Row]) {
+    for row in rows {
+        row.line.style = panel().patch(row.line.style);
+    }
+}
+
+fn finish_card(mut rows: Vec<Row>) -> Vec<Row> {
+    style_card(&mut rows);
+    rows.push(Row::plain(Line::default()));
+    rows
+}
+
+fn join_details<const N: usize>(parts: [&str; N]) -> String {
+    parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
@@ -557,6 +692,8 @@ struct Outcome {
     command_preview: Option<CommandPreview>,
     file_read: Option<FileRead>,
     receipt: Option<Receipt>,
+    observation: Option<Observation>,
+    change: Option<FileChange>,
     attention: bool,
 }
 
@@ -568,6 +705,8 @@ impl Outcome {
             .or_else(|| fields.get("result"))
             .unwrap_or(&Value::Null);
         let content = get("model_content");
+        let summary = get("summary").or(fallback_summary);
+        let succeeded = get("status") == Some("ok");
         let output_id = get("output_id")
             .or_else(|| structured["output_id"].as_str())
             .or_else(|| structured["output_ref"]["id"].as_str());
@@ -590,7 +729,7 @@ impl Outcome {
                 .is_some_and(|lines| lines > 0);
         Self {
             status: capped(get("status"), MAX_LABEL_BYTES),
-            summary: capped(get("summary").or(fallback_summary), MAX_DETAIL_BYTES),
+            summary: capped(summary, MAX_DETAIL_BYTES),
             invocation: capped(
                 structured["command"]
                     .as_str()
@@ -606,8 +745,19 @@ impl Outcome {
             output_id: output_id.map(str::to_owned),
             command_preview: CommandPreview::from_result(content, structured, output_id),
             file_read: FileRead::from_result(structured, truncated),
-            receipt: (get("status") == Some("ok"))
-                .then(|| agent_receipt(structured))
+            receipt: succeeded.then(|| agent_receipt(structured)).flatten(),
+            observation: succeeded
+                .then(|| {
+                    Observation::from_result(
+                        structured,
+                        summary.unwrap_or_default(),
+                        content.unwrap_or_default(),
+                        truncated,
+                    )
+                })
+                .flatten(),
+            change: succeeded
+                .then(|| FileChange::from_result(structured, truncated))
                 .flatten(),
             attention,
         }
@@ -709,6 +859,9 @@ impl CommandPreview {
 }
 
 fn invocation(tool: &str, args: &Value) -> String {
+    if tool == "query_session" {
+        return query_target(args);
+    }
     let get = |key| {
         args.get(key)
             .and_then(Value::as_str)
@@ -749,20 +902,6 @@ fn arguments_json(args: &Value) -> String {
     text
 }
 
-fn edit_preview(args: &Value) -> Option<String> {
-    let old = cap(args["old_text"].as_str()?, MAX_DETAIL_BYTES / 2);
-    let new = cap(args["new_text"].as_str()?, MAX_DETAIL_BYTES / 2);
-    let mut preview = String::from("Requested replacement\n");
-    for (prefix, text) in [('-', old), ('+', new)] {
-        for line in text.lines() {
-            preview.push(prefix);
-            preview.push_str(line);
-            preview.push('\n');
-        }
-    }
-    Some(preview)
-}
-
 fn render_excerpt(
     text: &str,
     render: impl FnOnce(&str) -> Vec<Line<'static>>,
@@ -796,154 +935,4 @@ fn render_preview(
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use crate::transcript::Transcript;
-
-    use super::{Tool, MAX_DETAIL_BYTES};
-
-    #[test]
-    fn late_live_output_does_not_change_a_full_preview() {
-        let mut tool = Tool::default();
-        let first = json!({"type":"tool_output", "event":{"stdout":"中".repeat(MAX_DETAIL_BYTES)}});
-        assert!(tool.apply_live(&first));
-        let details = tool.view().details;
-        assert!(details.ends_with("Display limit reached"));
-        let extra = json!({"type":"tool_output", "event":{"stdout":"Late output"}});
-        assert!(!tool.apply_live(&extra));
-        assert_eq!(details, tool.view().details);
-    }
-
-    #[test]
-    fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference() {
-        let mut transcript = Transcript::default();
-        let marker = "Output: saved-run (42 captured bytes; read by merged byte offset).";
-        let warning = "Capture quota reached; further bytes were drained and discarded.";
-        let raw = format!(
-            "stdout:\nOutput: from the process\nstderr:\ntry fewer inputs\n\n\n{marker} {warning}"
-        );
-        transcript.apply(
-            serde_json::from_value(json!({
-                "id": 1, "agent": "main", "turn": 1, "type": "tool_result", "tool": "run_command",
-                "tool_call_id": "cmd", "status": "error", "summary": "command timed out; output truncated",
-                "model_content": raw,
-                "structured": {"kind": "command_result", "command": "check", "output_ref": {"id": "saved-run", "bytes": 42}}
-            })).unwrap(),
-            None,
-        );
-
-        let view = transcript.project(96, 18);
-        let rendered = view
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("command timed out; output truncated"));
-        assert!(rendered.contains("stdout:\n    Output: from the process"));
-        assert!(rendered.contains(&format!(
-            "stderr:\n    try fewer inputs\n    {warning}\n    Saved output · /tools"
-        )));
-        assert!(!rendered.contains(marker));
-        assert_eq!(raw, transcript.tools()[0].details);
-        assert_eq!(
-            Some("saved-run"),
-            transcript.tools()[0].output_id.as_deref()
-        );
-    }
-
-    #[test]
-    fn custom_tool_arguments_and_output_have_bounded_inline_previews() {
-        let mut transcript = Transcript::default();
-        let args = "中文".repeat(8_000);
-        transcript.apply(
-            serde_json::from_value(json!({
-                "id": 1, "agent": "main", "turn": 1, "type": "tool_call",
-                "tool": "custom_fixture", "tool_call_id": "custom", "args": {"key": args}
-            }))
-            .unwrap(),
-            None,
-        );
-        transcript.apply(serde_json::from_value(json!({
-            "id": 2, "agent": "main", "turn": 1, "type": "tool_result", "tool_call_id": "custom",
-            "status": "ok", "model_content": format!("first\u{001b}line\n{}later line", "中\n".repeat(50)),
-            "output_id": "retained"
-        })).unwrap(), None);
-        let view = transcript.project(52, 40);
-        let plain = view
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(view.lines.len() <= 14);
-        assert!(plain.contains("{\"key\":\"中文"));
-        assert!(plain.contains("first␛line"));
-        assert!(plain.contains('…'));
-        assert!(!plain.contains("later line"));
-        assert!(!plain.contains('\u{001b}'));
-        let tools = transcript.tools();
-        assert!(tools[0].details.ends_with("later line"));
-        assert_eq!(Some("retained"), tools[0].output_id.as_deref());
-    }
-
-    #[test]
-    fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range() {
-        let mut transcript = Transcript::default();
-        let raw = "17\talpha\n18\tbeta\n19\tgamma\n20\tdelta\n21\tepsilon";
-        for (first, name, path, turn, number) in [
-            (1, "read-a", "src/lib.rs", 7, 3),
-            (4, "read-b", "src/main.rs", 8, 4),
-        ] {
-            for (id, entry) in (first..).zip([
-                json!({"type": "assistant", "text": "", "thinking": "Read this file"}),
-                json!({"type": "tool_call", "tool": "read_file", "tool_call_id": name, "args": {"path": format!("./{path}")}}),
-                json!({"type": "tool_result", "tool_call_id": name, "status": "ok", "summary": format!("read {path}, lines 17-21 of 30, results truncated"), "model_content": raw, "truncated": true, "structured": {"kind": "file_content", "path": path, "start_line": 17, "line_count": 5, "total_lines": 30, "cached": true}}),
-            ]) {
-                let mut entry = entry.as_object().unwrap().clone();
-                entry.extend([
-                    ("id".into(), json!(id)),
-                    ("agent".into(), json!("main")),
-                    ("turn".into(), json!(turn)),
-                    ("turn_number".into(), json!(number)),
-                ]);
-                transcript.apply(serde_json::from_value(entry.into()).unwrap(), None);
-            }
-        }
-
-        let view = transcript.project(84, 24);
-        let rendered = view
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(1, rendered.matches("Turn 3").count());
-        assert_eq!(1, rendered.matches("Turn 4").count());
-        assert_eq!(1, rendered.matches("src/lib.rs").count());
-        assert_eq!(1, rendered.matches("src/main.rs").count());
-        assert!(rendered
-            .contains("Read file · ok · src/lib.rs · lines 17–21 of 30 · cached · truncated"));
-        assert!(rendered.contains("…") && !rendered.contains("Assistant"));
-        assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
-        assert_eq!(Some("Ctrl+O hide · /details"), view.tool_hint.as_deref());
-        assert!(!rendered.contains("Ctrl+O"));
-        assert_eq!(raw, transcript.tools()[0].details);
-
-        transcript.toggle_details();
-        let collapsed = transcript.project(84, 24);
-        assert_eq!(
-            Some("Ctrl+O show · /details"),
-            collapsed.tool_hint.as_deref()
-        );
-        assert!(!collapsed
-            .lines
-            .iter()
-            .any(|line| line.to_string().contains("alpha")));
-        assert!(collapsed
-            .lines
-            .iter()
-            .any(|line| line.to_string().contains("src/lib.rs")));
-    }
-}
+mod tests;

@@ -5,12 +5,22 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+use crate::markup::render_literal;
 use crate::text::shorten;
 use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 
 use super::agent::AgentCard;
-use super::tool::{tool_title, Tool};
-use super::{body_inset, Key, Record, Row, ToolDetails, Transcript, MAX_RECORDS};
+use super::tool::{style_card, tool_title, Tool};
+use super::{body_inset, render_rows, Key, Record, Row, ToolDetails, Transcript, MAX_RECORDS};
+
+const INSPECTIONS: [(&str, &str, &str); 5] = [
+    ("read_file", "file read", "file reads"),
+    ("find_files", "file search", "file searches"),
+    ("search_text", "text search", "text searches"),
+    ("list_agents", "Agent listing", "Agent listings"),
+    ("query_session", "Session query", "Session queries"),
+];
+const GROUP_DETAIL_ROWS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DetailKey {
@@ -76,14 +86,14 @@ pub(super) struct VisibleDetail {
 }
 
 impl VisibleDetail {
-    pub(super) fn group(row: usize, key: &Key, group: GroupHeading) -> Self {
-        let GroupHeading { title, open } = group;
+    pub(super) fn group(rows: Range<usize>, key: &Key, group: GroupHeading) -> Self {
+        let GroupHeading { summary, open, .. } = group;
         Self::new(
-            row..row + 1,
+            rows,
             key,
             DetailKind::Group,
-            title,
-            String::new(),
+            summary.title,
+            summary.composition,
             open,
         )
     }
@@ -223,38 +233,61 @@ fn remember(expanded: &mut VecDeque<Key>, key: &Key) {
 
 pub(super) struct GroupSpan {
     pub(super) range: Range<usize>,
-    pub(super) title: String,
+    pub(super) summary: GroupSummary,
+}
+
+pub(super) struct GroupSummary {
+    title: String,
+    composition: String,
+    listing: String,
 }
 
 pub(super) struct GroupHeading {
-    pub(super) title: String,
+    summary: GroupSummary,
     pub(super) open: bool,
+    pub(super) rows: Vec<Row>,
 }
 
 impl GroupHeading {
-    pub(super) fn render(&self, width: usize) -> Row {
+    pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
         let inset = body_inset(width);
         let columns = width.saturating_sub(usize::from(inset));
         let mut spans = Vec::new();
         if inset > 0 {
             spans.push(Span::styled(
-                if self.open { "▾ " } else { "▸ " },
+                if open { "▾ " } else { "▸ " },
                 Style::new().fg(MUTED),
             ));
         }
         let status = " · ok";
         let title = if columns > status.width() {
-            shorten(&self.title, columns - status.width())
+            shorten(&summary.title, columns - status.width())
         } else {
-            shorten(&self.title, columns)
+            shorten(&summary.title, columns)
         };
         spans.push(Span::styled(title, emphasis(ACCENT)));
         if columns > status.width() {
             spans.push(Span::styled(status, Style::new().fg(SUCCESS)));
         }
-        Row {
+        let mut rows = vec![Row {
             line: Line::from(spans),
             inset,
+        }];
+        for detail in [&summary.composition, &summary.listing] {
+            if !detail.is_empty() {
+                rows.extend(render_rows(
+                    render_literal(detail, Style::default()),
+                    width,
+                    GROUP_DETAIL_ROWS,
+                    inset,
+                ));
+            }
+        }
+        style_card(&mut rows);
+        Self {
+            summary,
+            open,
+            rows,
         }
     }
 }
@@ -270,17 +303,14 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
         let start = index;
         index += 1;
         while records.get(index).is_some_and(|record| {
-            record.turn == first.turn
-                && record.owner == first.owner
-                && group_name(record) == Some(name)
+            record.turn == first.turn && record.owner == first.owner && group_name(record).is_some()
         }) {
             index += 1;
         }
         if index > start + 1 {
-            let title = group_title(name, &records[start..index]);
             groups.push(GroupSpan {
                 range: start..index,
-                title,
+                summary: group_summary(name, &records[start..index]),
             });
         }
     }
@@ -291,6 +321,47 @@ fn group_name(record: &Record) -> Option<&str> {
     record.turn.filter(|&turn| turn > 0)?;
     record.owner.as_ref()?;
     record.tool()?.group_name()
+}
+
+fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
+    let count = records.len();
+    let mixed = records
+        .iter()
+        .any(|record| group_name(record) != Some(first));
+    let title = if mixed {
+        format!("Read-only activity · {count} calls")
+    } else {
+        group_title(first, records)
+    };
+    let mut parts = Vec::new();
+    if mixed {
+        for (name, one, many) in INSPECTIONS {
+            let count = records
+                .iter()
+                .filter(|record| group_name(record) == Some(name))
+                .count();
+            if count > 0 {
+                parts.push(format!("{count} {}", if count == 1 { one } else { many }));
+            }
+        }
+    }
+    let listing = records
+        .iter()
+        .rev()
+        .find(|record| group_name(record) == Some("list_agents"))
+        .and_then(|record| record.tool()?.agent_listing())
+        .map_or_else(String::new, |(caption, detail)| {
+            if detail.is_empty() {
+                caption.to_owned()
+            } else {
+                format!("Latest · {caption} · {detail}")
+            }
+        });
+    GroupSummary {
+        title,
+        composition: parts.join(" · "),
+        listing,
+    }
 }
 
 fn group_title(name: &str, records: &[Record]) -> String {
@@ -413,8 +484,10 @@ mod tests {
 
         let compact = transcript.project(90, 64);
         let rendered = text(&compact);
-        assert!(rendered.contains("Read 12 files · ok") && rendered.contains("Find files ×3 · ok"));
-        assert!(rendered.contains("Run command ×3 · ok") && rendered.contains("failed · exit 23"));
+        assert!(rendered.contains("Read-only activity · 15 calls · ok"));
+        assert!(rendered.contains("12 file reads · 3 file searches"));
+        assert_eq!(3, rendered.matches("Run command · ok · exit 0").count());
+        assert!(rendered.contains("failed · exit 23"));
         for term in [
             "actual diagnostic",
             "ok with warnings",
@@ -435,7 +508,7 @@ mod tests {
             && record.rendered.source.is_none()));
         assert_eq!(Some("Ctrl+O show · /details"), compact.tool_hint.as_deref());
         let group = transcript
-            .detail_at(line(&compact, "Read 12 files"))
+            .detail_at(line(&compact, "12 file reads · 3 file searches"))
             .unwrap()
             .clone();
         assert!(transcript.toggle_detail(&group));
@@ -536,6 +609,128 @@ mod tests {
     }
 
     #[test]
+    fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result() {
+        let mut journal = Journal::default();
+        let sample = json!([
+            {"address":"main","status":"running","config":{"preset":null},"permission":null,"question":null},
+            {"address":"reviewer","status":"idle","last_output":"Original large reply heading\n\n```rust\nfn main() {}\n```", "pending_inputs":0},
+        ]);
+        let source = sample.to_string();
+        for _ in 0..3 {
+            journal.tool("list_agents", json!({}), json!({"status":"ok", "summary":"session operation committed", "structured":sample, "model_content":source}));
+        }
+        let waiting = json!([
+            {"address":"main","status":"running"},
+            {"address":"reviewer","status":"waiting","permission":{"id":"request"},"pending_inputs":1},
+            {"address":"audit","status":"idle","last_error":"Stopped with an error"},
+            {"address":"another","status":"idle"},
+        ]);
+        journal.tool("list_agents", json!({}), json!({"status":"ok", "summary":"session operation committed", "structured":waiting, "model_content":waiting.to_string()}));
+        let mut split_page = Transcript::default();
+        split_page.apply(journal.0[1].clone(), None);
+        let without_call = text(&split_page.project(90, 10));
+        assert!(without_call.contains("2 Agents at check"));
+        assert!(!without_call.contains("Original large reply heading"));
+
+        let mut transcript = journal.load();
+        let view = transcript.project(108, 28);
+        let compact = text(&view);
+        for term in [
+            "List Agents ×3 · ok",
+            "Latest · 2 Agents at check",
+            "reviewer (Idle, reply available)",
+            "4 Agents at check · 2 need attention",
+            "reviewer (Waiting for approval, 1 queued)",
+            "audit (Last run failed)",
+            "+1 more",
+        ] {
+            assert!(compact.contains(term), "missing {term}\n{compact}");
+        }
+        assert!(!compact.contains("Original large reply heading") && !compact.contains("preset"));
+        let row = line(&view, "List Agents ×3");
+        assert_eq!(crate::theme::panel().bg, view.lines[row].style.bg);
+        let group = transcript.detail_at(row).unwrap().clone();
+        assert!(transcript.toggle_detail(&group));
+        let expanded = transcript.project(108, 28);
+        let member = transcript
+            .detail_at(line(&expanded, "List Agents · 2 Agents at check"))
+            .unwrap()
+            .clone();
+        assert!(transcript.toggle_detail(&member));
+        let detail = text(&transcript.project(108, 28));
+        assert!(
+            detail.contains("Raw result · /tools")
+                && detail.contains("Original large reply heading")
+        );
+        assert_eq!(source, transcript.tools()[1].details);
+    }
+
+    #[test]
+    fn query_counts_preserve_observed_types_even_when_a_row_was_clipped() {
+        let mut journal = Journal::default();
+        let source = "[\n{\"kind\":\"message.user\",\"text\":\"Fixture input\"},\n{\"kind\":\"model.error\",\"text\":\"model failed\"},\n{\"kind\":\"runtime.model_retry\"},\n{\"kind\":\"tool.call\",\"args\": ...(truncated)\n]";
+        journal.tool(
+            "query_session",
+            json!({"conversation":"reviewer", "after":16}),
+            json!({"status":"ok", "summary":"4 events returned", "model_content":source}),
+        );
+        journal.tool("query_session", json!({"conversation":"reviewer", "after":22}), json!({"status":"error", "summary":"query_session failed", "model_content":"Session read was denied"}));
+        journal.tool(
+            "query_session",
+            json!({"conversation":"reviewer", "after":22}),
+            json!({"status":"ok", "summary":"0 events returned", "model_content":"[]"}),
+        );
+        let mut transcript = journal.load();
+        let compact = transcript.project(86, 30);
+        let rendered = text(&compact);
+        for term in [
+            "4 events matched",
+            "Agent reviewer · After #16",
+            "1 model error · 1 retry · 1 message",
+            "Preview incomplete",
+            "Query Session · error",
+            "Session read was denied",
+            "0 events matched",
+        ] {
+            assert!(rendered.contains(term), "missing {term}\n{rendered}");
+        }
+        assert!(!rendered.contains("Fixture input") && !rendered.contains("\"kind\""));
+        let call = transcript
+            .detail_at(line(&compact, "4 events matched"))
+            .unwrap()
+            .clone();
+        assert!(transcript.toggle_detail(&call));
+        let inspected = text(&transcript.project(86, 30));
+        assert!(
+            inspected.contains("Requested arguments · query_session")
+                && inspected.contains("Fixture input")
+        );
+        assert_eq!(source, transcript.tools()[2].details);
+    }
+
+    #[test]
+    fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
+        let mut journal = Journal::default();
+        let snapshot = json!([{"address":"reviewer","status":"idle","last_output":"archived Markdown\n".repeat(500),"config":{"instructions":"instructions".repeat(40)}}]);
+        let result = json!({"status":"ok", "summary":"session operation committed", "structured":snapshot, "model_content":snapshot.to_string()});
+        for _ in 0..super::MAX_RECORDS {
+            journal.tool("list_agents", json!({}), result.clone());
+        }
+        let mut transcript = journal.load();
+        for width in [32, 72, 150].into_iter().cycle().take(120) {
+            let view = transcript.project(width, 20);
+            assert!(view.lines.len() <= 5);
+            assert!(text(&view).contains("Agent at check"));
+            assert!(!text(&view).contains("archived Markdown"));
+        }
+        assert!(transcript
+            .recent
+            .records
+            .iter()
+            .all(|record| record.rendered.preview.is_none()));
+    }
+
+    #[test]
     fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating_its_key() {
         let mut journal = Journal::default();
         for index in 1..=8 {
@@ -576,6 +771,41 @@ mod tests {
         assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
         assert!(transcript.toggle_detail(&group));
         assert_eq!(before, text(&transcript.project(72, 3)));
+    }
+
+    #[test]
+    fn a_wrapped_group_caption_is_a_stable_reading_and_pointer_target() {
+        let mut journal = Journal::default();
+        journal.read(7, "main", "first.txt");
+        journal.tool(
+            "find_files",
+            json!({"pattern":"*.txt"}),
+            json!({"status":"ok"}),
+        );
+        journal.tool(
+            "search_text",
+            json!({"pattern":"notes"}),
+            json!({"status":"ok"}),
+        );
+        journal.push(
+            7,
+            "main",
+            json!({"type":"assistant","text":"first\n\nsecond\n\nthird\n\nfourth\n\nfifth"}),
+        );
+        let mut transcript = journal.load();
+        transcript.scroll(-100, 37, 3);
+        transcript.scroll(2, 37, 3);
+        let view = transcript.project(37, 3);
+        let caption = view.lines[0].to_string();
+        assert!(caption.contains("1 file read · 1 file search"), "{caption}");
+        let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
+        assert_eq!(AnchorLine::Group(1), anchor.line);
+        let key = transcript.detail_at(0).unwrap().clone();
+        assert!(transcript.toggle_detail(&key));
+        assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
+        assert_eq!(caption, transcript.project(37, 3).lines[0].to_string());
+        assert!(transcript.toggle_detail(&key));
+        assert_eq!(caption, transcript.project(37, 3).lines[0].to_string());
     }
 
     #[test]

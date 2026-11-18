@@ -135,16 +135,23 @@ impl Window {
         let mut start = 0;
         let mut group_row = None;
         for block in self.blocks(layout) {
-            if block.group.is_some() {
-                group_row = Some(start + usize::from(block.heading.is_some()));
+            if let Some(group) = &block.group {
+                group_row = Some((
+                    start + usize::from(block.heading.is_some()),
+                    group.rows.len(),
+                ));
             } else if !block.grouped {
                 group_row = None;
             }
             if block.key == &anchor.key {
                 return match anchor.line {
                     AnchorLine::Turn => start,
-                    AnchorLine::Group => group_row.unwrap_or(start),
-                    AnchorLine::Body(_) if block.collapsed => group_row.unwrap_or(start),
+                    AnchorLine::Group(row) => group_row.map_or(start, |(start, height)| {
+                        start + row.min(height.saturating_sub(1))
+                    }),
+                    AnchorLine::Body(_) if block.collapsed => {
+                        group_row.map_or(start, |(first, _)| first)
+                    }
                     AnchorLine::Body(line) => {
                         start + block.prefix_height() + line.min(block.rows.len().saturating_sub(1))
                     }
@@ -160,8 +167,8 @@ impl Window {
             if row < block.height() {
                 let line = if row == 0 && block.heading.is_some() {
                     AnchorLine::Turn
-                } else if block.group.is_some() && row == usize::from(block.heading.is_some()) {
-                    AnchorLine::Group
+                } else if row < block.prefix_height() {
+                    AnchorLine::Group(row - usize::from(block.heading.is_some()))
                 } else {
                     AnchorLine::Body(row - block.prefix_height())
                 };
@@ -180,7 +187,7 @@ impl Window {
             .into_iter()
             .map(|span| {
                 let open = layout.items.group_open(&self.records[span.range.clone()]);
-                (span.range, Some(span.title), open)
+                (span.range, Some(span.summary), open)
             })
             .collect::<Vec<_>>()
             .into_iter();
@@ -221,7 +228,7 @@ impl Window {
             let group = member.and_then(|(_, title, open)| {
                 title
                     .take()
-                    .map(|title| GroupHeading { title, open: *open })
+                    .map(|summary| GroupHeading::new(summary, *open, layout.width))
             });
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
@@ -289,6 +296,7 @@ impl Block<'_> {
     }
 
     fn prefix_height(&self) -> usize {
-        usize::from(self.heading.is_some()) + usize::from(self.group.is_some())
+        usize::from(self.heading.is_some())
+            + self.group.as_ref().map_or(0, |group| group.rows.len())
     }
 }

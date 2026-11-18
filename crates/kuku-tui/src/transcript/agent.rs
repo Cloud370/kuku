@@ -10,6 +10,7 @@ use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{emphasis, ACCENT, ERROR, MUTED};
 
+use super::tool::style_card;
 use super::{
     body_inset, capped, render_rows, Body, Key, Row, ToolDetails, Transcript, MAX_RECORDS,
 };
@@ -305,6 +306,7 @@ impl AgentCard<'_> {
                 ));
             }
         }
+        style_card(&mut rows);
         rows.push(Row::plain(Line::default()));
         rows
     }

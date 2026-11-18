@@ -11,6 +11,8 @@ use super::common::{
     text_match_offsets, write_atomically, WriteSnapshot,
 };
 
+mod change;
+
 struct EditRequest {
     path: String,
     old_text: String,
@@ -125,6 +127,7 @@ pub(crate) fn edit_file(
         );
     }
 
+    let change = change::summarize(&content, &edited);
     let raw_text_after = edited;
     let bytes_written = raw_text_after.len();
     let content_hash_after = content_hash(raw_text_after.as_bytes());
@@ -145,6 +148,7 @@ pub(crate) fn edit_file(
             "path": resolved.relative,
             "canonical_path": canonical_path,
             "replacement_count": replacement_count,
+            "change": change,
             "bytes_written": bytes_written,
             "content_hash": content_hash_after,
             "content_hash_after": content_hash_after,
@@ -377,6 +381,9 @@ mod tests {
         );
 
         let structured = unique.structured.as_ref().unwrap();
+        assert_eq!(structured["change"]["added_lines"], 1);
+        assert_eq!(structured["change"]["removed_lines"], 1);
+        assert_eq!(structured["change"]["preview"], "-beta\n+gamma");
         let canonical_path = dir.path().join("README.md").canonicalize().unwrap();
         assert_eq!(
             structured["canonical_path"].as_str().unwrap(),
@@ -408,6 +415,11 @@ mod tests {
         );
         assert_eq!(all.status, "ok");
         assert_eq!(all.structured.as_ref().unwrap()["replacement_count"], 2);
+        assert_eq!(all.structured.as_ref().unwrap()["change"]["added_lines"], 2);
+        assert_eq!(
+            all.structured.as_ref().unwrap()["change"]["removed_lines"],
+            2
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
             "omega\ngamma\nomega\n"
