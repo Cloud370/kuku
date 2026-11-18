@@ -170,7 +170,22 @@ impl App {
                 }
             }
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
-                self.complete_picker();
+                match (&picker.kind, picker.selected_choice()) {
+                    (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
+                        let completed = format!("/{}", command.name());
+                        if picker.query.text() != completed {
+                            picker.query.set_text(completed);
+                            picker.selected = 0;
+                            self.search(false);
+                        }
+                    }
+                    (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
+                    | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
+                        let kind = picker.kind.clone();
+                        self.choose(kind, choice);
+                    }
+                    _ => {}
+                }
             }
             key if Shortcut::UP.matches(key) => picker.move_by(-1),
             key if Shortcut::DOWN.matches(key) => picker.move_by(1),
@@ -191,28 +206,6 @@ impl App {
             {
                 picker.selected = 0;
                 self.search(false);
-            }
-            _ => {}
-        }
-    }
-
-    fn complete_picker(&mut self) {
-        let Some(Modal::Picker(picker)) = &mut self.modal else {
-            return;
-        };
-        match (&picker.kind, picker.selected_choice()) {
-            (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
-                let completed = format!("/{}", command.name());
-                if picker.query.text() != completed {
-                    picker.query.set_text(completed);
-                    picker.selected = 0;
-                    self.search(false);
-                }
-            }
-            (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
-            | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
-                let kind = picker.kind.clone();
-                self.choose(kind, choice);
             }
             _ => {}
         }
