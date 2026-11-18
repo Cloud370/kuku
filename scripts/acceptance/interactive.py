@@ -610,6 +610,12 @@ def delegated_agent_cards(client):
                     and reviewer_snapshot()["status"] == "running"
                 ))
                 terminal.expect(f"{card} · Agent now Streaming reply")
+                open_reviewer(terminal)
+                attached = terminal.expect(initial, state="Streaming reply")["screen"]
+                assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
+                screens.append(("Attaching to a reviewer mid-reply", attached))
+                terminal.press("\x1b[1;3A")
+                terminal.expect(f"{card} · Agent now Streaming reply", state="To main")
                 terminal.press("\x0f")
                 expanded = terminal.expect("Live Agent reply")["screen"]
                 assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
