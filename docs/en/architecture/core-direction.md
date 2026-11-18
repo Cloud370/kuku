@@ -12,6 +12,8 @@ kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harnes
 
 Give reliability, low resource use, and low human/model cognitive cost equal weight. A mechanism needs a concrete job and one owner. The default Harness supplies working prompts, tools, model selection, and delegation; callers need not assemble an agent platform. Custom Harnesses choose recipients, context, scheduling, and work completion through explicit SDK operations, without replacing persistence, authorization, or execution.
 
+The default Harness follows the user’s intended stage of work, including exploration, drafts and delivery. Evaluation callers own benchmark budgets, scoring and unattended scheduling. A normal turn follows the conversation and tool results to completion. Callers can set a step limit when they have a specific constraint.
+
 ## Preserve from kuku
 
 - **Keep behavioral Prompt text in versioned assets/templates**, outside Rust execution branches and tool implementations. Structured runtime facts are not themselves Prompt templates.
