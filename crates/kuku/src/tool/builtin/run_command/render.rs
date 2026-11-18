@@ -37,24 +37,6 @@ pub(super) fn render_command_result(
         metadata.stdout_lines, metadata.stderr_lines
     ));
     let filtered = !chunk.summary.is_empty();
-    #[cfg(windows)]
-    let native_diagnostic = if !filtered
-        && chunk.complete
-        && !chunk.has_more
-        && !metadata.quota_truncated
-        && !metadata.cleanup_incomplete
-    {
-        match chunk.segments.as_slice() {
-            [segment] if segment.stream == OutputStream::Stderr => {
-                segment.raw_bytes.as_deref().and_then(windows_diagnostic)
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-    #[cfg(not(windows))]
-    let native_diagnostic: Option<(u32, String)> = None;
     let mut model_content = if filtered {
         format!(
             "{}\n\nBuild/test summary (selected lines):\n{}",
@@ -75,11 +57,7 @@ pub(super) fn render_command_result(
                 });
                 previous_stream = Some(segment.stream);
             }
-            text.push_str(
-                native_diagnostic
-                    .as_ref()
-                    .map_or(&segment.text, |(_, text)| text),
-            );
+            text.push_str(&segment.text);
         }
         if text.is_empty() {
             text.push_str("(command produced no output)");
@@ -91,12 +69,7 @@ pub(super) fn render_command_result(
     };
     let capture_incomplete = metadata.quota_truncated || metadata.cleanup_incomplete;
     let preview_truncated = !filtered && chunk.has_more;
-    let reference = render_reference(
-        output_id,
-        &metadata,
-        filtered,
-        chunk.lossy_utf8 && native_diagnostic.is_none(),
-    );
+    let reference = render_reference(output_id, &metadata, filtered, chunk.lossy_utf8);
     let content_truncated = model_content.len() + reference.len() > limits.max_preview_bytes;
     let truncated = capture_incomplete || preview_truncated || content_truncated;
     if truncated {
@@ -144,8 +117,7 @@ pub(super) fn render_command_result(
             "cleanup_incomplete": metadata.cleanup_incomplete,
             "output_filtered": filtered,
             "preview_truncated": preview_truncated || content_truncated,
-            "lossy_utf8": !filtered && chunk.lossy_utf8 && native_diagnostic.is_none(),
-            "stderr_code_page": native_diagnostic.as_ref().map(|(code_page, _)| code_page),
+            "lossy_utf8": !filtered && chunk.lossy_utf8,
             "dropped_events": outcome.dropped_events,
             "summary_lines": chunk.summary,
         })),
@@ -204,36 +176,4 @@ fn fit_content(content: &mut String, suffix: &str, limit: usize) {
         keep -= 1;
     }
     content.truncate(keep);
-}
-
-#[cfg(windows)]
-fn windows_diagnostic(bytes: &[u8]) -> Option<(u32, String)> {
-    use windows_sys::Win32::Globalization::{GetOEMCP, MultiByteToWideChar, MB_ERR_INVALID_CHARS};
-
-    if bytes
-        .iter()
-        .any(|&byte| byte.is_ascii_control() && !matches!(byte, b'\r' | b'\n' | b'\t'))
-    {
-        return None;
-    }
-    let size = i32::try_from(bytes.len()).ok()?;
-    let mut buffer = vec![0u16; bytes.len()];
-    // SAFETY: Both buffers remain valid for the call and size bounds each buffer in its own units.
-    let (code_page, used) = unsafe {
-        let code_page = GetOEMCP();
-        let used = MultiByteToWideChar(
-            code_page,
-            MB_ERR_INVALID_CHARS,
-            bytes.as_ptr(),
-            size,
-            buffer.as_mut_ptr(),
-            size,
-        );
-        (code_page, used)
-    };
-    if used == 0 {
-        return None;
-    }
-    let text = String::from_utf16(&buffer[..used as usize]).ok()?;
-    Some((code_page, text))
 }

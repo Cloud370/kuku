@@ -2,7 +2,9 @@
 
 import json
 import os
+import shutil
 import subprocess
+from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
@@ -18,6 +20,9 @@ def rendering_cases(binary, bridge, directory):
         file_change_cards(client)
         if os.name == "nt":
             windows_diagnostic(client)
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell):
+                    windows_command_encoding(client, shell)
     with InstalledClient(binary, bridge, directory / "reasoning") as client:
         config = client.home / "config.toml"
         config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
@@ -137,6 +142,55 @@ def windows_diagnostic(client):
         assert "exit 1" in rows[header + 5], screen
         terminal.click_text(screen, "Check for missing example")
         terminal.expect("Requested arguments", state=diagnostic)
+        terminal.exit_cleanly()
+
+
+def windows_command_encoding(client, shell):
+    workspace = client.workspace(f"work-encoding-{shell[:-4]}")
+    script = workspace / "output.ps1"
+    script.write_text(
+        "[Console]::WriteLine('stdout 正常输出')\n"
+        "[Console]::Error.WriteLine(([char]27).ToString() + '[31;1mstderr 中文错误' + [char]27 + '[0m')\n"
+        "$bytes = [Text.Encoding]::UTF8.GetBytes('utf8 中文' + [Environment]::NewLine)\n"
+        "[Console]::OpenStandardError().Write($bytes, 0, $bytes.Length)\n",
+        encoding="utf-8-sig",
+    )
+    command = f"{shell} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File output.ps1"
+    reference = subprocess.run(command, cwd=workspace, capture_output=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+    stdout = reference.stdout.decode("oem").strip()
+    stderr = reference.stderr.splitlines()[0].decode("oem").removeprefix("\x1b[31;1m").removesuffix("\x1b[0m")
+    with client.terminal(workspace) as terminal:
+        terminal.expect("Ready")
+        terminal.submit("Check shell output")
+        client.provider.next().tool("run_command", "encoding", command=command, timeout=15, brief="Check shell output")
+        result = client.provider.next("encoding")
+        content = json.dumps(result.request["messages"], ensure_ascii=False)
+        assert all(line in content for line in (stdout, stderr, "utf8 中文")), content
+        assert "\ufffd" not in content and "[31;1m" not in content
+        result.text("Output checked.")
+        terminal.expect(stdout, also=(stderr, "Output checked."))
+        session = client.session(workspace)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+        output_id = next(entry["output_id"] for entry in entries if entry["type"] == "tool_result")
+        query = urlencode({"workspace": workspace, "offset": 0, "max_bytes": 4096})
+        page = client.request("GET", f"/sessions/{session}/outputs/{output_id}?{query}").as_json()["output"]
+        assert page["complete"] and not page["lossy_utf8"]
+        display = "".join(segment["text"] for segment in page["segments"])
+        assert all(line in display for line in (stdout, stderr, "utf8 中文")) and "[31;1m" not in display
+        for stream in ("stdout", "stderr"):
+            raw = b"".join(bytes(segment["raw_bytes"]) if "raw_bytes" in segment else segment["text"].encode()
+                           for segment in page["segments"] if segment["stream"] == stream)
+            assert raw == getattr(reference, stream)
+        utf8_line = "utf8 中文".encode() + b"\r\n"
+        stderr_segment = next(segment for segment in page["segments"] if "utf8 中文" in segment["text"])
+        raw_stderr = bytes(stderr_segment.get("raw_bytes", stderr_segment["text"].encode()))
+        offset = stderr_segment["offset"] + raw_stderr.index(utf8_line) + len("utf8 ".encode()) + 1
+        query = urlencode({"workspace": workspace, "offset": offset, "max_bytes": 2})
+        split = client.request("GET", f"/sessions/{session}/outputs/{output_id}?{query}").as_json()["output"]
+        assert split["lossy_utf8"] and split["next_offset"] == offset + 2
+        assert bytes(split["segments"][0]["raw_bytes"]) == "中".encode()[1:]
         terminal.exit_cleanly()
 
 

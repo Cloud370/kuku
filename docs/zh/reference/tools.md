@@ -74,7 +74,7 @@
 
 `segments` 保留流标识、捕获顺序、原始偏移和字节数。通过 `next_offset` 和 `has_more` 续读；下一次读取应传入 `next_offset`，不要自行加上 `limit`。字面量搜索的相邻扫描窗口可能保留重叠。匹配页为空但 `has_more: true` 时仍需继续。`filtered` 表示搜索结果，`lossy_utf8` 表示替换了无效或被窗口切开的 UTF-8 字节。
 
-当数据段的 `text` 替换了无效或被切开的 UTF-8 时，`raw_bytes` 保留原始字节。其他情况下，可由 UTF-8 文本直接得到原始字节。SDK 调用方可统一使用 `OutputSegment::as_bytes()`。
+文本视图移除 ANSI 颜色码。Windows 优先按 UTF-8 读取；对于标准输出和标准错误中的完整文本行，也会尝试宿主的 OEM 代码页。二进制数据和不完整字符仍可能显示替换符。显示文本与捕获字节不同时，`raw_bytes` 保留原始字节。其他情况下，可由 UTF-8 文本直接得到原始字节。SDK 调用方可统一使用 `OutputSegment::as_bytes()`。
 
 `complete` 表示写入器已完成收尾。`capture_truncated` 表示捕获配额导致输出丢弃；`cleanup_incomplete` 表示管道清理达到截止时间。即使返回的 JSON 页满足大小上限，这些标记也会明确保留。`summary` 包含读取器选出的构建或测试结果行。捕获数据的生命周期和清理语义见 [输出与清理](../how-it-works/sessions.md#输出与清理)。
 
@@ -105,7 +105,7 @@
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
 - `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
 - `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
-- `run_command` 要求 `timeout` 以秒为单位。Windows 通过 `cmd.exe /S /C` 执行，Unix 使用 `sh -c`。Windows 后台执行时不弹出控制台窗口。对于完整且只有 stderr 的 Windows 诊断，若无法按 UTF-8 读取，命令预览会尝试宿主的 OEM 代码页。保存的输出保留原始字节。
+- `run_command` 要求 `timeout` 以秒为单位。Windows 通过 `cmd.exe /S /C` 执行，Unix 使用 `sh -c`。Windows 后台执行时不弹出控制台窗口。命令预览与保存输出共用文本视图。使用 PowerShell 语法时，显式调用 `pwsh` 或 `powershell.exe`。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 
 ## Memory Tool Enums

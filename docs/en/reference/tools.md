@@ -74,7 +74,7 @@ The result is complete JSON in `model_content`, at most 16,384 UTF-8 bytes; `str
 
 `segments` preserve stream identity, capture order, raw offsets and byte lengths. `next_offset` and `has_more` control continuation; always pass `next_offset` to the next read instead of adding `limit`. Literal search can retain overlap between scan windows. An empty matching page with `has_more: true` still requires continuation. `filtered` identifies search results and `lossy_utf8` reports replacement of invalid or split UTF-8 bytes.
 
-When a segment's `text` replaces invalid or split UTF-8, `raw_bytes` carries its original bytes. Otherwise its UTF-8 text represents those bytes directly. SDK callers can use `OutputSegment::as_bytes()` for either case.
+The text view removes ANSI color codes. On Windows, it reads UTF-8 first and tries the host OEM code page for intact text lines on either pipe. Binary data and partial characters can still require replacement. Whenever the display text differs from the captured bytes, `raw_bytes` carries the original bytes. Otherwise its UTF-8 text represents those bytes directly. SDK callers can use `OutputSegment::as_bytes()` for either case.
 
 `complete` reports writer finalization. `capture_truncated` reports discarded output at the capture quota; `cleanup_incomplete` reports a pipe cleanup deadline. These flags remain explicit even when the returned JSON page fits its limit. `summary` contains the reader's selected build/test lines. See [Output and cleanup](../how-it-works/sessions.md#output-and-cleanup) for capture lifetime and cleanup semantics.
 
@@ -105,7 +105,7 @@ Within one advancing Agent, Kuku serializes `read_file`, `edit_file`, `write_fil
 - `query_session` filters the session ledger, defaults to excluding rolled-back events, and truncates individual event content.
 - `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
 - `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.
-- `run_command` requires `timeout` in seconds. It executes through `cmd.exe /S /C` on Windows and `sh -c` on Unix. Windows commands run without opening a console window. For a complete, stderr-only Windows diagnostic that cannot be read as UTF-8, the command preview tries the host OEM code page. Saved output retains the original bytes.
+- `run_command` requires `timeout` in seconds. It executes through `cmd.exe /S /C` on Windows and `sh -c` on Unix. Windows commands run without opening a console window. Command previews use the same text view as retained output. To run PowerShell syntax, invoke `pwsh` or `powershell.exe` explicitly.
 - `remember_memory` and `forget_memory` write memory files through dedicated APIs.
 
 ## Memory Tool Enums

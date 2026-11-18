@@ -17,6 +17,7 @@ use output::{read_output, OutputLimits, OutputRead, OutputStream, OutputWriter};
 use process::ProcessTree;
 use render::render_command_result;
 
+mod encoding;
 pub(crate) mod output;
 mod process;
 mod render;

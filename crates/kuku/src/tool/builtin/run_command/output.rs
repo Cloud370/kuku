@@ -1,9 +1,13 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+use super::encoding::display_text;
 
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
@@ -90,9 +94,9 @@ pub struct OutputSegment {
     pub offset: u64,
     /// The number of retained raw bytes represented by this segment.
     pub bytes: usize,
-    /// The segment decoded as UTF-8 with replacement for invalid bytes.
+    /// The readable command output with terminal color codes removed.
     pub text: String,
-    /// Original bytes when a segment could not be decoded as intact UTF-8.
+    /// Original bytes when the display text differs from the captured bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_bytes: Option<Vec<u8>>,
 }
@@ -261,7 +265,7 @@ impl StreamSummary {
     }
 
     fn finish(&mut self, summary: &mut Vec<String>) {
-        let text = String::from_utf8_lossy(&self.pending);
+        let (text, _) = display_text(&self.pending, true, !self.long_line);
         let text = text.trim();
         if !self.long_line && is_summary_line(text) {
             let mut line = text
@@ -300,13 +304,21 @@ pub(crate) fn read_output(
         let Some((stream, frame_bytes)) = read_frame_header(&mut file, &metadata)? else {
             break;
         };
-        if file.stream_position()? + frame_bytes as u64 > file_bytes {
+        let payload = file.stream_position()?;
+        if payload + frame_bytes as u64 > file_bytes {
             if metadata.complete {
                 return Err(invalid_output("output frame exceeds file length"));
             }
             break;
         }
-        window.read_frame(&mut file, stream, logical_offset, frame_bytes, &request)?;
+        window.read_frame(
+            &mut file,
+            stream,
+            logical_offset,
+            frame_bytes,
+            payload,
+            &request,
+        )?;
         logical_offset += frame_bytes as u64;
     }
     if metadata.complete && logical_offset != metadata.stored_bytes {
@@ -314,13 +326,44 @@ pub(crate) fn read_output(
             "output length disagrees with committed metadata",
         ));
     }
-    render_chunk(output_id, request, metadata, window, logical_offset)
+    render_chunk(
+        output_id,
+        request,
+        metadata,
+        window,
+        logical_offset,
+        &mut file,
+    )
 }
 
 #[derive(Default)]
 struct OutputWindow {
     bytes: Vec<u8>,
-    spans: Vec<(OutputStream, u64, usize, usize)>,
+    spans: Vec<OutputSpan>,
+    last_file_byte: [Option<u64>; 2],
+    stream_ends: [u64; 2],
+}
+
+struct OutputSpan {
+    stream: OutputStream,
+    offset: u64,
+    range: Range<usize>,
+    preceding_file_byte: Option<u64>,
+}
+
+impl OutputSpan {
+    fn starts_line(&self, file: &mut fs::File, bytes: &[u8]) -> io::Result<bool> {
+        let Some(position) = self.preceding_file_byte else {
+            return Ok(true);
+        };
+        if !cfg!(windows) || std::str::from_utf8(bytes).is_ok() {
+            return Ok(false);
+        }
+        let mut previous = [0];
+        file.seek(SeekFrom::Start(position))?;
+        file.read_exact(&mut previous)?;
+        Ok(previous[0] == b'\n')
+    }
 }
 
 impl OutputWindow {
@@ -330,6 +373,7 @@ impl OutputWindow {
         stream: OutputStream,
         frame_offset: u64,
         frame_bytes: usize,
+        payload: u64,
         request: &OutputRead,
     ) -> io::Result<()> {
         let skip = request
@@ -342,26 +386,28 @@ impl OutputWindow {
         } else {
             0
         };
+        let slot = stream as usize;
+        let preceding = self.last_file_byte[slot];
+        self.last_file_byte[slot] = Some(payload + frame_bytes as u64 - 1);
+        self.stream_ends[slot] = frame_offset + frame_bytes as u64;
         file.seek(SeekFrom::Current(skip as i64))?;
         if keep > 0 {
             let start = self.bytes.len();
             self.bytes.resize(start + keep, 0);
             file.read_exact(&mut self.bytes[start..])?;
-            if let Some((previous_stream, previous_offset, previous_start, previous_end)) =
-                self.spans.last_mut()
-            {
-                if *previous_stream == stream
-                    && *previous_offset + (*previous_end - *previous_start) as u64
-                        == frame_offset + skip as u64
-                {
-                    *previous_end = start + keep;
-                } else {
-                    self.spans
-                        .push((stream, frame_offset + skip as u64, start, start + keep));
-                }
+            if let Some(previous) = self.spans.last_mut().filter(|span| span.stream == stream) {
+                previous.range.end = start + keep;
             } else {
-                self.spans
-                    .push((stream, frame_offset + skip as u64, start, start + keep));
+                self.spans.push(OutputSpan {
+                    stream,
+                    offset: frame_offset + skip as u64,
+                    range: start..start + keep,
+                    preceding_file_byte: if skip == 0 {
+                        preceding
+                    } else {
+                        Some(payload + skip as u64 - 1)
+                    },
+                });
             }
         }
         file.seek(SeekFrom::Current((frame_bytes - skip - keep) as i64))?;
@@ -450,6 +496,7 @@ fn render_chunk(
     metadata: CaptureMetadata,
     window: OutputWindow,
     total_bytes: u64,
+    file: &mut fs::File,
 ) -> io::Result<OutputChunk> {
     let mut next_offset = request.offset.saturating_add(window.bytes.len() as u64);
     let ranges = match &request.search {
@@ -469,18 +516,27 @@ fn render_chunk(
     let mut ranges = ranges.into_iter().peekable();
     let mut segments = Vec::new();
     let mut lossy_utf8 = false;
-    for (stream, offset, start, end) in window.spans {
-        while ranges.peek().is_some_and(|range| range.end <= start) {
+    let complete = metadata.complete && !metadata.quota_truncated && !metadata.cleanup_incomplete;
+    for span in window.spans {
+        while ranges
+            .peek()
+            .is_some_and(|range| range.end <= span.range.start)
+        {
             ranges.next();
         }
-        if ranges.peek().is_some_and(|range| range.start < end) {
-            let bytes = &window.bytes[start..end];
-            let text = String::from_utf8_lossy(bytes);
-            let raw_bytes = matches!(&text, std::borrow::Cow::Owned(_)).then(|| bytes.to_vec());
-            lossy_utf8 |= raw_bytes.is_some();
+        if ranges
+            .peek()
+            .is_some_and(|range| range.start < span.range.end)
+        {
+            let bytes = &window.bytes[span.range.clone()];
+            let ends_stream = complete
+                && span.offset + bytes.len() as u64 == window.stream_ends[span.stream as usize];
+            let (text, lossy) = display_text(bytes, span.starts_line(file, bytes)?, ends_stream);
+            let raw_bytes = matches!(text, Cow::Owned(_)).then(|| bytes.to_vec());
+            lossy_utf8 |= lossy;
             segments.push(OutputSegment {
-                stream,
-                offset,
+                stream: span.stream,
+                offset: span.offset,
                 bytes: bytes.len(),
                 text: text.into_owned(),
                 raw_bytes,
