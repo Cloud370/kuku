@@ -28,7 +28,7 @@ class Fixture:
         self.admit(0, {"role": "User", "blocks": [{"Text": "private workload must stay in original facts"}]})
         first = self.step("request-1", 1)
         self.model("request-1", "tool_use", "")
-        self.args = {"command": "printf done", "timeout": 3}
+        self.args = {"program": "printf", "args": ["done"], "cwd": ".", "timeout": 3}
         self.add("tool.call", conversation="main", turn=self.turn, request_id="request-1",
                  tool_call_id="call-1", tool="run_command", args=self.args, index=0)
         self.add("runtime.tool_prepared", agent="main", turn=self.turn, tool_call_id="call-1", args=self.args,

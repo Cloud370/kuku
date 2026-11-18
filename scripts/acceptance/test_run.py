@@ -75,6 +75,54 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ACCEPTANCE.money(value)
 
+    def test_live_boundary_binds_route_effort_price_and_existing_reservation(self):
+        from interactive_fixture import local_request, serve
+        from paid_model import RequestBoundary, RunLimits, route_for
+
+        endpoint = {"endpoints": [{
+            "tag": "example/standard", "provider_name": "Example", "name": "Example | sample/model-v2",
+            "context_length": 10_000, "max_completion_tokens": 1000,
+            "supported_parameters": ["tools", "reasoning_effort"],
+            "pricing": {"prompt": "0.000001", "completion": "0.000002",
+                        "overrides": [{"prompt": "0.000003", "input_cache_write": "0.000004"}]},
+        }]}
+        with mock.patch("paid_model.upstream_json", return_value=(200, endpoint)):
+            route = route_for("openrouter", model="sample/model", effort="high", upstream="example/standard")
+        limits = RunLimits(requests=2, request_bytes=2048, output_tokens=1000)
+        self.assertEqual(str(route.reserve(limits)), "0.084000")
+        payload = {"model": "sample/model", "stream": True, "store": False, "max_output_tokens": 1000,
+                   "reasoning": {"effort": "high"}, "provider": {
+                       "order": ["example/standard"], "only": ["example/standard"],
+                       "allow_fallbacks": False, "require_parameters": True,
+                       "max_price": {"prompt": 3, "completion": 2},
+                   }}
+        boundary = RequestBoundary(route, limits, "unused-key", "loopback-token")
+        self.assertEqual(boundary.checked_output(payload), (1000, []))
+        self.assertIsNone(boundary.checked_output({**payload, "reasoning": {"effort": "low"}}))
+        self.assertIsNone(boundary.checked_output({**payload, "max_output_tokens": 1001}))
+        self.assertIsNone(boundary.checked_output({**payload, "models": ["sample/other"]}))
+        headers = {"Authorization": "Bearer loopback-token", "Content-Type": "application/json"}
+        body = json.dumps(payload).encode()
+        with mock.patch.object(boundary, "forward") as forward, serve(boundary.handler()) as address:
+            self.assertEqual(local_request(address, "POST", route.path, body=body, headers=headers).status, 429)
+            forward.assert_not_called()
+        budget = self.budget()
+        boundary.reserve(budget, "bounded", "unit fixture")
+        self.assertTrue(boundary.armed)
+        self.assertEqual(budget.committed(json.loads(budget.path.read_text())), 0.084)
+
+    def test_paid_workspace_validates_selected_service_ledger(self):
+        from paid_model import paid_budget
+
+        ledger = self.budget().path
+        tracker = self.directory / "benchmarks" / "rewrite-state.json"
+        ACCEPTANCE.write_json(tracker, {"paid_acceptance_ledgers": {"deepseek": str(ledger),
+                                                                     "openrouter": str(ledger.with_name("router.json"))}})
+        with mock.patch("paid_model.ROOT", self.directory):
+            self.assertEqual(paid_budget(ledger, "deepseek").path, ledger.resolve())
+            with self.assertRaises(ValueError):
+                paid_budget(ledger, "openrouter")
+
     def test_credentials_are_loaded_without_shell_evaluation(self):
         path = self.directory / "credentials.env"
         path.write_text("KUKU_TEST_KEY='$(do-not-run)'\n")

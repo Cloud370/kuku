@@ -16,7 +16,8 @@ from interactive_browser import open_session
 from interactive_fixture import InstalledClient, eventually, install, serve
 from playwright.sync_api import sync_playwright
 
-from run import Budget, ROOT, load_secrets, write_json
+from paid_model import paid_budget
+from run import ROOT, load_secrets, write_json
 
 MODEL = "deepseek-flash"
 MAX_REQUESTS = 12
@@ -156,7 +157,7 @@ def handoff(client, workspace, browser, args, result):
         terminal.expect("New session", state="Ready")
         tiers = client.request("GET", "/models").as_json()["tiers"]
         assert all("error" not in tier for tier in tiers), "Server cannot resolve its model configuration"
-        Budget(args.ledger).reserve(
+        paid_budget(args.ledger, "deepseek").reserve(
             args.run_id, RESERVATION_USD,
             "One installed-client development task. At most 12 upstream requests, 48000 serialized bytes "
             "and 2048 output tokens per request, including retries. DeepSeek Flash peak pricing.",

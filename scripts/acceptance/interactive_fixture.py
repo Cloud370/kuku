@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import queue
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -179,8 +178,8 @@ class ProviderCall:
     def text(self, text, *, usage=None):
         self.reply([{"type": "text", "text": text}], usage)
 
-    def tool(self, name, call_id, **inputs):
-        self.reply([{"type": "tool_use", "id": call_id, "name": name, "input": inputs}])
+    def tool(self, tool_name, call_id, **inputs):
+        self.reply([{"type": "tool_use", "id": call_id, "name": tool_name, "input": inputs}])
 
     def fail(self):
         self.response.put_nowait(json_response({
@@ -696,12 +695,11 @@ class InstalledClient:
         if executable is None:
             fixture = workspace / f"fixture-command{EXE}"
             shutil.copy2(self.bridge, fixture)
-            command = fixture.name if os.name == "nt" else f"./{fixture.name}"
+            program = f"./{fixture.name}"
         else:
-            assert os.name != "nt", "Use the workspace-local fixture executable on Windows"
-            command = shlex.quote(str(executable))
+            program = str(executable)
         self.tool_workspaces.append(workspace)
-        call.tool("run_command", call_id, command=f"{command} --gated-tool", timeout=95, brief=TOOL_BRIEF)
+        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".", timeout=95, brief=TOOL_BRIEF)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     @staticmethod

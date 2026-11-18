@@ -2,11 +2,7 @@
 """Verify intended reply and workspace actions in native TUI sessions with a budgeted provider."""
 
 import argparse
-from dataclasses import dataclass
-from decimal import Decimal
 import hashlib
-import http.client
-from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
@@ -15,283 +11,17 @@ import secrets
 import shutil
 import sys
 import tempfile
-import threading
-import time
 from urllib.parse import urlencode
 
 from interactive_fixture import EXE, InstalledClient, eventually, install, serve
-from run import Budget, ROOT, config_record, load_secrets, now, redact, write_json
+from paid_model import RequestBoundary, RunLimits, paid_budget, route_for
+from run import ROOT, config_record, load_secrets, now, redact, write_json
 
 
-MAX_REQUESTS = 36
-MAX_BYTES = 64_000
-MAX_OUTPUT = 2048
+INTENT_REQUEST_BYTES = 64000
 TURN_TIMEOUT = 125
-RATE_UNIT = Decimal(1_000_000)
 ARTIFACT_LIMIT = 64 * 1024
 ROUTING_FIELDS = ("connection", "tier", "model", "reasoning_effort", "service_tier", "preset")
-
-
-def upstream_json(host, path, key=None):
-    connection = http.client.HTTPSConnection(host, timeout=12)
-    try:
-        headers = {"Accept": "application/json", "Cache-Control": "no-cache"}
-        if key:
-            headers["Authorization"] = "Bearer " + key
-        connection.request("GET", path, headers=headers)
-        response = connection.getresponse()
-        if response.status != 200:
-            return response.status, None
-        return response.status, json.loads(response.read(262_144))["data"]
-    finally:
-        connection.close()
-
-
-@dataclass(frozen=True)
-class Route:
-    connection: str
-    host: str
-    wire: str
-    model: str
-    upstream_model: str
-    credential: str
-    context: int
-    input_rate: Decimal
-    output_rate: Decimal
-    price_source: str
-
-    @property
-    def router(self):
-        return self.wire == "openai-responses"
-
-    @property
-    def path(self):
-        return "/responses" if self.router else "/chat/completions"
-
-    @property
-    def reserve(self):
-        return MAX_REQUESTS * (self.context * self.input_rate + MAX_OUTPUT * self.output_rate)
-
-    def config(self, endpoint):
-        prefix = 'default_model = "balanced"\n'
-        for tier in ("balanced", "strong", "light"):
-            prefix += f'''
-[model.{tier}]
-provider = "{self.connection}"
-model = "{self.model}"
-think = "low"
-reasoning_effort = "low"
-context_window = 32768
-max_output_tokens = {MAX_OUTPUT}
-'''
-        template = f'''
-[provider.{self.connection}]
-format = "{self.wire}"
-profile = "{'openrouter' if self.router else 'deepseek'}"
-base_url = "{endpoint}"
-api_key = "$KUKU_INTENT_FIXTURE_TOKEN"
-'''
-        if self.router:
-            template += f'''
-reasoning_efforts = ["low"]
-[provider.{self.connection}.routing]
-order = ["openai"]
-only = ["openai"]
-allow_fallbacks = false
-require_parameters = true
-[provider.{self.connection}.routing.max_price]
-prompt = 0.20
-completion = 0.75
-'''
-        return prefix + template
-
-
-def route_for(name):
-    if name == "deepseek":
-        return Route("deepseek-chat", "api.deepseek.com", "openai-chat", "deepseek-flash", "DeepSeek-V4.1-Flash-1017",
-                     "KUKU_TEST_DEEPSEEK_API_KEY", 1_000_000, Decimal("0.30") / RATE_UNIT, Decimal("1.20") / RATE_UNIT,
-                     "https://api-docs.deepseek.com/quick_start/pricing/")
-    model = "openai/gpt-6-luna"
-    path = f"/api/v1/models/{model}/endpoints"
-    status, data = upstream_json("openrouter.ai", path)
-    if status != 200:
-        raise RuntimeError(f"OpenRouter endpoint metadata returned HTTP {status}")
-    standard, = [endpoint for endpoint in data["endpoints"] if endpoint["tag"] == "openai"]
-    assert standard["provider_name"] == "OpenAI" and "reasoning_effort" in standard["supported_parameters"]
-    pricing = standard["pricing"]
-    tiers = [pricing, *pricing.get("overrides", [])]
-    input_rate = max(Decimal(tier.get(field, "0")) for tier in tiers
-                     for field in ("prompt", "input_cache_read", "input_cache_write"))
-    output_rate = max(Decimal(tier["completion"]) for tier in tiers)
-    return Route("openrouter-openai", "openrouter.ai", "openai-responses", model, standard["name"].split(" | ")[-1],
-                 "KUKU_TEST_OPENROUTER_API_KEY", standard["context_length"], input_rate, output_rate,
-                 "https://openrouter.ai" + path)
-
-
-class RequestBoundary:
-    def __init__(self, route, upstream_key, loopback_key):
-        self.route = route
-        self.key = upstream_key
-        self.loopback_key = loopback_key
-        self.lock = threading.Lock()
-        self.phase = "preflight"
-        self.attempts = []
-
-    def checked_output(self, payload):
-        route = self.route
-        output = payload.get("max_output_tokens") if route.router else payload.get("max_tokens", payload.get("max_completion_tokens"))
-        if (payload.get("model") != route.model or payload.get("stream") is not True
-                or type(output) is not int or not 0 < output <= MAX_OUTPUT):
-            return None
-        if not all(tool.get("type") == "function" for tool in payload.get("tools", [])):
-            return None
-        if route.router:
-            pin = payload.get("provider", {})
-            ceiling = pin.get("max_price", {})
-            if (pin.get("order") != ["openai"] or pin.get("only") != ["openai"]
-                    or pin.get("allow_fallbacks") is not False or pin.get("require_parameters") is not True
-                    or not 0 < ceiling.get("prompt", 0) <= 0.20 or not 0 < ceiling.get("completion", 0) <= 0.75
-                    or payload.get("store") is not False or (payload.get("reasoning") or {}).get("effort") != "low"):
-                return None
-        elif payload.get("thinking") != {"type": "enabled"} or payload.get("reasoning_effort") != "low":
-            return None
-        return output
-
-    def observe(self, attempt, line):
-        if not line.startswith(b"data:") or not any(marker in line for marker in (b'"usage"', b'"tool_calls"', b'"response.output_item.done"')):
-            return
-        try:
-            event = json.loads(line[5:])
-            if self.route.router:
-                if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call":
-                    attempt.setdefault("streamed_tool_names", []).append(event["item"]["name"])
-                if event.get("type") != "response.completed":
-                    return
-                event = event["response"]
-            else:
-                for choice in event.get("choices", []):
-                    for call in choice.get("delta", {}).get("tool_calls", []):
-                        if name := call.get("function", {}).get("name"):
-                            attempt.setdefault("streamed_tool_names", []).append(name)
-            usage = event.get("usage")
-            if not isinstance(usage, dict):
-                return
-            attempt["model_received"] = event.get("model")
-            fields = (("input_tokens", "output_tokens", "cost") if self.route.router
-                      else ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"))
-            attempt["usage"] = {name: usage[name] for name in fields if type(usage.get(name)) in (int, float)}
-            if self.route.router:
-                attempt["usage"]["cache_read_input_tokens"] = (usage.get("input_tokens_details") or {}).get("cached_tokens")
-        except (KeyError, TypeError, ValueError):
-            return
-
-    def handler(self):
-        boundary = self
-        route = self.route
-
-        class Forward(BaseHTTPRequestHandler):
-            def log_message(self, *_):
-                pass
-
-            def do_POST(self):
-                try:
-                    length = int(self.headers.get("Content-Length", 0))
-                    authorized = self.headers.get("Authorization") == "Bearer " + boundary.loopback_key
-                    if self.path != route.path or not 0 < length <= MAX_BYTES or not authorized:
-                        return self.send_error(400, "outside the acceptance transport boundary")
-                    body = self.rfile.read(length)
-                    payload = json.loads(body)
-                    output = boundary.checked_output(payload)
-                except (AttributeError, TypeError, ValueError):
-                    return self.send_error(400, "invalid request for the acceptance transport")
-                if output is None:
-                    return self.send_error(400, "outside the selected model, route, or output limit")
-                with boundary.lock:
-                    if len(boundary.attempts) >= MAX_REQUESTS:
-                        return self.send_error(429, "acceptance request limit reached")
-                    attempt = {"case": boundary.phase, "request_bytes": length, "max_output_tokens": output}
-                    if route.router:
-                        create = next((tool for tool in payload.get("tools", []) if tool.get("name") == "create_agent"), None)
-                        if create is not None:
-                            attempt["create_agent_strict_disabled"] = create.get("strict") is False
-                            attempt["create_agent_required_fields"] = create.get("parameters", {}).get("required", [])
-                    boundary.attempts.append(attempt)
-                connection = http.client.HTTPSConnection(route.host, timeout=75)
-                started = time.monotonic()
-                try:
-                    path = ("/api/v1" if route.router else "") + route.path
-                    connection.request("POST", path, body, headers={"Authorization": "Bearer " + boundary.key,
-                                       "Content-Type": "application/json", "Accept": "text/event-stream"})
-                    reply = connection.getresponse()
-                    attempt["http_status"] = reply.status
-                    if route.router:
-                        attempt["generation_id"] = reply.getheader("X-Generation-Id")
-                    self.send_response(reply.status)
-                    self.send_header("Content-Type", reply.getheader("Content-Type", "application/json"))
-                    self.end_headers()
-                    while line := reply.readline(1_048_576):
-                        boundary.observe(attempt, line)
-                        try:
-                            self.wfile.write(line)
-                            self.wfile.flush()
-                        except ConnectionError:
-                            continue
-                    attempt["response_ended"] = True
-                except (OSError, http.client.HTTPException) as error:
-                    attempt["transport_error"] = type(error).__name__
-                finally:
-                    attempt["seconds"] = round(time.monotonic() - started, 4)
-                    connection.close()
-
-        return Forward
-
-    def accounting(self):
-        attempts = self.attempts
-        if not attempts or any(not row.get("response_ended") or row.get("http_status") != 200 for row in attempts):
-            return {"complete": False}
-        try:
-            if self.route.router:
-                costs = [Decimal(str(row["usage"]["cost"])) for row in attempts]
-                if any(not cost.is_finite() or cost < 0 for cost in costs):
-                    return {"complete": False}
-                return {"complete": True, "basis": "provider_reported", "cost_usd": str(sum(costs))}
-            cost = Decimal(0)
-            for row in attempts:
-                usage = row["usage"]
-                hit = usage["prompt_cache_hit_tokens"]
-                miss = usage["prompt_cache_miss_tokens"]
-                if hit + miss != usage["prompt_tokens"] or not usage["prompt_tokens"]:
-                    return {"complete": False}
-                cost += (hit * Decimal("0.006") + miss * Decimal("0.30") + usage["completion_tokens"] * Decimal("1.20")) / RATE_UNIT
-            return {"complete": True, "basis": "token_estimate", "cost_usd": str(cost), "rates": "DeepSeek peak"}
-        except KeyError:
-            return {"complete": False}
-
-    def confirm_upstream(self):
-        if not self.route.router:
-            return bool(self.attempts) and all(row.get("http_status") == 200 and row.get("model_received") == self.route.model
-                                               for row in self.attempts)
-        for attempt in self.attempts:
-            if not attempt.get("generation_id") or "cost" not in attempt.get("usage", {}):
-                return False
-            query = urlencode({"id": attempt["generation_id"]})
-            data = None
-            for delay in (0, 1, 2, 4, 8, 12, 15):
-                if delay:
-                    time.sleep(delay)
-                status, data = upstream_json(self.route.host, "/api/v1/generation?" + query, self.key)
-                if status == 200:
-                    break
-                if status != 404:
-                    raise RuntimeError(f"Generation receipt returned HTTP {status}")
-            if data is None:
-                return False
-            attempt["receipt"] = {field: data.get(field) for field in ("model", "provider_name", "service_tier", "total_cost")}
-            if (data.get("id") != attempt["generation_id"] or data.get("model") != self.route.upstream_model
-                    or data.get("provider_name") != "OpenAI" or data.get("service_tier") != "default"
-                    or Decimal(str(data["total_cost"])) != Decimal(str(attempt["usage"]["cost"]))):
-                return False
-        return bool(self.attempts)
 
 
 def files_at(workspace):
@@ -336,13 +66,13 @@ def selected_snapshot(client, workspace, session, agent="main"):
     return client.request("GET", f"/sessions/{session}/snapshot?{params}").as_json()
 
 
-def submit(terminal, prompt):
+def submit(terminal, prompt, marker=None):
     terminal.press("\x1b[200~" + prompt + "\x1b[201~")
-    terminal.expect(prompt.splitlines()[0][:26])
+    terminal.expect(marker or prompt.splitlines()[0][:26])
     terminal.press("\r")
 
 
-def wait_for_turn(client, workspace, previous):
+def wait_for_turn(client, workspace, previous, timeout=TURN_TIMEOUT):
     def settled():
         sessions = client.sessions(workspace)
         if not sessions:
@@ -354,7 +84,7 @@ def wait_for_turn(client, workspace, previous):
             return None
         return session, agent
 
-    return eventually("the submitted native TUI turn to settle", settled, timeout=TURN_TIMEOUT)
+    return eventually("the submitted native TUI turn to settle", settled, timeout=timeout)
 
 
 def assistant_lines(screen):
@@ -372,7 +102,14 @@ def assistant_lines(screen):
 def read_only_inspection(tool):
     if tool["name"] != "run_command":
         return False
-    command = tool["args"].get("command", "").strip()
+    args = tool["args"]
+    literals = args.get("args", [])
+    if not isinstance(literals, list) or any(not isinstance(arg, str) for arg in literals):
+        return False
+    if args.get("program"):
+        command = " ".join((Path(args["program"]).stem, *literals))
+    else:
+        command = args.get("command", "").strip()
     return bool(re.fullmatch(r"(?:ls(?: +-[aAlh1]+)*(?: +\.)?|pwd|dir(?: +\.)?|Get-ChildItem(?: +\.)?)", command, re.IGNORECASE))
 
 
@@ -431,7 +168,7 @@ def intent_turn(client, boundary, terminal, workspace, folder, secrets_to_mask, 
     return {"name": name, "passed": all(checks.values()), "checks": checks, "session_id": session,
             "turn": agent["turn"], "assistant": (agent.get("last_output") or "")[:1200],
             "before": before, "after": after, "tools": tools, "screen": f"{name}.txt",
-            "read_only_shell": [tool["args"]["command"] for tool in tools if read_only_inspection(tool)]}
+            "read_only_commands": [tool["args"] for tool in tools if read_only_inspection(tool)]}
 
 
 def delivery_and_revision(client, boundary, folder, secret_values, cases):
@@ -534,7 +271,7 @@ def delegation(client, boundary, folder, secret_values, route):
                 and used_default_route(created[0]["args"]),
             "child_model_request_and_route": reviewer.get("agent", {}).get("usage", {}).get("model_requests", 0) > 0
                 and selection.get("model") == route.model and selection.get("connection") == route.connection
-                and (selection.get("settings") or {}).get("reasoning_effort") == "low",
+                and (selection.get("settings") or {}).get("reasoning_effort") == route.effort,
             "task_sent_to_child": any(tool["name"] == "send_message" and tool["status"] == "ok"
                                       and tool["args"].get("to") == "reviewer" for tool in main_tools),
             "child_read_owned_task_file": any(tool["name"] == "read_file" and tool["status"] == "ok"
@@ -561,6 +298,11 @@ def run_selected_live(args, directory, record, scratch, bridge, checked):
         script, label, evidence, key = "interactive_intent.py", "installed-intent", directory / "intent", "intent_result"
         product = ["--archive" if args.archive else "--binary", str(artifact.resolve())]
         options = ["--scratch-base", str(scratch), "--provider", args.intent, "--case", args.intent_case, "--revision", args.revision]
+        for flag, value in (("model", args.intent_model), ("effort", args.intent_effort), ("upstream", args.intent_upstream)):
+            if value is not None:
+                options.extend(["--" + flag, value])
+        options.extend(["--max-requests", str(args.intent_max_requests),
+                        "--max-output-tokens", str(args.intent_max_output_tokens)])
         result = evidence / "result.json"
     else:
         script, label, evidence, key = "interactive_live.py", "installed-live", directory, "live_result"
@@ -593,19 +335,27 @@ def main():
         parser.add_argument("--" + arg, type=Path, required=True)
     parser.add_argument("--scratch-base", type=Path)
     parser.add_argument("--provider", required=True, choices=("deepseek", "openrouter"))
+    parser.add_argument("--model")
+    parser.add_argument("--effort", default="low")
+    parser.add_argument("--upstream")
+    parser.add_argument("--max-requests", type=int, default=36)
+    parser.add_argument("--max-output-tokens", type=int, default=2048)
     parser.add_argument("--case", default="all", choices=("all", "delivery", "delegation"))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--revision", required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{7,40}", args.revision):
         parser.error("--revision must be a Git commit ID of at least seven hexadecimal characters")
-    route = route_for(args.provider)
     credentials = load_secrets(args.secrets)
-    upstream_key = credentials[route.credential]
+    upstream_key = credentials.get(f"KUKU_TEST_{args.provider.upper()}_API_KEY")
+    if not upstream_key:
+        raise ValueError("The selected provider needs its acceptance credential")
+    route = route_for(args.provider, model=args.model, effort=args.effort, upstream=args.upstream, key=upstream_key)
+    limits = RunLimits(args.max_requests, INTENT_REQUEST_BYTES, args.max_output_tokens)
     loopback_key = secrets.token_hex(32)
     masked = [loopback_key, *(value for name, value in credentials.items() if name.endswith(("_KEY", "_TOKEN", "_SECRET")))]
-    boundary = RequestBoundary(route, upstream_key, loopback_key)
-    budget = Budget(args.ledger.resolve())
+    boundary = RequestBoundary(route, limits, upstream_key, loopback_key)
+    budget = paid_budget(args.ledger, args.provider)
     artifact = (args.archive or args.binary).resolve()
     evidence = args.evidence.resolve()
     if args.scratch_base and args.scratch_base.resolve().is_relative_to(ROOT):
@@ -614,10 +364,8 @@ def main():
     evidence.mkdir(parents=True)
     report = {"passed": False, "run_id": args.run_id, "started_at": now(), "revision": args.revision,
               "selected_case": args.case, "artifact": config_record(artifact), "bridge": config_record(args.bridge),
-              "provider": route.host, "wire": route.wire, "model": route.model, "reasoning_effort": "low",
-              "max_requests_including_retries": MAX_REQUESTS, "max_bytes": MAX_BYTES, "max_output_tokens": MAX_OUTPUT,
-              "price_source": route.price_source, "reservation_usd": str(route.reserve), "requests": boundary.attempts,
-              "cases": []}
+              **route.evidence(limits), "ledger": str(budget.path), "requests": boundary.attempts,
+              "transport_rejections": boundary.rejections, "cases": []}
     try:
         with tempfile.TemporaryDirectory(prefix="kuku-live-intent-", dir=args.scratch_base) as directory, serve(boundary.handler()) as endpoint:
             scratch = Path(directory)
@@ -630,7 +378,7 @@ def main():
             else:
                 executable.parent.mkdir()
                 shutil.copy2(artifact, executable)
-            (client.home / "config.toml").write_text(route.config(endpoint), encoding="utf-8")
+            (client.home / "config.toml").write_text(route.config(endpoint, limits), encoding="utf-8")
             version, _ = client.cli(scratch, "--version")
             report.update(version=version.strip(), binary=config_record(executable))
             installed_revision = re.search(r"\(([0-9a-f]{7,40})\)$", version.strip())
@@ -642,10 +390,9 @@ def main():
                     terminal.expect("New session", state="Ready")
                     selected = client.request("GET", "/models/resolve").as_json()["selection"]
                     assert selected["model"] == route.model and selected["connection"] == route.connection
-                    assert selected["settings"]["reasoning_effort"] == "low" and not boundary.attempts
+                    assert selected["settings"]["reasoning_effort"] == route.effort and not boundary.attempts
                     terminal.exit_cleanly()
-                budget.reserve(args.run_id, float(route.reserve), f"Native intent and first delegation on {route.model}: "
-                               f"up to {MAX_REQUESTS} requests at full provider context and {MAX_OUTPUT} output tokens each, including retries.")
+                boundary.reserve(budget, args.run_id, "Native intent and first delegation")
                 if args.case in {"all", "delivery"}:
                     delivery_and_revision(client, boundary, evidence, masked, report["cases"])
                 if args.case in {"all", "delegation"}:
@@ -653,11 +400,12 @@ def main():
             finally:
                 client.stop()
         report["upstream_confirmed"] = boundary.confirm_upstream()
-        report["passed"] = report["upstream_confirmed"] and all(result["passed"] for result in report["cases"])
+        report["passed"] = report["upstream_confirmed"] is True and bool(report["cases"]) and not boundary.rejections \
+            and all(result["passed"] for result in report["cases"])
     except Exception as error:
         report["error"] = type(error).__name__ + ": " + redact(str(error), masked)[:2400]
     finally:
-        report.update(finished_at=now(), accounting=boundary.accounting())
+        report.update(finished_at=now(), accounting=boundary.accounting(), reservation_applied=boundary.armed)
         write_json(evidence / "result.json", sanitize_report(report, masked))
         print(evidence / "result.json")
     return 0 if report["passed"] else 1

@@ -116,7 +116,7 @@ def windows_diagnostic(client):
 
     workspace = client.workspace("work-command-diagnostic")
     command = "dir /b kuku-absent-38c207b6.txt"
-    reference = subprocess.run(["cmd.exe", "/d", "/c", command], cwd=workspace, capture_output=True)
+    reference = subprocess.run(["cmd.exe", "/d", "/s", "/c", command], cwd=workspace, capture_output=True)
     assert reference.returncode == 1 and reference.stderr and not reference.stdout
     try:
         diagnostic = reference.stderr.decode("utf-8").strip()
@@ -127,8 +127,10 @@ def windows_diagnostic(client):
         prompt = "Check for a missing example."
         terminal.submit(prompt)
         request = client.provider.next(prompt)
-        assert "Windows cmd.exe /S /C" in json.dumps(request.request)
-        request.tool("run_command", "missing-example", command=command, timeout=5, brief="Check for missing example")
+        schema = next(tool["input_schema"] for tool in request.request["tools"] if tool["name"] == "run_command")
+        assert "cmd" in schema["properties"]["shell"]["enum"], schema
+        request.tool("run_command", "missing-example", shell="cmd", command=command, cwd=".",
+                     timeout=5, brief="Check for missing example")
         result = client.provider.next("missing-example")
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
@@ -155,15 +157,16 @@ def windows_command_encoding(client, shell):
         "[Console]::OpenStandardError().Write($bytes, 0, $bytes.Length)\n",
         encoding="utf-8-sig",
     )
-    command = f"{shell} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File output.ps1"
-    reference = subprocess.run(command, cwd=workspace, capture_output=True,
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "output.ps1"]
+    reference = subprocess.run([shell, *args], cwd=workspace, capture_output=True,
                                creationflags=subprocess.CREATE_NO_WINDOW, check=True)
     stdout = reference.stdout.decode("oem").strip()
     stderr = reference.stderr.splitlines()[0].decode("oem").removeprefix("\x1b[31;1m").removesuffix("\x1b[0m")
     with client.terminal(workspace) as terminal:
         terminal.expect("Ready")
         terminal.submit("Check shell output")
-        client.provider.next().tool("run_command", "encoding", command=command, timeout=15, brief="Check shell output")
+        client.provider.next().tool("run_command", "encoding", program=shell, args=args, cwd=".",
+                                    timeout=15, brief="Check shell output")
         result = client.provider.next("encoding")
         content = json.dumps(result.request["messages"], ensure_ascii=False)
         assert all(line in content for line in (stdout, stderr, "utf8 中文")), content

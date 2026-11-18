@@ -3,11 +3,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kuku::event::EventPayload;
+use kuku::execution::CommandExecutionFacts;
 use kuku::query::ModelPhase;
 use kuku::{
-    AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions, ToolEvent, UiEvent,
+    AgentConfig, AgentStatus, Input, Observation, OutputRead, Session, SessionOptions, ToolEvent,
+    UiEvent, WorkspaceScriptFacts,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -100,7 +102,7 @@ async fn main() {
 async fn execute() -> Result<bool, AnyError> {
     let args = arguments()?;
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY --inspect-named-value NAME]");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -130,6 +132,8 @@ async fn execute() -> Result<bool, AnyError> {
     let limits = options.limits.clone();
     let session = Session::open(options).await?;
     let agent = args.get("agent").map(String::as_str).unwrap_or("main");
+    let inspected_name = args.get("inspect-named-value");
+    let named_before = inspected_name.map(|name| inspect_named_value(&session, agent, name));
     let selection = AgentConfig {
         connection: args.get("connection").cloned(),
         tier: args.get("tier").cloned(),
@@ -206,6 +210,7 @@ async fn execute() -> Result<bool, AnyError> {
     while let Some(observation) = observer.try_next()? {
         streaming.observe(observation, agent, started);
     }
+    let named_after = inspected_name.map(|name| inspect_named_value(&session, agent, name));
     let close = session.close().await;
     if let Err(failure) = &close {
         error = Some(failure.to_string());
@@ -214,6 +219,7 @@ async fn execute() -> Result<bool, AnyError> {
     let mut facts = BTreeMap::<&str, u64>::new();
     let mut settings = Vec::new();
     let mut reports = Vec::new();
+    let mut workspace_outcomes = Vec::new();
     loop {
         let events = session.events(after, 128)?;
         if events.is_empty() {
@@ -227,9 +233,19 @@ async fn execute() -> Result<bool, AnyError> {
                 {
                     Some("tool_calls")
                 }
-                EventPayload::ToolResult { conversation, .. }
-                    if conversation.as_deref().unwrap_or("main") == agent =>
-                {
+                EventPayload::ToolResult {
+                    conversation,
+                    structured,
+                    tool_call_id,
+                    turn,
+                    ..
+                } if conversation.as_deref().unwrap_or("main") == agent => {
+                    let selected = structured.as_ref().filter(|_| inspected_name.is_some());
+                    if let Some(outcome) = workspace_outcome(selected)? {
+                        workspace_outcomes.push(json!({
+                            "turn": turn, "tool_call_id": tool_call_id, "facts": outcome
+                        }));
+                    }
                     Some("tool_results")
                 }
                 EventPayload::ModelResponse { conversation, .. }
@@ -263,7 +279,10 @@ async fn execute() -> Result<bool, AnyError> {
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    if inspected_name.is_some() {
+        result["workspace"] = json!({"named_before": named_before, "named_after": named_after, "outcomes": workspace_outcomes});
+    }
     if let Some(parent) = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -273,6 +292,41 @@ async fn execute() -> Result<bool, AnyError> {
     std::fs::write(&output_path, serde_json::to_vec_pretty(&result)?)?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(passed)
+}
+
+fn workspace_outcome(value: Option<&Value>) -> serde_json::Result<Option<Value>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value["kind"].as_str() {
+        Some("command_result") => {
+            serde_json::to_value(CommandExecutionFacts::from_structured(value)?).map(Some)
+        }
+        Some("workspace_script_result") => {
+            serde_json::to_value(WorkspaceScriptFacts::from_structured(value)?).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn inspect_named_value(session: &Session, agent: &str, name: &str) -> Value {
+    let result = (|| {
+        let binding = session.named_value(agent, name)?;
+        let page =
+            session.read_agent_output(agent, &binding.reference.id, &OutputRead::default())?;
+        let bytes: Vec<u8> = page
+            .segments
+            .iter()
+            .flat_map(|segment| segment.as_bytes())
+            .copied()
+            .collect();
+        Ok::<_, kuku::Error>(json!({
+            "binding": binding,
+            "complete": page.complete && !page.has_more && !page.capture_truncated && !page.cleanup_incomplete,
+            "value": serde_json::from_slice::<Value>(&bytes).ok()
+        }))
+    })();
+    result.unwrap_or_else(|error| json!({"error": error.to_string()}))
 }
 
 fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
@@ -308,6 +362,7 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "timeout"
                 | "command-id"
                 | "prompts-dir"
+                | "inspect-named-value"
         ) {
             return Err(format!("unknown option '--{name}'").into());
         }

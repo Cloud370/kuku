@@ -752,10 +752,13 @@ def run_interactive(args, directory, record):
         require_active_desktop()
     elif args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
         raise ValueError("Desktop interactive acceptance requires Linux and Docker")
-    if args.live and (not args.archive or not args.secrets):
-        raise ValueError("Live interactive acceptance requires --archive and --secrets")
-    if args.intent and (not args.secrets or not args.revision or not (args.archive or args.binary) or args.browser):
-        raise ValueError("--intent requires --archive or --binary, --secrets and --revision, without --browser")
+    if args.live and (not args.archive or not args.secrets or not args.ledger):
+        raise ValueError("Live interactive acceptance requires --archive, --secrets and --ledger")
+    if args.intent and (not args.secrets or not args.ledger or not args.revision or not (args.archive or args.binary) or args.browser):
+        raise ValueError("--intent requires --archive or --binary, --secrets, --ledger and --revision, without --browser")
+    if not args.intent and any((args.intent_model, args.intent_effort, args.intent_upstream,
+                                args.intent_max_requests != 36, args.intent_max_output_tokens != 2048)):
+        raise ValueError("Select --intent to set its model, reasoning effort, or upstream endpoint")
     if args.upgrade_from and (not args.archive or args.live or args.intent):
         raise ValueError("--upgrade-from requires a controlled run with --archive")
     scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
@@ -843,10 +846,30 @@ def parser():
     scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
     interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation"), default="all")
     interactive.add_argument("--intent-bridge", type=Path, help="reuse a built native PTY helper with --intent")
+    interactive.add_argument("--intent-model", help="selected provider model for --intent")
+    interactive.add_argument("--intent-effort", help="explicit native reasoning effort for --intent (default: low)")
+    interactive.add_argument("--intent-upstream", help="exact OpenRouter endpoint tag for --intent")
+    interactive.add_argument("--intent-max-requests", type=int, default=36)
+    interactive.add_argument("--intent-max-output-tokens", type=int, default=2048)
     interactive.add_argument("--revision", help="expected installed source revision for --intent")
     interactive.add_argument("--windows-terminal", type=Path, help="existing WindowsTerminal.exe in a dedicated test desktop")
     interactive.add_argument("--secrets", type=Path, help="explicit credentials file for budgeted interactive checks")
-    interactive.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json", help="existing live-call budget ledger")
+    interactive.add_argument("--ledger", type=Path, help="existing budget ledger for the selected API service")
+    workspace = sub.add_parser("workspace", help="verify native log analysis and named report recovery through the SDK or installed TUI")
+    workspace_product = workspace.add_mutually_exclusive_group(required=True)
+    workspace_product.add_argument("--sdk", type=Path, help="built kuku session_task example")
+    workspace_product.add_argument("--binary", type=Path, help="install a copy of the selected kuku binary")
+    workspace_product.add_argument("--archive", type=Path, help="install the selected platform release .tar.gz or .zip")
+    workspace.add_argument("--bridge", type=Path, help="reuse a built native PTY and log fixture")
+    workspace.add_argument("--scratch-base", type=Path, help="temporary workspaces outside the source tree")
+    workspace.add_argument("--provider", choices=("deepseek", "openrouter"), help="explicitly select a paid service; default is a fixed local provider")
+    workspace.add_argument("--model", help="explicit provider model slug")
+    workspace.add_argument("--effort", help="native reasoning effort for a paid provider (default: high)")
+    workspace.add_argument("--upstream", help="exact upstream endpoint tag (OpenRouter default: openai)")
+    workspace.add_argument("--max-requests", type=int, default=12, help="total bounded upstream requests including retries")
+    workspace.add_argument("--max-output-tokens", type=int, default=8192)
+    workspace.add_argument("--secrets", type=Path, help="explicit KUKU_TEST_ credentials file for paid runs")
+    workspace.add_argument("--ledger", type=Path, help="existing budget ledger for the selected API service")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
     metrics.add_argument("--profile", choices=("debug", "release"), default="debug")
     metrics.add_argument("--idle-agents", type=int, default=32)
@@ -926,7 +949,8 @@ def main():
     directory = args.output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     record = {"schema_version": 1, "run_id": run_id, "group": args.group, "started_at": now(),
-              "tree": tree_state(), "paid": paid or (args.group == "interactive" and bool(args.live or args.intent)), "passed": False,
+              "tree": tree_state(), "paid": paid or (args.group == "interactive" and bool(args.live or args.intent))
+              or (args.group == "workspace" and bool(args.provider)), "passed": False,
               "selector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "manifest_sha256": hashlib.sha256(MANIFEST.read_bytes()).hexdigest()}
     reserved = False
@@ -947,6 +971,10 @@ def main():
             run_metrics(args, directory, record)
         elif args.group == "interactive":
             run_interactive(args, directory, record)
+        elif args.group == "workspace":
+            from workspace import run_workspace
+
+            run_workspace(args, directory, record)
         elif args.group == "inspect":
             record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
                                                   args.connection, args.container_data, require_streaming=args.require_streaming)
