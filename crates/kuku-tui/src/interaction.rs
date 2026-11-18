@@ -146,6 +146,9 @@ impl App {
             key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::PREVIOUS_AGENT_DETAILS.matches(key) => {
+                self.pane_mut().transcript.focus_previous_visible_agent();
+            }
             key if Shortcut::AGENT_DETAILS.matches(key) => {
                 self.pane_mut().transcript.toggle_visible_agent();
             }

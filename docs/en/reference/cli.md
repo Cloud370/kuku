@@ -58,7 +58,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | Ctrl+O, `/tools`, `/copy` | Tool details start expanded with a bounded preview. Toggle them with Ctrl+O, choose a saved result with `/tools`, or use `/copy` to copy the assistant’s reply. |
-| F3 or click an Agent card | Expand or collapse its task and reply preview. F3 acts on the last visible card. |
+| F3 or click an Agent card | Expand or collapse its task and reply preview. F3 acts on the focused card, initially the last visible one. Shift+F3 cycles through visible cards. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
 | Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |

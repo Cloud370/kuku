@@ -77,13 +77,13 @@
 
 1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。 连接正在执行的 Agent 时可以加上 `progress=true`。如果最近的持久事件足以确定阶段，`progress.phase` 为 `waiting_for_model` 或 `running_tools`；后者还包含 `tool_call_ids`。这些信息对应同一快照游标。
 2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。
-3. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收快照之后的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。
+3. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收快照之后的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。 对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入、输出或缓存读取量的请求数。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
-历史条目包含持久的 `id`、Agent 地址、可选的 Turn，以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
+历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
 
 回复 `ask_user` 或待决工具授权时，使用快照里的请求标识。并发的回复逐一核对同一待决请求。重开 Session 会保留待决请求和排队输入。已派发但没有确认结果的工具可能已经修改文件或触发副作用。继续中断的工作前检查工作区。[Session](../how-it-works/sessions.md)
 
