@@ -113,20 +113,23 @@ class ProviderCall:
         )
         return self
 
-    def reply(self, content):
+    def reply(self, content, usage=None):
         has_tool = any(block["type"] == "tool_use" for block in content)
         message = {
             "id": self.id, "type": "message", "role": "assistant", "content": content,
             "stop_reason": "tool_use" if has_tool else "end_turn",
-            "usage": {"input_tokens": 8, "output_tokens": 5},
+            "usage": usage if usage is not None else {
+                "input_tokens": 8, "output_tokens": 5,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+            },
         }
         result = subprocess.run([self.bridge, "--anthropic-response"],
                                 input=json.dumps(message).encode("utf-8"),
                                 capture_output=True, timeout=TIMEOUT, check=True)
         self.response.put_nowait(Response(200, result.stdout, "text/event-stream"))
 
-    def text(self, text):
-        self.reply([{"type": "text", "text": text}])
+    def text(self, text, *, usage=None):
+        self.reply([{"type": "text", "text": text}], usage)
 
     def tool(self, name, call_id, **inputs):
         self.reply([{"type": "tool_use", "id": call_id, "name": name, "input": inputs}])

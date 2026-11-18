@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import json
+import os
 from pathlib import Path
 import re
 from urllib.parse import urlencode, urlsplit
@@ -129,8 +130,16 @@ def two_workspaces_and_disconnect(client):
                 "write_file", "write-right-marker", path="right-marker.txt",
                 content="right workspace\n", brief="Write right workspace marker",
             )
-            client.provider.next("write-right-marker").text("right workspace verified")
+            client.provider.next("write-right-marker").text("right workspace verified", usage={
+                "input_tokens": 44_500, "cache_read_input_tokens": 133_500,
+                "cache_creation_input_tokens": 0, "output_tokens": 205,
+            })
             right.expect("right workspace verified")
+            footer = right.expect("Context 89% used")["screen"]
+            assert "178K in" in footer and "210 out" in footer and "Cache hit 75%" in footer, footer
+            assert "Agent main" in footer and "work-right" in footer, footer
+            assert re.search(r"\b[0-9]+(?:\.[0-9]+)?[KMB]? TPS\b", footer), footer
+            print(next(line.strip() for line in footer.splitlines() if "Context 89% used" in line))
             assert (other / "right-marker.txt").read_text(encoding="utf-8") == "right workspace\n"
             assert not (workspace / "right-marker.txt").exists(), "Work crossed the terminal workspace boundary"
             right.exit_cleanly()
@@ -235,12 +244,17 @@ def editable_multiline_paste(client):
         eventually("Tab to complete /quit in the open actions menu", completed_quit)
         terminal.press("\x03")
         terminal.expect("Search…")
-        terminal.press("\x1b")
-        terminal.expect("Type a prompt")
 
         assert terminal.request("screen")["bracketed_paste"], "The client must request bracketed paste"
-        terminal.press(f"\x1b[200~{paste}\x1b[201~")
-        terminal.expect("fourth lineX")
+        framed = f"\x1b[200~{paste}\x1b[201~"
+        if os.name == "nt":
+            terminal.press("\x1b" + framed)
+        else:
+            terminal.press("\x1b")
+            eventually("the action picker to close", lambda: "Search…" not in terminal.request("screen")["screen"])
+            terminal.press(framed)
+        draft = terminal.expect("fourth lineX")["screen"]
+        assert "Search…" not in draft, "Escape must have closed the action picker"
         assert client.sessions(workspace) == [], "Pasting a line break must leave the draft unsent"
         client.provider.assert_idle(duration=0.25)
 
