@@ -97,7 +97,7 @@ pub(crate) struct Pane {
     pub(crate) opening: bool,
     pub(crate) sending: bool,
     creation_rejected: bool,
-    pub(crate) stopping: bool,
+    stopping: Option<u64>,
     watch: Watch,
     progress: ExecutionProgress,
     submission: Option<(u64, SubmissionStatus)>,
@@ -116,6 +116,16 @@ pub(crate) struct Pane {
 impl Pane {
     pub(crate) fn execution(&self) -> Option<u64> {
         self.execution
+    }
+
+    fn interruption_pending(&self) -> bool {
+        self.stopping.is_some() && self.stopping == self.execution
+    }
+
+    fn finish_interrupt(&mut self, execution: u64) {
+        if self.stopping == Some(execution) {
+            self.stopping = None;
+        }
     }
 
     pub(crate) fn observation_problem(&self) -> Option<&str> {
@@ -508,12 +518,12 @@ impl App {
     }
 
     pub(crate) fn interrupt(&mut self) {
-        if self.pane().stopping {
+        if self.pane().interruption_pending() {
             return;
         }
         if let Some(execution_id) = self.pane().execution() {
             if self.require_service() {
-                self.pane_mut().stopping = true;
+                self.pane_mut().stopping = Some(execution_id);
                 self.issue(self.active.clone(), Action::Cancel { execution_id });
             }
         }

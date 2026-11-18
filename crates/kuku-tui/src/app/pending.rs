@@ -22,7 +22,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use crate::app::App;
+    use crate::app::{Activity, App};
     use crate::jobs::{Job, Update};
 
     fn connected() -> App {
@@ -34,6 +34,51 @@ mod tests {
         });
         app.effects.clear();
         app
+    }
+
+    #[test]
+    fn a_late_interrupt_receipt_cannot_block_or_clear_a_newer_interrupt() {
+        let mut app = connected();
+        let interrupt = |app: &mut App, execution_id| {
+            app.update(Update::Observation(
+                app.selection(),
+                serde_json::from_value(json!({
+                    "type":"committed","id":execution_id,"agent":"main",
+                    "kind":"runtime.operation","operation":"execution_started",
+                }))
+                .unwrap(),
+            ));
+            assert_eq!(Activity::Running, app.pane().activity());
+            app.interrupt();
+            let Some(Job::Save(command)) = app.effects.pop() else {
+                panic!("interrupt must save the selected execution identity");
+            };
+            assert!(
+                matches!(command.action, Action::Cancel { execution_id: id } if id == execution_id)
+            );
+            assert_eq!(Activity::Stopping, app.pane().activity());
+            command
+        };
+        let first = interrupt(&mut app, 5);
+        let second = interrupt(&mut app, 12);
+        app.update(Update::Sent(
+            first.command_id.clone(),
+            Ok(Acknowledgement {
+                receipt: Receipt {
+                    command_id: first.command_id,
+                    event_id: 7,
+                    agent: "main".into(),
+                },
+                replayed: false,
+                status: None,
+            }),
+        ));
+        assert_eq!(Activity::Stopping, app.pane().activity());
+        app.update(Update::Sent(
+            second.command_id,
+            Err(Error::Io(std::io::Error::other("client connection closed"))),
+        ));
+        assert_eq!(Activity::Running, app.pane().activity());
     }
 
     #[test]
@@ -403,8 +448,8 @@ impl App {
                         if matches!(item.command.action, Action::Send { .. }) {
                             pane.sending = false;
                         }
-                        if matches!(item.command.action, Action::Cancel { .. }) {
-                            pane.stopping = false;
+                        if let Action::Cancel { execution_id } = item.command.action {
+                            pane.finish_interrupt(execution_id);
                         }
                     }
                 }
@@ -498,8 +543,8 @@ impl App {
         }
         let mut restored = false;
         if let Some(pane) = self.panes.get_mut(&address) {
-            if matches!(item.command.action, Action::Cancel { .. }) {
-                pane.stopping = false;
+            if let Action::Cancel { execution_id } = item.command.action {
+                pane.finish_interrupt(execution_id);
             }
             if let Action::Send { text, create, .. } = &item.command.action {
                 pane.sending = false;
@@ -632,11 +677,17 @@ impl App {
                 });
             }
             Action::Advance => self.message("Continue request received"),
-            Action::Cancel { .. } => {
+            Action::Cancel { execution_id } => {
                 if let Some(pane) = self.panes.get_mut(&address) {
-                    pane.stopping = false;
+                    pane.finish_interrupt(execution_id);
+                    if active
+                        && pane
+                            .execution()
+                            .is_none_or(|current| current == execution_id)
+                    {
+                        self.message("Execution stopped · draft kept");
+                    }
                 }
-                self.message("Execution stopped · draft kept");
             }
         }
         if active {

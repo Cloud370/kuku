@@ -433,11 +433,10 @@ impl Pane {
     }
 
     pub(crate) fn activity(&self) -> Activity {
-        if self.stopping
-            || self
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.cleaning_up)
+        if self.interruption_pending()
+            || self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.cleaning_up && snapshot.execution_id() == self.execution
+            })
         {
             return Activity::Stopping;
         }
