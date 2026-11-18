@@ -12,7 +12,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures_util::StreamExt;
 use kuku_client::ConnectionOptions;
 use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::App;
 use crate::jobs::{Job, Jobs};
@@ -40,14 +40,14 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let mut clipboard = Clipboard::default();
     let mut frames = tokio::time::interval(FRAME_INTERVAL);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    terminal.draw(&mut app)?;
+    let mut screen = terminal.draw(&mut app)?;
     dispatch(&mut app, &mut jobs, &mut clipboard);
     let mut dirty = false;
     while !app.quit {
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
-                    app.event(event);
+                    app.event(event, screen.buffer);
                     dirty = true;
                 }
                 Some(Err(error)) => return Err(error),
@@ -66,7 +66,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
             _ = frames.tick() => {
                 app.tick();
                 if dirty {
-                    terminal.draw(&mut app)?;
+                    screen = terminal.draw(&mut app)?;
                     dirty = false;
                 }
             },
@@ -107,10 +107,9 @@ impl Screen {
         })
     }
 
-    fn draw(&mut self, app: &mut App) -> io::Result<()> {
+    fn draw(&mut self, app: &mut App) -> io::Result<CompletedFrame<'_>> {
         self.terminal
             .draw(|frame| ui::render(frame, app))
-            .map(|_| ())
             .map_err(io::Error::other)
     }
 }
@@ -149,7 +148,7 @@ impl Restore {
 
     #[cfg(windows)]
     fn enable_input_modes(&mut self, stdout: &mut Stdout) -> io::Result<()> {
-        stdout.write_all(b"\x1b[?1000;1006h")?;
+        stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         self.enhanced_keyboard = true;
         stdout.write_all(b"\x1b[>1u")?;
         stdout.flush()
@@ -170,7 +169,7 @@ impl Restore {
         if self.enhanced_keyboard {
             let _ = stdout.write_all(b"\x1b[<1u");
         }
-        let _ = stdout.write_all(b"\x1b[?1006;1000l");
+        let _ = stdout.write_all(b"\x1b[?1006l\x1b[?1002l");
         let _ = stdout.flush();
     }
 }
@@ -199,12 +198,12 @@ impl Clipboard {
         }
         if let Some(clipboard) = &mut self.native {
             if clipboard.set_text(text.as_str()).is_ok() {
-                return Ok("Copied assistant reply");
+                return Ok("Copied to clipboard");
             }
         }
         let mut terminal = io::stdout().lock();
         write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
         terminal.flush()?;
-        Ok("Sent assistant reply to terminal clipboard")
+        Ok("Sent text to terminal clipboard")
     }
 }

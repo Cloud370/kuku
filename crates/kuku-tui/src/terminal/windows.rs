@@ -5,18 +5,23 @@ use std::ptr;
 use std::thread::{self, JoinHandle};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use termina::event::{KeyCode as VirtualKey, KeyEventKind as VirtualKeyKind, Modifiers};
+use termina::event::{
+    KeyCode as VirtualKey, KeyEventKind as VirtualKeyKind, Modifiers, MouseButton as VirtualButton,
+    MouseEventKind as VirtualMouseKind,
+};
 use termina::Parser;
 use tokio::sync::mpsc;
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, ReadConsoleInputW, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
+    GetConsoleMode, GetConsoleScreenBufferInfo, ReadConsoleInputW, SetConsoleMode,
+    CONSOLE_SCREEN_BUFFER_INFO, COORD, DOUBLE_CLICK, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
     ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
     ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    ENABLE_WINDOW_INPUT, FOCUS_EVENT, INPUT_RECORD, KEY_EVENT, MOUSE_EVENT, MOUSE_WHEELED,
-    WINDOW_BUFFER_SIZE_EVENT,
+    ENABLE_WINDOW_INPUT, FOCUS_EVENT, FROM_LEFT_1ST_BUTTON_PRESSED, INPUT_RECORD, KEY_EVENT,
+    LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, MOUSE_EVENT, MOUSE_EVENT_RECORD, MOUSE_MOVED,
+    MOUSE_WHEELED, RIGHT_ALT_PRESSED, RIGHT_CTRL_PRESSED, SHIFT_PRESSED, WINDOW_BUFFER_SIZE_EVENT,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, SetEvent, WaitForMultipleObjects, INFINITE,
@@ -106,7 +111,10 @@ impl Drop for Input {
 fn read_events(stop: &OwnedHandle, sender: &mpsc::Sender<io::Result<Event>>) -> io::Result<()> {
     let input = io::stdin().as_raw_handle();
     let handles = [stop.as_raw_handle(), input];
-    let mut decoder = Decoder::default();
+    let mut decoder = Decoder {
+        viewport_origin: viewport_origin(),
+        ..Decoder::default()
+    };
     let mut records = [MaybeUninit::<INPUT_RECORD>::uninit(); INPUT_RECORDS];
     let mut timeout = INFINITE;
     loop {
@@ -165,6 +173,8 @@ struct Decoder {
     parser: Parser,
     high_surrogate: Option<u16>,
     trailing_escape: bool,
+    left_down: bool,
+    viewport_origin: COORD,
 }
 
 impl Decoder {
@@ -184,6 +194,7 @@ impl Decoder {
             WINDOW_BUFFER_SIZE_EVENT => {
                 // NOTE: The event type identifies the window-size union member.
                 let size = unsafe { record.Event.WindowBufferSizeEvent }.dwSize;
+                self.viewport_origin = viewport_origin();
                 Some(Event::Resize(size.X as u16, size.Y as u16))
             }
             FOCUS_EVENT => {
@@ -192,29 +203,56 @@ impl Decoder {
                 Some(if focused {
                     Event::FocusGained
                 } else {
+                    self.left_down = false;
                     Event::FocusLost
                 })
             }
             MOUSE_EVENT => {
                 // NOTE: The event type identifies the mouse union member.
                 let mouse = unsafe { record.Event.MouseEvent };
-                (mouse.dwEventFlags == MOUSE_WHEELED).then(|| {
-                    let delta = (mouse.dwButtonState >> 16) as i16;
-                    let kind = if delta < 0 {
-                        MouseEventKind::ScrollDown
-                    } else {
-                        MouseEventKind::ScrollUp
-                    };
-                    scroll(
-                        kind,
-                        mouse.dwMousePosition.X as u16,
-                        mouse.dwMousePosition.Y as u16,
-                        KeyModifiers::NONE,
-                    )
-                })
+                self.native_mouse(mouse)
             }
             _ => None,
         }
+    }
+
+    fn native_mouse(&mut self, mouse: MOUSE_EVENT_RECORD) -> Option<Event> {
+        let down = mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED != 0;
+        let was_down = std::mem::replace(&mut self.left_down, down);
+        let kind = match (mouse.dwEventFlags, down, was_down) {
+            (0 | DOUBLE_CLICK, true, false) => MouseEventKind::Down(MouseButton::Left),
+            (0, false, true) => MouseEventKind::Up(MouseButton::Left),
+            (MOUSE_MOVED, true, _) => MouseEventKind::Drag(MouseButton::Left),
+            (MOUSE_MOVED, false, true) => MouseEventKind::Moved,
+            (MOUSE_WHEELED, _, _) => {
+                let delta = (mouse.dwButtonState >> 16) as i16;
+                if delta < 0 {
+                    MouseEventKind::ScrollDown
+                } else {
+                    MouseEventKind::ScrollUp
+                }
+            }
+            _ => return None,
+        };
+        let state = mouse.dwControlKeyState;
+        let mut modifiers = KeyModifiers::NONE;
+        modifiers.set(KeyModifiers::SHIFT, state & SHIFT_PRESSED != 0);
+        modifiers.set(
+            KeyModifiers::ALT,
+            state & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED) != 0,
+        );
+        modifiers.set(
+            KeyModifiers::CONTROL,
+            state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0,
+        );
+        let origin = self.viewport_origin;
+        let position = mouse.dwMousePosition;
+        Some(mouse_event(
+            kind,
+            position.X.saturating_sub(origin.X).max(0) as u16,
+            position.Y.saturating_sub(origin.Y).max(0) as u16,
+            modifiers,
+        ))
     }
 
     fn push(&mut self, unit: u16) {
@@ -287,11 +325,23 @@ fn translate(event: termina::Event) -> Option<Event> {
         }
         termina::Event::Mouse(event) => {
             let kind = match event.kind {
-                termina::event::MouseEventKind::ScrollUp => MouseEventKind::ScrollUp,
-                termina::event::MouseEventKind::ScrollDown => MouseEventKind::ScrollDown,
-                _ => return None,
+                VirtualMouseKind::Down(VirtualButton::Left) => {
+                    MouseEventKind::Down(MouseButton::Left)
+                }
+                VirtualMouseKind::Drag(VirtualButton::Left) => {
+                    MouseEventKind::Drag(MouseButton::Left)
+                }
+                VirtualMouseKind::Up(VirtualButton::Left) => MouseEventKind::Up(MouseButton::Left),
+                VirtualMouseKind::Moved => MouseEventKind::Moved,
+                VirtualMouseKind::ScrollUp => MouseEventKind::ScrollUp,
+                VirtualMouseKind::ScrollDown => MouseEventKind::ScrollDown,
+                VirtualMouseKind::Down(VirtualButton::Middle | VirtualButton::Right)
+                | VirtualMouseKind::Drag(VirtualButton::Middle | VirtualButton::Right)
+                | VirtualMouseKind::Up(VirtualButton::Middle | VirtualButton::Right)
+                | VirtualMouseKind::ScrollLeft
+                | VirtualMouseKind::ScrollRight => return None,
             };
-            Some(scroll(
+            Some(mouse_event(
                 kind,
                 event.column,
                 event.row,
@@ -345,13 +395,25 @@ fn modifiers(native: Modifiers) -> KeyModifiers {
     converted
 }
 
-fn scroll(kind: MouseEventKind, column: u16, row: u16, modifiers: KeyModifiers) -> Event {
+fn mouse_event(kind: MouseEventKind, column: u16, row: u16, modifiers: KeyModifiers) -> Event {
     Event::Mouse(MouseEvent {
         kind,
         column,
         row,
         modifiers,
     })
+}
+
+fn viewport_origin() -> COORD {
+    let mut screen = CONSOLE_SCREEN_BUFFER_INFO::default();
+    // NOTE: The process owns the output handle, and `screen` is writable during the call.
+    if unsafe { GetConsoleScreenBufferInfo(io::stdout().as_raw_handle(), &mut screen) } == 0 {
+        return COORD::default();
+    }
+    COORD {
+        X: screen.srWindow.Left,
+        Y: screen.srWindow.Top,
+    }
 }
 
 fn stop_event() -> io::Result<OwnedHandle> {
@@ -384,11 +446,13 @@ fn set_mode(handle: HANDLE, mode: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use windows_sys::Win32::System::Console::{
-        INPUT_RECORD_0, KEY_EVENT_RECORD, KEY_EVENT_RECORD_0,
+        INPUT_RECORD_0, KEY_EVENT_RECORD, KEY_EVENT_RECORD_0, RIGHTMOST_BUTTON_PRESSED,
     };
 
     use super::{
-        Decoder, Event, KeyCode, KeyEvent, KeyModifiers, INPUT_RECORD, KEY_EVENT, VK_MENU,
+        mouse_event, Decoder, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
+        COORD, FROM_LEFT_1ST_BUTTON_PRESSED, INPUT_RECORD, KEY_EVENT, MOUSE_EVENT,
+        MOUSE_EVENT_RECORD, MOUSE_MOVED, MOUSE_WHEELED, SHIFT_PRESSED, VK_MENU,
     };
 
     fn input(decoder: &mut Decoder, text: &str) {
@@ -450,6 +514,78 @@ mod tests {
                 Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
                 Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
                 Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+            ],
+            output
+        );
+    }
+
+    #[test]
+    fn native_mouse_reports_convert_button_transitions_and_viewport_offsets() {
+        let mut decoder = Decoder {
+            viewport_origin: COORD { X: 2, Y: 3 },
+            ..Decoder::default()
+        };
+        let left = MouseButton::Left;
+        let pressed = FROM_LEFT_1ST_BUTTON_PRESSED;
+        let wheel = u32::from((-120i16) as u16) << 16;
+        for (flags, buttons, state, expected) in [
+            (0, pressed, 0, Some(MouseEventKind::Down(left))),
+            (0, pressed | RIGHTMOST_BUTTON_PRESSED, 0, None),
+            (
+                MOUSE_MOVED,
+                pressed,
+                SHIFT_PRESSED,
+                Some(MouseEventKind::Drag(left)),
+            ),
+            (
+                MOUSE_WHEELED,
+                pressed | wheel,
+                0,
+                Some(MouseEventKind::ScrollDown),
+            ),
+            (0, 0, 0, Some(MouseEventKind::Up(left))),
+            (MOUSE_MOVED, 0, 0, None),
+        ] {
+            let record = INPUT_RECORD {
+                EventType: MOUSE_EVENT as u16,
+                Event: INPUT_RECORD_0 {
+                    MouseEvent: MOUSE_EVENT_RECORD {
+                        dwMousePosition: COORD { X: 7, Y: 9 },
+                        dwButtonState: buttons,
+                        dwControlKeyState: state,
+                        dwEventFlags: flags,
+                    },
+                },
+            };
+            let modifiers = if state == SHIFT_PRESSED {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            assert_eq!(
+                expected.map(|kind| mouse_event(kind, 5, 6, modifiers)),
+                decoder.record(&record)
+            );
+        }
+    }
+
+    #[test]
+    fn virtual_mouse_reports_preserve_left_drag_wheel_and_modifiers() {
+        let mut decoder = Decoder::default();
+        input(
+            &mut decoder,
+            "\x1b[<0;3;4M\x1b[<32;4;5M\x1b[<0;5;6m\x1b[<65;5;6M\x1b[<4;3;4M",
+        );
+        let output: Vec<_> = std::iter::from_fn(|| decoder.next()).collect();
+        let left = MouseButton::Left;
+        let none = KeyModifiers::NONE;
+        assert_eq!(
+            vec![
+                mouse_event(MouseEventKind::Down(left), 2, 3, none),
+                mouse_event(MouseEventKind::Drag(left), 3, 4, none),
+                mouse_event(MouseEventKind::Up(left), 4, 5, none),
+                mouse_event(MouseEventKind::ScrollDown, 4, 5, none),
+                mouse_event(MouseEventKind::Down(left), 2, 3, KeyModifiers::SHIFT),
             ],
             output
         );

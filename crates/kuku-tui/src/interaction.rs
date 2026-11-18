@@ -1,7 +1,10 @@
 use std::ops::Range;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use kuku_client::{Action, AgentConfig, Timing};
+use ratatui::buffer::Buffer;
 
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
@@ -14,21 +17,25 @@ use crate::transcript::ToolView;
 const MOUSE_SCROLL_LINES: isize = 3;
 
 impl App {
-    pub(crate) fn event(&mut self, event: Event) {
+    pub(crate) fn event(&mut self, event: Event, screen: &Buffer) {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
             Event::Paste(text) => self.paste(&text),
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.wheel(-MOUSE_SCROLL_LINES),
-                MouseEventKind::ScrollDown => self.wheel(MOUSE_SCROLL_LINES),
-                MouseEventKind::Down(_)
-                | MouseEventKind::Up(_)
-                | MouseEventKind::Drag(_)
-                | MouseEventKind::Moved
-                | MouseEventKind::ScrollLeft
-                | MouseEventKind::ScrollRight => {}
-            },
-            Event::FocusGained | Event::FocusLost | Event::Resize(_, _) | Event::Key(_) => {}
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..
+            }) => self.wheel(-MOUSE_SCROLL_LINES),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..
+            }) => self.wheel(MOUSE_SCROLL_LINES),
+            Event::Mouse(mouse) => {
+                if let Some(text) = self.text_selection.mouse(mouse, screen) {
+                    self.effects.push(Job::Copy(text));
+                }
+            }
+            Event::FocusLost | Event::Resize(_, _) => self.text_selection.clear(),
+            Event::FocusGained | Event::Key(_) => {}
         }
     }
 
@@ -43,6 +50,7 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        self.text_selection.clear();
         if control(key, 'c') {
             self.exit();
             return;
@@ -60,6 +68,7 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        self.text_selection.clear();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable() {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
@@ -78,6 +87,7 @@ impl App {
     }
 
     fn wheel(&mut self, amount: isize) {
+        self.text_selection.clear();
         match &mut self.modal {
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {

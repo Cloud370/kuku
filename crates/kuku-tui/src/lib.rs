@@ -11,6 +11,7 @@ mod jobs;
 mod markup;
 mod menu;
 mod output;
+mod selection;
 mod terminal;
 mod text;
 mod transcript;

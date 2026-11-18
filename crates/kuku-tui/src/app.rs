@@ -11,6 +11,7 @@ use crate::editor::Editor;
 use crate::jobs::{Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
 use crate::output::OutputViewer;
+use crate::selection::TextSelection;
 use crate::transcript::{HistoryRequest, Transcript};
 
 mod pending;
@@ -197,6 +198,7 @@ pub(crate) struct App {
     pub(crate) restarting: bool,
     pub(crate) notice: Option<Notice>,
     pub(crate) modal: Option<Modal>,
+    pub(crate) text_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
@@ -231,6 +233,7 @@ impl App {
             restarting: false,
             notice: None,
             modal: None,
+            text_selection: TextSelection::default(),
             pending: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
@@ -301,6 +304,7 @@ impl App {
     }
 
     pub(crate) fn select(&mut self, address: Address, exists: bool, title: String) {
+        self.text_selection.clear();
         let pane = self.panes.entry(address.clone()).or_default();
         pane.exists |= exists;
         if pane.title.is_empty() {

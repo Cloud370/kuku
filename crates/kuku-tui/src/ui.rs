@@ -23,6 +23,7 @@ const OUTPUT_WIDTH: u16 = 112;
 pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
     let outer = frame.area();
     if outer.is_empty() {
+        app.text_selection.clear();
         return;
     }
     let area = outer.inner(Margin::new(u16::from(outer.width >= 24), 0));
@@ -61,7 +62,14 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
         "Type a prompt · / Actions",
     );
     render_status(frame, status, app);
-    render_modal(frame, outer, app);
+    let main_areas = [transcript, banner_area, inner, status];
+    let modal_area = render_modal(frame, outer, app);
+    app.text_selection.render(
+        frame.buffer_mut(),
+        modal_area
+            .as_ref()
+            .map_or(&main_areas[..], std::slice::from_ref),
+    );
 }
 
 fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
@@ -330,30 +338,32 @@ fn activity(app: &App) -> &'static str {
     }
 }
 
-fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let Some(modal) = &mut app.modal else { return };
-    match modal {
+fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
+    Some(match app.modal.as_mut()? {
         Modal::Picker(picker) => {
             let area = popup(area, PICKER_WIDTH, PICKER_HEIGHT);
-            let (width, page, header) = render_picker(frame, area, picker);
+            let inner = render_popup(frame, area, picker.kind.title());
+            let (width, page, header) = render_picker(frame, inner, picker);
             app.modal_editor_width = width;
             app.modal_page = page;
             app.modal_info_rows = header;
+            inner
         }
         Modal::Prompt(prompt) => {
             let area = popup(area, PICKER_WIDTH, PICKER_HEIGHT);
-            let (width, header) = render_prompt(frame, area, prompt);
+            let inner = render_popup(frame, area, &prompt.title);
+            let (width, header) = render_prompt(frame, inner, prompt);
             app.modal_editor_width = width;
             app.modal_info_rows = header;
+            inner
         }
         Modal::Output(viewer) => {
             render_output(frame, popup(area, OUTPUT_WIDTH, area.height), viewer)
         }
-    }
+    })
 }
 
-fn render_picker(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (usize, usize, usize) {
-    let inner = render_popup(frame, area, picker.kind.title());
+fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (usize, usize, usize) {
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
     let header = if picker.header.is_empty() {
@@ -448,8 +458,7 @@ fn render_picker(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (usi
     (width.max(1), count, header_rows)
 }
 
-fn render_prompt(frame: &mut Frame<'_>, area: Rect, prompt: &mut Prompt) -> (usize, usize) {
-    let inner = render_popup(frame, area, &prompt.title);
+fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {
     let width = usize::from(inner.width);
     let instructions = wrap(
         render_literal(&prompt.instructions, Style::default().fg(Color::Yellow)),
@@ -488,7 +497,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, prompt: &mut Prompt) -> (usi
     (usize::from(editor.width).max(1), header_rows)
 }
 
-fn render_output(frame: &mut Frame<'_>, area: Rect, viewer: &mut OutputViewer) {
+fn render_output(frame: &mut Frame<'_>, area: Rect, viewer: &mut OutputViewer) -> Rect {
     let title = if viewer.tool.name.is_empty() {
         "Tool details"
     } else {
@@ -499,6 +508,7 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, viewer: &mut OutputViewer) {
     let lines = viewer.render_lines(usize::from(body.width), usize::from(body.height));
     frame.render_widget(Paragraph::new(lines), body);
     frame.render_widget(Paragraph::new(viewer.footer()), footer);
+    body
 }
 
 fn render_editor(
@@ -597,17 +607,24 @@ fn shorten_middle(text: &str, width: usize) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use kuku_client::{
         Action, Error, HistoryEntry, HistoryKind, HistoryPage, Observation, Snapshot, Timing,
     };
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
     use ratatui::Terminal;
     use serde_json::json;
 
     use super::render;
-    use crate::app::{Address, App};
+    use crate::app::{Address, App, Modal};
     use crate::jobs::{Job, Update};
+    use crate::output::OutputViewer;
+    use crate::transcript::ToolView;
 
     fn screen(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -637,7 +654,29 @@ mod tests {
     }
 
     fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-        app.event(Event::Key(KeyEvent::new(code, modifiers)));
+        event(app, Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    fn event(app: &mut App, event: Event) {
+        app.event(event, &Buffer::empty(Rect::ZERO));
+    }
+
+    fn mouse(kind: MouseEventKind, point: (u16, u16), modifiers: KeyModifiers) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: point.0,
+            row: point.1,
+            modifiers,
+        })
+    }
+
+    fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
+        let index = buffer
+            .content
+            .iter()
+            .position(|cell| cell.symbol() == symbol)
+            .unwrap_or_else(|| panic!("missing screen symbol {symbol:?}"));
+        buffer.pos_of(index)
     }
 
     fn command(app: &mut App, name: &str) {
@@ -689,7 +728,10 @@ mod tests {
         let first = screen(&mut app, 104, 24);
         assert!(first.contains("New session"));
         assert!(first.contains("kuku init"));
-        app.event(Event::Paste("中文\r\nfirst\rlast e\u{301}".into()));
+        event(
+            &mut app,
+            Event::Paste("中文\r\nfirst\rlast e\u{301}".into()),
+        );
         key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -724,13 +766,13 @@ mod tests {
             snapshot(&app, "running", json!(null), json!(null)),
             page,
         ));
-        app.event(Event::Paste("main-draft".into()));
+        event(&mut app, Event::Paste("main-draft".into()));
         screen(&mut app, 79, 22);
         key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
         let before = screen(&mut app, 79, 22);
         let review = Address::new(main.session.clone(), "reviewer".into());
         app.select(review.clone(), true, "Example".into());
-        app.event(Event::Paste("review-notes".into()));
+        event(&mut app, Event::Paste("review-notes".into()));
         app.update(Update::Observation(
             main_selection,
             Observation::Live {
@@ -792,7 +834,7 @@ mod tests {
                 next_before: None,
             },
         ));
-        app.event(Event::Paste("my independent draft".into()));
+        event(&mut app, Event::Paste("my independent draft".into()));
         let view = screen(&mut app, 82, 20);
         assert!(view.contains("Waiting · main · F2 Reply"));
         assert!(view.contains("Which test target?"));
@@ -804,7 +846,7 @@ mod tests {
             .iter()
             .any(|effect| matches!(effect, Job::Save(_))));
         key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
-        app.event(Event::Paste("workspace tests".into()));
+        event(&mut app, Event::Paste("workspace tests".into()));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let action = app
             .effects
@@ -859,5 +901,128 @@ mod tests {
             .effects
             .iter()
             .any(|effect| matches!(effect, Job::Copy(text) if text == reply)));
+    }
+
+    #[test]
+    fn mouse_drag_highlights_and_copies_visible_unicode_in_both_directions() {
+        let mut app = app();
+        app.pane_mut().transcript.apply(
+            entry(
+                1,
+                "main",
+                HistoryKind::Assistant,
+                "before **中e\u{301}**\n\n👩‍💻! after",
+            ),
+            None,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(72, 22)).unwrap();
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        let wide = cell(buffer, "中");
+        let start = (wide.0 + 1, wide.1);
+        let end = cell(buffer, "!");
+        let emoji = cell(buffer, "👩‍💻");
+        let left = MouseButton::Left;
+        let modifiers = KeyModifiers::NONE;
+
+        for (anchor, release) in [(start, end), (end, start)] {
+            let buffer = terminal
+                .draw(|frame| render(frame, &mut app))
+                .unwrap()
+                .buffer;
+            app.event(mouse(MouseEventKind::Down(left), anchor, modifiers), buffer);
+            app.event(mouse(MouseEventKind::Drag(left), emoji, modifiers), buffer);
+            let buffer = terminal
+                .draw(|frame| render(frame, &mut app))
+                .unwrap()
+                .buffer;
+            assert!(buffer[emoji].modifier.contains(Modifier::REVERSED));
+            if anchor == start {
+                assert!(buffer[wide].modifier.contains(Modifier::REVERSED));
+                assert!(buffer[start].modifier.contains(Modifier::REVERSED));
+                assert!(!buffer[end].modifier.contains(Modifier::REVERSED));
+            }
+            assert!(app.effects.is_empty());
+            app.event(mouse(MouseEventKind::Up(left), release, modifiers), buffer);
+            assert!(matches!(
+                std::mem::take(&mut app.effects).as_slice(),
+                [Job::Copy(text)] if text == "中e\u{301}\n\n👩‍💻!"
+            ));
+            app.event(mouse(MouseEventKind::Up(left), release, modifiers), buffer);
+            assert!(app.effects.is_empty());
+        }
+    }
+
+    #[test]
+    fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
+        let mut app = app();
+        app.modal = Some(Modal::Output(Box::new(OutputViewer::new(
+            1,
+            ToolView {
+                name: "Tool".into(),
+                summary: "Finished".into(),
+                details: "before\u{001b}[2J\nExit".into(),
+                diff: String::new(),
+                output_id: None,
+            },
+        ))));
+        let mut terminal = Terminal::new(TestBackend::new(58, 18)).unwrap();
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        let start = cell(buffer, "␛");
+        let end = cell(buffer, "E");
+        let left = MouseButton::Left;
+        let modifiers = KeyModifiers::NONE;
+        app.event(mouse(MouseEventKind::Down(left), start, modifiers), buffer);
+        app.event(mouse(MouseEventKind::Drag(left), end, modifiers), buffer);
+        app.event(mouse(MouseEventKind::Up(left), end, modifiers), buffer);
+        assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == "␛[2J\nE"));
+    }
+
+    #[test]
+    fn click_shift_drag_and_replaced_text_leave_the_clipboard_alone() {
+        let mut app = app();
+        app.pane_mut().draft.insert("abc XYZ");
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        let left = MouseButton::Left;
+        let start = cell(buffer, "X");
+        let end = cell(buffer, "Z");
+        let down = mouse(MouseEventKind::Down(left), start, KeyModifiers::NONE);
+        let up = mouse(MouseEventKind::Up(left), end, KeyModifiers::NONE);
+        app.event(down.clone(), buffer);
+        app.event(
+            mouse(MouseEventKind::Up(left), start, KeyModifiers::NONE),
+            buffer,
+        );
+        for (kind, point) in [
+            (MouseEventKind::Down(left), start),
+            (MouseEventKind::Drag(left), end),
+            (MouseEventKind::Up(left), end),
+        ] {
+            app.event(mouse(kind, point, KeyModifiers::SHIFT), buffer);
+        }
+        assert!(app.effects.is_empty());
+
+        app.event(down, buffer);
+        app.event(
+            mouse(MouseEventKind::Drag(left), end, KeyModifiers::NONE),
+            buffer,
+        );
+        app.pane_mut().draft.set_text("abc UVW".into());
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        app.event(up, buffer);
+        assert!(app.effects.is_empty());
+        assert!(!buffer[start].modifier.contains(Modifier::REVERSED));
     }
 }
