@@ -1,7 +1,6 @@
 """Drive the installed client in Windows Terminal on a dedicated Windows test desktop."""
 
 import argparse
-import base64
 from contextlib import contextmanager, suppress
 import ctypes
 from ctypes import wintypes
@@ -27,6 +26,8 @@ PROMPT = "粘贴第一行 e\u0301 👩‍💻\n粘贴第二行\n最后\nshiftlin
 SELECTION = "selectable desktop text"
 REPLY = f"**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显\n\nBefore {SELECTION} after"
 SCREENSHOT_LIMIT = 1024 * 1024
+CLIPBOARD_TEXT_LIMIT = 1024 * 1024
+CF_UNICODETEXT, GMEM_MOVEABLE, HWND_MESSAGE = 13, 0x0002, -3
 VK_BACK, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_SPACE = 0x08, 0x0D, 0x10, 0x11, 0x20
 VK_LWIN, VK_NUMPAD_PLUS, VK_OEM_SLASH = 0x5B, 0x6B, 0xBF
 VK_LEFT_BUTTON, VK_ALT, VK_RWIN = 0x01, 0x12, 0x5C
@@ -54,6 +55,95 @@ class InputEvent(ctypes.Union):
 
 class Input(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("event", InputEvent)]
+
+
+class Clipboard:
+    def __init__(self, user):
+        self.user = user
+        self.kernel = kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        user.OpenClipboard.argtypes = (wintypes.HWND,)
+        user.CloseClipboard.argtypes = ()
+        user.EmptyClipboard.argtypes = ()
+        user.IsClipboardFormatAvailable.argtypes = (wintypes.UINT,)
+        user.GetClipboardData.argtypes = (wintypes.UINT,)
+        user.GetClipboardData.restype = wintypes.HANDLE
+        user.SetClipboardData.argtypes = (wintypes.UINT, wintypes.HANDLE)
+        user.SetClipboardData.restype = wintypes.HANDLE
+        user.CreateWindowExW.argtypes = (wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p)
+        user.CreateWindowExW.restype = wintypes.HWND
+        user.DestroyWindow.argtypes = (wintypes.HWND,)
+        kernel.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
+        kernel.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel.GlobalFree.argtypes = (wintypes.HGLOBAL,)
+        kernel.GlobalFree.restype = wintypes.HGLOBAL
+        kernel.GlobalLock.argtypes = (wintypes.HGLOBAL,)
+        kernel.GlobalLock.restype = ctypes.c_void_p
+        kernel.GlobalUnlock.argtypes = (wintypes.HGLOBAL,)
+        kernel.GlobalSize.argtypes = (wintypes.HGLOBAL,)
+        kernel.GlobalSize.restype = ctypes.c_size_t
+
+    @contextmanager
+    def open(self, owner=None):
+        deadline = time.monotonic() + 2
+        while not self.user.OpenClipboard(owner):
+            if time.monotonic() >= deadline:
+                error = ctypes.WinError(ctypes.get_last_error())
+                raise RuntimeError(f"OpenClipboard remained unavailable for 2 seconds ({error})") from error
+            time.sleep(0.025)
+        try:
+            yield
+        finally:
+            if not self.user.CloseClipboard():
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    @contextmanager
+    def lock(self, handle):
+        pointer = self.kernel.GlobalLock(handle)
+        if not pointer:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield pointer
+        finally:
+            self.kernel.GlobalUnlock(handle)
+
+    def read(self):
+        with self.open():
+            if not self.user.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                return ""
+            handle = self.user.GetClipboardData(CF_UNICODETEXT)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            size = self.kernel.GlobalSize(handle)
+            if not 2 <= size <= CLIPBOARD_TEXT_LIMIT:
+                raise ValueError(f"Unexpected Windows clipboard text allocation size: {size}")
+            with self.lock(handle) as pointer:
+                data = ctypes.string_at(pointer, size - size % 2)
+                return data.decode("utf-16-le", errors="surrogatepass").partition("\0")[0]
+
+    def write(self, text):
+        data = text.encode("utf-16-le") + b"\0\0"
+        window = self.user.CreateWindowExW(0, "Static", "Kuku Acceptance Clipboard", 0, 0, 0, 0, 0,
+                                           HWND_MESSAGE, None, None, None)
+        if not window:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            handle = self.kernel.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                with self.lock(handle) as pointer:
+                    ctypes.memmove(pointer, data, len(data))
+                with self.open(window):
+                    if not self.user.EmptyClipboard() or not self.user.SetClipboardData(CF_UNICODETEXT, handle):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    handle = None
+            finally:
+                if handle:
+                    self.kernel.GlobalFree(handle)
+        finally:
+            self.user.DestroyWindow(window)
 
 
 class Desktop:
@@ -87,6 +177,7 @@ class Desktop:
         self.title = title
         self.window = eventually("the Windows Terminal acceptance window", self.find, timeout=15)
         self.thread = user.GetWindowThreadProcessId(self.window, None)
+        self.clipboard = Clipboard(user)
 
     def find(self):
         return self.user.FindWindowW("CASCADIA_HOSTING_WINDOW_CLASS", self.title)
@@ -121,24 +212,31 @@ class Desktop:
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
 $window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new({self.window}))
 $condition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::IsTextPatternAvailableProperty, $true)
-foreach ($element in $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)) {{
-    $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-    foreach ($visible in $pattern.GetVisibleRanges()) {{
-        if (-not $visible.GetText(-1).Contains('{SELECTION}')) {{ continue }}
-        $match = $visible.FindText('{SELECTION}', $false, $false)
-        if ($match -and $match.GetText(-1) -ceq '{SELECTION}') {{
-            $boxes = $match.GetBoundingRectangles()
-            if ($boxes.Count -eq 1 -and $boxes[0].Width -gt 0 -and $boxes[0].Height -gt 0) {{
-                $box = $boxes[0]
-                @{{ left = $box.Left; top = $box.Top; width = $box.Width; height = $box.Height }} | ConvertTo-Json -Compress
-                return
+    [System.Windows.Automation.AutomationElement]::ClassNameProperty, 'TermControl')
+$clock = [Diagnostics.Stopwatch]::StartNew()
+do {{
+    $element = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($element) {{
+        $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+        foreach ($visible in $pattern.GetVisibleRanges()) {{
+            if (-not $visible.GetText(-1).Contains('{SELECTION}')) {{ continue }}
+            $match = $visible.FindText('{SELECTION}', $false, $false)
+            if ($match -and $match.GetText(-1) -ceq '{SELECTION}') {{
+                $boxes = $match.GetBoundingRectangles()
+                if ($boxes.Count -eq 1 -and $boxes[0].Width -gt 0 -and $boxes[0].Height -gt 0) {{
+                    $box = $boxes[0]
+                    @{{ left = $box.Left; top = $box.Top; width = $box.Width; height = $box.Height }} |
+                        ConvertTo-Json -Compress
+                    return
+                }}
             }}
         }}
     }}
-}}
-""")
-        return json.loads(result) if result else None
+    Start-Sleep -Milliseconds 100
+}} while ($clock.Elapsed.TotalSeconds -lt 8)
+""", timeout=25)
+        assert result, "Could not locate the visible transcript text for mouse selection"
+        return json.loads(result)
 
     def move_cursor(self, point):
         left, top, width, height = (self.user.GetSystemMetrics(index) for index in VIRTUAL_SCREEN_METRICS)
@@ -206,18 +304,6 @@ foreach ($element in $window.FindAll([System.Windows.Automation.TreeScope]::Desc
         return filename
 
 
-def clipboard(text=None):
-    require_active_desktop()
-    script = "Add-Type -AssemblyName System.Windows.Forms; "
-    if text is None:
-        result = powershell(script + "[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("
-                            "[Windows.Forms.Clipboard]::GetText()))")
-        return base64.b64decode(result).decode("utf-16-le")
-    encoded = base64.b64encode(text.encode("utf-16-le")).decode("ascii")
-    powershell(script + "[Windows.Forms.Clipboard]::SetText("
-               f"[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))")
-
-
 def terminal_child(state, binary):
     process = subprocess.Popen([binary])
     previous = None
@@ -240,9 +326,10 @@ def read_state(state):
 
 def check_mouse_selection(desktop, checks):
     sentinel = f"previous clipboard value {secrets.token_hex(8)}"
-    clipboard(sentinel)
-    assert clipboard() == sentinel, "Windows clipboard did not hold the mouse selection sentinel"
-    bounds = eventually("the visible transcript text for mouse selection", desktop.visible_selection, timeout=8)
+    desktop.focus()
+    desktop.clipboard.write(sentinel)
+    assert desktop.clipboard.read() == sentinel, "Windows clipboard did not hold the mouse selection sentinel"
+    bounds = desktop.visible_selection()
     cell = bounds["width"] / len(SELECTION)
     y = int(bounds["top"] + bounds["height"] / 2)
     start = (int(bounds["left"] + cell / 4), y)
@@ -251,11 +338,11 @@ def check_mouse_selection(desktop, checks):
                                           "expected_text": SELECTION}
     with desktop.drag(start, end):
         result["screenshot"] = desktop.picture("01a-mouse-selection")
-        assert clipboard() == sentinel, "Mouse selection changed the clipboard before the button was released"
+        assert desktop.clipboard.read() == sentinel, "Mouse selection changed the clipboard before the button was released"
         result["clipboard_unchanged_while_dragging"] = True
 
     def copied_text():
-        actual = clipboard()
+        actual = desktop.clipboard.read()
         result["clipboard_text"] = actual[:512]
         return actual == SELECTION
 
@@ -281,11 +368,12 @@ def exercise(client, desktop, workspace, state, checks):
     eventually("the copied reply to persist", lambda: client.snapshot(workspace, session)["last_output"] == REPLY,
                timeout=10)
 
-    clipboard("previous isolated clipboard value")
+    desktop.focus()
+    desktop.clipboard.write("previous isolated clipboard value")
     desktop.press(VK_OEM_SLASH)
     desktop.spell("copy")
     desktop.press(VK_RETURN)
-    eventually("the exact response in the Windows clipboard", lambda: clipboard() == REPLY, timeout=12)
+    eventually("the exact response in the Windows clipboard", lambda: desktop.clipboard.read() == REPLY, timeout=12)
     checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
                       "screenshot": desktop.picture("01-reply-copied")}
     check_mouse_selection(desktop, checks)
@@ -311,8 +399,9 @@ def exercise(client, desktop, workspace, state, checks):
 
     old = client.snapshot(workspace, session)
     checks["paste"] = {"shortcut": "Ctrl+Shift+V", "clipboard_input": PASTE}
-    clipboard(PASTE)
-    assert clipboard() == PASTE, "Windows clipboard did not hold the paste fixture"
+    desktop.focus()
+    desktop.clipboard.write(PASTE)
+    assert desktop.clipboard.read() == PASTE, "Windows clipboard did not hold the paste fixture"
     desktop.press(VK_CONTROL, VK_SHIFT, ord("V"))
     checks["paste"]["screenshot"] = desktop.picture("04-pasted-draft")
     client.provider.assert_idle(duration=0.25)
