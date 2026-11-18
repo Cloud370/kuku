@@ -7,8 +7,8 @@ use crate::event::StoredEvent;
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, read_file_as_utf8, require_brief, resolve_path,
-    text_match_offsets, write_atomically, WriteSnapshot,
+    content_hash, find_write_snapshot, plural, read_file_as_utf8, resolve_path, text_match_offsets,
+    write_atomically, WriteSnapshot,
 };
 
 mod change;
@@ -18,7 +18,6 @@ struct EditRequest {
     old_text: String,
     new_text: String,
     replace_all: bool,
-    _brief: String,
 }
 
 struct EditTextCandidate {
@@ -271,7 +270,6 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             "old_text must not be empty",
         ));
     }
-    let brief = require_brief("edit_file", args)?;
     Ok(EditRequest {
         path: path.to_string(),
         old_text: old_text.to_string(),
@@ -280,7 +278,6 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        _brief: brief,
     })
 }
 

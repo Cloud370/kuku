@@ -101,6 +101,8 @@ pub(super) fn display_summary(
         "edit_file" | "write_file" => args
             .get("brief")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| args["path"].as_str())
             .unwrap_or(tool)
             .to_string(),
         "search_text" => {

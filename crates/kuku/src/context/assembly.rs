@@ -199,20 +199,20 @@ pub fn assemble_context(
     // ---- Layer 3: agent identity ----
     let identity_text = input.agent_instructions.clone();
 
-    // ---- Layer 4: tool-guidance ----
-    let tool_guidance = catalog
-        .blocks
-        .get("tool-guidance")
-        .map(|a| a.text.clone())
-        .unwrap_or_default();
-
-    // ---- Layer 5: memory (optional) ----
-    let memory_guidance = if input.enable_memory {
-        catalog.blocks.get("memory").map(|a| a.text.clone())
-    } else {
-        None
-    };
-
+    let has_tool = |name: &str| input.tools.iter().any(|tool| tool.name == name);
+    let guidance = [
+        ("tool-guidance", !input.tools.is_empty()),
+        (
+            "delegation",
+            ["create_agent", "send_message", "list_agents"]
+                .iter()
+                .all(|name| has_tool(name)),
+        ),
+        (
+            "memory",
+            input.enable_memory && (has_tool("remember_memory") || has_tool("forget_memory")),
+        ),
+    ];
     let global_memory_text = input
         .global_memory
         .as_ref()
@@ -282,12 +282,13 @@ pub fn assemble_context(
     if !identity_text.is_empty() {
         prelude.push(CanonicalMessage::user_text(identity_text));
     }
-    if !tool_guidance.is_empty() {
-        prelude.push(CanonicalMessage::user_text(tool_guidance));
-    }
-    if let Some(mem) = memory_guidance {
-        if !mem.is_empty() {
-            prelude.push(CanonicalMessage::user_text(mem));
+    for (key, _) in guidance.iter().filter(|(_, selected)| *selected) {
+        if let Some(asset) = catalog
+            .blocks
+            .get(*key)
+            .filter(|asset| !asset.text.is_empty())
+        {
+            prelude.push(CanonicalMessage::user_text(asset.text.clone()));
         }
     }
     if !global_rendered.is_empty() {
@@ -304,8 +305,13 @@ pub fn assemble_context(
         path: catalog.system.path.clone(),
         hash: catalog.system.hash.clone(),
     }];
-    for key in &["project-policy", "tool-guidance", "memory"] {
-        if let Some(a) = catalog.blocks.get(*key) {
+    for key in std::iter::once("project-policy").chain(
+        guidance
+            .into_iter()
+            .filter(|(_, selected)| *selected)
+            .map(|(key, _)| key),
+    ) {
+        if let Some(a) = catalog.blocks.get(key) {
             prompt_asset_sources.push(FileSource {
                 path: a.path.clone(),
                 hash: a.hash.clone(),
@@ -379,7 +385,7 @@ mod tests {
                 project_memory: None,
                 history: vec![CanonicalMessage::user_text("hello")],
                 tools: vec![ToolSchema {
-                    name: "read".into(),
+                    name: "remember_memory".into(),
                     description: "r".into(),
                     input_schema: json!({"type": "object"}),
                 }],
@@ -462,8 +468,7 @@ mod tests {
         )
         .unwrap();
 
-        // Without memory and empty identity: only project_policy + tool_guidance
-        assert_eq!(assembly.prelude_messages.len(), 2);
+        assert_eq!(assembly.prelude_messages.len(), 1);
     }
 
     #[test]
@@ -491,8 +496,7 @@ mod tests {
         )
         .unwrap();
 
-        // project_policy, identity, tool_guidance = 3 messages
-        assert_eq!(assembly.prelude_messages.len(), 3);
+        assert_eq!(assembly.prelude_messages.len(), 2);
 
         // [1] should be identity
         let msg1 = match &assembly.prelude_messages[1].blocks[..] {

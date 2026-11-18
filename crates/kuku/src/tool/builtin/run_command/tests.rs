@@ -199,7 +199,7 @@ fn command_hard_guard_still_blocks_destructive_commands() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_command_rejects_missing_brief() {
+async fn run_command_accepts_commands_without_display_labels() {
     let dir = workspace();
     let result = run_command(
         &serde_json::json!({"command": "echo hi", "timeout": 1}),
@@ -208,8 +208,7 @@ async fn run_command_rejects_missing_brief() {
         None,
     )
     .await;
-    assert_eq!(result.status, "error");
-    assert!(result.model_content.contains("run_command requires brief"));
+    assert_eq!(result.status, "ok");
 }
 
 #[cfg(unix)]

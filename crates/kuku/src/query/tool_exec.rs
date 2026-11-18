@@ -242,7 +242,7 @@ pub(super) async fn execute_tool_call(
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
     if pending.query.runtime.is_some() && super::runtime_tools::is_inline(&tool_call.name) {
-        let result = match super::runtime_tools::execute(pending, tool_call) {
+        let result = match super::runtime_tools::execute(pending, tool_call).await {
             Ok(result) => result,
             Err(error) => crate::tool::ToolResultEnvelope::error(
                 "session operation failed",

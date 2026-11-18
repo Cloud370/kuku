@@ -12,11 +12,13 @@
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
-| `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
-| `write_file` | `path`, `content`, `brief` | none | `edit` |
-| `run_command` | `command`, `timeout`, `brief` | none | `command` |
+| `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `brief` | `edit` |
+| `write_file` | `path`, `content` | `brief` | `edit` |
+| `run_command` | `command`, `timeout` | `brief` | `command` |
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
 | `forget_memory` | `scope`, `text` | none | `edit` |
+
+工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑、写入和命令调用的 `brief` 是可选的显示标签。
 
 条件 Skill 工具：
 
@@ -31,13 +33,13 @@
 | Tool | Required args | Optional args | Risk |
 |---|---|---|---|
 | `ask_user` | `question` | none | `session` |
-| `create_agent` | `address` | `connection`, `tier`, `model`, `preset`, `instructions`, `reasoning_effort`, `service_tier`, `max_output_tokens`, `no_agents`, `no_skills`, `bootstrap_skill`, `tools`, `workspace` | `session` |
+| `create_agent` | `address` | `instructions`, `tools`, `preset`, `tier`, `workspace` | `session` |
 | `send_message` | `to`, `message` | `wake` | `session` |
-| `list_agents` | none | none | `session` |
+| `list_agents` | none | `wait_for` | `session` |
 
-`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 读取保留状态和最后持久输出，不消费观察流。
+`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。
 
-省略模型路由字段时，使用 Session 的默认 tier 或所选 preset 的 tier。将 `tier` 设为已配置的 `[model.NAME]` 名称，可选用对应的路由和默认设置。只有知道确切的 `[provider.NAME]` 条目名称时才填写 `connection`。
+模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。宿主通过 SDK 配置供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 

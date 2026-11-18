@@ -340,6 +340,32 @@ impl Session {
         self.inner.state.lock().unwrap().snapshot(address)
     }
 
+    pub(crate) async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
+        let done = {
+            let state = self.inner.state.lock().unwrap();
+            let agent = state.agent(address)?;
+            if agent.snapshot.status != AgentStatus::Running {
+                return state.snapshot(address);
+            }
+            agent.active_epoch.and_then(|epoch| {
+                self.inner
+                    .workers
+                    .lock()
+                    .unwrap()
+                    .get(&epoch)
+                    .map(|worker| worker.done.clone())
+            })
+        };
+        if let Some(mut done) = done {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                done.wait_for(|result| result.is_some()),
+            )
+            .await;
+        }
+        self.agent(address)
+    }
+
     /// Return all retained agents in stable address order.
     pub fn agents(&self) -> Vec<AgentSnapshot> {
         self.inner.state.lock().unwrap().snapshots()

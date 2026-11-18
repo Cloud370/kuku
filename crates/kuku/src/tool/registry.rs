@@ -82,7 +82,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
                     "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
-                "required": ["path", "old_text", "new_text", "brief"]
+                "required": ["path", "old_text", "new_text"]
             }),
             false,
             20_000,
@@ -98,7 +98,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "content": {"type": "string", "description": "Complete file content."},
                     "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
-                "required": ["path", "content", "brief"]
+                "required": ["path", "content"]
             }),
             false,
             20_000,
@@ -145,7 +145,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "timeout": {"type": "integer", "description": "Timeout in seconds."},
                     "brief": {"type": "string", "description": "What this command does, in 3-5 words."}
                 },
-                "required": ["command", "timeout", "brief"]
+                "required": ["command", "timeout"]
             }),
             false,
             80_000,

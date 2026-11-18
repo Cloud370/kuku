@@ -379,54 +379,28 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
         definition(
             "create_agent",
-            "Create a stable Agent with independent context. Omit model routing fields to use the Session's default tier or the chosen preset's tier.",
+            "Create an independent Agent. Send its task with send_message after creation.",
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
-                    "address": {"type": "string"},
-                    "connection": {
-                        "type": "string",
-                        "description": "Exact connection name from [provider.NAME] in host config. Set only to a known provider key."
-                    },
-                    "tier": {
-                        "type": "string",
-                        "description": "Configured model tier name from <kuku_models>. Supplies connection, model and settings defaults."
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Exact model identifier on the selected connection. Defaults to the chosen tier's model."
-                    },
-                    "preset": {"type": "string"},
-                    "instructions": {"type": "string"},
-                    "reasoning_effort": {"type": "string"},
-                    "service_tier": {"type": "string"},
-                    "max_output_tokens": {"type": "integer", "minimum": 1},
-                    "no_agents": {
-                        "type": "boolean",
-                        "description": "Defaults false. Keep false when the Agent needs send_message or other Agent collaboration tools."
-                    },
-                    "no_skills": {"type": "boolean"},
-                    "bootstrap_skill": {"type": "string"},
-                    "tools": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "description": "Use the exact registered tool name, such as the bare names read_file and send_message for built-in tools."
-                        },
-                        "description": "Omit to keep the Agent's default or preset tools, including send_message when collaboration is enabled. An explicit list replaces all default tools. Include every tool the task needs when restricting the list."
-                    },
-                    "workspace": {"type": "string"}
+                    "address": {"type": "string", "description": "Stable Session-local name."},
+                    "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
+                    "tools": {"type": "array", "items": {"type":"string"}, "description":"Exact tool names. Omit to use defaults. An empty array means no tools."},
+                    "preset": {"type": "string", "description": "Configured Agent preset."},
+                    "tier": {"type": "string", "description": "Configured model tier from <kuku_models>. Omit to use the preset or Session default."},
+                    "workspace": {"type": "string", "description": "Working directory when different from the Session workspace."}
                 },
                 "required": ["address"]
             }),
         ),
         definition("send_message", "Deliver selected material to an existing agent without sharing conversation history. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues: the recipient needs host advance or a later wake before it can act."}},"required":["to","message"]})),
-        definition("list_agents", "Read Agent addresses, current states and latest durable outputs. Use when current state affects your next action.", serde_json::json!({"type":"object","properties":{}})),
+        definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
     ]
 }
 
-pub(super) fn execute(
-    pending: &PendingRun,
+pub(super) async fn execute(
+    pending: &mut PendingRun,
     call: &crate::provider::types::ProviderToolCall,
 ) -> Result<ToolResultEnvelope> {
     let inner = pending
@@ -446,7 +420,7 @@ pub(super) fn execute(
         "read_output" => return output::execute(&session, &call.args),
         "create_agent" => {
             let (address, config) = create_agent_input(&call.args)?;
-            serde_json::to_value(session.create_agent(&key, address, config)?)?
+            serde_json::to_value(session.create_agent(&key, &address, config)?)?
         }
         "send_message" => {
             let input = crate::Input {
@@ -465,7 +439,30 @@ pub(super) fn execute(
             };
             serde_json::to_value(session.send(input)?)?
         }
-        "list_agents" => serde_json::to_value(session.agents())?,
+        "list_agents" => {
+            if let Some(target) = call.args.get("wait_for") {
+                let address = target
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| {
+                        Error::InvalidArgument("wait_for requires an Agent address".into())
+                    })?;
+                if address == pending.conversation.as_str() {
+                    return Err(Error::InvalidArgument(
+                        "an Agent cannot wait for itself".into(),
+                    ));
+                }
+                serde_json::json!([agent_listing(session.wait_for_agent(address).await?, true)])
+            } else {
+                serde_json::Value::Array(
+                    session
+                        .agents()
+                        .into_iter()
+                        .map(|agent| agent_listing(agent, false))
+                        .collect(),
+                )
+            }
+        }
         "ask_user" => serde_json::to_value(
             session.request_question(
                 pending.conversation.as_str(),
@@ -492,36 +489,68 @@ pub(super) fn execute(
     ))
 }
 
-fn create_agent_input(args: &serde_json::Value) -> Result<(&str, crate::AgentConfig)> {
-    let address = required(args, "address")?;
-    if address.trim().is_empty() {
+fn agent_listing(agent: crate::AgentSnapshot, include_reply: bool) -> serde_json::Value {
+    let mut item = serde_json::json!({"address": agent.address, "status": agent.status});
+    if agent.pending_inputs > 0 {
+        item["pending_inputs"] = agent.pending_inputs.into();
+    }
+    if agent.permission.is_some() {
+        item["needs_approval"] = true.into();
+    }
+    if agent.question.is_some() {
+        item["needs_reply"] = true.into();
+    }
+    if let Some(error) = agent.last_error {
+        item["last_error"] = error.into();
+    } else if agent.status == crate::AgentStatus::Idle {
+        if let Some(output) = agent.last_output {
+            if include_reply {
+                item["last_output"] = output.into();
+            } else {
+                item["reply_available"] = true.into();
+            }
+        }
+    }
+    item
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateAgentInput {
+    address: String,
+    instructions: Option<String>,
+    tools: Option<Vec<String>>,
+    preset: Option<String>,
+    tier: Option<String>,
+    workspace: Option<std::path::PathBuf>,
+}
+
+fn create_agent_input(args: &serde_json::Value) -> Result<(String, crate::AgentConfig)> {
+    use serde::Deserialize;
+    let input = CreateAgentInput::deserialize(args)?;
+    if input.address.trim().is_empty() {
         return Err(Error::InvalidArgument(
             "tool argument 'address' must not be blank".into(),
         ));
     }
-    let mut values = args
-        .as_object()
-        .expect("tool arguments are an object")
-        .clone();
-    values.remove("address");
-    let config = serde_json::from_value(serde_json::Value::Object(values))?;
-    Ok((address, config))
+    Ok((
+        input.address,
+        crate::AgentConfig {
+            instructions: input.instructions,
+            tools: input.tools,
+            preset: input.preset,
+            tier: input.tier,
+            workspace: input.workspace,
+            ..Default::default()
+        },
+    ))
 }
 
 fn normalize_create_agent_args(args: &mut serde_json::Value) {
     let Some(values) = args.as_object_mut() else {
         return;
     };
-    for field in [
-        "connection",
-        "tier",
-        "model",
-        "preset",
-        "reasoning_effort",
-        "service_tier",
-        "bootstrap_skill",
-        "workspace",
-    ] {
+    for field in ["tier", "preset", "workspace"] {
         if values
             .get(field)
             .and_then(serde_json::Value::as_str)
@@ -699,21 +728,13 @@ mod tests {
 
     #[test]
     fn create_agent_preserves_values_outside_optional_identifiers() {
-        let mut args = json!({
-            "address": "reviewer", "model": " ", "connection": "unconfigured",
-            "instructions": "", "max_output_tokens": 120, "no_agents": true, "no_skills": false,
-            "tools": ["read_file"]
-        });
+        let mut args = json!({"address":"reviewer","tier":" ", "instructions":"", "tools":[]});
         normalize_create_agent_args(&mut args);
         let (address, config) = create_agent_input(&args).unwrap();
         assert_eq!("reviewer", address);
-        assert_eq!(None, config.model);
-        assert_eq!(Some("unconfigured"), config.connection.as_deref());
+        assert_eq!(None, config.tier);
         assert_eq!(Some(""), config.instructions.as_deref());
-        assert_eq!(Some(120), config.max_output_tokens);
-        assert!(config.no_agents);
-        assert!(!config.no_skills);
-
+        assert_eq!(Some(Vec::new()), config.tools);
         for args in [
             json!({"address":" "}),
             json!({"tier":"balanced"}),

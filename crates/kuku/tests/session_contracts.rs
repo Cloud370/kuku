@@ -280,30 +280,18 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && properties["tier"]["description"]
                     .as_str()
                     .is_some_and(|text| text.contains("<kuku_models>"))
-                && properties["connection"]["description"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("[provider.NAME]"))
-                && properties["no_agents"]["description"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("send_message"))
-                && properties["tools"]["description"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("explicit list replaces all default tools"))
-                && properties["tools"]["items"]["description"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("exact registered tool name"))
+                && properties.as_object().unwrap().len() == 6
+                && properties["tools"]["description"].as_str().is_some_and(|text| text.contains("empty array means no tools"))
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
-                && context.contains("Omit routing fields to use the default model.")
-                && context.contains("Collect a restricted Agent’s reply from list_agents")
+                && context.contains("Omit tier to use the default model")
+                && context.contains("collect its reply with list_agents")
         },
         response(
             json!({"tool_calls":[
                 tool("default", "create_agent", json!({
                     "address":"reviewer","instructions":"Review code for defects.",
-                    "connection":" ","tier":"","model":"","preset":"","reasoning_effort":"",
-                    "service_tier":"","bootstrap_skill":"","workspace":"","no_agents":false,
-                    "max_output_tokens":200,"tools":["read_file","send_message"]
+                    "tier":"","preset":"","workspace":"","tools":["read_file","send_message"]
                 })),
                 tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"})),
                 tool("conflicting-tools", "create_agent", json!({
@@ -329,8 +317,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                     .unwrap_or_default()
             };
             tool_count(request) == 5
-                && content("wrong-route").contains("Set tier=\"balanced\" and omit connection")
-                && content("conflicting-tools").contains("no_agents disables 'send_message'")
+                && content("wrong-route").contains("unknown field `connection`")
+                && content("conflicting-tools").contains("unknown field `no_agents`")
                 && content("invalid-address").contains("must be flat")
                 && content("denied").contains("not dispatched")
         },
@@ -384,7 +372,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
         assert_eq!("openai", selected.connection);
     }
     let reviewer = session.agent("reviewer").unwrap();
-    assert_eq!(Some(200), reviewer.config.max_output_tokens);
+    assert_eq!(None, reviewer.config.max_output_tokens);
     assert!(!reviewer.config.no_agents);
     assert_eq!(
         Some(vec!["read_file".into(), "send_message".into()]),

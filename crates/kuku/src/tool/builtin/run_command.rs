@@ -13,7 +13,6 @@ use tokio::time::{sleep_until, timeout, Duration, Instant as TokioInstant};
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::require_brief;
 use output::{read_output, OutputLimits, OutputRead, OutputStream, OutputWriter};
 use process::ProcessTree;
 use render::render_command_result;
@@ -40,7 +39,6 @@ pub(crate) enum CommandEvent {
 struct CommandRequest {
     command: String,
     timeout_seconds: u64,
-    _brief: String,
 }
 
 #[derive(Default)]
@@ -349,12 +347,9 @@ fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelop
         ));
     }
 
-    let brief = require_brief("run_command", args)?;
-
     Ok(CommandRequest {
         command: command.to_string(),
         timeout_seconds,
-        _brief: brief,
     })
 }
 

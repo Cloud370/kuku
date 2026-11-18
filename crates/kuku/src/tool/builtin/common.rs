@@ -183,22 +183,6 @@ pub(super) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolRe
     Ok((content, bytes))
 }
 
-pub(super) fn require_brief(tool_name: &str, args: &Value) -> Result<String, ToolResultEnvelope> {
-    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing brief",
-            format!("{tool_name} requires brief"),
-        ));
-    };
-    if brief.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: brief is empty",
-            "brief must not be empty",
-        ));
-    }
-    Ok(brief.to_string())
-}
-
 // ---------- Content helpers ----------
 
 pub(crate) fn content_hash(bytes: &[u8]) -> String {

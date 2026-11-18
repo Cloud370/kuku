@@ -7,14 +7,13 @@ use crate::event::StoredEvent;
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
-    content_hash, find_write_snapshot, plural, require_brief, resolve_write_path, write_atomically,
+    content_hash, find_write_snapshot, plural, resolve_write_path, write_atomically,
     WriteSnapshotLookup,
 };
 
 struct WriteRequest {
     path: String,
     content: String,
-    _brief: String,
 }
 
 pub(crate) fn write_file(
@@ -140,11 +139,9 @@ fn write_request(args: &Value) -> Result<WriteRequest, ToolResultEnvelope> {
             "write_file requires content",
         ));
     };
-    let brief = require_brief("write_file", args)?;
     Ok(WriteRequest {
         path: path.to_string(),
         content: content.to_string(),
-        _brief: brief,
     })
 }
 
