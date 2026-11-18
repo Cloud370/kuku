@@ -121,12 +121,13 @@ pub(crate) fn definition() -> ToolDefinition {
             "const report = await workspace.write_file({path: 'summary.json', content: JSON.stringify({count})}); ",
             "return {count, status: report.status}; ",
             "Get an output id from run_command result.output_ref.id. For raw bytes, use ",
-            "workspace.output_chunks({id}) and its segments. Use create_output, append_output and ",
+            "for await (const page of workspace.output_chunks({id})) and inspect page.segments. Use create_output, append_output and ",
             "finish_output to retain large derived results. When available, save durable names with ",
             "await workspace.save_value({name, value}) or await workspace.save_value({name, output_id}). ",
             "Set replace to true to change an existing binding. Use workspace.list_values({prefix, after, limit}) ",
-            "to discover names and their references, and workspace.read_output({name}) to read a value. ",
-            "JavaScript runs in QuickJS without Node.js APIs."
+            "to discover names and their references. For a named value, (await workspace.read_output({name})).result.segments ",
+            "contains the first page. QuickJS provides ECMAScript built-ins. Use segment.bytes for raw byte counts. ",
+            "Node.js and browser APIs such as TextEncoder are unavailable."
         ).into(),
         input_schema: json!({
             "type":"object",
