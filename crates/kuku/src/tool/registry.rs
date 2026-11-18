@@ -137,7 +137,11 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         ),
         tool(
             "run_command",
-            "Run a local command with the workspace as cwd. timeout is required in seconds.",
+            if cfg!(windows) {
+                "Run a command in the workspace using Windows cmd.exe /S /C. Use cmd syntax, or explicitly invoke PowerShell for PowerShell syntax. timeout is required in seconds."
+            } else {
+                "Run a command in the workspace using sh -c (POSIX shell syntax). timeout is required in seconds."
+            },
             serde_json::json!({
                 "type": "object",
                 "properties": {
