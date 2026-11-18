@@ -84,6 +84,8 @@ Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests 
 
 The selected Agent’s `agent.usage` contains cumulative token counts and counts of requests that reported input or output. `cache_measured_input_tokens` and `cache_measured_read_tokens` sum input and cache reads over the same requests with valid paired counts. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
 
+When available, `agent.turn_started_at_ms` is the latest Turn's first admission time in milliseconds since the Unix epoch. After settlement, `agent.turn_elapsed_ms` gives its final elapsed time in milliseconds. The committed `inputs_accepted` frame for a new Turn can also carry `turn_started_at_ms`.
+
 `committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
 
 When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`.
@@ -99,6 +101,8 @@ History entries carry a durable `id`, Agent address, optional Turn identity, its
 For a `user` entry, `agent` identifies the recipient. When trusted runtime input records an Agent sender, `from` contains that sender's Session-local address, including on the input that opens a Turn.
 
 An explicit interruption can produce a `status` entry with `status: "interrupted"`, the `execution_id`, and the Turn identity and number when available. Its `text` holds up to 64 KiB of the interrupted reply, or is `null` if no visible text was retained. `truncated` indicates a longer partial reply. The raw journal can link its `turn.cancelled` event to the stop record with `stop_event_id`.
+
+A settled Turn can have a `turn_summary` entry. When a Turn is explicitly interrupted, its interrupted `status` entry can carry the same summary. The `turn_summary` object has `tool_calls`, the count of committed tool calls including calls awaiting authorization. Available measurements include `elapsed_ms` from admission to settlement, `input_tokens` and `output_tokens` when all model requests reported the corresponding count, and `cache_hit_percent` over requests with paired cache-read and input counts.
 
 Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.
 

@@ -84,6 +84,8 @@
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
+有记录时，`agent.turn_started_at_ms` 是最近轮次首次接纳输入的时间，单位为自 Unix 纪元起的毫秒数。轮次结算后，`agent.turn_elapsed_ms` 提供该轮最终耗时，单位为毫秒。新轮次的已提交 `inputs_accepted` 帧也可带有 `turn_started_at_ms`。
+
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
 已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
@@ -99,6 +101,8 @@
 在 `user` 条目中，`agent` 标识接收者。可信运行时输入记录了发送 Agent 时，`from` 包含该 Agent 在 Session 内的地址。开启一轮的输入也保留此字段。
 
 显式打断可以产生 `status` 为 `"interrupted"` 的 `status` 条目，包含 `execution_id`，也会提供已知的轮次标识和序号。`text` 保留最多 64 KiB 的中断回复，未保留可见正文时为 `null`。`truncated` 表示中断回复超过上限。原始日志可用 `stop_event_id` 将 `turn.cancelled` 对应到停止记录。
+
+已结算的轮次可以有 `turn_summary` 条目。显式打断轮次时，中断的 `status` 条目可以附带同样的摘要。`turn_summary` 对象的 `tool_calls` 是已提交的工具调用数，包括等待授权的调用。可用测量包括从接纳到结算的 `elapsed_ms`、所有模型请求均报告相应计数时的 `input_tokens` 或 `output_tokens`，以及按成对输入与缓存读取计数计算的 `cache_hit_percent`。
 
 Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个可为空的字符串分别摘录最近接纳的任务输入和仍在排队的最新任务输入，摘录长度有限。任务摘录不含问题回复。排队数量和待决事项分别读取 `pending_inputs`、`question` 和 `permission`。
 

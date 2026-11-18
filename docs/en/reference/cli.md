@@ -52,8 +52,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Ctrl+P, F1, or `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
-| Alt+↑ or Alt+← | Switch directly to the previous Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
-| Alt+↓ or Alt+→ | Switch directly to the next Agent. |
+| Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
 | `/agents` | Search the Session's Agents, switch recipients, or create an Agent. The selector shows activity, pending requests and queue counts, with `Admitted` and `Queued` task excerpts when available. |
 | `/back` | Return to the last Agent you viewed in this Session. Repeat to switch between the last two. Agent switching keeps each draft and reading position. |
 | `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
@@ -67,7 +66,8 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/source` | Switch between the rendered view and original Markdown for assistant replies in the current Agent's transcript. The source view keeps the fence markers. |
 | `/tools`, `/copy` | Open retained tool output or copy the complete source of the latest committed assistant reply. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
-| Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
+| Page Up, Page Down | Scroll the transcript. |
+| Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
 | ↑, ↓ in the editor | Move within a multiline draft. At the first or last visual line, browse sent prompts and return to the draft. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
@@ -78,6 +78,10 @@ In a selection dialog, click a row to highlight it. A click can switch the viewe
 ### Reading the transcript
 
 Each Turn contains user messages, tool activity and assistant text. Consecutive successful read-only inspections within a Turn are grouped by default, with counts for reads, searches and listings. File changes, running calls, failures and authorization requests stay individually visible. **List Agents** summarizes participants and their activity. **Query Session** summarizes matching events. Open details to inspect individual calls or read original results with `/tools`.
+
+While reading earlier output, click **Jump to latest** beside the composer to resume following.
+
+A settled Turn ends with a line such as `1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools`. The line shows duration, input and output tokens, cache hit rate and tool call count when those fields are available and fit.
 
 Write and edit cards show the file path, a bounded content or diff preview, and line counts when the tool reports them.
 
@@ -95,7 +99,7 @@ By default, a fence labeled `md` or `markdown` in an assistant reply previews th
 
 An empty Session opens with the kuku title. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and shows connection state, the selected Agent and its workspace. Context usage and average TPS appear when space and measurements are available.
 
-Above the input, an activity mark and label show the selected Agent's state. The mark animates during active work and stays still when ready or finished. Use `/statusline` to add the optional `execution` field to the footer. The composer grows with the draft. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
+Above the input, an activity mark and label show the selected Agent's state. The mark animates during active work and stays still when ready or finished. The display smooths brief phase changes and shows errors and requests for attention immediately. The current Turn's elapsed time updates each second when shown and keeps its start time across phases and Agent switches. Use `/statusline` to add the optional `execution` field to the footer. The composer shows its `To <agent>` recipient above the draft and grows as you type. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
 
 `Waiting for model` shows a pending model request. Provider updates can move among `Thinking`, `Streaming reply` and `Writing tool arguments` as reasoning, visible reply text and tool arguments arrive. `Running tools` shows dispatched tools. `Waiting` identifies a pending question or permission, and `Failed` identifies an execution error. `Offline` indicates a service connection problem. `Updates unavailable` indicates that the live transcript subscription has failed. While reconnecting or missing updates, `Last seen` marks the most recent observed execution state.
 
