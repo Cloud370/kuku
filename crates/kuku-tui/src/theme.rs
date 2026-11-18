@@ -77,3 +77,15 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
     let vertical = u16::from(area.height >= 14);
     Padding::new(sides, sides, vertical, vertical)
 }
+
+pub(crate) const CODE_BACKGROUND: Color = Color::Rgb(29, 38, 46);
+pub(crate) const CODE_TEXT: Color = Color::Rgb(224, 232, 239);
+pub(crate) const CODE_COMMENT: Color = Color::Rgb(151, 167, 178);
+pub(crate) const CODE_KEYWORD: Color = Color::Rgb(204, 168, 229);
+pub(crate) const CODE_STRING: Color = Color::Rgb(155, 204, 161);
+pub(crate) const CODE_LITERAL: Color = Color::Rgb(234, 188, 126);
+pub(crate) const CODE_NAME: Color = Color::Rgb(135, 200, 217);
+
+pub(crate) fn code_surface() -> Style {
+    Style::new().fg(CODE_TEXT).bg(CODE_BACKGROUND)
+}

@@ -1,16 +1,18 @@
 use std::borrow::Cow;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::text::{replace_tabs, single_line, terminal_text};
+use crate::text::{replace_tabs, terminal_text};
 use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS};
 
+mod code;
 mod table;
 
+use code::{CodeBlock, SyntaxBudget};
 use table::Table;
 
 pub(crate) fn render_markdown(text: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
@@ -110,10 +112,12 @@ struct Markdown {
     lines: Vec<Line<'static>>,
     current: Vec<Span<'static>>,
     table: Option<Table>,
+    code: Option<CodeBlock>,
+    syntax_budget: SyntaxBudget,
+    heading: Option<HeadingLevel>,
     modifiers: Modifier,
     lists: Vec<Option<u64>>,
     quotes: usize,
-    code: bool,
     link: bool,
 }
 
@@ -144,27 +148,16 @@ impl Markdown {
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Heading { level, .. } => {
-                self.finish();
-                self.modifiers.insert(Modifier::BOLD);
-                if matches!(level, HeadingLevel::H1 | HeadingLevel::H2) {
-                    self.push("▰ ", Style::default().fg(ACCENT));
-                }
+                self.paragraph();
+                self.heading = Some(level);
             }
             Tag::BlockQuote(_) => {
                 self.finish();
                 self.quotes += 1;
             }
             Tag::CodeBlock(kind) => {
-                self.finish();
-                let label = match kind {
-                    CodeBlockKind::Fenced(language) if !language.is_empty() => {
-                        single_line(&language)
-                    }
-                    CodeBlockKind::Indented | CodeBlockKind::Fenced(_) => "Code".into(),
-                };
-                self.push(&label, Style::default().fg(ACCENT));
-                self.finish();
-                self.code = true;
+                self.paragraph();
+                self.code = Some(CodeBlock::new(kind));
             }
             Tag::List(start) => {
                 self.finish();
@@ -199,7 +192,7 @@ impl Markdown {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Heading(_) => {
-                self.modifiers.remove(Modifier::BOLD);
+                self.heading = None;
                 self.paragraph();
             }
             TagEnd::BlockQuote(_) => {
@@ -207,11 +200,7 @@ impl Markdown {
                 self.quotes = self.quotes.saturating_sub(1);
                 self.paragraph();
             }
-            TagEnd::CodeBlock => {
-                self.finish();
-                self.code = false;
-                self.paragraph();
-            }
+            TagEnd::CodeBlock => self.finish_code(),
             TagEnd::List(_) => {
                 self.lists.pop();
                 self.paragraph();
@@ -254,9 +243,11 @@ impl Markdown {
     }
 
     fn text(&mut self, text: &str) {
-        let style = if self.code {
-            Style::default()
-        } else if self.link {
+        if let Some(code) = &mut self.code {
+            code.push(text);
+            return;
+        }
+        let style = if self.link {
             Style::default()
                 .fg(ACCENT)
                 .add_modifier(Modifier::UNDERLINED | self.modifiers)
@@ -275,10 +266,17 @@ impl Markdown {
         if text.is_empty() {
             return;
         }
-        if self.table.is_none() && self.current.is_empty() && (self.quotes > 0 || self.code) {
-            let indentation = "│ ".repeat(self.quotes + usize::from(self.code));
+        if self.table.is_none() && self.current.is_empty() && self.quotes > 0 {
+            let indentation = "│ ".repeat(self.quotes);
             append(&mut self.current, &indentation, Style::default().fg(MUTED));
         }
+        let style = match self.heading {
+            Some(HeadingLevel::H1 | HeadingLevel::H2) => style.add_modifier(Modifier::BOLD),
+            Some(HeadingLevel::H3 | HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6) => {
+                style.add_modifier(Modifier::ITALIC)
+            }
+            None => style,
+        };
         append(&mut self.current, &terminal_text(text), style);
     }
 
@@ -299,18 +297,35 @@ impl Markdown {
 
     fn finish_table(&mut self) {
         let table = self.table.take().expect("table end");
+        let (width, limit, inset) = self.block_area();
+        self.append_block(table.render(width, limit), &inset);
+    }
+
+    fn finish_code(&mut self) {
+        let code = self.code.take().expect("code block end");
+        let (width, limit, inset) = self.block_area();
+        let rows = code.render(width, limit, &mut self.syntax_budget);
+        self.append_block(rows, &inset);
+    }
+
+    fn block_area(&self) -> (usize, usize, String) {
         let quotes = self.quotes.min(self.width.saturating_sub(2) / 2);
         let inset = "│ ".repeat(quotes);
         let width = self.width - inset.width();
         let limit = self.limit.saturating_sub(self.lines.len());
-        self.lines
-            .extend(table.render(width, limit).into_iter().map(|mut row| {
-                if !inset.is_empty() && !row.spans.is_empty() {
-                    row.spans
-                        .insert(0, Span::styled(inset.clone(), Style::default().fg(MUTED)));
-                }
-                row
-            }));
+        (width, limit, inset)
+    }
+
+    fn append_block(&mut self, rows: Vec<Line<'static>>, inset: &str) {
+        self.lines.extend(rows.into_iter().map(|mut row| {
+            if !inset.is_empty() && !row.spans.is_empty() {
+                row.spans.insert(
+                    0,
+                    Span::styled(inset.to_owned(), Style::default().fg(MUTED)),
+                );
+            }
+            row
+        }));
         self.paragraph();
     }
 
@@ -337,7 +352,9 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::{render_markdown, wrap_bounded};
-    use crate::theme::ACCENT;
+    use crate::theme::{
+        ACCENT, CODE_BACKGROUND, CODE_COMMENT, CODE_KEYWORD, CODE_STRING, CODE_TEXT,
+    };
 
     const RICH_TABLE: &str = "| 项目 | Result | Cost |\n\
                               | :--- | :---: | ---: |\n\
@@ -472,7 +489,10 @@ mod tests {
         let before_fence = rows(&render_markdown(&source, width, LIMIT));
         assert!(before_fence.iter().any(|line| line.starts_with('┌')));
         assert!(before_fence.iter().any(|line| line.contains("中文 │ a|b")));
-        assert!(before_fence.iter().any(|line| line == "│ let 值"));
+        assert!(before_fence
+            .iter()
+            .any(|line| line.starts_with("│ let 值 ")));
+        assert!(before_fence.iter().any(|line| line.starts_with('╰')));
 
         source.push_str(" = 1;\n```\n\nFinished.");
         let complete = rows(&render_markdown(&source, width, LIMIT));
@@ -480,7 +500,7 @@ mod tests {
             1,
             complete
                 .iter()
-                .filter(|line| *line == "│ let 值 = 1;")
+                .filter(|line| line.starts_with("│ let 值 = 1; "))
                 .count()
         );
         assert_eq!(
@@ -499,8 +519,109 @@ mod tests {
         let plain = rows(&render_markdown(&fenced, 60, LIMIT));
         assert!(plain
             .iter()
-            .any(|line| line == "│ | 项目 | Result | Cost |"));
+            .any(|line| line.starts_with("│ | 项目 | Result | Cost | ")));
         assert!(plain.iter().any(|line| line == "Ordinary paragraph."));
         assert!(plain.iter().all(|line| !line.starts_with('┌')));
+    }
+
+    #[test]
+    fn fence_labels_and_highlights_lexical_scopes_across_lines() {
+        let source = concat!(
+            "```rust linenos\n",
+            "let greeting = \"let 中文\";\n",
+            "/* let 42\n",
+            "   let still a comment */\n",
+            "let answer = 42;\n",
+            "```",
+        );
+        let lines = render_markdown(source, 48, LIMIT);
+        let plain = rows(&lines);
+        assert!(plain[0].starts_with("╭─ rust "));
+        assert!(!plain[0].contains("linenos"));
+        assert!(plain[3].starts_with("│    let still a comment */"));
+        assert!(plain[5].starts_with('╰'));
+        assert!(lines[..6].iter().all(|line| line.width() == 48));
+        assert!(lines[..6].iter().all(|line| line
+            .spans
+            .iter()
+            .all(|span| { line.style.patch(span.style).bg == Some(CODE_BACKGROUND) })));
+        for (row, part, color) in [
+            (1, "let", CODE_KEYWORD),
+            (1, "let 中文", CODE_STRING),
+            (2, "let 42", CODE_COMMENT),
+            (3, "let still a comment", CODE_COMMENT),
+            (4, "let", CODE_KEYWORD),
+        ] {
+            assert!(
+                lines[row]
+                    .spans
+                    .iter()
+                    .any(|span| { span.content.contains(part) && span.style.fg == Some(color) }),
+                "missing color for {part:?} in {:?}",
+                lines[row]
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_fences_and_long_lines_keep_plain_code_and_independent_scopes() {
+        let long = "/".repeat(1100);
+        let source = format!(
+            concat!(
+                "```unknown_lang\nlet unknown = 3;\n```\n\n",
+                "```rust\n{}\nlet after_long = 4;\n```\n\n",
+                "```python\nreturn 5\n```",
+            ),
+            long
+        );
+        let lines = render_markdown(&source, 80, LIMIT);
+        assert!(lines[0].to_string().starts_with("╭─ unknown_lang "));
+        for word in ["let unknown", "let after_long"] {
+            assert!(lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| { span.content.contains(word) && span.style.fg == Some(CODE_TEXT) }));
+        }
+        assert!(lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| { span.content == "return" && span.style.fg == Some(CODE_KEYWORD) }));
+    }
+
+    #[test]
+    fn quoted_code_wraps_original_unicode_graphemes_at_narrow_widths() {
+        let source = "> ```text\n>  中文👩‍💻𠮷字\n> ```";
+        for width in 4..17 {
+            let lines = render_markdown(source, width, LIMIT);
+            let plain = rows(&lines);
+            assert!(lines.iter().all(|line| line.width() <= width));
+            assert!(plain.iter().all(|line| !line.contains('�')));
+            let body: String = plain
+                .iter()
+                .skip(1)
+                .take_while(|line| !line.is_empty() && !line.contains('╰'))
+                .flat_map(|line| line.chars())
+                .filter(|ch| *ch != '│' && !ch.is_whitespace())
+                .collect();
+            assert_eq!("中文👩‍💻𠮷字", body, "width {width}");
+        }
+    }
+
+    #[test]
+    fn headings_use_spacing_and_typography() {
+        let lines = render_markdown("# First *part*\n\n### Detail\n\nBody", 30, LIMIT);
+        assert_eq!(
+            ["First part", "", "Detail", "", "Body", ""],
+            rows(&lines).as_slice()
+        );
+        assert!(lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(lines[2].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::ITALIC));
+        assert!(lines[4].spans[0].style.add_modifier.is_empty());
     }
 }
