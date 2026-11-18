@@ -146,14 +146,21 @@ mod tests {
         let hash = versioned["content_hash"].as_str().unwrap();
         assert_eq!(crate::tool::builtin::common::content_hash(original), hash);
         let pinned = serde_json::json!({"path":"二进制 & file.out","expected_version":hash});
+        let digest = hash.strip_prefix("sha256:").unwrap();
+        let bare = serde_json::json!({"path":"二进制 & file.out","expected_version":digest.to_ascii_uppercase()});
 
         std::fs::write(&path, b"\xff\x00").unwrap();
         let stale = remove_file_for_executor(&pinned, workspace.path(), &[], &|| false);
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
+        let stale_bare = remove_file_for_executor(&bare, workspace.path(), &[], &|| false);
+        assert_eq!(
+            "snapshot_stale",
+            stale_bare.structured.unwrap()["reason_code"]
+        );
         assert_eq!(b"\xff\x00", std::fs::read(&path).unwrap().as_slice());
         std::fs::write(&path, original).unwrap();
 
-        let removed = remove_file_for_executor(&pinned, workspace.path(), &[], &|| false);
+        let removed = remove_file_for_executor(&bare, workspace.path(), &[], &|| false);
         assert_eq!("ok", removed.status);
         let facts =
             FileMutationFacts::from_structured(removed.structured.as_ref().unwrap()).unwrap();

@@ -171,6 +171,7 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 - `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
 - `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
 - `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
+- 文件工具的 `expected_version` 可使用返回的 `sha256:` 版本串，也可使用同一完整的 64 位十六进制 SHA-256 摘要。内容检查比较全部摘要位。
 - `edit_file` 和 `write_file` 可传入先前读取的 `content_hash` 作为 `expected_version`，进行附加版本检查。两种操作仍需满足各自的快照要求。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 

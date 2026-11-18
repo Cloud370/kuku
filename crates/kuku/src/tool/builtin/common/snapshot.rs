@@ -139,8 +139,19 @@ pub(crate) fn require_version(
     expected: Option<&str>,
     current: Option<&str>,
 ) -> Result<(), ToolResultEnvelope> {
-    if expected.is_some_and(|expected| Some(expected) != current) {
-        return Err(snapshot_stale_error(relative, 0));
+    if let Some(expected) = expected {
+        let matches = current.is_some_and(|current| {
+            current == expected
+                || current.strip_prefix("sha256:").is_some_and(|digest| {
+                    digest.len() == 64
+                        && digest.eq_ignore_ascii_case(
+                            expected.strip_prefix("sha256:").unwrap_or(expected),
+                        )
+                })
+        });
+        if !matches {
+            return Err(snapshot_stale_error(relative, 0));
+        }
     }
     Ok(())
 }

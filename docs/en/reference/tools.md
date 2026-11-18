@@ -171,6 +171,7 @@ Within one advancing Agent, kuku serializes the `read_file`, `stat_file`, `edit_
 - `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
 - `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.
 - `remove_file` removes a regular file when `expected_version` matches the current hash or, if omitted, after a whole-file read of the same version. For a binary file, obtain the hash with `stat_file({path, version: true})` and pass it as `expected_version`. A final symlink is rejected.
+- File tools accept the returned `sha256:` version or the same full 64-digit SHA-256 digest as `expected_version`. The content check uses all digest bits.
 - `edit_file` and `write_file` accept `expected_version` with the `content_hash` of an earlier read as an additional version check. Their snapshot requirements still apply.
 - `remember_memory` and `forget_memory` write memory files through dedicated APIs.
 
