@@ -25,15 +25,15 @@ The four scored attempts used DeepSeek-V4.1-Flash-1017 through OpenRouter, pinne
 
 ¹ TTFT measures request dispatch to the first meaningful output observed at the proxy. Stream TPS divides completion tokens by the interval from the first meaningful delta through end of stream. Reasoning tokens contribute to completion tokens. Native provider TTFT was unavailable. Memory, CPU, I/O units, sampling coverage and per-request metric coverage are included in the JSON report.
 
-| Harness | Original task passes | Mean inference USD/attempt | Inference USD/success² |
-|---|---:|---:|---:|
-| kuku | 3/4 | 0.04984 | 0.06646 |
-| Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 |
-| Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 |
-| Claude Code 2.1.308 | 14/16 | 0.05676 | 0.06486 |
-| OpenCode 1.19.4 | 11/16 | 0.02498 | 0.03634 |
-| OpenCode 2.2.7 | 14/16 | 0.04684 | 0.05354 |
-| DeepSeek Harness Standard 0.2.1-rc.3 | 13/16 | 0.06908 | 0.08502 |
+| Harness | Original task passes | Mean inference USD/attempt | Inference USD/success² | Mean agent + verifier seconds/attempt |
+|---|---:|---:|---:|---:|
+| kuku | 3/4 | 0.04984 | 0.06646 | 266 |
+| Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 |
+| Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 |
+| Claude Code 2.1.308 | 14/16 | 0.05676 | 0.06486 | 819 |
+| OpenCode 1.19.4 | 11/16 | 0.02498 | 0.03634 | 812 |
+| OpenCode 2.2.7 | 14/16 | 0.04684 | 0.05354 | 370 |
+| DeepSeek Harness Standard 0.2.1-rc.3 | 13/16 | 0.06908 | 0.08502 | 877 |
 
 ² Total model cost of all scored attempts divided by the number of successes. Official harness rates use the site's audit adjustments and four trials per task. The kuku row uses the original verifier once per task and excludes setup and diagnostic attempts. Only log aggregation also met kuku's separate SDK completion check. Different runtimes and replica counts limit speed and ranking claims. The local regex session used two external searches; local results have no official FrontierHarness audit.
 
@@ -55,6 +55,23 @@ Subsequent OpenRouter generation receipts confirmed Baseten and matched the stre
 The last sampled container block I/O was 0 B read and 32.6 MB written for async cancellation, and 0 B read and 1.39 GB written for Vim. Docker rounds these values and includes task tools. The SDK's own `getrusage` recorded zero input and output blocks in both runs. This host's WSL2 kernel did not expose `/proc/PID/io`, so logical read and write bytes for the SDK process are unknown.
 
 Both sessions also exposed redundant file reads. In the async session, `write_file` confirmed writing a scratch file on request 11 but refused to overwrite it on request 16. Reading it on request 17 returned the same hash. In the Vim session, the agent wrote its complete script on request 22, received the same refusal on request 37 and read back the unchanged hash on request 38. Pi's edit tool and Codex's patch implementation read current content within the edit operation. [Pi edit](https://github.com/earendil-works/pi/blob/d5b3de22d0e24a3e9c38a9410d3329b099717283/packages/coding-agent/src/core/tools/edit.ts#L178) · [Codex patch](https://github.com/openai/codex/blob/6ee9bc1ba7b6375faf040042728add58f796e79c/codex-rs/apply-patch/src/file_update.rs#L25)
+
+## Natural turn completion
+
+Two fresh sessions at `25ef0eb` used the ordinary SDK turn behavior. Neither session had a request-count or step limit. Each had a $1.50 budget, the original task timeout, the same Baseten pin, maximum reasoning effort and 131,072 output tokens per request. The ordinary single pre-stream retry was enabled. These trials appear under `round-6`.
+
+| Task | Original grader | SDK finish | Upstream attempts | Reported inference USD | SDK + verifier seconds | Cached input³ | Proxy first output p50 | Generation TPS | Mean / peak SDK RSS |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| Async cancellation | 6/6 | HTTP 429 | 18 | 0.06509 | 248.4 + 25.9 | 91.6% | 1.65 s | 186.0 | 34.3 / 36.7 MiB |
+| Large-file Vim edit | 5/5 | completed | 13 | 0.03732 | 191.8 + 42.3 | 73.1% | 1.33 s | 174.0 | 34.6 / 34.8 MiB |
+
+³ Cost, cache and timing measurements cover 17 completed async streams and all 13 Vim streams. The delayed receipts for all 30 confirmed Baseten and matched the stream charges. The 18th async attempt received an upstream HTTP 429 before streaming. The ledger held $0.4718592 against that unpriced request. The SDK's HTTP classifier considered temporary 429 errors retryable, but the runtime filtered out that failure kind. The async session also repeated the same-version overwrite failures described above.
+
+The SDK used 4.33 CPU seconds for async cancellation and 1.87 for Vim. Its recorded context and request preparation took 0.185 and 0.069 seconds in total, respectively. The five async commands reported 1.66 seconds of execution, and the eleven Vim commands reported 64.82 seconds. These measurements give different scopes for interpreting the wall time above.
+
+On the Vim task, the successful local attempt cost $0.03732. The four published Pi attempts averaged $0.08018 (one pass), and the four Codex CLI attempts averaged $0.04673 (three passes). The local model mostly used shell commands on this attempt. The single trial cannot isolate the effect of a particular SDK change. [Per-task comparisons](frontier-v1.1-sample.json)
+
+Through this cohort, OpenRouter streams reported **$0.585663908** across the pilot, including the reconciled canary. The ledger also counted **$2.359296** in conservative holds for four routing failures and the unpriced 429, totaling **$2.944959908** against its $50 allowance. The separate direct DeepSeek ledger carried **$0.168339876** in estimated charges against $30.
 
 ## Turn completion in peer implementations
 
