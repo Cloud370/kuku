@@ -158,11 +158,18 @@ impl Record {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct QueuedDelivery {
+    pub(super) queued_at: u64,
+    pub(super) receipt: Receipt,
+    pub(super) input: Input,
+}
+
 #[derive(Debug)]
 pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
-    pub(super) inbox: VecDeque<PendingInput>,
-    pub(super) accepted: Vec<PendingInput>,
+    pub(super) inbox: VecDeque<QueuedDelivery>,
+    pub(super) accepted: Vec<QueuedDelivery>,
     question_replies: HashSet<String>,
     pub(super) reply_preview: Option<ReplyPreview>,
     pub(super) permission_reply: Option<(String, bool)>,
@@ -463,7 +470,7 @@ impl State {
                         agent
                             .inbox
                             .make_contiguous()
-                            .sort_by_key(|entry| entry.receipt.event_id);
+                            .sort_by_key(|delivery| delivery.queued_at);
                         agent.snapshot.pending_inputs = agent.inbox.len();
                     }
                 }
@@ -545,7 +552,10 @@ impl State {
             .filter(|entry| {
                 self.deliveries.get(&entry.input.command_id) == Some(&InputStatus::Queued)
             })
-            .cloned()
+            .map(|entry| PendingInput {
+                receipt: entry.receipt.clone(),
+                input: entry.input.clone(),
+            })
             .collect())
     }
 
@@ -598,7 +608,11 @@ impl State {
             .insert(input.command_id.clone(), InputStatus::Queued);
         let receipt = self.commands[&input.command_id].1.clone();
         let agent = self.agent_mut(&input.target)?;
-        agent.inbox.push_back(PendingInput { receipt, input });
+        agent.inbox.push_back(QueuedDelivery {
+            queued_at: event_id,
+            receipt,
+            input,
+        });
         agent.update_inbox();
         Ok(())
     }

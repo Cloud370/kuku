@@ -1,10 +1,8 @@
 use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
-use super::record::{timestamp, AgentState, Record, State};
-use super::{
-    AgentConfig, AgentStatus, InputSource, InputTiming, PendingInput, Session, UsageTotals,
-};
+use super::record::{timestamp, AgentState, QueuedDelivery, Record, State};
+use super::{AgentConfig, AgentStatus, InputSource, InputTiming, Session, UsageTotals};
 
 pub(super) struct TurnWork {
     pub(super) config: AgentConfig,
@@ -65,7 +63,7 @@ impl Session {
         state: &mut State,
         address: &str,
         turn: u64,
-        inputs: &[PendingInput],
+        inputs: &[QueuedDelivery],
     ) -> Result<Option<InputSource>> {
         let Some(first) = inputs.first() else {
             return Ok(None);
@@ -180,7 +178,11 @@ impl Session {
         }))
     }
 
-    fn select_inputs(&self, agent: &AgentState, timing: Option<InputTiming>) -> Vec<PendingInput> {
+    fn select_inputs(
+        &self,
+        agent: &AgentState,
+        timing: Option<InputTiming>,
+    ) -> Vec<QueuedDelivery> {
         let mut eligible = agent
             .inbox
             .iter()
@@ -202,7 +204,7 @@ impl Session {
         &self,
         state: &mut State,
         address: &str,
-        entries: &[PendingInput],
+        entries: &[QueuedDelivery],
         turn: Option<u64>,
     ) -> Result<u64> {
         self.commit(
@@ -250,7 +252,7 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
     (config != *active).then_some(config)
 }
 
-fn input_text(entries: &[PendingInput]) -> String {
+fn input_text(entries: &[QueuedDelivery]) -> String {
     entries
         .iter()
         .map(|entry| entry.input.text.as_str())
@@ -258,7 +260,7 @@ fn input_text(entries: &[PendingInput]) -> String {
         .join("\n\n")
 }
 
-fn input_skills(entries: &[PendingInput]) -> Vec<String> {
+fn input_skills(entries: &[QueuedDelivery]) -> Vec<String> {
     entries
         .iter()
         .filter_map(|entry| entry.input.bootstrap_skill.clone())

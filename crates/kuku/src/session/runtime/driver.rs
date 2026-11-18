@@ -423,7 +423,7 @@ impl Session {
             && agent.snapshot.status == AgentStatus::Stopped
             && agent.stopped_at.is_some_and(|stopped| {
                 agent.inbox.iter().any(|entry| {
-                    entry.receipt.event_id > stopped
+                    entry.queued_at > stopped
                         && entry.input.activation == Activation::Wake
                         && matches!(entry.input.source, InputSource::Host(_))
                 })

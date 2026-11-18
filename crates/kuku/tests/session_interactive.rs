@@ -409,6 +409,75 @@ async fn concurrent_replacement_and_admission_deliver_exactly_one_version() {
 }
 
 #[tokio::test]
+async fn an_edited_input_preserves_its_order_and_admitted_text_when_retried() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options =
+        SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+    let (model, mut calls) = mpsc::unbounded_channel();
+    options.model_adapter = Some(Arc::new(Model(model)));
+    options.limits.retry_transient_provider_errors = false;
+    options.session_id = Some("retry-edited-input".into());
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let first = Input {
+        activation: Activation::Enqueue,
+        ..Input::new("first", "main", "original first input")
+    };
+    let later = Input {
+        source: InputSource::Host("another client".into()),
+        activation: Activation::Enqueue,
+        ..next_turn("later", "subsequent input")
+    };
+    session.send(first.clone()).unwrap();
+    let later_receipt = session.send(later.clone()).unwrap();
+    let replacement = session
+        .replace_queued(
+            "edited",
+            "main",
+            "first",
+            "edited first input",
+            &first.source,
+        )
+        .unwrap();
+    assert!(replacement.event_id > later_receipt.event_id);
+
+    session.advance("main").unwrap();
+    let attempt = next_call(&mut calls).await;
+    let body = attempt.request.body.to_string();
+    assert!(body.contains("edited first input"));
+    assert!(!body.contains("subsequent input"));
+    attempt.response.send(Reply::TemporaryFailure).unwrap();
+    ready(&session, AgentStatus::Interrupted).await;
+    session.close().await.unwrap();
+
+    let reopened = Session::open(options).await.unwrap();
+    reopened.advance("main").unwrap();
+    assert!(matches!(
+        reopened.replace_queued("late-edit", "main", "edited", "changed after admission", &first.source),
+        Err(Error::InputNotQueued(id)) if id == "edited"
+    ));
+    assert_eq!(None, reopened.receipt("late-edit").unwrap());
+    assert_eq!(Some(replacement), reopened.receipt("edited").unwrap());
+    let retried = next_call(&mut calls).await;
+    let body = retried.request.body.to_string();
+    assert!(body.contains("edited first input"));
+    assert!(!body.contains("changed after admission"));
+    assert!(!body.contains("subsequent input"));
+    let pending = reopened.pending_inputs("main").unwrap();
+    assert_eq!(1, pending.len());
+    assert_eq!(later, pending[0].input);
+    assert_eq!(later_receipt, pending[0].receipt);
+    retried
+        .response
+        .send(Reply::Text("replayed first input"))
+        .unwrap();
+    ready(&reopened, AgentStatus::Idle).await;
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn steering_waits_for_tools_and_skips_an_earlier_next_turn_receipt() {
     let (root, session, mut calls, tool) = open_model().await;
     let skill = root.path().join(".fixture/skills/inspect-fixture");

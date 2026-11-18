@@ -109,6 +109,12 @@ impl Session {
                 "replacement text is empty or exceeds the configured byte limit".into(),
             ));
         }
+        if !matches!(
+            state.input_status(address, input_command_id),
+            Ok(InputStatus::Queued)
+        ) {
+            return Err(Error::InputNotQueued(input_command_id.into()));
+        }
         let old = state
             .agents
             .get(address)
