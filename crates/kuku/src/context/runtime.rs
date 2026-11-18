@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
@@ -9,7 +9,7 @@ use crate::{Error, Result};
 
 const PAGE_RECORDS: usize = 256;
 const MAX_SELECTION_BYTES_FACTOR: usize = 4;
-const MAX_CACHED_READS: usize = 128;
+const MAX_CACHED_FILE_SNAPSHOTS: usize = 128;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub(crate) struct FrozenSegment {
@@ -524,6 +524,178 @@ pub(crate) fn read_frozen_catalog(path: &Path, agent: &str) -> Result<Option<Pro
     Ok(cursor.catalog)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum SnapshotKey {
+    Read(String, u64),
+    Write(u64, String),
+}
+
+#[derive(Default)]
+struct SnapshotCache {
+    entries: BTreeMap<SnapshotKey, (u64, StoredEvent)>,
+    visible_writes: BTreeSet<u64>,
+    segment: Option<u64>,
+    pending: Option<WriteAdmissions>,
+}
+
+struct WriteAdmissions {
+    segment: u64,
+    source_head: u64,
+    next_ordinal: u64,
+    receipts: BTreeSet<u64>,
+}
+
+impl SnapshotCache {
+    fn observe_context(&mut self, value: &serde_json::Value) {
+        let (Some(segment), Some(source_head)) =
+            (value["segment"].as_u64(), value["source_head"].as_u64())
+        else {
+            return;
+        };
+        match value["kind"].as_str() {
+            Some("runtime.context_admitted") => self.admit(value, segment, source_head),
+            Some("runtime.step_prepared") => {
+                if self.segment != Some(segment) {
+                    self.visible_writes.clear();
+                    self.segment = Some(segment);
+                }
+                if let Some(batch) = self.pending.take().filter(|batch| {
+                    batch.segment == segment
+                        && batch.source_head == source_head
+                        && Some(batch.next_ordinal) == value["context_head"].as_u64()
+                }) {
+                    self.visible_writes.extend(batch.receipts);
+                }
+                self.entries.retain(|key, (_, event)| {
+                    matches!(key, SnapshotKey::Read(..))
+                        || event.id > source_head
+                        || self.visible_writes.contains(&event.id)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn admit(&mut self, value: &serde_json::Value, segment: u64, source_head: u64) {
+        let (Some(ordinal), Some(turn), Some(blocks)) = (
+            value["ordinal"].as_u64(),
+            value["turn"].as_u64(),
+            value["message"]["blocks"].as_array(),
+        ) else {
+            return;
+        };
+        if self.pending.as_ref().is_none_or(|batch| {
+            batch.segment != segment
+                || batch.source_head != source_head
+                || batch.next_ordinal != ordinal
+        }) {
+            self.pending = Some(WriteAdmissions {
+                segment,
+                source_head,
+                next_ordinal: ordinal,
+                receipts: BTreeSet::new(),
+            });
+        }
+        let batch = self.pending.as_mut().expect("matching admission batch");
+        batch.next_ordinal = ordinal.saturating_add(1);
+        for block in blocks {
+            let result = &block["ToolResult"];
+            let Some(call) = result["tool_call_id"]
+                .as_str()
+                .filter(|_| result["status"] == "ok")
+            else {
+                continue;
+            };
+            if let Some((_, event)) = self
+                .entries
+                .get(&SnapshotKey::Write(turn, call.into()))
+                .filter(|(_, event)| event.id <= source_head)
+            {
+                batch.receipts.insert(event.id);
+            }
+        }
+    }
+
+    fn observe_result(
+        &mut self,
+        event: &mut StoredEvent,
+        agent: &str,
+        latest_turn: Option<u64>,
+    ) -> bool {
+        let EventPayload::ToolResult {
+            conversation,
+            turn,
+            tool_call_id,
+            status,
+            summary,
+            model_content,
+            structured: Some(value),
+            ..
+        } = &mut event.payload
+        else {
+            return false;
+        };
+        if status != "ok" || !belongs(conversation.as_deref(), *turn, agent, latest_turn) {
+            return false;
+        }
+        let key = if value["kind"] == "file_content" {
+            let Some(path) = value["canonical_path"].as_str() else {
+                return false;
+            };
+            let key = SnapshotKey::Read(path.into(), value["start_line"].as_u64().unwrap_or(1));
+            if value["cached"] == true {
+                if let Some((accessed, _)) = self.entries.get_mut(&key) {
+                    *accessed = event.id;
+                }
+                return true;
+            }
+            key
+        } else if let Some((path, hash)) = super::replay::supplied_file_version(value) {
+            *value = serde_json::json!({
+                "kind": "file_write", "canonical_path": path, "content_hash_after": hash,
+                "commit_state": "committed", (super::replay::SUPPLIED_FULL_WRITE): true,
+            });
+            summary.clear();
+            model_content.clear();
+            SnapshotKey::Write(*turn, tool_call_id.clone())
+        } else {
+            return false;
+        };
+        *conversation = Some(agent.into());
+        self.entries.insert(key, (event.id, event.clone()));
+        if self.entries.len() > MAX_CACHED_FILE_SNAPSHOTS {
+            self.remove_oldest();
+        }
+        true
+    }
+
+    fn remove_oldest(&mut self) -> bool {
+        let Some(key) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, (accessed, _))| *accessed)
+            .map(|(key, _)| key.clone())
+        else {
+            return false;
+        };
+        let (_, event) = self.entries.remove(&key).expect("oldest snapshot exists");
+        self.visible_writes.remove(&event.id);
+        if let Some(batch) = self.pending.as_mut() {
+            batch.receipts.remove(&event.id);
+        }
+        true
+    }
+
+    fn into_events(self) -> impl Iterator<Item = StoredEvent> {
+        self.entries
+            .into_iter()
+            .filter_map(move |(key, (_, event))| {
+                (matches!(key, SnapshotKey::Read(..)) || self.visible_writes.contains(&event.id))
+                    .then_some(event)
+            })
+    }
+}
+
 pub(crate) fn read_agent_events(
     path: &Path,
     agent: &str,
@@ -533,7 +705,7 @@ pub(crate) fn read_agent_events(
     let mut metadata = BTreeMap::<String, StoredEvent>::new();
     let mut current = Vec::<StoredEvent>::new();
     let mut skills = Vec::<StoredEvent>::new();
-    let mut reads = BTreeMap::<String, (u64, StoredEvent)>::new();
+    let mut snapshots = SnapshotCache::default();
     scan(path, 0, |mut event| {
         let mut changed = false;
         let key = match &event.payload {
@@ -583,40 +755,12 @@ pub(crate) fn read_agent_events(
             }
             return Ok(());
         }
-        if let EventPayload::ToolResult {
-            conversation,
-            turn,
-            status,
-            structured: Some(value),
-            ..
-        } = &event.payload
-        {
-            if belongs(conversation.as_deref(), *turn, agent, latest_turn)
-                && status == "ok"
-                && value["kind"] == "file_content"
-            {
-                let key = format!(
-                    "{}:{}",
-                    value["canonical_path"].as_str().unwrap_or(""),
-                    value["start_line"].as_u64().unwrap_or(1)
-                );
-                if value["cached"] != true {
-                    reads.insert(key, (event.id, event.clone()));
-                } else if let Some((accessed, _)) = reads.get_mut(&key) {
-                    *accessed = event.id;
-                }
-                changed = true;
-                if reads.len() > MAX_CACHED_READS {
-                    if let Some(key) = reads
-                        .iter()
-                        .min_by_key(|(_, (accessed, _))| *accessed)
-                        .map(|(key, _)| key.clone())
-                    {
-                        reads.remove(&key);
-                    }
-                }
+        if let EventPayload::Unknown(value) = &event.payload {
+            if value["agent"] == agent {
+                snapshots.observe_context(value);
             }
         }
+        changed |= snapshots.observe_result(&mut event, agent, latest_turn);
         let turn = match &event.payload {
             EventPayload::ModelResponse {
                 turn, conversation, ..
@@ -710,15 +854,15 @@ pub(crate) fn read_agent_events(
         if !changed {
             return Ok(());
         }
-        trim_read_cache(&metadata, &current, &skills, &mut reads, max_bytes)?;
+        trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
         Ok(())
     })?;
-    trim_read_cache(&metadata, &current, &skills, &mut reads, max_bytes)?;
+    trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
     let selected = metadata
         .into_values()
         .chain(current)
         .chain(skills)
-        .chain(reads.into_values().map(|(_, event)| event))
+        .chain(snapshots.into_events())
         .map(|event| (event.id, event))
         .collect::<BTreeMap<_, _>>();
     let result = selected.into_values().collect::<Vec<_>>();
@@ -730,25 +874,28 @@ pub(crate) fn read_agent_events(
     Ok(result)
 }
 
-fn trim_read_cache(
+fn trim_snapshot_cache(
     metadata: &BTreeMap<String, StoredEvent>,
     current: &[StoredEvent],
     skills: &[StoredEvent],
-    reads: &mut BTreeMap<String, (u64, StoredEvent)>,
+    snapshots: &mut SnapshotCache,
     max_bytes: usize,
 ) -> Result<()> {
     let budget = max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR);
-    while serde_json::to_vec(&(metadata, current, skills, &reads))?.len() > budget {
-        let Some(key) = reads
-            .iter()
-            .min_by_key(|(_, (accessed, _))| *accessed)
-            .map(|(key, _)| key.clone())
-        else {
+    while serde_json::to_vec(&(
+        metadata,
+        current,
+        skills,
+        snapshots.entries.values().collect::<Vec<_>>(),
+    ))?
+    .len()
+        > budget
+    {
+        if !snapshots.remove_oldest() {
             return Err(Error::InvalidArgument(
                 "agent startup facts exceed the context selection byte limit".into(),
             ));
-        };
-        reads.remove(&key);
+        }
     }
     Ok(())
 }

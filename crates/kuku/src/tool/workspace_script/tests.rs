@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::{Barrier, Notify};
 
-use crate::tool::builtin::common::ExecutorRead;
+use crate::tool::builtin::common::{ExecutorObservation, ExecutorObservationSource};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::WorkspaceExecutionHost;
 
@@ -231,14 +231,15 @@ async fn read_evidence_becomes_available_only_after_the_reply_reaches_javascript
                 match call.op {
                     ScriptOperation::ReadFile => {
                         let size = call.args["size"].as_u64().unwrap() as usize;
-                        execution.stage_read(
+                        execution.stage_observation(
                             &call.id,
-                            ExecutorRead {
+                            ExecutorObservation {
                                 canonical_path: PathBuf::from("file.txt"),
                                 content_hash: format!("hash-{size}"),
                                 range: 0..size,
                                 size_bytes: size,
                                 complete: true,
+                                source: ExecutorObservationSource::Read,
                             },
                         );
                         ToolResultEnvelope::ok("read", "", json!({"raw_text":"x".repeat(size)}))
@@ -246,7 +247,7 @@ async fn read_evidence_becomes_available_only_after_the_reply_reaches_javascript
                     ScriptOperation::WriteFile => ToolResultEnvelope::ok(
                         "write",
                         "",
-                        json!({"observed_reads":execution.reads().len()}),
+                        json!({"observed_reads":execution.observations().len()}),
                     ),
                     _ => panic!("unexpected host call"),
                 }

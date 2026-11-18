@@ -94,26 +94,26 @@ impl WorkspaceActions {
                                 &cancelled,
                             );
                             if let Some(read) = read {
-                                execution.stage_read(&local_id, read);
+                                execution.stage_observation(&local_id, read);
                             }
                             result
                         }
                         Op::EditFile => builtin::edit_file_for_executor(
                             &args,
                             &workspace,
-                            &execution.reads(),
+                            &execution.observations(),
                             &cancelled,
                         ),
                         Op::WriteFile => builtin::write_file_for_executor(
                             &args,
                             &workspace,
-                            &execution.reads(),
+                            &execution.observations(),
                             &cancelled,
                         ),
                         Op::RemoveFile => builtin::remove_file_for_executor(
                             &args,
                             &workspace,
-                            &execution.reads(),
+                            &execution.observations(),
                             &cancelled,
                         ),
                         _ => unreachable!("only file operations reach the blocking executor"),

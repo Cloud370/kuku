@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
+use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::workspace_script::{
     self, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation, WorkspaceActions,
 };
@@ -316,9 +317,18 @@ impl WorkspaceHost {
                 ));
             }
         }
+        let supplied_full_write = call.op == ScriptOperation::WriteFile
+            && call.args["content"]
+                .as_str()
+                .is_some_and(|content| args["content"].as_str() == Some(content));
         let mut result = self
-            .execute_authorized(&call.id, call.op, args, execution, mutating)
+            .execute_authorized(&call.id, call.op, args, execution.clone(), mutating)
             .await?;
+        if supplied_full_write {
+            if let Some(observation) = ExecutorObservation::committed_write(&result) {
+                execution.stage_observation(&call.id, observation);
+            }
+        }
         if !context.is_empty() {
             result.model_content.push('\n');
             result.model_content.push_str(&context.join("\n"));

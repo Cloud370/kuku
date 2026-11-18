@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::session::runtime::WorkspaceWorkerPermit;
-use crate::tool::builtin::common::ExecutorRead;
+use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::WorkspaceExecutionHost;
 
@@ -220,12 +220,15 @@ async fn dispatch(
             let result = execution
                 .call(host.as_ref(), request.ordinal, request.op, args)
                 .await;
-            let read = if request.op == ScriptOperation::ReadFile {
-                execution.take_read(request.ordinal)
-            } else {
-                None
-            };
-            buffer_response(result, request.op, read, &execution, response_capacity).await
+            let observation = execution.take_observation(request.ordinal);
+            buffer_response(
+                result,
+                request.op,
+                observation,
+                &execution,
+                response_capacity,
+            )
+            .await
         }
         Ok(_) | Err(_) => Err("workspace host request must be a JSON object within nesting bounds"),
     };
@@ -238,14 +241,14 @@ async fn dispatch(
 async fn buffer_response(
     envelope: ToolResultEnvelope,
     op: ScriptOperation,
-    read: Option<ExecutorRead>,
+    observation: Option<ExecutorObservation>,
     execution: &ScriptExecution,
     capacity: Arc<Semaphore>,
 ) -> Result<BufferedResponse, &'static str> {
     if execution.is_cancelled() {
         return Err("workspace script has stopped");
     }
-    let read = read.filter(|_| envelope.status == "ok");
+    let observation = observation.filter(|_| envelope.status == "ok");
     let model_content = if envelope.status == "ok"
         && matches!(op, ScriptOperation::ReadFile | ScriptOperation::ReadOutput)
     {
@@ -281,7 +284,7 @@ async fn buffer_response(
     };
     Ok(BufferedResponse {
         json,
-        read,
+        observation,
         _capacity,
     })
 }

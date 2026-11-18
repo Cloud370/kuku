@@ -88,7 +88,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         ),
         tool(
             "edit_file",
-            "Make a precise replacement in an existing file. The file must have been read in the current session before editing.",
+            "Make a precise replacement in visible file text. Use a prior read_file result or your own confirmed full write of the same version.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -96,7 +96,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
                     "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
-                    "expected_version": {"type": "string", "description": "Optional content_hash returned by read_file for the version to edit."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash of the version to edit."},
                     "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
                 "required": ["path", "old_text", "new_text"]
@@ -107,13 +107,13 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         ),
         tool(
             "write_file",
-            "Write a complete file. Creates new files or overwrites existing files after a full prior read snapshot.",
+            "Write a complete file. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "content": {"type": "string", "description": "Complete file content."},
-                    "expected_version": {"type": "string", "description": "Optional content_hash returned by read_file for the version to overwrite."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash of the version to overwrite."},
                     "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
                 "required": ["path", "content"]

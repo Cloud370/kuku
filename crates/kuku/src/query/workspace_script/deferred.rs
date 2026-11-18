@@ -10,7 +10,7 @@ use crate::event::{EventPayload, EventStore};
 use crate::permission::GateDecisionKind;
 use crate::query::helpers::{display_summary, now_timestamp, permission_candidate};
 use crate::query::types::{PendingRun, PermissionRequest, QueuedToolCall};
-use crate::tool::builtin::common::ExecutorRead;
+use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::workspace_script::{ScriptCall, ScriptExecution, ScriptOperation};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, WorkspaceScriptActionStatus, WorkspaceScriptFacts};
@@ -20,7 +20,8 @@ pub(super) struct PreparedAction {
     id: String,
     operation: ScriptOperation,
     args: Value,
-    reads: Vec<ExecutorRead>,
+    #[serde(rename = "reads")]
+    observations: Vec<ExecutorObservation>,
     workspace: PathBuf,
     definition: ToolDefinition,
     candidate: String,
@@ -48,13 +49,13 @@ impl PreparedAction {
         workspace: &Path,
         execution: &ScriptExecution,
     ) -> Result<Self> {
-        let reads = match call.op {
+        let observations = match call.op {
             ScriptOperation::EditFile
             | ScriptOperation::WriteFile
             | ScriptOperation::RemoveFile => {
                 let path = workspace.join(args["path"].as_str().unwrap_or_default());
                 execution
-                    .reads()
+                    .observations()
                     .into_iter()
                     .filter(|read| read.canonical_path == path)
                     .collect()
@@ -65,7 +66,7 @@ impl PreparedAction {
             id: call.id.clone(),
             operation: call.op,
             args,
-            reads,
+            observations,
             workspace: workspace.to_owned(),
             definition: definition.clone(),
             candidate,
@@ -160,8 +161,8 @@ impl Continuation {
         execution: Arc<ScriptExecution>,
         stop: Arc<Notify>,
     ) -> ToolResultEnvelope {
-        for read in &self.action.reads {
-            execution.remember_read(read.clone());
+        for observation in &self.action.observations {
+            execution.remember_observation(observation.clone());
         }
         let watcher = {
             let execution = execution.clone();
@@ -283,6 +284,6 @@ impl Continuation {
         content.truncate(boundary);
         ToolResultEnvelope { status:result.status, summary:summary.clone(),truncated:result.truncated,
             model_content:format!("{summary}\n{content}\nThe script stopped for approval. Continue from the recorded actions."),
-            structured:Some(json!(self.facts)),faults:result.faults }
+            structured:Some(json!(self.facts)),faults:result.faults,supplied_full_write:false }
     }
 }

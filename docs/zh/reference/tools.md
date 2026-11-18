@@ -84,7 +84,7 @@
 
 `workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。worker 由 kuku 提供并按需启动。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。通过 `workspace` 对象执行工作区动作。可用方法取决于 Agent 所选的工具，参数对象与相应直接工具一致。`workspace.methods` 列出可用方法定义。
 
-每次宿主调用返回 `{status, summary, truncated, result, model_content}`，其中 `result` 包含结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。动作仍需经过宿主授权与版本检查。
+每次宿主调用返回 `{status, summary, truncated, result, model_content}`，其中 `result` 包含结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `workspace.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
@@ -168,11 +168,11 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 - `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。编辑前应读取文件本身。
 - `fetch_url` 下载到临时目录，拒绝非 HTTP(S) URL 和内嵌凭证，并限制 50 MB。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
-- `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
-- `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
+- `edit_file` 要求 `old_text` 在 Agent 的有效历史中见过的文本内唯一匹配。证据可以来自先前的读取，或 Agent 自身已确认成功的完整写入。局部或截断读取只覆盖实际展示的原文。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
+- `write_file` 可以覆盖 Agent 在有效历史中完整读取过的文件版本，或由它自身写入完整内容且已确认成功的版本。当前路径和哈希都必须与证据一致。局部编辑不足以确认变更后的整文件内容。
 - `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
 - 文件工具的 `expected_version` 可使用返回的 `sha256:` 版本串，也可使用同一完整的 64 位十六进制 SHA-256 摘要。内容检查比较全部摘要位。
-- `edit_file` 和 `write_file` 可传入先前读取的 `content_hash` 作为 `expected_version`，进行附加版本检查。两种操作仍需满足各自的快照要求。
+- `edit_file` 和 `write_file` 可传入先前读取或已确认写入的 `content_hash` 作为 `expected_version`，进行附加版本检查。两种操作仍需满足各自的快照要求。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 
 ## Memory Tool Enums

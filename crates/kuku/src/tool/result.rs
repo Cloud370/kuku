@@ -35,6 +35,7 @@ pub(crate) struct ToolResultEnvelope {
     pub truncated: bool,
     pub structured: Option<Value>,
     pub(crate) faults: ToolFaults,
+    pub(crate) supplied_full_write: bool,
 }
 
 impl ToolResultEnvelope {
@@ -55,6 +56,7 @@ impl ToolResultEnvelope {
                 ..Default::default()
             },
             structured: Some(serde_json::to_value(facts).expect("command facts serialize to JSON")),
+            supplied_full_write: false,
         }
     }
 
@@ -74,6 +76,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(structured),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -89,6 +92,7 @@ impl ToolResultEnvelope {
             truncated: true,
             structured: Some(structured),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -100,6 +104,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(serde_json::json!({"kind": "error"})),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -136,6 +141,7 @@ impl ToolResultEnvelope {
                 "reason_code": reason.as_str(),
             })),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -147,6 +153,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(Self::blocked_marker()),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -158,6 +165,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(serde_json::json!({"kind": "cancelled"})),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 }

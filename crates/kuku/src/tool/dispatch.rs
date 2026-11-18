@@ -5,9 +5,7 @@ use serde_json::Value;
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-use crate::event::EventPayload;
-use crate::event::StoredEvent;
+use crate::event::{EventPayload, StoredEvent};
 use crate::tool::{builtin, ToolResultEnvelope};
 
 pub(crate) fn is_workspace_file(name: &str) -> bool {
@@ -40,7 +38,7 @@ pub(crate) fn dispatch_workspace_file(
     {
         return Some(permission_denied(name));
     }
-    let result = match name {
+    let mut result = match name {
         "find_files" => builtin::find_files(args, workspace, cancelled),
         "read_file" => builtin::read_file(
             args,
@@ -59,7 +57,39 @@ pub(crate) fn dispatch_workspace_file(
         }
         _ => return None,
     };
+    if name == "write_file" && result.status == "ok" {
+        result.supplied_full_write =
+            supplied_write_content(prior_events, conversation, tool_call_id)
+                .is_some_and(|content| args["content"].as_str() == Some(content));
+    }
     Some(result)
+}
+
+fn supplied_write_content<'a>(
+    events: &'a [StoredEvent],
+    actor: &crate::conversation::address::ConversationAddress,
+    call_id: Option<&str>,
+) -> Option<&'a str> {
+    let call_id = call_id?;
+    let (tool, args) = events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ToolCall {
+            tool,
+            tool_call_id,
+            conversation,
+            args,
+            ..
+        } if tool_call_id == call_id
+            && conversation.as_deref().unwrap_or("main") == actor.as_str() =>
+        {
+            Some((tool, args))
+        }
+        _ => None,
+    })?;
+    if tool == "write_file" {
+        args["content"].as_str()
+    } else {
+        None
+    }
 }
 
 // Dispatch is the single entry point bridging tool registry, config, and event path;
@@ -211,6 +241,41 @@ mod tests {
                 })),
             },
         }
+    }
+
+    #[test]
+    fn a_host_rewrite_of_the_content_does_not_grant_full_write_evidence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let call = StoredEvent {
+            id: 1,
+            payload: EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-05-14T00:00:00Z".into(),
+                conversation: Some("main".into()),
+                tool_call_id: "write".into(),
+                request_id: "request".into(),
+                index: 0,
+                tool: "write_file".into(),
+                args: serde_json::json!({"path":"out.txt","content":"agent text"}),
+            },
+        };
+        let result = dispatch_workspace_file(
+            "write_file",
+            &serde_json::json!({"path":"out.txt","content":"host text"}),
+            workspace.path(),
+            &crate::conversation::address::ConversationAddress::MAIN,
+            &[call],
+            2,
+            Some("write"),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!("ok", result.status);
+        assert!(!result.supplied_full_write);
+        assert_eq!(
+            "host text",
+            std::fs::read_to_string(workspace.path().join("out.txt")).unwrap()
+        );
     }
 
     fn denied_event(tool_call_id: &str) -> StoredEvent {

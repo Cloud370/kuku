@@ -1,7 +1,8 @@
 mod common;
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kuku::event::{EventPayload, ModelStopReason};
@@ -12,7 +13,7 @@ use kuku::{
     ModelStream, Session, SessionOptions, WorkspaceExecutionHost, WorkspaceScriptActionStatus,
     WorkspaceScriptFacts, WorkspaceScriptOperation,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[derive(Debug)]
 struct ScriptModel {
@@ -606,5 +607,286 @@ async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old
         })
         .collect::<Vec<_>>();
     assert_eq!(1, mutations.len());
+    session.close().await.unwrap();
+}
+
+type FileCall = (&'static str, &'static str, Value);
+
+#[derive(Debug)]
+struct FileToolModel(Mutex<VecDeque<Vec<FileCall>>>);
+
+impl ModelAdapter for FileToolModel {
+    fn stream(&self, _request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
+        Box::pin(async move {
+            let step = self
+                .0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("fixture model step");
+            let mut events = vec![ModelEvent::StreamStart {
+                request_id: "file-test".into(),
+            }];
+            if step.is_empty() {
+                events.extend([
+                    ModelEvent::TextDelta {
+                        text: "done".into(),
+                    },
+                    ModelEvent::StopReason {
+                        reason: ModelStopReason::EndTurn,
+                    },
+                ]);
+            } else {
+                for (index, (id, name, args)) in step.into_iter().enumerate() {
+                    let index = index as u64;
+                    events.extend([
+                        ModelEvent::ToolCallStart {
+                            index,
+                            id: id.into(),
+                            name: name.into(),
+                        },
+                        ModelEvent::ToolCallArgDelta {
+                            index,
+                            fragment: args.to_string(),
+                        },
+                        ModelEvent::ToolCallStop { index },
+                    ]);
+                }
+                events.push(ModelEvent::StopReason {
+                    reason: ModelStopReason::ToolUse,
+                });
+            }
+            events.push(ModelEvent::StreamEnd);
+            Ok(Box::pin(tokio_stream::iter(events.into_iter().map(Ok))) as ModelStream)
+        })
+    }
+}
+
+fn file_tool_options(
+    work: &tempfile::TempDir,
+    data: &tempfile::TempDir,
+    steps: Vec<Vec<FileCall>>,
+) -> SessionOptions {
+    let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
+    options.model_adapter = Some(Arc::new(FileToolModel(Mutex::new(steps.into()))));
+    options
+}
+
+fn write_owned(id: &'static str, content: &str) -> FileCall {
+    (
+        id,
+        "write_file",
+        json!({"path":"owned.txt","content":content}),
+    )
+}
+
+fn edit_owned(id: &'static str, old_text: &str, new_text: &str) -> FileCall {
+    (
+        id,
+        "edit_file",
+        json!({"path":"owned.txt","old_text":old_text,"new_text":new_text}),
+    )
+}
+
+async fn completed_turns(session: &Session, count: usize) {
+    until(|| {
+        (session
+            .events(0, 256)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::TurnCompleted { .. }))
+            .count()
+            == count)
+            .then_some(())
+    })
+    .await;
+}
+
+fn result_for(session: &Session, id: &str) -> (String, Value) {
+    session
+        .events(0, 256)
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ToolResult {
+                tool_call_id,
+                status,
+                structured: Some(data),
+                ..
+            } if tool_call_id == id => Some((status, data)),
+            _ => None,
+        })
+        .expect("tool result")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_writer_can_overwrite_after_reopen_and_edit_its_new_version() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session = start(file_tool_options(
+        &work,
+        &data,
+        vec![vec![write_owned("seed", "first")], vec![]],
+    ))
+    .await;
+    completed_turns(&session, 1).await;
+    let id = session.id().to_owned();
+    session.close().await.unwrap();
+
+    let prefix_lines = 12_000;
+    let prefix = "prefix\n".repeat(prefix_lines);
+    let mut options = file_tool_options(
+        &work,
+        &data,
+        vec![
+            vec![write_owned(
+                "rewrite",
+                &format!("{prefix}full second version"),
+            )],
+            vec![edit_owned("edit", "second", "third")],
+            vec![edit_owned("partial-result", "third", "unobserved")],
+            vec![(
+                "read",
+                "read_file",
+                json!({"path":"owned.txt", "offset":prefix_lines + 1}),
+            )],
+            vec![],
+        ],
+    );
+    options.session_id = Some(id);
+    let reopened = Session::open(options).await.unwrap();
+    reopened
+        .send(Input::new("second-input", "main", "update the file"))
+        .unwrap();
+    completed_turns(&reopened, 2).await;
+    let (status, write_facts) = result_for(&reopened, "rewrite");
+    assert_eq!("ok", status);
+    assert_eq!(true, write_facts["raw_text_after_truncated"]);
+    assert_eq!("ok", result_for(&reopened, "edit").0);
+    assert_eq!(
+        "snapshot_stale",
+        result_for(&reopened, "partial-result").1["reason_code"]
+    );
+    let (_, read_facts) = result_for(&reopened, "read");
+    assert_eq!(false, read_facts["cached"]);
+    assert_eq!("full third version", read_facts["raw_text"]);
+    assert_eq!(
+        format!("{prefix}full third version"),
+        std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
+    );
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_writer_evidence_checks_the_actor_and_current_digest() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session = start(file_tool_options(
+        &work,
+        &data,
+        vec![
+            vec![write_owned("seed", "my version")],
+            vec![],
+            vec![edit_owned("other-agent", "my version", "different actor")],
+            vec![],
+            vec![write_owned("stale-write", "unexpected overwrite")],
+            vec![],
+        ],
+    ))
+    .await;
+    completed_turns(&session, 1).await;
+    session
+        .create_agent("create-reviewer", "reviewer", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("review", "reviewer", "try to edit the file"))
+        .unwrap();
+    completed_turns(&session, 2).await;
+    assert_eq!(
+        "snapshot_required",
+        result_for(&session, "other-agent").1["reason_code"]
+    );
+
+    std::fs::write(work.path().join("owned.txt"), "external").unwrap();
+    session
+        .send(Input::new("update", "main", "try to overwrite the file"))
+        .unwrap();
+    completed_turns(&session, 3).await;
+    assert_eq!(
+        "snapshot_stale",
+        result_for(&session, "stale-write").1["reason_code"]
+    );
+    assert_eq!(
+        "external",
+        std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_writer_can_reuse_a_write_after_the_model_receives_confirmation() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session = start(file_tool_options(
+        &work,
+        &data,
+        vec![
+            vec![
+                write_owned("seed", "first"),
+                edit_owned("before-confirmation", "first", "premature"),
+            ],
+            vec![edit_owned("after-confirmation", "first", "confirmed")],
+            vec![],
+        ],
+    ))
+    .await;
+    completed_turns(&session, 1).await;
+    assert_eq!("ok", result_for(&session, "seed").0);
+    assert_eq!(
+        "snapshot_required",
+        result_for(&session, "before-confirmation").1["reason_code"]
+    );
+    assert_eq!("ok", result_for(&session, "after-confirmation").0);
+    assert_eq!(
+        "confirmed",
+        std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_writer_can_use_its_own_version_only_within_its_execution() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session = start(file_tool_options(&work, &data, vec![
+        vec![("script", "workspace_script", json!({"code":r#"
+const first = await workspace.write_file({path:"owned.txt",content:"alpha"});
+const second = await workspace.write_file({path:"owned.txt",content:"beta"});
+const edit = await workspace.edit_file({path:"owned.txt",old_text:"beta",new_text:"gamma"});
+const partial = await workspace.edit_file({path:"owned.txt",old_text:"gamma",new_text:"unobserved"});
+const independent = await workspace.write_file({path:"vm.txt",content:"observed"});
+return [first.status,second.status,edit.status,partial.result.reason_code,independent.status];
+"#}))],
+        vec![("new-vm", "workspace_script", json!({"code":r#"
+const attempt = await workspace.edit_file({path:"vm.txt",old_text:"observed",new_text:"different VM"});
+return attempt.result.reason_code;
+"#}))],
+        vec![],
+    ])).await;
+    completed_turns(&session, 1).await;
+    assert_eq!(
+        json!(["ok", "ok", "ok", "snapshot_stale", "ok"]),
+        script_facts(&session).unwrap().value
+    );
+    let facts = WorkspaceScriptFacts::from_structured(&result_for(&session, "new-vm").1).unwrap();
+    assert_eq!(json!("snapshot_required"), facts.value);
+    assert_eq!(
+        "gamma",
+        std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
+    );
+    assert_eq!(
+        "observed",
+        std::fs::read_to_string(work.path().join("vm.txt")).unwrap()
+    );
     session.close().await.unwrap();
 }

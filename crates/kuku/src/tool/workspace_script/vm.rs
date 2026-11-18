@@ -16,7 +16,7 @@ use rquickjs::{
 use serde_json::Value;
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 
-use crate::tool::builtin::common::ExecutorRead;
+use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::builtin::run_command::encoding::display_text;
 use crate::tool::ToolDefinition;
 
@@ -41,7 +41,7 @@ pub(super) struct Reply {
 
 pub(super) struct BufferedResponse {
     pub(super) json: Vec<u8>,
-    pub(super) read: Option<ExecutorRead>,
+    pub(super) observation: Option<ExecutorObservation>,
     pub(super) _capacity: OwnedSemaphorePermit,
 }
 
@@ -225,8 +225,8 @@ impl<'js> Worker<'js> {
         match reply.response {
             Ok(reply) => {
                 let response = self.ctx.json_parse(reply.json)?;
-                if let Some(read) = reply.read {
-                    self.execution.remember_read(read);
+                if let Some(observation) = reply.observation {
+                    self.execution.remember_observation(observation);
                 }
                 continuation.resolve.call((response,))
             }

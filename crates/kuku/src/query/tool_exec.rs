@@ -17,14 +17,21 @@ pub(super) struct HookPreResult {
 
 fn finalize_persisted_tool_result(
     result_event_id: u64,
-    result: &Option<serde_json::Value>,
+    envelope: &crate::tool::ToolResultEnvelope,
 ) -> Option<serde_json::Value> {
-    let mut result = result.clone();
+    let mut result = envelope.structured.clone();
     let Some(structured) = result.as_mut() else {
         return result;
     };
     if structured["kind"] == "file_content" {
         structured["read_event_id"] = serde_json::Value::from(result_event_id);
+    }
+    if let Some(fields) = structured.as_object_mut() {
+        let key = crate::context::replay::SUPPLIED_FULL_WRITE;
+        fields.remove(key);
+        if envelope.supplied_full_write {
+            fields.insert(key.into(), true.into());
+        }
     }
     result
 }
@@ -36,7 +43,7 @@ pub(crate) fn write_tool_result(
     turn: u64,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), &result.structured);
+    let structured = finalize_persisted_tool_result(store.next_id(), result);
     let stored = store.append(crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
@@ -194,6 +201,7 @@ fn handle_use_skill(
         model_content: result,
         truncated: false,
         faults: Default::default(),
+        supplied_full_write: false,
         structured: Some(json!({
             "kind": "skill_load",
             "conversation": pending.conversation.as_str(),
@@ -318,6 +326,7 @@ pub(super) async fn execute_tool_call(
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;
+    let structured = finalize_persisted_tool_result(store.next_id(), &result);
     let stored = store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -331,7 +340,7 @@ pub(super) async fn execute_tool_call(
         files_changed: Vec::new(),
         commands_run: Vec::new(),
         memory_changed: None,
-        structured: result.structured.clone(),
+        structured,
     })?;
     let mut result = result;
     if let EventPayload::ToolResult { structured, .. } = stored.payload {
@@ -654,6 +663,7 @@ mod tests {
             truncated: false,
             structured: None,
             faults: Default::default(),
+            supplied_full_write: false,
         };
         write_tool_result(&slot, &result, &events_path, 1).unwrap();
 
@@ -663,5 +673,17 @@ mod tests {
             crate::event::EventPayload::ToolResult { conversation, tool_call_id, .. }
                 if conversation.as_deref() == Some("review") && tool_call_id == "toolu_read"
         )));
+    }
+
+    #[test]
+    fn tool_result_data_cannot_mint_a_full_write_observation() {
+        let envelope = crate::tool::ToolResultEnvelope::ok(
+            "fixture",
+            "fixture",
+            serde_json::json!({"kind":"file_write","supplied_full_write":true,
+                "commit_state":"committed","canonical_path":"/fixture/test","content_hash_after":"digest"}),
+        );
+        let stored = finalize_persisted_tool_result(1, &envelope).unwrap();
+        assert!(crate::context::replay::supplied_file_version(&stored).is_none());
     }
 }

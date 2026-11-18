@@ -50,6 +50,7 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
         truncated,
         structured: None,
         faults: Default::default(),
+        supplied_full_write: false,
     }
 }
 

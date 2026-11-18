@@ -18,11 +18,11 @@ pub(crate) use file_io::{
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;
-pub(crate) use snapshot::ExecutorRead;
 pub(super) use snapshot::{
     expected_version, find_covering_read, require_version, snapshot_stale_error,
     text_match_offsets, WriteEvidence, WriteSnapshotLookup,
 };
+pub(crate) use snapshot::{ExecutorObservation, ExecutorObservationSource};
 
 pub(super) struct ResolvedPath {
     pub(super) workspace: PathBuf,
@@ -378,6 +378,7 @@ mod tests {
             require_full_file,
             required_text,
             None,
+            true,
         ) {
             WriteSnapshotLookup::Found(snapshot) => Some(snapshot),
             WriteSnapshotLookup::Rejected(_) => None,
@@ -536,6 +537,7 @@ mod tests {
             false,
             Some("alpha"),
             Some(&current_hash),
+            true,
         );
 
         let WriteSnapshotLookup::Found(snapshot) = result else {

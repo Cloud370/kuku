@@ -5,7 +5,9 @@ use crate::conversation::address::ConversationAddress;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 use super::revert::filter_rolled_back_events;
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, ModelStopReason, StoredEvent};
+
+pub(crate) const SUPPLIED_FULL_WRITE: &str = "supplied_full_write";
 
 struct PendingToolCall {
     index: u64,
@@ -53,7 +55,8 @@ pub(crate) fn effective_snapshot_events<'a>(
     conversation: &ConversationAddress,
 ) -> Vec<&'a StoredEvent> {
     let filtered = filter_rolled_back_events(events);
-    let suppressed_turns = if is_session_runtime(events) {
+    let session_runtime = is_session_runtime(events);
+    let suppressed_turns = if session_runtime {
         HashSet::new()
     } else {
         suppressed_turns(&filtered, conversation)
@@ -71,7 +74,23 @@ pub(crate) fn effective_snapshot_events<'a>(
         handoff_start_index(&filtered, index, keep_turns, conversation)
     });
 
-    filtered[start_idx..]
+    let effective = &filtered[start_idx..];
+    let latest_response = if session_runtime {
+        None
+    } else {
+        effective
+            .iter()
+            .rfind(|event| {
+                matches!(&event.payload, EventPayload::ModelResponse {
+                turn,
+                stop_reason: None | Some(ModelStopReason::EndTurn | ModelStopReason::ToolUse),
+                ..
+            } if !suppressed_turns.contains(turn))
+                    && event_belongs_to_history_conversation(&event.payload, conversation)
+            })
+            .map(|event| event.id)
+    };
+    effective
         .iter()
         .copied()
         .filter(|event| {
@@ -88,11 +107,25 @@ pub(crate) fn effective_snapshot_events<'a>(
                     structured: Some(structured),
                     ..
                 } if status == "ok"
-                    && structured["kind"] == "file_content"
-                    && structured["cached"] != true
+                    && ((structured["kind"] == "file_content" && structured["cached"] != true)
+                        || ((session_runtime || latest_response.is_some_and(|id| event.id < id))
+                            && supplied_file_version(structured).is_some()))
             )
         })
         .collect()
+}
+
+pub(crate) fn supplied_file_version(structured: &serde_json::Value) -> Option<(&str, &str)> {
+    if structured[SUPPLIED_FULL_WRITE] != true
+        || structured["kind"] != "file_write"
+        || structured["commit_state"] != "committed"
+    {
+        return None;
+    }
+    Some((
+        structured["canonical_path"].as_str()?,
+        structured["content_hash_after"].as_str()?,
+    ))
 }
 
 fn rebuild_history_internal(

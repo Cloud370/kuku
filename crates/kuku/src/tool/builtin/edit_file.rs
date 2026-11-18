@@ -8,7 +8,7 @@ use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 
 use super::common::{
     content_hash, expected_version, mutation_preview, plural, publish_file, read_file_as_utf8,
-    require_version, resolve_path, snapshot_stale_error, text_match_offsets, ExecutorRead,
+    require_version, resolve_path, snapshot_stale_error, text_match_offsets, ExecutorObservation,
     FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
@@ -52,7 +52,7 @@ pub(crate) fn edit_file(
 pub(crate) fn edit_file_for_executor(
     args: &Value,
     workspace: &Path,
-    reads: &[ExecutorRead],
+    reads: &[ExecutorObservation],
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     edit_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
@@ -197,10 +197,10 @@ fn snapshot_lookup_error(relative: &str, reason: ToolErrorReason) -> ToolResultE
             "old_text is outside the visible read_file snapshot; read the matching lines from {relative} before editing"
         ),
         ToolErrorReason::FullSnapshotRequired => format!(
-            "replace_all requires a full read_file snapshot; read all of {relative} before editing"
+            "replace_all requires a full read_file snapshot or your own confirmed full write of {relative}"
         ),
         ToolErrorReason::SnapshotRequired | ToolErrorReason::SnapshotStale => format!(
-            "edit_file requires a prior successful read_file snapshot for {relative}"
+            "edit_file requires a prior successful read_file snapshot for {relative} or your own confirmed full write"
         ),
     };
     ToolResultEnvelope::error_with_reason(

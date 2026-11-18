@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{Notify, Semaphore};
 
-use crate::tool::builtin::common::ExecutorRead;
+use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::{
@@ -48,8 +48,8 @@ pub(crate) struct ScriptExecution {
     cancelling: Arc<Notify>,
     host_operations: Arc<Semaphore>,
     facts: Mutex<BTreeMap<usize, WorkspaceScriptActionFacts>>,
-    staged_reads: Mutex<BTreeMap<String, ExecutorRead>>,
-    reads: Mutex<Vec<ExecutorRead>>,
+    staged_observations: Mutex<BTreeMap<String, ExecutorObservation>>,
+    observations: Mutex<Vec<ExecutorObservation>>,
     pub(super) outputs: super::outputs::DerivedOutputs,
 }
 
@@ -80,8 +80,8 @@ impl ScriptExecution {
             cancelling: Arc::new(Notify::new()),
             host_operations,
             facts: Mutex::new(BTreeMap::new()),
-            staged_reads: Mutex::new(BTreeMap::new()),
-            reads: Mutex::new(Vec::new()),
+            staged_observations: Mutex::new(BTreeMap::new()),
+            observations: Mutex::new(Vec::new()),
         }
     }
 
@@ -113,34 +113,37 @@ impl ScriptExecution {
         self.dispatch(host, ordinal, op, args).await
     }
 
-    pub(crate) fn remember_read(&self, read: ExecutorRead) {
-        let mut reads = self.reads.lock().unwrap();
-        if reads.contains(&read) {
+    pub(crate) fn remember_observation(&self, observation: ExecutorObservation) {
+        let mut observations = self.observations.lock().unwrap();
+        if observations.contains(&observation) {
             return;
         }
-        reads.push(read);
-        let mut bytes = reads.iter().map(read_bytes).sum::<usize>();
-        let discard = reads
+        observations.push(observation);
+        let mut bytes = observations.iter().map(observation_bytes).sum::<usize>();
+        let discard = observations
             .iter()
             .take_while(|read| {
                 let full = bytes > self.limits.host_bytes;
-                bytes -= read_bytes(read);
+                bytes -= observation_bytes(read);
                 full
             })
             .count();
-        reads.drain(..discard);
+        observations.drain(..discard);
     }
 
-    pub(crate) fn reads(&self) -> Vec<ExecutorRead> {
-        self.reads.lock().unwrap().clone()
+    pub(crate) fn observations(&self) -> Vec<ExecutorObservation> {
+        self.observations.lock().unwrap().clone()
     }
 
-    pub(super) fn stage_read(&self, id: &str, read: ExecutorRead) {
-        self.staged_reads.lock().unwrap().insert(id.into(), read);
+    pub(crate) fn stage_observation(&self, id: &str, observation: ExecutorObservation) {
+        self.staged_observations
+            .lock()
+            .unwrap()
+            .insert(id.into(), observation);
     }
 
-    pub(super) fn take_read(&self, ordinal: usize) -> Option<ExecutorRead> {
-        self.staged_reads
+    pub(super) fn take_observation(&self, ordinal: usize) -> Option<ExecutorObservation> {
+        self.staged_observations
             .lock()
             .unwrap()
             .remove(&action_id(ordinal))
@@ -235,8 +238,8 @@ fn action_id(ordinal: usize) -> String {
     format!("action_{ordinal}")
 }
 
-fn read_bytes(read: &ExecutorRead) -> usize {
-    std::mem::size_of::<ExecutorRead>()
+fn observation_bytes(read: &ExecutorObservation) -> usize {
+    std::mem::size_of::<ExecutorObservation>()
         + read.canonical_path.as_os_str().len()
         + read.content_hash.len()
 }

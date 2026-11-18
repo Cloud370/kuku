@@ -16,12 +16,43 @@ pub(crate) struct ReadSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ExecutorRead {
+pub(crate) struct ExecutorObservation {
     pub(crate) canonical_path: PathBuf,
     pub(crate) content_hash: String,
     pub(crate) range: Range<usize>,
     pub(crate) size_bytes: usize,
     pub(crate) complete: bool,
+    #[serde(default)]
+    pub(crate) source: ExecutorObservationSource,
+}
+
+impl ExecutorObservation {
+    pub(crate) fn committed_write(result: &ToolResultEnvelope) -> Option<Self> {
+        let facts = result.structured.as_ref()?;
+        if result.status != "ok"
+            || facts["kind"] != "file_write"
+            || facts["commit_state"] != "committed"
+        {
+            return None;
+        }
+        let size_bytes = usize::try_from(facts["bytes_written"].as_u64()?).ok()?;
+        Some(Self {
+            canonical_path: PathBuf::from(facts["canonical_path"].as_str()?),
+            content_hash: facts["content_hash_after"].as_str()?.to_owned(),
+            range: 0..size_bytes,
+            size_bytes,
+            complete: true,
+            source: ExecutorObservationSource::Write,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExecutorObservationSource {
+    #[default]
+    Read,
+    Write,
 }
 
 pub(crate) struct WriteSnapshot {
@@ -83,7 +114,7 @@ pub(crate) enum WriteEvidence<'a> {
         conversation: &'a ConversationAddress,
         events: &'a [StoredEvent],
     },
-    Executor(&'a [ExecutorRead]),
+    Executor(&'a [ExecutorObservation]),
 }
 
 impl WriteEvidence<'_> {
@@ -93,6 +124,25 @@ impl WriteEvidence<'_> {
         require_full: bool,
         required_text: Option<&str>,
         current_hash: &str,
+    ) -> WriteSnapshotLookup {
+        self.find_snapshot(path, require_full, required_text, current_hash, true)
+    }
+
+    pub(crate) fn find_full_read(&self, path: &Path, current_hash: &str) -> WriteSnapshotLookup {
+        self.find_snapshot(path, true, None, current_hash, false)
+    }
+
+    pub(crate) fn is_model(&self) -> bool {
+        matches!(self, Self::Model { .. })
+    }
+
+    fn find_snapshot(
+        &self,
+        path: &Path,
+        require_full: bool,
+        required_text: Option<&str>,
+        current_hash: &str,
+        allow_written: bool,
     ) -> WriteSnapshotLookup {
         match self {
             Self::Model {
@@ -105,15 +155,16 @@ impl WriteEvidence<'_> {
                 require_full,
                 required_text,
                 Some(current_hash),
+                allow_written,
             ),
-            Self::Executor(reads) => {
-                find_executor_snapshot(reads, path, require_full, current_hash)
-            }
+            Self::Executor(observations) => find_executor_snapshot(
+                observations,
+                path,
+                require_full,
+                current_hash,
+                allow_written,
+            ),
         }
-    }
-
-    pub(crate) fn is_model(&self) -> bool {
-        matches!(self, Self::Model { .. })
     }
 }
 
@@ -232,6 +283,7 @@ pub(crate) fn find_write_snapshot(
     require_full_file: bool,
     required_text: Option<&str>,
     current_content_hash: Option<&str>,
+    allow_written: bool,
 ) -> WriteSnapshotLookup {
     let canonical_path = canonical_path.to_string_lossy();
     let mut saw_path_snapshot = false;
@@ -253,14 +305,27 @@ pub(crate) fn find_write_snapshot(
         {
             continue;
         }
-        let Some(content_hash) = structured["content_hash"].as_str() else {
-            continue;
-        };
-        saw_path_snapshot = true;
-        let Some(coverage) = model_coverage(structured, require_full_file, required_text) else {
-            continue;
-        };
-        let event_id = structured["read_event_id"].as_u64().unwrap_or(event.id);
+        let (content_hash, coverage, event_id) =
+            if let Some((_, hash)) = crate::context::replay::supplied_file_version(structured) {
+                if !allow_written {
+                    continue;
+                }
+                (hash, ReadCoverage::Full, event.id)
+            } else {
+                let Some(hash) = structured["content_hash"].as_str() else {
+                    continue;
+                };
+                saw_path_snapshot = true;
+                let Some(coverage) = model_coverage(structured, require_full_file, required_text)
+                else {
+                    continue;
+                };
+                (
+                    hash,
+                    coverage,
+                    structured["read_event_id"].as_u64().unwrap_or(event.id),
+                )
+            };
         let snapshot = WriteSnapshot {
             event_id,
             content_hash: content_hash.to_owned(),
@@ -325,14 +390,16 @@ fn model_coverage(
 }
 
 fn find_executor_snapshot(
-    reads: &[ExecutorRead],
+    observations: &[ExecutorObservation],
     canonical_path: &Path,
     require_full: bool,
     current_hash: &str,
+    allow_written: bool,
 ) -> WriteSnapshotLookup {
-    let mut reads = reads
-        .iter()
-        .filter(|read| read.canonical_path == canonical_path);
+    let mut reads = observations.iter().filter(|read| {
+        read.canonical_path == canonical_path
+            && (allow_written || read.source == ExecutorObservationSource::Read)
+    });
     let Some(latest) = reads.next_back() else {
         return WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired);
     };

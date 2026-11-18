@@ -9,7 +9,7 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     file_read_error, find_covering_read, optional_positive_usize, requested_line_count,
-    required_path, resolve_path, ExecutorRead, FileCancellation,
+    required_path, resolve_path, ExecutorObservation, ExecutorObservationSource, FileCancellation,
 };
 
 mod scan;
@@ -55,7 +55,7 @@ pub(crate) fn read_file_for_executor(
     workspace: &Path,
     max_bytes: usize,
     cancelled: &FileCancellation<'_>,
-) -> (ToolResultEnvelope, Option<ExecutorRead>) {
+) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     read_file_impl(
         args,
         workspace,
@@ -73,7 +73,7 @@ fn read_file_impl(
     max_bytes: usize,
     model_history: Option<(&[StoredEvent], &ConversationAddress, u64)>,
     cancelled: &FileCancellation<'_>,
-) -> (ToolResultEnvelope, Option<ExecutorRead>) {
+) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     let request = match read_request(args) {
         Ok(request) => request,
         Err(result) => return (result, None),
@@ -146,12 +146,13 @@ fn read_file_impl(
     }
     let observation = if matches!(read_by, ReadBy::Executor) {
         view.model_content = summary.clone();
-        Some(ExecutorRead {
+        Some(ExecutorObservation {
             canonical_path: resolved.path,
             content_hash: view.content_hash,
             range: view.start_byte..end_byte,
             size_bytes: view.size_bytes,
             complete: is_full_file_snapshot,
+            source: ExecutorObservationSource::Read,
         })
     } else {
         if view.truncated {

@@ -212,6 +212,7 @@ async fn capture_tool_result(
             cleanup_incomplete: metadata.cleanup_incomplete,
             ..Default::default()
         },
+        supplied_full_write: false,
         structured: Some(
             serde_json::json!({"kind":"host_tool_result","tool":registered.spec.name,"data":data,"output_id":output.id,
             "output_ref":{"id":output.id,"offset":0,"bytes":metadata.stored_bytes},"capture_complete":!metadata.quota_truncated && !metadata.cleanup_incomplete,

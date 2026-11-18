@@ -9,8 +9,8 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     expected_version, file_read_error, file_version, remove_observed_file, require_version,
-    required_path, resolve_remove_path, snapshot_stale_error, ExecutorRead, FileCancellation,
-    WriteEvidence, WriteSnapshotLookup,
+    required_path, resolve_remove_path, snapshot_stale_error, ExecutorObservation,
+    FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
 pub(crate) fn remove_file(
@@ -34,7 +34,7 @@ pub(crate) fn remove_file(
 pub(crate) fn remove_file_for_executor(
     args: &Value,
     workspace: &Path,
-    reads: &[ExecutorRead],
+    reads: &[ExecutorObservation],
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     remove_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
@@ -99,7 +99,7 @@ fn require_remove_read(
     version: &str,
     evidence: &WriteEvidence<'_>,
 ) -> Result<(), ToolResultEnvelope> {
-    match evidence.find(path, true, None, version) {
+    match evidence.find_full_read(path, version) {
         WriteSnapshotLookup::Found(snapshot) if snapshot.content_hash == version => Ok(()),
         WriteSnapshotLookup::Found(snapshot) => Err(snapshot_stale_error(relative, snapshot.event_id)),
         WriteSnapshotLookup::Rejected(reason) => Err(ToolResultEnvelope::error_with_reason(

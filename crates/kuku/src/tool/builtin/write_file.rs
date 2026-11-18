@@ -10,7 +10,7 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     content_hash, expected_version, file_read_error, file_version, mutation_preview, plural,
-    publish_file, require_version, resolve_write_path, snapshot_stale_error, ExecutorRead,
+    publish_file, require_version, resolve_write_path, snapshot_stale_error, ExecutorObservation,
     FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
@@ -40,7 +40,7 @@ pub(crate) fn write_file(
 pub(crate) fn write_file_for_executor(
     args: &Value,
     workspace: &Path,
-    reads: &[ExecutorRead],
+    reads: &[ExecutorObservation],
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     write_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
@@ -82,7 +82,7 @@ fn write_file_with_evidence(
                         resolved.relative
                     ),
                     format!(
-                        "write_file requires a prior full read_file snapshot before overwriting {}",
+                        "write_file requires a prior full read_file snapshot of {} or your own confirmed full write of its current version",
                         resolved.relative
                     ),
                     reason,
