@@ -5,14 +5,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from frontier_report import (CASES, DATASET, MODEL_ID, SDK_REQUEST_BYTES_ERROR, EvidenceError,
-                             build_report, official_report)
+from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
+                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report)
 
 
 SECRET = 'do-not-publish-local-identity'
 SDK_SHA = '1' * 64
 GIT_COMMIT = '3' * 40
+ROUTER_MODEL = 'deepseek/deepseek-v4.1-flash-1017'
 
 
 def official_feed():
@@ -77,6 +79,33 @@ def local_evidence(directory, passed, *, ledger=False):
         {'kind': 'tool.result', 'status': 'blocked', 'summary': SECRET},
         {'kind': 'turn.completed'} if passed else {'kind': 'turn.interrupted', 'reason': 'length'},
     ]), encoding='utf-8')
+
+
+def router_evidence(directory, *overrides):
+    local_evidence(directory, True)
+    amounts = str(len(overrides) * 5 / 1000)
+    rows = [{'request': index, 'upstream_requested': 'baseten', 'status': 'completed', 'http_status': 200,
+             'basis': 'provider_reported', 'provider_reported_usd': '0.005', 'provider_cost_source': 'stream_usage',
+             'receipt_lookup': 404, 'model_received': ROUTER_MODEL, 'usage': {'input_tokens': 20, 'output_tokens': 10},
+             **extra} for index, extra in enumerate(overrides, 1)]
+    write_json(directory / 'meter.json', {
+        'case': directory.name, 'service': 'openrouter', 'wire': 'openai-responses', 'model_requested': ROUTER_MODEL,
+        'upstream': 'baseten', 'upstream_provider': 'BaseTen', 'allow_fallbacks': False, 'attempts': rows,
+        'accounting': {'upstream_requests': len(rows), 'provider_reported_requests': len(rows),
+                       'provider_reported_usd': amounts, 'provider_billed_usd': amounts, 'reconciled': True,
+                       'provider_cost_sources': {'stream_usage': {'requests': len(rows), 'usd': amounts}}},
+    })
+    ids = [f'gen-{SECRET}-{index}' for index in range(1, len(rows) + 1)]
+    (directory / PRIVATE_RECEIPTS).write_text(''.join(
+        json.dumps({'request': index, 'id': identifier, 'source': 'header'}) + '\n'
+        for index, identifier in enumerate(ids, 1)
+    ), encoding='utf-8')
+    return ids
+
+
+def generation_receipt(identifier, **changes):
+    return {'id': identifier, 'provider_name': 'BaseTen', 'model': ROUTER_MODEL, 'total_cost': 0.005,
+            'generation_time': 2_000, 'latency': 3_500, 'native_tokens_completion': 10, 'unknown': SECRET, **changes}
 
 
 class FrontierReportTests(unittest.TestCase):
@@ -268,6 +297,88 @@ class FrontierReportTests(unittest.TestCase):
             self.assertEqual(attempt['resources']['container']['samples'], 9)
             self.assertNotIn(SDK_REQUEST_BYTES_ERROR, json.dumps(attempt))
             self.assertNotIn(SECRET, json.dumps(attempt))
+
+    def test_delayed_receipt_is_bound_to_meter_and_reused_without_recounting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            case = CASES[0]
+            directory = root / case
+            delayed_id, _ = router_evidence(directory, {}, {
+                'receipt_lookup': 200, 'receipt_matches_route': True, 'reported_upstream': 'BaseTen',
+                'timing': {'openrouter_receipt_generation_time_ms': 3_000, 'openrouter_receipt_completion_tokens': 30},
+            })
+            attempt = [[case, directory]]
+            meter_path = directory / 'meter.json'
+            meter_raw = meter_path.read_bytes()
+            with patch('frontier_report.upstream_json', return_value=(200, generation_receipt(delayed_id))) as get:
+                report = build_report(official_feed(), attempt, receipt_key=SECRET)
+                get.assert_called_once_with('openrouter.ai', '/api/v1/generation?id=' + delayed_id, SECRET)
+            local = report['local_attempts'][0]
+            routing = local['routing']
+            self.assertEqual(routing['confirmed_upstream'], 'Baseten')
+            self.assertEqual(routing['requests_with_matching_receipt'], 2)
+            self.assertEqual(routing['requests_with_live_matching_receipt'], 1)
+            self.assertEqual(routing['requests_with_delayed_matching_receipt'], 1)
+            self.assertEqual(routing['live_receipt_lookup_counts'], {'200': 1, '404': 1})
+            self.assertEqual(local['cost']['provider_cost_sources'], {'stream_usage': {'requests': 2, 'usd': 0.01}})
+            perf = local['performance']
+            self.assertEqual(perf['openrouter_receipt']['openrouter_receipt_latency_ms']['p50'], 3_500)
+            self.assertEqual(perf['pooled_throughput']['openrouter_generation']['tokens_per_second'], 8)
+            self.assertEqual(perf['provider_native_ttft']['measured_requests'], 0)
+            self.assertEqual(meter_path.read_bytes(), meter_raw)
+            sidecar = directory / DELAYED_RECEIPTS
+            sidecar_raw = sidecar.read_text()
+            self.assertEqual(json.loads(sidecar_raw)['meter_sha256'], sha256(meter_raw).hexdigest())
+            self.assertNotIn(SECRET, sidecar_raw)
+            self.assertNotIn(str(root), json.dumps(report))
+            self.assertNotIn(SECRET, json.dumps(report))
+            with patch('frontier_report.upstream_json') as get:
+                self.assertEqual(build_report(official_feed(), attempt, receipt_key=SECRET), report)
+                self.assertEqual(build_report(official_feed(), attempt), report)
+                get.assert_not_called()
+            self.assertEqual(sidecar.read_text(), sidecar_raw)
+            meter_path.write_bytes(meter_raw + b'\n')
+            routing = build_report(official_feed(), attempt)['local_attempts'][0]['routing']
+            self.assertEqual(routing['requests_with_live_matching_receipt'], 1)
+            self.assertEqual(routing['requests_with_delayed_matching_receipt'], 0)
+
+    def test_delayed_receipt_lookup_failures_and_mismatches_leave_verification_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            case = CASES[0]
+            directory = Path(temporary) / case
+            ids = router_evidence(directory, {}, {}, {}, {}, {})
+            replies = dict(zip(ids, [(404, None), (200, generation_receipt(ids[1], total_cost=0.02)),
+                                     (200, generation_receipt(ids[2], provider_name='DeepSeek')),
+                                     (200, generation_receipt(ids[3], model='unexpected')),
+                                     (200, generation_receipt(ids[0]))], strict=True))
+            with patch('frontier_report.upstream_json', side_effect=lambda host, path, key: replies[path.split('=', 1)[1]]) as get:
+                local = build_report(official_feed(), [[case, directory]], receipt_key=SECRET)['local_attempts'][0]
+            self.assertEqual(get.call_count, 5)
+            self.assertTrue(local['result']['passed'])
+            self.assertIsNone(local['routing']['confirmed_upstream'])
+            self.assertEqual(local['routing']['live_receipt_lookup_counts'], {'404': 5})
+            self.assertEqual(local['routing']['requests_with_delayed_matching_receipt'], 0)
+            self.assertEqual(local['performance']['pooled_throughput']['openrouter_generation']['measured_requests'], 0)
+            self.assertFalse((directory / DELAYED_RECEIPTS).exists())
+
+    def test_refresh_receipts_cli_limits_gets_to_selected_attempts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / CASES[0]
+            selected_id, = router_evidence(directory, {})
+            router_evidence(root / CASES[1], {})
+            keyfile = root / 'credential.env'
+            keyfile.write_text(f'KUKU_TEST_OPENROUTER_API_KEY={SECRET}\n')
+            source = root / 'feed.json'
+            output = root / 'public.json'
+            write_json(source, official_feed())
+            argv = ['frontier_report', '--official-live', str(source), '--refresh-receipts', str(keyfile),
+                    '--attempt', CASES[0], str(directory), '--output', str(output)]
+            with patch('sys.argv', argv), patch('frontier_report.upstream_json', return_value=(404, None)) as get:
+                main()
+            get.assert_called_once_with('openrouter.ai', '/api/v1/generation?id=' + selected_id, SECRET)
+            self.assertNotIn(SECRET, output.read_text())
+            self.assertNotIn(str(root), output.read_text())
 
     def test_cli_writes_report_to_requested_file(self):
         with tempfile.TemporaryDirectory() as temporary:

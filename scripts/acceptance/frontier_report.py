@@ -3,14 +3,20 @@
 
 import argparse
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from hashlib import sha256
+from http.client import HTTPException
 import json
 import math
 from pathlib import Path
 import re
 from statistics import median
 import sys
+from urllib.parse import urlencode
+
+from paid_model import upstream_json, usd
+from run import load_secrets, locked, write_json
 
 
 CASES = ('log-summary-date-ranges', 'cancel-async-tasks', 'regex-log', 'large-scale-text-editing')
@@ -63,6 +69,10 @@ ROUTER_TIMINGS = {
     'openrouter_receipt_generation_time_ms': 'milliseconds',
     'openrouter_receipt_completion_tokens_per_second': 'tokens_per_second',
 }
+PRIVATE_RECEIPTS = '.frontier-receipts.jsonl'
+DELAYED_RECEIPTS = 'delayed-receipts.json'
+GENERATION_ID = re.compile(r'(?:gen-|resp[_-])[A-Za-z0-9_-]{1,152}')
+RECEIPT_LOOKUP_RESULTS = {'missing_generation_id', 'response_id_only', 'invalid_response'}
 
 
 class EvidenceError(ValueError):
@@ -281,7 +291,148 @@ def provider_name(value):
     return PROVIDERS.get(value.lower()) if isinstance(value, str) else None
 
 
-def routing_summary(meter, rows, requests):
+def exact_cost(value):
+    if type(value) not in (int, float, str):
+        return None
+    try:
+        return usd(value)
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def matched_receipt(meter, row, receipt):
+    pin = provider_name(meter.get('upstream'))
+    provider = provider_name(receipt.get('provider'))
+    models = {meter.get(field) for field in ('model_requested', 'catalog_upstream_model')
+              if isinstance(meter.get(field), str)} & OPENROUTER_MODELS
+    model = allowed(receipt.get('model'), models)
+    cost = exact_cost(receipt.get('cost_usd'))
+    if not model or not pin or provider != pin or cost is None or cost != exact_cost(row.get('provider_reported_usd')):
+        return None
+    latency = number(receipt.get('latency_ms'))
+    generation = number(receipt.get('generation_time_ms'))
+    tokens = count(receipt.get('completion_tokens'))
+    return {'request': row['request'], 'provider': provider, 'model': model, 'cost_usd': str(cost),
+            'latency_ms': latency if latency is not None and latency <= 10**9 else None,
+            'generation_time_ms': generation if generation is not None and 1 <= generation <= 10**9 else None,
+            'completion_tokens': tokens if tokens is not None and tokens <= 10**9 else None}
+
+
+def cached_receipts(path, meter, digest, rows):
+    try:
+        cache = read_object(path, 'delayed receipt evidence')
+    except EvidenceError:
+        return {}
+    entries = cache.get('receipts')
+    if cache.get('schema_version') != 1 or cache.get('meter_sha256') != digest or not isinstance(entries, list):
+        return {}
+    resolved = {}
+    for entry in entries:
+        receipt = object_value(entry)
+        request = count(receipt.get('request'))
+        if request in rows and (matched := matched_receipt(meter, rows[request], receipt)) is not None:
+            resolved[request] = matched
+    return resolved
+
+
+def private_generation_ids(path):
+    candidates = defaultdict(set)
+    try:
+        with path.open(encoding='utf-8') as handle:
+            for line in handle:
+                try:
+                    row = object_value(json.loads(line))
+                except ValueError:
+                    continue
+                request = count(row.get('request'))
+                identifier = row.get('id')
+                if request and isinstance(identifier, str) and GENERATION_ID.fullmatch(identifier):
+                    candidates[request].add(identifier)
+    except (OSError, UnicodeError):
+        return {}
+    occurrences = Counter(identifier for values in candidates.values() for identifier in values)
+    return {request: identifier for request, values in candidates.items() if len(values) == 1
+            for identifier in values if occurrences[identifier] == 1}
+
+
+def fetch_receipt(meter, row, identifier, key):
+    try:
+        status, data = upstream_json('openrouter.ai', '/api/v1/generation?' + urlencode({'id': identifier}), key)
+    except (OSError, HTTPException, KeyError, TypeError, ValueError):
+        return None
+    if status != 200 or not isinstance(data, dict) or data.get('id') != identifier:
+        return None
+    return matched_receipt(meter, row, {
+        'provider': data.get('provider_name'), 'model': data.get('model'), 'cost_usd': data.get('total_cost'),
+        'latency_ms': data.get('latency'), 'generation_time_ms': data.get('generation_time'),
+        'completion_tokens': data.get('native_tokens_completion'),
+    })
+
+
+def delayed_receipts(directory, meter, raw, rows, key):
+    if meter.get('service') != 'openrouter' or meter.get('allow_fallbacks') is not False:
+        return {}
+    pin = allowed(meter.get('upstream'), PROVIDERS)
+    if not pin or provider_name(meter.get('upstream_provider')) not in (None, provider_name(pin)):
+        return {}
+    requests = Counter(count(row.get('request')) for row in rows)
+    eligible = {}
+    for row in rows:
+        request = count(row.get('request'))
+        reported = row.get('reported_upstream')
+        if (request and requests[request] == 1 and row.get('upstream_requested') == pin
+                and row.get('basis') == 'provider_reported' and row.get('route_mismatch') is not True
+                and row.get('provider_matches_pin') is not False and row.get('receipt_matches_route') is None
+                and (not reported or provider_name(reported) == provider_name(pin))
+                and exact_cost(row.get('provider_reported_usd')) is not None):
+            eligible[request] = row
+    if not eligible:
+        return {}
+    digest = sha256(raw).hexdigest()
+    cache_path = directory / DELAYED_RECEIPTS
+    cache = cached_receipts(cache_path, meter, digest, eligible)
+    if not key or len(cache) == len(eligible):
+        return cache
+    identifiers = private_generation_ids(directory / PRIVATE_RECEIPTS)
+    jobs = [(eligible[request], identifier) for request, identifier in identifiers.items()
+            if request in eligible and request not in cache]
+    if not jobs:
+        return cache
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        received = [sample for sample in pool.map(lambda job: fetch_receipt(meter, *job, key), jobs)
+                    if sample is not None]
+    if not received:
+        return cache
+    try:
+        with locked(cache_path.with_suffix('.lock')):
+            if sha256((directory / 'meter.json').read_bytes()).hexdigest() != digest:
+                return cache
+            merged = cached_receipts(cache_path, meter, digest, eligible)
+            merged.update({item['request']: item for item in received})
+            write_json(cache_path, {'schema_version': 1, 'meter_sha256': digest,
+                                    'receipts': [item for _, item in sorted(merged.items())]})
+            return merged
+    except OSError:
+        return cache
+
+
+def with_delayed_receipt(row, receipt):
+    if receipt is None:
+        return row
+    generation = receipt['generation_time_ms']
+    tokens = receipt['completion_tokens']
+    return {**row, 'reported_upstream': receipt['provider'], 'provider_matches_pin': True,
+            'receipt_matches_route': True, 'timing': {
+                **object_value(row.get('timing')),
+                'openrouter_receipt_latency_ms': receipt['latency_ms'],
+                'openrouter_receipt_generation_time_ms': generation,
+                'openrouter_receipt_completion_tokens': tokens,
+                'openrouter_receipt_completion_tokens_per_second': tokens * 1000 / generation
+                if tokens is not None and generation else None,
+            }}
+
+
+def routing_summary(meter, rows, requests, delayed_receipt_count):
     pin_tag = allowed(meter.get('upstream'), PROVIDERS)
     pin_name = provider_name(meter.get('upstream_provider')) or provider_name(pin_tag)
     reported_names = [provider_name(row.get('reported_upstream')) for row in rows]
@@ -293,6 +444,9 @@ def routing_summary(meter, rows, requests):
                         and (name := provider_name(row.get('reported_upstream'))) is not None and name == pin_name})
     match = sum(boolean(row.get('receipt_matches_route')) is True for row in rows)
     mismatch = sum(boolean(row.get('receipt_matches_route')) is False for row in rows)
+    live_lookups = Counter(str(value) if type(value) is int and 100 <= value <= 599
+                           else allowed(value, RECEIPT_LOOKUP_RESULTS) or 'other'
+                           for row in rows if (value := row.get('receipt_lookup')) is not None)
     provider_comparisons = []
     if pin_name:
         for row, name in zip(rows, reported_names, strict=True):
@@ -321,6 +475,9 @@ def routing_summary(meter, rows, requests):
         'reported_model_request_counts': dict(sorted(Counter(
             model for row in rows if (model := allowed(row.get('model_received'), LOCAL_MODELS)) is not None).items())),
         'requests_with_matching_receipt': match,
+        'requests_with_live_matching_receipt': match - delayed_receipt_count,
+        'requests_with_delayed_matching_receipt': delayed_receipt_count,
+        'live_receipt_lookup_counts': dict(sorted(live_lookups.items())),
         'requests_with_nonmatching_receipt': mismatch,
         'requests_with_route_mismatch': sum(row.get('route_mismatch') is True for row in rows),
         'receipt_match_coverage': coverage(match + mismatch, requests),
@@ -405,9 +562,10 @@ def performance_summary(dispatched, requests):
     }
 
 
-def meter_summary(meter, rows):
+def meter_summary(meter, rows, delayed):
     ledger = object_value(meter.get('accounting'))
-    dispatched = [row for row in rows if row.get('basis') != 'no_upstream_charge' or row.get('status') != 'connection_failed']
+    dispatched = [with_delayed_receipt(row, delayed.get(count(row.get('request')))) for row in rows
+                  if row.get('basis') != 'no_upstream_charge' or row.get('status') != 'connection_failed']
     usages = [request_usage(row if row.get('route_mismatch') is not True else {}) for row in dispatched]
     aggregate_usage = {key: sum_observed(usage[key] for usage in usages) for key in (*USAGE_FIELDS, 'reasoning_tokens')}
     finish = Counter((allowed(row.get('response_status'), FINISH_REASONS) or 'other')
@@ -433,7 +591,7 @@ def meter_summary(meter, rows):
                       'subsequent_requests': cache_observation(usages[1:])},
         },
         'cost': cost_summary(meter, ledger, upstream_requests, usages),
-        'routing': routing_summary(meter, dispatched, upstream_requests),
+        'routing': routing_summary(meter, dispatched, upstream_requests, len(delayed)),
         'performance': performance_summary(dispatched, upstream_requests),
     }
 
@@ -528,12 +686,12 @@ def resource_summary(source):
     }
 
 
-def local_attempt(case, directory, ordinal, label):
+def local_attempt(case, directory, ordinal, label, receipt_key=None):
     if label is not None and not ROUND_LABEL.fullmatch(label):
         raise EvidenceError('invalid round label; use first, rerun, round-N, guidance, guarded, outputNk or contextNk')
     live = directory.resolve() / 'live'
     result = read_object(live / 'result.json', 'local live result')
-    meter = read_object(directory / 'meter.json', 'local meter')
+    meter, raw_meter = load_object(directory / 'meter.json', 'local meter')
     if result.get('mode') != 'live' or meter.get('case', case) != case:
         raise EvidenceError('local attempt evidence does not match its declared case or mode')
     sdk = object_value(result.get('sdk_evidence'))
@@ -547,7 +705,8 @@ def local_attempt(case, directory, ordinal, label):
         raise EvidenceError('local meter must contain request rows')
     if any('case' in row and row['case'] != case for row in rows):
         raise EvidenceError('local meter request does not match its declared case')
-    measure = meter_summary(meter, rows)
+    receipts = delayed_receipts(directory, meter, raw_meter, rows, receipt_key)
+    measure = meter_summary(meter, rows, receipts)
     outputs = {value for row in rows if (value := count(row.get('max_output_tokens'))) is not None}
     output_cap = next(iter(outputs)) if len(outputs) == 1 else None
     model_version = allowed(meter.get('model_version'), {MODEL_VERSION})
@@ -616,7 +775,7 @@ def local_attempt(case, directory, ordinal, label):
     }
 
 
-def build_report(feed, attempts, official_live_sha256=None):
+def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None):
     official = official_report(feed)
     official['snapshot_sha256'] = hex_digest(official_live_sha256, 64)
     counts = Counter()
@@ -626,7 +785,7 @@ def build_report(feed, attempts, official_live_sha256=None):
             raise EvidenceError('expected --attempt CASE RESULT_DIR [ROUND_LABEL] for a supported case')
         case, directory, *label = attempt
         counts[case] += 1
-        records.append(local_attempt(case, Path(directory), counts[case], label[0] if label else None))
+        records.append(local_attempt(case, Path(directory), counts[case], label[0] if label else None, receipt_key))
     return {
         'schema_version': 1,
         'measurement': {
@@ -638,8 +797,9 @@ def build_report(feed, attempts, official_live_sha256=None):
             'local_time': 'SDK execution inside the container and verifier wall times are measured separately.',
             'local_performance': ('Proxy timing starts before the outbound connection. First output is the first nonempty text, '
                                   'reasoning or tool-argument delta. Stream TPS spans first output to stream end and uses reported '
-                                  'completion tokens. OpenRouter receipt latency is total latency and provides no provider-native TTFT. '
-                                  'Receipt TPS uses native completion tokens and generation duration.'),
+                                  'completion tokens. OpenRouter receipt latency is the reported latency field. Provider-native TTFT is unavailable. '
+                                  'Receipt TPS uses native completion tokens and generation duration. '
+                                  'Matching delayed receipts can supplement provider timing and routing evidence.'),
             'local_cost': ('Completed OpenRouter stream usage or generation receipts provide known request charges. DeepSeek direct charges are estimated from token usage. '
                            'Missing charges may be accounted at an upper bound. Partial reported amounts cover requests with a provider-reported cost.'),
             'local_usage': ('Token sums use available usage and may be incomplete. Reasoning tokens are part of output when reported. '
@@ -663,11 +823,21 @@ def main():
     parser.add_argument('--official-live', required=True, type=Path, metavar='JSON')
     parser.add_argument('--attempt', action='append', nargs='+', default=[], metavar='VALUE',
                         help='CASE RESULT_DIR [ROUND_LABEL]; repeat in chronological order per case')
+    parser.add_argument('--refresh-receipts', type=Path, metavar='KEYFILE',
+                        help='read KUKU_TEST_OPENROUTER_API_KEY from a credential file for delayed generation lookups')
     parser.add_argument('--output', type=Path, metavar='JSON', help='default: standard output')
     args = parser.parse_args()
     try:
         feed, raw = load_object(args.official_live, 'official live snapshot')
-        report = build_report(feed, args.attempt, sha256(raw).hexdigest())
+        key = None
+        if args.refresh_receipts is not None and args.attempt:
+            try:
+                key = load_secrets(args.refresh_receipts).get('KUKU_TEST_OPENROUTER_API_KEY')
+            except (OSError, UnicodeError, ValueError):
+                pass
+            if not key:
+                sys.stderr.write('OpenRouter receipt refresh skipped: credential unavailable\n')
+        report = build_report(feed, args.attempt, sha256(raw).hexdigest(), receipt_key=key)
         encoded = json.dumps(report, indent=2, allow_nan=False) + '\n'
         if args.output is None:
             sys.stdout.write(encoded)
