@@ -495,9 +495,11 @@ impl OpenAiResponsesSseParser {
                         id: call_id,
                         name,
                     });
+                } else if item_type == "reasoning" {
+                    self.chunks.push(ProviderChunk::Reasoning);
                 }
             }
-            "response.output_text.delta" => {
+            "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(delta) = data.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
                         self.chunks.push(ProviderChunk::TextDelta {
@@ -507,6 +509,15 @@ impl OpenAiResponsesSseParser {
                 }
             }
             "response.reasoning_text.delta" => {
+                if data
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .is_some_and(|delta| !delta.is_empty())
+                {
+                    self.chunks.push(ProviderChunk::Reasoning);
+                }
+            }
+            "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = data.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
                         self.chunks.push(ProviderChunk::ThinkingDelta {

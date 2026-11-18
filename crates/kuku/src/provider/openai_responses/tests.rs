@@ -112,7 +112,7 @@ fn completed_usage_reports_cached_input_tokens() {
 }
 
 #[test]
-fn reasoning_text_delta_emits_thinking() {
+fn raw_reasoning_emits_only_activity_and_provider_summary_remains_separate() {
     let mut parser = OpenAiResponsesSseParser::new();
     let frame = concat!(
         "event: response.reasoning_text.delta\n",
@@ -121,10 +121,23 @@ fn reasoning_text_delta_emits_thinking() {
 
     let chunks = parser.feed(frame).unwrap();
 
-    assert!(chunks.iter().any(|chunk| matches!(
-        chunk,
-        ProviderChunk::ThinkingDelta { text } if text == "considering"
-    )));
+    assert!(matches!(chunks.as_slice(), [ProviderChunk::Reasoning]));
+    let summary = parser.feed(concat!(
+        "event: response.reasoning_summary_text.delta\n",
+        r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_123","output_index":0,"summary_index":0,"delta":"Published summary"}"#,
+    )).unwrap();
+    assert!(
+        matches!(summary.as_slice(), [ProviderChunk::ThinkingDelta { text }] if text == "Published summary")
+    );
+}
+
+#[test]
+fn a_provider_refusal_is_visible_assistant_text() {
+    let mut parser = OpenAiResponsesSseParser::new();
+    let refusal = parser.feed(r#"data: {"type":"response.refusal.delta","item_id":"message","output_index":0,"content_index":0,"delta":"I can’t do that."}"#).unwrap();
+    assert!(
+        matches!(refusal.as_slice(), [ProviderChunk::TextDelta { text }] if text == "I can’t do that.")
+    );
 }
 
 #[test]

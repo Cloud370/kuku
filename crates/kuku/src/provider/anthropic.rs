@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use crate::config::ProviderFormat;
+use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -171,7 +171,9 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(AnthropicSseParser::new()));
+    let parser = Arc::new(Mutex::new(AnthropicSseParser::new(
+        config.capabilities.profile == ProviderProfile::Anthropic,
+    )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -194,6 +196,7 @@ pub(crate) async fn stream_prepared(
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
+    require_thinking_signature: bool,
     tool_blocks: BTreeSet<u64>,
     invalid_tool_stream: bool,
     saw_terminal: bool,
@@ -205,9 +208,10 @@ struct AnthropicSseParser {
 }
 
 impl AnthropicSseParser {
-    fn new() -> Self {
+    fn new(require_thinking_signature: bool) -> Self {
         Self {
             chunks: Vec::new(),
+            require_thinking_signature,
             tool_blocks: BTreeSet::new(),
             invalid_tool_stream: false,
             saw_terminal: false,
@@ -254,17 +258,19 @@ impl AnthropicSseParser {
             }
             "content_block_start" => {
                 if let Some(block) = data.get("content_block") {
+                    let Some(index) = data.get("index").and_then(Value::as_u64) else {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    };
                     self.replay_budget.add(block)?;
                     if self.content_blocks.len() >= MAX_REPLAY_ITEMS {
                         return Err(super::prepare::invalid_request(
                             "too many native content blocks",
                         ));
                     }
-                    if let Some(index) = data.get("index").and_then(Value::as_u64) {
-                        if self.content_blocks.insert(index, block.clone()).is_some() {
-                            self.invalid_tool_stream = true;
-                            self.chunks.push(ProviderChunk::InvalidToolStream);
-                        }
+                    if self.content_blocks.insert(index, block.clone()).is_some() {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
                     }
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
@@ -277,22 +283,10 @@ impl AnthropicSseParser {
                                     .push(ProviderChunk::TextDelta { text: text.into() });
                             }
                         }
-                        Some("thinking") => {
-                            if let Some(text) = block
-                                .get("thinking")
-                                .and_then(Value::as_str)
-                                .filter(|text| !text.is_empty())
-                            {
-                                self.chunks
-                                    .push(ProviderChunk::ThinkingDelta { text: text.into() });
-                            }
+                        Some("thinking" | "redacted_thinking") => {
+                            self.chunks.push(ProviderChunk::Reasoning)
                         }
                         Some("tool_use") => {
-                            let Some(index) = data.get("index").and_then(Value::as_u64) else {
-                                self.invalid_tool_stream = true;
-                                self.chunks.push(ProviderChunk::InvalidToolStream);
-                                return Ok(self.take_chunks());
-                            };
                             self.tool_blocks.insert(index);
                             let id = block
                                 .get("id")
@@ -326,59 +320,45 @@ impl AnthropicSseParser {
             }
             "content_block_delta" => {
                 if let Some(delta) = data.get("delta") {
+                    let Some(index) = data.get("index").and_then(Value::as_u64) else {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    };
+                    if !self.content_blocks.contains_key(&index)
+                        || self.completed_blocks.contains(&index)
+                    {
+                        self.invalidate_tool_stream();
+                        return Ok(self.take_chunks());
+                    }
                     match delta.get("type").and_then(Value::as_str) {
                         Some("text_delta") => {
-                            let text = delta
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            self.append_native(
-                                data.get("index").and_then(Value::as_u64),
-                                "text",
-                                &text,
-                            )?;
-                            self.chunks.push(ProviderChunk::TextDelta { text });
+                            let text = delta.get("text").and_then(Value::as_str).unwrap_or("");
+                            if self.append_native(index, "text", "text", text)? && !text.is_empty()
+                            {
+                                self.chunks.push(ProviderChunk::TextDelta {
+                                    text: text.to_string(),
+                                });
+                            }
                         }
                         Some("thinking_delta") => {
-                            let text = delta
-                                .get("thinking")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            self.append_native(
-                                data.get("index").and_then(Value::as_u64),
-                                "thinking",
-                                &text,
-                            )?;
-                            self.chunks.push(ProviderChunk::ThinkingDelta { text });
+                            let text = delta.get("thinking").and_then(Value::as_str).unwrap_or("");
+                            if self.append_native(index, "thinking", "thinking", text)?
+                                && !text.is_empty()
+                            {
+                                self.chunks.push(ProviderChunk::Reasoning);
+                            }
                         }
                         Some("signature_delta") => {
                             if let Some(signature) = delta.get("signature").and_then(Value::as_str)
                             {
-                                self.append_native(
-                                    data.get("index").and_then(Value::as_u64),
-                                    "signature",
-                                    signature,
-                                )?;
+                                self.append_native(index, "thinking", "signature", signature)?;
                             }
                         }
                         Some("input_json_delta") => {
-                            let Some(index) = data.get("index").and_then(Value::as_u64) else {
-                                self.invalid_tool_stream = true;
-                                self.chunks.push(ProviderChunk::InvalidToolStream);
-                                return Ok(self.take_chunks());
-                            };
                             let fragment = delta
                                 .get("partial_json")
                                 .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            self.replay_budget.add(&Value::String(fragment.clone()))?;
-                            self.tool_arguments
-                                .entry(index)
-                                .or_default()
-                                .push_str(&fragment);
+                                .unwrap_or("");
                             if !self.tool_blocks.contains(&index)
                                 || self
                                     .content_blocks
@@ -387,11 +367,19 @@ impl AnthropicSseParser {
                                     .and_then(Value::as_object)
                                     .is_some_and(|input| !input.is_empty())
                             {
-                                self.invalid_tool_stream = true;
-                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                                self.invalidate_tool_stream();
+                            } else if !fragment.is_empty() {
+                                self.replay_budget
+                                    .add(&Value::String(fragment.to_string()))?;
+                                self.tool_arguments
+                                    .entry(index)
+                                    .or_default()
+                                    .push_str(fragment);
+                                self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                                    index,
+                                    fragment: fragment.to_string(),
+                                });
                             }
-                            self.chunks
-                                .push(ProviderChunk::ToolCallArgDelta { index, fragment });
                         }
                         _ => {}
                     }
@@ -399,13 +387,13 @@ impl AnthropicSseParser {
             }
             "content_block_stop" => {
                 let Some(index) = data.get("index").and_then(Value::as_u64) else {
-                    self.invalid_tool_stream = true;
-                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                    self.invalidate_tool_stream();
                     return Ok(self.take_chunks());
                 };
-                if !self.completed_blocks.insert(index) {
-                    self.invalid_tool_stream = true;
-                    self.chunks.push(ProviderChunk::InvalidToolStream);
+                if !self.content_blocks.contains_key(&index) || !self.completed_blocks.insert(index)
+                {
+                    self.invalidate_tool_stream();
+                    return Ok(self.take_chunks());
                 }
                 if self.tool_blocks.contains(&index) {
                     if let Some(arguments) = self.tool_arguments.remove(&index) {
@@ -416,8 +404,7 @@ impl AnthropicSseParser {
                                 }
                             }
                             Ok(_) | Err(_) => {
-                                self.invalid_tool_stream = true;
-                                self.chunks.push(ProviderChunk::InvalidToolStream);
+                                self.invalidate_tool_stream();
                             }
                         }
                     } else if self
@@ -441,6 +428,9 @@ impl AnthropicSseParser {
                 if let Some(delta) = data.get("delta") {
                     if let Some(reason) = delta.get("stop_reason").and_then(Value::as_str) {
                         if let Some(reason) = ModelStopReason::from_wire(reason) {
+                            if !self.invalid_tool_stream && !self.complete_content() {
+                                self.invalidate_tool_stream();
+                            }
                             self.chunks.push(ProviderChunk::StopReason {
                                 reason: if self.invalid_tool_stream {
                                     ModelStopReason::InvalidResponse
@@ -458,13 +448,10 @@ impl AnthropicSseParser {
                 self.record_report(&data, output_reported)?;
             }
             "message_stop" => {
-                if !self.invalid_tool_stream
-                    && !self.content_blocks.is_empty()
-                    && self
-                        .content_blocks
-                        .keys()
-                        .all(|index| self.completed_blocks.contains(index))
-                {
+                if !self.invalid_tool_stream && !self.complete_content() {
+                    self.invalidate_tool_stream();
+                }
+                if !self.invalid_tool_stream && !self.content_blocks.is_empty() {
                     let value = json!({"role": "assistant", "content": self.content_blocks.values().cloned().collect::<Vec<_>>()});
                     validate_replay_size(&value)?;
                     self.chunks.push(ProviderChunk::Replay {
@@ -497,18 +484,44 @@ impl AnthropicSseParser {
         Ok(self.take_chunks())
     }
 
+    fn complete_content(&self) -> bool {
+        self.content_blocks.len() == self.completed_blocks.len()
+            && (!self.require_thinking_signature
+                || self.content_blocks.values().all(|block| {
+                    block["type"] != "thinking"
+                        || block["signature"]
+                            .as_str()
+                            .is_some_and(|signature| !signature.is_empty())
+                }))
+    }
+
+    fn invalidate_tool_stream(&mut self) {
+        self.invalid_tool_stream = true;
+        self.chunks.push(ProviderChunk::InvalidToolStream);
+    }
+
     fn append_native(
         &mut self,
-        index: Option<u64>,
+        index: u64,
+        kind: &str,
         field: &str,
         fragment: &str,
-    ) -> Result<(), ProviderFailure> {
+    ) -> Result<bool, ProviderFailure> {
+        let Some(block) = self
+            .content_blocks
+            .get_mut(&index)
+            .filter(|block| block["type"] == kind)
+        else {
+            self.invalidate_tool_stream();
+            return Ok(false);
+        };
         self.replay_budget.add(&Value::String(fragment.into()))?;
-        if let Some(block) = index.and_then(|index| self.content_blocks.get_mut(&index)) {
-            let existing = block.get(field).and_then(Value::as_str).unwrap_or("");
-            block[field] = Value::String(existing.to_string() + fragment);
+        if let Some(Value::String(existing)) = block.get_mut(field) {
+            existing.push_str(fragment);
+        } else {
+            block[field] = Value::String(fragment.to_string());
         }
-        Ok(())
+        Ok(true)
     }
 
     fn record_report(
@@ -636,7 +649,7 @@ mod tests {
 
     #[test]
     fn messages_initial_output_is_not_normalized_as_final_usage() {
-        let mut parser = AnthropicSseParser::new();
+        let mut parser = AnthropicSseParser::new(true);
         let start = parser.feed(
             "event: message_start\ndata: {\"message\":{\"id\":\"msg_use\",\"usage\":{\"input_tokens\":80,\"cache_read_input_tokens\":15,\"cache_creation_input_tokens\":5,\"output_tokens\":1}}}",
         ).unwrap();
@@ -665,12 +678,15 @@ mod tests {
 
     #[test]
     fn truncated_stream_does_not_emit_stream_end() {
-        let mut parser = AnthropicSseParser::new();
+        let mut parser = AnthropicSseParser::new(true);
         let mut chunks = parser
             .feed(
             "event: message_start\ndata: {\"message\":{\"id\":\"msg_truncated\",\"usage\":{\"input_tokens\":1}}}",
         )
             .unwrap();
+        chunks.extend(parser.feed(
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+        ).unwrap());
         chunks.extend(parser.feed(
             "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}",
         ).unwrap());
@@ -687,7 +703,7 @@ mod tests {
 
     #[test]
     fn text_content_block_stop_remains_generic_content() {
-        let mut parser = AnthropicSseParser::new();
+        let mut parser = AnthropicSseParser::new(true);
         parser
             .feed(
                 "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
@@ -706,27 +722,73 @@ mod tests {
 
     #[test]
     fn tool_content_block_stop_is_typed_as_tool_completion() {
-        let mut parser = AnthropicSseParser::new();
+        let mut parser = AnthropicSseParser::new(true);
         parser
             .feed(
                 "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
             )
             .unwrap();
+        assert!(parser.feed(r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}"#).unwrap().is_empty());
 
         let chunks = parser
             .feed("event: content_block_stop\ndata: {\"index\":1}")
             .unwrap();
 
+        assert!(matches!(chunks.as_slice(), [
+            ProviderChunk::ToolCallArgDelta { index: 1, fragment },
+            ProviderChunk::ToolCallStop { index: 1 }
+        ] if fragment == "{}"));
+    }
+
+    #[test]
+    fn a_completed_tool_cannot_dispatch_with_incomplete_or_unsigned_thinking() {
+        for close_thinking in [false, true] {
+            let mut parser = AnthropicSseParser::new(true);
+            let initial = parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private fixture"}}"#).unwrap();
+            assert!(matches!(initial.as_slice(), [ProviderChunk::Reasoning]));
+            if close_thinking {
+                parser
+                    .feed(r#"data: {"type":"content_block_stop","index":0}"#)
+                    .unwrap();
+            } else {
+                parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"fixture-signature"}}"#).unwrap();
+            }
+            parser.feed(r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call","name":"read_file","input":{}}}"#).unwrap();
+            parser
+                .feed(r#"data: {"type":"content_block_stop","index":1}"#)
+                .unwrap();
+            let terminal = parser
+                .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#)
+                .unwrap();
+            assert!(matches!(
+                terminal.as_slice(),
+                [
+                    ProviderChunk::InvalidToolStream,
+                    ProviderChunk::StopReason {
+                        reason: ModelStopReason::InvalidResponse
+                    }
+                ]
+            ));
+            let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
+            assert!(matches!(ended.as_slice(), [ProviderChunk::StreamEnd]));
+        }
+    }
+
+    #[test]
+    fn text_delta_addressed_to_a_thinking_block_is_never_visible_text() {
+        let mut parser = AnthropicSseParser::new(true);
+        parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#).unwrap();
+        let chunks = parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"private fixture"}}"#).unwrap();
         assert!(matches!(
-            chunks.last(),
-            Some(ProviderChunk::ToolCallStop { index: 1 })
+            chunks.as_slice(),
+            [ProviderChunk::InvalidToolStream]
         ));
     }
 
     #[test]
     fn missing_or_malformed_tool_index_is_invalid() {
         for index in ["null", "\"zero\""] {
-            let mut parser = AnthropicSseParser::new();
+            let mut parser = AnthropicSseParser::new(true);
             parser.feed(&format!(
                 "event: content_block_start\ndata: {{\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{{}}}}}}"
             )).unwrap();
@@ -736,7 +798,7 @@ mod tests {
             assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
         }
 
-        let mut parser = AnthropicSseParser::new();
+        let mut parser = AnthropicSseParser::new(true);
         let chunks = parser.feed(
             "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
         ).unwrap();
