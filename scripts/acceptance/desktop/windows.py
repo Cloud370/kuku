@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import io
+from itertools import groupby
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,9 @@ TITLE = "Kuku Windows Terminal Acceptance"
 PASTE = "粘贴第一行 e\u0301 👩‍💻\r\n粘贴第二行\r\n最后X"
 PROMPT = "粘贴第一行 e\u0301 👩‍💻\n粘贴第二行\n最后\nshiftline\nctrlline"
 SELECTION = "selectable desktop text"
-REPLY = f"**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显\n\nBefore {SELECTION} after"
+SELECTION_MARKER = "||||||"
+SELECTION_LINE = f"{SELECTION_MARKER} {SELECTION} {SELECTION_MARKER}"
+REPLY = f"**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显\n\n{SELECTION_LINE}"
 SCREENSHOT_LIMIT = 1024 * 1024
 CLIPBOARD_TEXT_LIMIT = 1024 * 1024
 CF_UNICODETEXT, GMEM_MOVEABLE, HWND_MESSAGE = 13, 0x0002, -3
@@ -206,38 +209,6 @@ class Desktop:
         if self.user.SendInput(len(events), inputs, ctypes.sizeof(Input)) != len(events):
             raise ctypes.WinError(ctypes.get_last_error())
 
-    def visible_selection(self):
-        self.focus()
-        result = powershell(f"""
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
-$window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new({self.window}))
-$condition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ClassNameProperty, 'TermControl')
-$clock = [Diagnostics.Stopwatch]::StartNew()
-do {{
-    $element = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($element) {{
-        $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-        foreach ($visible in $pattern.GetVisibleRanges()) {{
-            if (-not $visible.GetText(-1).Contains('{SELECTION}')) {{ continue }}
-            $match = $visible.FindText('{SELECTION}', $false, $false)
-            if ($match -and $match.GetText(-1) -ceq '{SELECTION}') {{
-                $boxes = $match.GetBoundingRectangles()
-                if ($boxes.Count -eq 1 -and $boxes[0].Width -gt 0 -and $boxes[0].Height -gt 0) {{
-                    $box = $boxes[0]
-                    @{{ left = $box.Left; top = $box.Top; width = $box.Width; height = $box.Height }} |
-                        ConvertTo-Json -Compress
-                    return
-                }}
-            }}
-        }}
-    }}
-    Start-Sleep -Milliseconds 100
-}} while ($clock.Elapsed.TotalSeconds -lt 8)
-""", timeout=25)
-        assert result, "Could not locate the visible transcript text for mouse selection"
-        return json.loads(result)
-
     def move_cursor(self, point):
         left, top, width, height = (self.user.GetSystemMetrics(index) for index in VIRTUAL_SCREEN_METRICS)
         x, y = point[0] - left, point[1] - top
@@ -282,7 +253,7 @@ do {{
             time.sleep(0.35)
         raise AssertionError(f"Windows Terminal did not switch to the keyboard language 0x{expected:04x}")
 
-    def picture(self, name, settle=0.2):
+    def capture(self, settle=0.2):
         from PIL import ImageGrab
 
         self.focus()
@@ -292,7 +263,12 @@ do {{
         dwm.DwmGetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
         if dwm.DwmGetWindowAttribute(self.window, 9, ctypes.byref(bounds), ctypes.sizeof(bounds)):
             raise RuntimeError("Could not capture the Windows Terminal client bounds")
-        image = ImageGrab.grab(bbox=(bounds.left, bounds.top, bounds.right, bounds.bottom), include_layered_windows=True)
+        rectangle = (bounds.left, bounds.top, bounds.right, bounds.bottom)
+        image = ImageGrab.grab(bbox=rectangle, include_layered_windows=True, all_screens=True)
+        return image, (bounds.left, bounds.top)
+
+    def picture(self, name, settle=0.2):
+        image, _ = self.capture(settle)
         data = io.BytesIO()
         image.save(data, format="PNG")
         content = data.getvalue()
@@ -324,18 +300,58 @@ def read_state(state):
     return {}
 
 
+def selection_pixels(image):
+    rgb = image.convert("RGB")
+    pixels = rgb.load()
+    marker_size = len(SELECTION_MARKER)
+    marker_spacing = marker_size + len(SELECTION) + 2
+    matches = {}
+    for y in range(image.height):
+        background = pixels[0, y]
+        runs = []
+        start = None
+        for x in range(1, image.width):
+            if pixels[x, y] != background:
+                if start is None:
+                    start = x
+            elif start is not None:
+                runs.append((start, x - start))
+                start = None
+        markers = set()
+        for i in range(len(runs) - marker_size + 1):
+            x, width = runs[i]
+            stride = runs[i + 1][0] - x
+            columns = [(x + column * stride, width) for column in range(marker_size)]
+            if runs[i:i + marker_size] == columns:
+                markers.add((x, stride, width))
+        for x, stride, width in markers:
+            if (x + marker_spacing * stride, stride, width) in markers:
+                matches.setdefault((x + width // 2, stride), []).append(y)
+
+    candidates = []
+    for (x, stride), rows in matches.items():
+        for _, band in groupby(enumerate(rows), key=lambda row: row[1] - row[0]):
+            contiguous_rows = [y for _, y in band]
+            if len(contiguous_rows) >= 3:
+                candidates.append((x, stride, contiguous_rows[len(contiguous_rows) // 2]))
+    assert len(candidates) == 1, f"Expected one visible mouse selection fixture, found {len(candidates)}"
+    left, stride, y = candidates[0]
+    first = left + (marker_size + 1) * stride
+    last = first + (len(SELECTION) - 1) * stride
+    return first, last, y, stride
+
+
 def check_mouse_selection(desktop, checks):
     sentinel = f"previous clipboard value {secrets.token_hex(8)}"
     desktop.focus()
     desktop.clipboard.write(sentinel)
     assert desktop.clipboard.read() == sentinel, "Windows clipboard did not hold the mouse selection sentinel"
-    bounds = desktop.visible_selection()
-    cell = bounds["width"] / len(SELECTION)
-    y = int(bounds["top"] + bounds["height"] / 2)
-    start = (int(bounds["left"] + cell / 4), y)
-    end = (int(bounds["left"] + bounds["width"] - 3 * cell / 4), y)
+    image, (left, top) = desktop.capture()
+    first, last, row, cell_width = selection_pixels(image)
+    start = (left + first, top + row)
+    end = (left + last, top + row)
     result = checks["mouse_selection"] = {"button": "left", "modifiers": [], "start": start, "end": end,
-                                          "expected_text": SELECTION}
+                                          "expected_text": SELECTION, "cell_width_pixels": cell_width}
     with desktop.drag(start, end):
         result["screenshot"] = desktop.picture("01a-mouse-selection")
         assert desktop.clipboard.read() == sentinel, "Mouse selection changed the clipboard before the button was released"
