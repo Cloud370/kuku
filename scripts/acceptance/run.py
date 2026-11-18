@@ -821,6 +821,7 @@ def parser():
     workspace_product.add_argument("--archive", type=Path, help="install the selected platform release .tar.gz or .zip")
     workspace.add_argument("--bridge", type=Path, help="reuse a built native PTY and log fixture")
     workspace.add_argument("--scratch-base", type=Path, help="temporary workspaces outside the source tree")
+    workspace.add_argument("--handoff-only", action="store_true", help="with --sdk, verify the named report handoff to a reviewer")
     workspace.add_argument("--provider", choices=("deepseek", "openrouter"), help="explicitly select a paid service; default is a fixed local provider")
     workspace.add_argument("--model", help="explicit provider model slug")
     workspace.add_argument("--effort", help="native reasoning effort for a paid provider (default: high)")

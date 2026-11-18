@@ -22,6 +22,8 @@ from run import (ROOT, capture, command_environment, config_record, extract_rele
 REPORT = "incident-report.json"
 RESTORED = "restored-report.json"
 VALUE_NAME = "ingest_incidents"
+REVIEWER = "reviewer"
+REVIEW_FILE = "incident-review.json"
 PROGRAM = f"./ingest-replay{EXE}"
 ARGS = ["--workspace-log"]
 TURN_TIMEOUT = 150
@@ -41,6 +43,18 @@ PROMPTS = (
     f"Save the same report as a named Session value {VALUE_NAME}. Keep the captured replay available.",
     f"Use the saved Session value {VALUE_NAME} to write its JSON report to {RESTORED}. "
     f"Keep {REPORT} intact and use the saved value without running the replay again.",
+)
+REVIEW_TASK = (
+    f"Independently check the attached incident report. Write {REVIEW_FILE} with exactly audit_id "
+    "(from the report), checked_errors (sum of the codes counts), largest_code (the code with the "
+    "highest count), and consistent (whether that sum equals the report's errors count). "
+    "Reply with the audit ID and whether the report is consistent."
+)
+HANDOFF_PROMPT = (
+    f"Ask an independent Agent named {REVIEWER} to review our saved incident report. "
+    f"Attach the saved Session value {VALUE_NAME} so the reviewer can read the original. "
+    f"Give the reviewer this assignment. {REVIEW_TASK} "
+    "Wait for the reviewer to finish and tell me the audit ID and the consistency finding."
 )
 
 
@@ -131,24 +145,58 @@ return {{report, status:write.status}};
         provider.next("write-restored-report").text("Restored the saved incident report.")
 
 
-def turn_evidence(entries, turn):
+def drive_handoff_mock(provider, seed, evidence):
+    call = provider.next(HANDOFF_PROMPT)
+    names = sorted(tool["name"] for tool in call.request["tools"])
+    assert REQUIRED_WORKSPACE_TOOLS | {"send_message", "list_agents"} <= set(names), names
+    evidence["offered_tools"] = names
+    assert seed["audit_id"] not in json.dumps(call.request["messages"])
+    call.tool("create_agent", "create-handoff-reviewer", address=REVIEWER, instructions="Independently check incident reports.")
+    provider.next("create-handoff-reviewer").tool("send_message", "dispatch-handoff", to=REVIEWER,
+                                                 message=REVIEW_TASK, values=[VALUE_NAME])
+    first, second = provider.next(), provider.next()
+    parent, reviewer = (first, second) if "dispatch-handoff" in json.dumps(first.request["messages"]) else (second, first)
+    parent.expect("dispatch-handoff")
+    reviewer.expect(REVIEW_TASK)
+    child_context = reviewer.request["messages"][-1]["content"]
+    task = next(block["text"] for block in child_context if "<kuku_output_refs>" in block.get("text", ""))
+    assert seed["audit_id"] not in task and HANDOFF_PROMPT not in task
+    reference, = json.loads(task.split("<kuku_output_refs>", 1)[1].split("</kuku_output_refs>", 1)[0])
+    parent.tool("list_agents", "wait-for-reviewer", wait_for=REVIEWER)
+    provider.assert_idle(0.08)
+    reviewer.tool("read_output", "read-shared-report", id=reference["id"])
+    call = provider.next("read-shared-report")
+    report = report_from_chunk(json.loads(mock_result(call, "read-shared-report")))
+    assert report == seed, report
+    computed = review_report(report)
+    call.tool("write_file", "write-review-report", path=REVIEW_FILE, content=json.dumps(computed) + "\n")
+    reply = f'The report for audit {report["audit_id"]} is consistent.'
+    provider.next("write-review-report").text(reply)
+    call = provider.next("wait-for-reviewer")
+    returned, = json.loads(mock_result(call, "wait-for-reviewer"))
+    assert returned == {"address": REVIEWER, "status": "idle", "last_output": reply}, returned
+    call.text(f"The reviewer confirmed {reply}")
+
+
+def turn_evidence(entries, turn, agent="main"):
     calls = {}
     for row in entries:
-        if row.get("turn") != turn:
+        if row.get("turn") != turn or row.get("conversation", row.get("agent", "main")) != agent:
             continue
         identity = row.get("tool_call_id")
-        if row["type"] == "tool_call":
+        if row.get("type") == "tool_call":
             calls[identity] = {"call_id": identity, "name": row["tool"], "args": row.get("args", {}),
-                               "status": None, "result": {}}
-        elif row["type"] == "tool_result":
+                               "event_id": row["id"], "status": None, "result": {}}
+        elif row.get("type") == "tool_result":
             call = calls[identity]
             call.update(status=row["status"], result=row.get("structured") or {},
+                        result_event_id=row["id"],
                         summary=(row.get("summary") or "")[:440],
                         preview_bytes=len((row.get("model_content") or "").encode()))
     return list(calls.values())
 
 
-def sdk_entries(path):
+def sdk_entries(path, *, handoff=False):
     entries = []
     with path.open("rb") as handle:
         for _ in range(10000):
@@ -158,8 +206,10 @@ def sdk_entries(path):
             if len(line) > 1048576:
                 raise ValueError("Workspace evidence event exceeds 1 MiB")
             event = json.loads(line)
-            if event.get("kind") in {"tool.call", "tool.result"} and event.get("conversation", "main") == "main":
+            if event.get("kind") in {"tool.call", "tool.result"}:
                 event["type"] = event["kind"].replace(".", "_")
+                entries.append(event)
+            elif handoff and event.get("kind") in {"runtime.operation", "runtime.step_prepared", "runtime.context_admitted"}:
                 entries.append(event)
     raise ValueError("Workspace evidence has too many events")
 
@@ -183,12 +233,19 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
     report["turns"] = turns = []
     help_check = capture([caller, "--help"], evidence, "sdk-help", timeout=30, env=env, cwd=scratch)
     report["sdk_help"] = help_check
-    assert "--inspect-named-value" in Path(require_success(help_check)["log"]).read_text(encoding="utf-8")
+    help_text = Path(require_success(help_check)["log"]).read_text(encoding="utf-8")
+    assert "--inspect-named-value" in help_text
+    if args.handoff_only:
+        assert "--seed-named-json" in help_text, "Build the current session_task example for --handoff-only"
+        seed = {**EXPECTED, "audit_id": f"ingest-{secrets.token_hex(8)}"}
+        seed_file = scratch / "seed-report.json"
+        write_json(seed_file, seed)
     if isinstance(provider, RequestBoundary):
-        provider.reserve(budget, report["run_id"], "Public SDK workspace execution")
+        case = "Public SDK named report handoff" if args.handoff_only else "Public SDK workspace execution"
+        provider.reserve(budget, report["run_id"], case)
     connection = provider.route.connection if isinstance(provider, RequestBoundary) else "test-anthropic"
-    for index, prompt in enumerate(PROMPTS):
-        label = ("analyze", "reopen")[index]
+    steps = (("handoff", HANDOFF_PROMPT),) if args.handoff_only else tuple(zip(("analyze", "reopen"), PROMPTS))
+    for index, (label, prompt) in enumerate(steps):
         result = evidence / (label + "-sdk.json")
         prompt_file = scratch / (label + ".txt")
         prompt_file.write_text(prompt, encoding="utf-8")
@@ -199,6 +256,8 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
             "--max-output-tokens", str(args.max_output_tokens), "--max-context-tokens", "131072",
             "--timeout", str(TURN_TIMEOUT), "--inspect-named-value", VALUE_NAME,
         ]
+        if args.handoff_only:
+            command.extend(["--seed-named-json", seed_file])
         turn = {"name": label}
         turns.append(turn)
         if isinstance(provider, RequestBoundary):
@@ -209,7 +268,10 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 execution = pool.submit(capture, command, evidence, label, TURN_TIMEOUT + 15, env, (), scratch)
                 try:
-                    drive_mock(provider, index, turn)
+                    if args.handoff_only:
+                        drive_handoff_mock(provider, seed, turn)
+                    else:
+                        drive_mock(provider, index, turn)
                 except (AssertionError, ValueError) as error:
                     turn["fixture_error"] = str(error)[:1200]
                 check = execution.result()
@@ -221,11 +283,14 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
             raise ValueError("The SDK caller did not produce its result")
         sdk = json.loads(result.read_text(encoding="utf-8"))
         snapshot = sdk.get("agent") or {}
+        entries = sdk_entries(Path(sdk["events_path"]), handoff=args.handoff_only)
         turn.update(session_id=sdk["session_id"], number=snapshot.get("turn"), usage=snapshot.get("usage"),
                     last_error=sdk.get("error") or snapshot.get("last_error"),
-                    tools=turn_evidence(sdk_entries(Path(sdk["events_path"])), snapshot.get("turn")),
+                    tools=turn_evidence(entries, snapshot.get("turn")),
                     sdk_workspace=sdk["workspace"])
-        if index == 0:
+        if args.handoff_only:
+            checks = verify_handoff(turn, sdk, entries, seed, workspace, evidence)
+        elif index == 0:
             checks = verify_analysis(turn, workspace, evidence)
             observed = sdk["workspace"]["outcomes"]
             checks["sdk_decoded_script_outcome"] = any(item["facts"]["kind"] == "workspace_script_result"
@@ -335,8 +400,9 @@ def read_artifact(workspace, evidence, name):
 def tool_actions(tools):
     for tool in tools:
         yield tool
-        for action in tool["result"].get("actions", []):
-            yield {**action, "result": action["result"] or {}}
+        if isinstance(tool["result"], dict):
+            for action in tool["result"].get("actions", []):
+                yield {**action, "result": action["result"] or {}}
 
 
 def read_all_captured_output(script, reference):
@@ -353,6 +419,8 @@ def read_all_captured_output(script, reference):
 
 
 def is_replay(command):
+    if not isinstance(command, dict):
+        return False
     invocation = command.get("invocation", {})
     if invocation.get("mode") == "program":
         return Path(invocation["program"]).name == Path(PROGRAM).name and invocation.get("args") == ARGS
@@ -375,7 +443,8 @@ def script_failures(tools):
 def verify_analysis(turn, workspace, evidence):
     tools = turn["tools"]
     actions = list(tool_actions(tools))
-    commands = [action["result"] for action in actions if action["result"].get("kind") == "command_result"]
+    commands = [action["result"] for action in actions if isinstance(action["result"], dict)
+                and action["result"].get("kind") == "command_result"]
     replay = [row for row in commands if row["invocation"]["mode"] == "program" and is_replay(row)]
     scripts = [tool for tool in tools if tool["name"] == "workspace_script"]
     named_reference = saved_report_reference(turn)
@@ -442,6 +511,112 @@ def verify_reopen(turns, workspace, evidence):
     return checks
 
 
+def review_report(report):
+    checked_errors = sum(report["codes"].values())
+    return {"audit_id": report["audit_id"], "checked_errors": checked_errors,
+            "largest_code": max(report["codes"], key=report["codes"].get),
+            "consistent": checked_errors == report["errors"]}
+
+
+def reviewer_delivery(operations):
+    deliveries = [
+        {"event_id": identity, "input": record["input"], "values": record.get("values", [])}
+        for identity, record in operations
+        if record.get("operation") == "input_delivered" and record["input"]["target"] == REVIEWER
+    ]
+    accepted = [record["input_ids"] for _, record in operations
+                if record.get("operation") == "inputs_accepted" and record["address"] == REVIEWER]
+    return deliveries, accepted
+
+
+def reviewer_context(entries, reference, seed):
+    requests = [event for event in entries if event.get("kind") == "runtime.step_prepared"
+                and event.get("agent") == REVIEWER]
+    if not requests or reference is None:
+        return requests, False
+    blocks = [block["Text"] for event in entries if event["id"] < requests[0]["id"]
+              and event.get("kind") == "runtime.context_admitted" and event.get("agent") == REVIEWER
+              and event.get("message", {}).get("role", "").lower() == "user"
+              for block in event["message"]["blocks"] if "Text" in block]
+    return requests, any("<kuku_output_refs>" in text and reference["id"] in text for text in blocks) \
+        and all(seed["audit_id"] not in text and HANDOFF_PROMPT not in text for text in blocks)
+
+
+def review_was_written(actions):
+    return any(action.get("name", action.get("tool")) == "write_file" and action["status"] == "ok"
+               and action["result"].get("path") == REVIEW_FILE for action in actions)
+
+
+def read_shared_report(tools, reference, seed):
+    if reference is None:
+        return False
+    return any(
+        (tool["name"] == "read_output" and tool["status"] == "ok"
+         and tool["args"].get("id") == reference["id"] and tool["result"].get("output_id") == reference["id"]
+         and report_from_chunk(tool["result"]) == seed)
+        or (tool["name"] == "workspace_script" and read_all_captured_output(tool, reference))
+        for tool in tools
+    )
+
+
+def verify_handoff(turn, sdk, entries, seed, workspace, evidence):
+    tools = turn["tools"]
+    reviewer = next((agent for agent in sdk["agents"] if agent["address"] == REVIEWER), {})
+    reviewer_tools = turn_evidence(entries, reviewer.get("turn"), REVIEWER)
+    saved = sdk["workspace"]["named_before"] or {}
+    reference = saved.get("binding", {}).get("reference")
+    audit_id = seed["audit_id"]
+    creates = [tool for tool in tools if tool["name"] == "create_agent" and tool["status"] == "ok"]
+    sends = [tool for tool in tools if tool["name"] == "send_message" and tool["args"].get("to") == REVIEWER]
+    committed = [tool for tool in sends if tool["status"] == "ok"]
+    operations = [(event["id"], event["record"]) for event in entries if event.get("kind") == "runtime.operation"]
+    deliveries, accepted = reviewer_delivery(operations)
+    requests, reference_only = reviewer_context(entries, reference, seed)
+    polls = [tool for tool in tools if tool["name"] == "list_agents" and committed
+             and tool["event_id"] > committed[0]["event_id"]]
+    waits = [tool for tool in polls if tool["args"].get("wait_for") == REVIEWER]
+    seeded = next((identity for identity, record in operations if record.get("operation") == "named_value_saved"
+                   and record["agent"] == "main" and record["binding"]["value"] == saved.get("binding")), None)
+    first_request = next((event["id"] for event in entries if event.get("kind") == "runtime.step_prepared"), None)
+    settled = next((identity for identity, record in operations if record.get("operation") == "turn_settled"
+                    and record["address"] == REVIEWER and record["turn"] == reviewer.get("turn")), None)
+    child_reply = reviewer.get("last_output") or ""
+    parent_reply = (sdk.get("agent") or {}).get("last_output") or ""
+    actual = read_artifact(workspace, evidence, REVIEW_FILE)
+    expected = review_report(seed)
+    turn["handoff"] = {
+        "reference": reference, "deliveries": deliveries, "accepted_commands": accepted,
+        "reviewer": reviewer, "reviewer_tools": reviewer_tools, "send_attempts": len(sends),
+        "wait_calls": len(waits), "invalid_poll_calls": len(polls) - min(len(waits), 1),
+        "reviewer_model_requests": len(requests), "expected_review": expected, "file_review": actual,
+        "seed_event_id": seeded, "reviewer_settled_event_id": settled,
+        "wait_started_while_reviewer_running": bool(waits and settled and waits[0]["event_id"] < settled),
+        "parent_reply": parent_reply,
+    }
+    turn["checks"] = checks = {
+        "seed_binding_unchanged": reference is not None and saved.get("binding", {}).get("name") == VALUE_NAME
+            and saved.get("complete") is True and saved.get("value") == seed and sdk["workspace"]["named_after"] == saved,
+        "value_saved_before_any_model_request": bool(seeded and first_request and seeded < first_request),
+        "created_independent_reviewer": len(creates) == 1 and creates[0]["args"].get("address") == REVIEWER
+            and bool(requests) and reviewer.get("status") == "idle" and reviewer.get("pending_inputs") == 0,
+        "single_shared_dispatch": reference is not None and len(committed) == len(deliveries) == 1
+            and deliveries[0]["values"] == [reference]
+            and deliveries[0]["input"]["source"] == {"kind": "agent", "identity": "main"}
+            and deliveries[0]["input"]["correlation"] == committed[0]["call_id"]
+            and committed[0]["result"].get("event_id") == deliveries[0]["event_id"]
+            and accepted == [[deliveries[0]["input"]["command_id"]]],
+        "independent_context_received_reference": reference_only,
+        "reviewer_read_shared_report": read_shared_report(reviewer_tools, reference, seed),
+        "reviewer_wrote_verified_review": actual == expected and review_was_written(tool_actions(reviewer_tools))
+            and not review_was_written(tool_actions(tools)),
+        "waited_once_and_received_reviewer_reply": len(waits) == 1 and waits[0]["status"] == "ok"
+            and waits[0]["result"] == [{"address": REVIEWER, "status": "idle", "last_output": child_reply}]
+            and audit_id in child_reply and len(polls) == 1,
+        "parent_reported_audit": audit_id in parent_reply,
+    }
+    return checks
+
+
 def cleanup_path(path):
     if os.name != "nt":
         return path
@@ -472,6 +647,8 @@ def workspace_scratch(base, report):
 
 
 def run_workspace(args, directory, record):
+    if args.handoff_only and not args.sdk:
+        raise ValueError("--handoff-only requires --sdk")
     if args.provider and (args.secrets is None or args.ledger is None):
         raise ValueError("A paid workspace scenario requires explicit --secrets and --ledger")
     if args.provider is None and any((args.model, args.effort, args.upstream, args.secrets, args.ledger)):
@@ -491,7 +668,8 @@ def run_workspace(args, directory, record):
         record["fixture_build"] = compiled
         bridge = pty_artifact(require_success(compiled)["log"])
     report = {"run_id": record["run_id"], "started_at": now(), "passed": False, "paid": bool(args.provider),
-              "mode": "sdk" if args.sdk else "installed_native", "isolated_product_path": True,
+              "mode": "sdk" if args.sdk else "installed_native", "case": "handoff" if args.handoff_only else "replay",
+              "isolated_product_path": True,
               "fixture": config_record(bridge), "expected_report": EXPECTED}
     masked = ()
     provider = None
@@ -503,7 +681,8 @@ def run_workspace(args, directory, record):
             (scratch / "bin").mkdir()
             workspace = scratch / "workspace 中文"
             workspace.mkdir()
-            shutil.copy2(bridge, workspace / PROGRAM)
+            if not args.handoff_only:
+                shutil.copy2(bridge, workspace / PROGRAM)
             provider, text, environment, masked, budget = select_provider(args, stack, bridge, report)
             config = scratch / "config.toml"
             config.write_text(text, encoding="utf-8")

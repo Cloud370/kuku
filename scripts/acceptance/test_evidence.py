@@ -169,6 +169,21 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(within(r"\\?\UNC\host\other\data\events.jsonl", r"\\host\share\data"))
         self.assertFalse(within(r"\\?\UNC\other\share\data\events.jsonl", r"\\host\share\data"))
 
+    def test_receipt_list_can_be_a_valid_tool_result(self):
+        for event in self.fixture.records:
+            if event["kind"] == "tool.call":
+                event.update(tool="list_agents", args={"wait_for": "reviewer"})
+            elif event["kind"] == "runtime.tool_prepared":
+                event["definition"]["schema"]["name"] = "list_agents"
+            elif event["kind"] == "tool.result":
+                event["structured"] = [{"address": "reviewer", "status": "idle", "last_output": "checked"}]
+            elif event["kind"] == "runtime.context_admitted":
+                for block in event["message"]["blocks"]:
+                    if "ToolUse" in block:
+                        block["ToolUse"].update(name="list_agents", args={"wait_for": "reviewer"})
+        result = self.fixture.inspect()
+        self.assertTrue(result["passed"], result)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.fixture = Fixture(Path(self.temporary.name))

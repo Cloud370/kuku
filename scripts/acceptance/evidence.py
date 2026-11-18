@@ -276,10 +276,11 @@ class SessionFacts:
             self.results[key] = fingerprint({field: event.get(field) for field in RESULT_VIEW_FIELDS})
             self.result_events[key] = identity
             self.counts["tool_results"] += 1
-            structured = event.get("structured") or {}
-            require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
-            if structured.get("kind") == "command_result":
-                self.outputs.append(output_reference(self.events_path, structured))
+            structured = event.get("structured")
+            if isinstance(structured, dict):
+                require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
+                if structured.get("kind") == "command_result":
+                    self.outputs.append(output_reference(self.events_path, structured))
         elif kind == "turn.completed":
             self.counts["turns_completed"] += 1
 

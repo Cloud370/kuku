@@ -6,8 +6,8 @@ use kuku::event::EventPayload;
 use kuku::execution::CommandExecutionFacts;
 use kuku::query::ModelPhase;
 use kuku::{
-    AgentConfig, AgentStatus, Input, Observation, OutputRead, Session, SessionOptions, ToolEvent,
-    UiEvent, WorkspaceScriptFacts,
+    AgentConfig, AgentStatus, Input, NamedValueSource, Observation, OutputRead, Session,
+    SessionOptions, ToolEvent, UiEvent, WorkspaceScriptFacts,
 };
 use serde_json::{json, Value};
 
@@ -102,7 +102,7 @@ async fn main() {
 async fn execute() -> Result<bool, AnyError> {
     let args = arguments()?;
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY --inspect-named-value NAME]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -130,10 +130,18 @@ async fn execute() -> Result<bool, AnyError> {
     options.limits.max_agents = max_agents;
     options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
     let limits = options.limits.clone();
+    let inspected_name = args.get("inspect-named-value");
+    let seed = args
+        .get("seed-named-json")
+        .map(|path| -> Result<_, AnyError> {
+            let name = inspected_name.ok_or("--seed-named-json requires --inspect-named-value")?;
+            let json = serde_json::from_slice(&std::fs::read(path)?)?;
+            Ok((name, NamedValueSource::Json(json)))
+        })
+        .transpose()?;
     let session = Session::open(options).await?;
     let agent = args.get("agent").map(String::as_str).unwrap_or("main");
-    let inspected_name = args.get("inspect-named-value");
-    let named_before = inspected_name.map(|name| inspect_named_value(&session, agent, name));
+    let mut named_before = None;
     let selection = AgentConfig {
         connection: args.get("connection").cloned(),
         tier: args.get("tier").cloned(),
@@ -162,6 +170,10 @@ async fn execute() -> Result<bool, AnyError> {
                 session.create_agent(&format!("create:{agent}"), agent, selection)?;
             }
         }
+        if let Some((name, source)) = seed {
+            session.save_named_value(agent, name, source, false).await?;
+        }
+        named_before = inspected_name.map(|name| inspect_named_value(&session, agent, name));
         session.send(Input::new(command_id, agent, prompt))?;
         session.advance(agent)?;
         loop {
@@ -363,6 +375,7 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "command-id"
                 | "prompts-dir"
                 | "inspect-named-value"
+                | "seed-named-json"
         ) {
             return Err(format!("unknown option '--{name}'").into());
         }
