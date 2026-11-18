@@ -150,6 +150,49 @@ When the caller reports `streaming`, the inspector validates its counters, first
 
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
+## FrontierHarness public sample
+
+The `frontier` suite pins four tasks from FrontierHarness Eval v1.1.0 in the [case manifest](../../../scripts/acceptance/cases.json). They cover log aggregation, async cancellation, regular expressions and large-file Vim editing. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+
+```sh
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
+  --suite frontier --case regex-log --mode preflight
+```
+
+For live runs, place `KUKU_TEST_OPENROUTER_API_KEY=...` in a private file outside the repository. A host-side meter holds the upstream key and caps each case against a shared USD ledger. The example reserves up to $0.75 per case and pins OpenRouter to DeepSeek's own endpoint for `deepseek/deepseek-v4.1-flash-1017` at `max` effort. Choose the total before the first run, reuse its ledger for repeats and use a fresh run ID for each attempt. The same output allowance applies to all four cases. Token ceilings bound generation and only actual usage or explicitly identified conservative estimates contribute to settled spend.
+
+```sh
+ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-frontier-sample --limit-usd 3
+printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
+  xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
+    --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
+    --max-output-tokens 131072 --max-requests 22 --case-cap-usd 0.75 \
+    --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
+```
+
+If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. The OpenRouter stream may report the cost before its generation receipt becomes available.
+
+Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+```sh
+mkdir -p benchmarks/acceptance/public
+curl -fsSL https://frontierharness.org/api/live -o benchmarks/acceptance/public/live.json
+python3 scripts/acceptance/frontier_report.py --official-live benchmarks/acceptance/public/live.json \
+  --attempt log-summary-date-ranges benchmarks/acceptance/sample-log-summary-date-ranges \
+  --attempt cancel-async-tasks benchmarks/acceptance/sample-cancel-async-tasks \
+  --attempt regex-log benchmarks/acceptance/sample-regex-log \
+  --attempt large-scale-text-editing benchmarks/acceptance/sample-large-scale-text-editing \
+  --output benchmarks/acceptance/public/results.json
+```
+
+The SDK samples its own Linux `getrusage(RUSAGE_SELF)` immediately before writing its result, including process peak RSS, CPU time and filesystem block input/output counts. The parent sampler estimates mean RSS by time-weighting adjacent SDK samples and reports its observed window. The last Linux `/proc/PID/io` reading can include waited-for children. It distinguishes logical characters and system calls from storage bytes. Container-wide snapshots include the tool processes. Verifier time and resources are outside the SDK sampling window. The meter distinguishes its time to the first content-bearing stream delta from native provider metrics and reports denominators for TPS and cache comparisons.
+
+The [sample results and session findings](../../../scripts/acceptance/results/frontier-sample.md) include the exploratory attempts and the shared-protocol rerun.
+
 ## Resource measurements
 
 ```bash

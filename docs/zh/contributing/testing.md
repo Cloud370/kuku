@@ -150,6 +150,49 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
+## FrontierHarness 公开小样本
+
+`frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+
+```sh
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
+  --suite frontier --case regex-log --mode preflight
+```
+
+实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。四道题采用同一输出上限。结算按实际用量或明确标记的保守估计计算。
+
+```sh
+ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-frontier-sample --limit-usd 3
+printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
+  xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
+    --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
+    --max-output-tokens 131072 --max-requests 22 --case-cap-usd 0.75 \
+    --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
+```
+
+如果账户的数据策略排除了所选上游，可以使用与策略兼容的固定端点（如 `--upstream baseten`）另起一轮，并记录路由变化。OpenRouter 流可能先于 generation 回执给出费用。
+
+下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+```sh
+mkdir -p benchmarks/acceptance/public
+curl -fsSL https://frontierharness.org/api/live -o benchmarks/acceptance/public/live.json
+python3 scripts/acceptance/frontier_report.py --official-live benchmarks/acceptance/public/live.json \
+  --attempt log-summary-date-ranges benchmarks/acceptance/sample-log-summary-date-ranges \
+  --attempt cancel-async-tasks benchmarks/acceptance/sample-cancel-async-tasks \
+  --attempt regex-log benchmarks/acceptance/sample-regex-log \
+  --attempt large-scale-text-editing benchmarks/acceptance/sample-large-scale-text-editing \
+  --output benchmarks/acceptance/public/results.json
+```
+
+SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰值 RSS、CPU 时间、文件系统输入和输出块计数。宿主采样器按相邻样本的时间间隔估算平均 RSS，并报告覆盖窗口。最后一次 Linux `/proc/PID/io` 读数可能包含已等待结束的子进程，分别记录逻辑读写量、系统调用数和存储字节。容器快照还包含工具进程。判分在 SDK 采样结束后进行。计量程序分开记录到首个有效流式输出的时间与供应商原生指标，并给出 TPS 与缓存命中统计的分母。
+
+[小样本结果与 Session 诊断](../../../scripts/acceptance/results/frontier-sample.md)保留探索阶段的各次尝试及统一配置下的复测。
+
 ## 资源测量
 
 ```bash
