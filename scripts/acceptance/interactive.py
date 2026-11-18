@@ -880,7 +880,8 @@ def dense_transcript(client, reference=False):
                 assert all(text in wide for text in (scenario.activity_group, scenario.activity_composition, *scenario.file_cards)), wide
                 inspect_tools(terminal)
             terminal.request("resize", rows=26, cols=74)
-            narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value,
+            narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
+                                and scenario.draft in value,
                                 "the narrow tool turn")
             assert scenario.draft in narrow and re.search(r"(?:Run command|Tool run_command) · running", narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
