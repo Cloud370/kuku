@@ -19,7 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
-use crate::run_manager::RunManager;
+use crate::run_manager::{RunManager, TurnLookup};
 use crate::wire::{agent_activity_frame, committed_frame, event_agent, history_entry, live_frame};
 use crate::AppState;
 
@@ -99,11 +99,13 @@ pub(super) async fn history(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     validate_limit(limit)?;
+    let turns = manager(&state).await.turn_lookup(&target.path)?;
     let (entries, next_before) = history_page(
         &target.path,
         query.agent.as_deref().unwrap_or("main"),
         query.before,
         limit,
+        &turns,
     )?;
     Ok(Json(
         json!({"ok":true,"entries":entries,"next_before":next_before}),
@@ -185,6 +187,7 @@ fn history_page(
     agent: &str,
     mut before: Option<u64>,
     limit: usize,
+    turns: &TurnLookup,
 ) -> Result<(Vec<Value>, Option<u64>)> {
     let mut entries = Vec::new();
     let mut bytes = 0;
@@ -197,7 +200,7 @@ fn history_page(
         }
         for event in page.into_iter().rev() {
             let entry = (event_agent(&event.payload).unwrap_or("main") == agent)
-                .then(|| history_entry(&event))
+                .then(|| history_entry(&event, |address, turn| turns.number(address, turn)))
                 .flatten();
             if let Some(entry) = entry {
                 let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
@@ -265,7 +268,12 @@ async fn follow(
                 let frame = match observation {
                     Observation::Committed(event) => {
                         after = event.id;
-                        Some(committed_frame(&event, agent, include_agent_activity))
+                        Some(committed_frame(
+                            &event,
+                            agent,
+                            include_agent_activity,
+                            |address, turn| session.turn_number(address, turn),
+                        ))
                     }
                     Observation::Live {
                         agent: source,
@@ -275,7 +283,14 @@ async fn follow(
                         turn,
                     } => {
                         if agent.is_none_or(|agent| agent == source) {
-                            live_frame(&event, &source, execution_id, turn, after)
+                            live_frame(
+                                &event,
+                                &source,
+                                execution_id,
+                                turn,
+                                after,
+                                session.turn_number(&source, turn),
+                            )
                         } else if include_agent_activity {
                             agent_activity_frame(&event, &source, execution_id, turn, after)
                         } else {
@@ -297,11 +312,14 @@ async fn follow(
             target.require_exists()?;
             let events = EventStore::read_page(&target.path, after, READ_PAGE_SIZE)?;
             if !events.is_empty() {
+                let turns = manager.turn_lookup(&target.path)?;
                 for event in events {
                     after = event.id;
-                    if !write_frame(send, committed_frame(&event, agent, include_agent_activity))
-                        .await
-                    {
+                    let frame =
+                        committed_frame(&event, agent, include_agent_activity, |address, turn| {
+                            turns.number(address, turn)
+                        });
+                    if !write_frame(send, frame).await {
                         return Ok(());
                     }
                 }

@@ -181,6 +181,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
             execution_id: 49,
             cursor: 52,
             turn: Some(1),
+            turn_number: Some(1),
             event: json!({"type":"text","content":"obsolete main stream"}),
         },
     ));

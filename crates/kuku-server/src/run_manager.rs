@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use kuku::session::{Input, Session, SessionOptions};
+use kuku::event::EventStore;
+use kuku::session::{Input, Session, SessionOptions, TurnIndex};
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::error_mapping::{ApiError, Result};
@@ -27,8 +28,29 @@ pub struct RunManager {
 
 struct Registry {
     slots: Mutex<HashMap<PathBuf, Arc<Slot>>>,
+    closed_turns: Mutex<Option<CachedTurns>>,
     changed: watch::Sender<()>,
     permits: Arc<Semaphore>,
+}
+
+struct CachedTurns {
+    path: PathBuf,
+    cursor: u64,
+    index: Arc<TurnIndex>,
+}
+
+pub(crate) enum TurnLookup {
+    Live(Session),
+    Closed(Arc<TurnIndex>),
+}
+
+impl TurnLookup {
+    pub(crate) fn number(&self, agent: &str, turn: u64) -> Option<u64> {
+        match self {
+            Self::Live(session) => session.turn_number(agent, turn),
+            Self::Closed(index) => index.number(agent, turn),
+        }
+    }
 }
 
 struct Slot {
@@ -65,6 +87,7 @@ impl RunManager {
         Self {
             inner: Arc::new(Registry {
                 slots: Mutex::new(HashMap::new()),
+                closed_turns: Mutex::new(None),
                 changed: watch::channel(()).0,
                 permits: Arc::new(Semaphore::new(max_concurrent)),
             }),
@@ -128,6 +151,28 @@ impl RunManager {
         let slots = self.inner.slots.lock().unwrap();
         let session = slots.get(path)?.session.lock().unwrap().clone();
         session
+    }
+
+    pub(crate) fn turn_lookup(&self, path: &Path) -> Result<TurnLookup> {
+        if let Some(session) = self.open_session(path) {
+            return Ok(TurnLookup::Live(session));
+        }
+        let mut cache = self.inner.closed_turns.lock().unwrap();
+        let cursor = EventStore::read_head(path)?;
+        if let Some(cached) = cache
+            .as_ref()
+            .filter(|cached| cached.path == path && cached.cursor == cursor)
+        {
+            return Ok(TurnLookup::Closed(cached.index.clone()));
+        }
+        let (index, cursor) = TurnIndex::read(path)?;
+        let index = Arc::new(index);
+        *cache = Some(CachedTurns {
+            path: path.to_owned(),
+            cursor,
+            index: index.clone(),
+        });
+        Ok(TurnLookup::Closed(index))
     }
 
     pub(crate) async fn command(
@@ -202,10 +247,15 @@ impl RunManager {
             Ok(())
         };
         let result = result.and_then(|()| {
+            let mut cache = self.inner.closed_turns.lock().unwrap();
             if !path.is_file() {
                 return Err(ApiError::session_not_found());
             }
-            kuku::delete_session(home, Some(workspace), session_id).map_err(ApiError::from)
+            kuku::delete_session(home, Some(workspace), session_id)?;
+            if cache.as_ref().is_some_and(|cached| cached.path == path) {
+                *cache = None;
+            }
+            Ok(())
         });
         self.release_slot(&path, &slot);
         self.inner.changed.send_replace(());

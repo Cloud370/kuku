@@ -26,7 +26,7 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
-pub use observe::{Observation, SessionObserver};
+pub use observe::{Observation, SessionObserver, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
     InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,

@@ -172,7 +172,10 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
     })
 }
 
-pub(crate) fn history_entry(event: &StoredEvent) -> Option<Value> {
+pub(crate) fn history_entry(
+    event: &StoredEvent,
+    display_number: impl FnOnce(&str, u64) -> Option<u64>,
+) -> Option<Value> {
     let agent = event_agent(&event.payload).unwrap_or("main");
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
@@ -244,6 +247,12 @@ pub(crate) fn history_entry(event: &StoredEvent) -> Option<Value> {
     };
     entry["id"] = json!(event.id);
     entry["agent"] = json!(agent);
+    if let Some(number) = entry["turn"]
+        .as_u64()
+        .and_then(|turn| display_number(agent, turn))
+    {
+        entry["turn_number"] = json!(number);
+    }
     Some(entry)
 }
 
@@ -251,6 +260,7 @@ pub(crate) fn committed_frame(
     event: &StoredEvent,
     target: Option<&str>,
     include_agent_activity: bool,
+    display_number: impl FnOnce(&str, u64) -> Option<u64>,
 ) -> Value {
     let kind = event.payload.kind_name();
     let agent = event_agent(&event.payload);
@@ -260,7 +270,7 @@ pub(crate) fn committed_frame(
     }
     let matches = target.is_none_or(|target| agent.unwrap_or("main") == target);
     if matches {
-        if let Some(entry) = history_entry(event) {
+        if let Some(entry) = history_entry(event, display_number) {
             value["entry"] = entry;
         }
         match &event.payload {
@@ -327,14 +337,13 @@ pub(crate) fn live_frame(
     execution_id: u64,
     turn: u64,
     cursor: u64,
+    turn_number: Option<u64>,
 ) -> Option<Value> {
-    Some(live_payload(
-        event_value(event)?,
-        agent,
-        execution_id,
-        turn,
-        cursor,
-    ))
+    let mut frame = live_payload(event_value(event)?, agent, execution_id, turn, cursor);
+    if let Some(number) = turn_number {
+        frame["turn_number"] = json!(number);
+    }
+    Some(frame)
 }
 
 pub(crate) fn agent_activity_frame(

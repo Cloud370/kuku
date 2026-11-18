@@ -909,6 +909,7 @@ impl App {
                 agent,
                 execution_id,
                 turn,
+                turn_number,
                 cursor,
                 event,
             } => {
@@ -926,7 +927,7 @@ impl App {
                         pane.progress = ExecutionProgress::default();
                     }
                     pane.progress.live(&event);
-                    pane.transcript.live(execution_id, turn, None, &event);
+                    pane.transcript.live(execution_id, turn, turn_number, &event);
                 }
             }
             Observation::Lagged { .. } => {

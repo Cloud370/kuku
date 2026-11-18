@@ -58,6 +58,8 @@ pub enum Observation {
         cursor: u64,
         /// Turn that emitted the preview, when available.
         turn: Option<u64>,
+        /// One-based display number of that Agent's Turn, when known.
+        turn_number: Option<u64>,
         /// The existing SDK progress event in wire form.
         event: Value,
     },

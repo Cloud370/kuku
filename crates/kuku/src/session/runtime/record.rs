@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::event::{EventPayload, StoredEvent};
 use crate::{Error, Result};
 
+use super::observe::TurnIndex;
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
@@ -180,6 +181,7 @@ impl AgentState {
 #[derive(Debug, Default)]
 pub(super) struct State {
     pub(super) agents: BTreeMap<String, AgentState>,
+    pub(super) turns: TurnIndex,
     pub(super) commands: HashMap<String, (String, Receipt)>,
     pub(super) deliveries: HashMap<String, InputStatus>,
     pub(super) withdrawals: HashMap<String, InputStatus>,
@@ -307,6 +309,7 @@ impl State {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
                 }
                 agent.snapshot.last_error = None;
+                self.turns.accepted(address, event_id, turn);
             }
             Record::TurnSettled {
                 address,

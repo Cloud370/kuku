@@ -10,7 +10,7 @@ fn response(id: u64, body: String) -> HistoryEntry {
         turn: Some(1),
         kind: HistoryKind::Assistant,
         text: Some(body),
-        details: Default::default(),
+        details: [("turn_number".into(), json!(1))].into_iter().collect(),
     }
 }
 
@@ -69,6 +69,7 @@ fn durable_response_replaces_its_live_preview() {
     let mut transcript = Transcript::default();
     transcript.live(
         7,
+        Some(1),
         Some(1),
         &json!({"type":"text","content":"temporary preview"}),
     );
@@ -159,6 +160,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     transcript.live(
         9,
         Some(1),
+        Some(1),
         &json!({
             "type": "tool_start", "id": "cmd", "tool": "run_command", "summary": "Checking"
         }),
@@ -168,6 +170,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     assert!(!transcript.toggle_details());
     transcript.live(
         9,
+        Some(1),
         Some(1),
         &json!({
             "type": "tool_output", "id": "cmd", "event": {"stdout": "working output"}
@@ -184,6 +187,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     transcript.live(
         9,
         Some(1),
+        Some(1),
         &json!({
             "type": "tool_end", "id": "cmd", "status": "error", "summary": "Live failure",
             "model_content": "live diagnostic"
@@ -199,6 +203,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     })).unwrap(), Some(9));
     transcript.live(
         9,
+        Some(1),
         Some(1),
         &json!({
             "type": "tool_output", "id": "cmd", "event": {"stderr": "late duplicate"}
@@ -234,15 +239,16 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
 #[test]
 fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor() {
     let mut transcript = Transcript::default();
-    let mut first = response(3, "First visible model step".into());
-    first.turn = Some(41);
-    let mut same_turn = response(4, "Another model step".into());
-    same_turn.turn = Some(41);
-    let mut later = response(6, "Different turn".into());
-    later.turn = Some(44);
+    let mut first = response(15, "First visible model step".into());
+    first.turn = Some(6);
+    let mut same_turn = response(19, "Another model step".into());
+    same_turn.turn = Some(6);
+    let mut later = response(24, "Different turn".into());
+    later.turn = Some(23);
+    later.details.insert("turn_number".into(), json!(2));
     transcript.replace_recent(HistoryPage {
         entries: vec![first, same_turn, later],
-        next_before: Some(3),
+        next_before: Some(15),
     });
     let request = transcript.scroll(-100, 44, 10).expect("older history");
     let anchored = rows(&mut transcript);
@@ -251,16 +257,18 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
         1,
         anchored
             .iter()
-            .filter(|row| row.as_str() == "Turn 44")
+            .filter(|row| row.as_str() == "Turn 2")
             .count()
     );
-    assert!(!anchored.iter().any(|row| row == "Turn 41"));
+    assert!(!anchored
+        .iter()
+        .any(|row| matches!(row.as_str(), "Turn 6" | "Turn 23")));
 
-    let mut first_message = response(1, "Inspect the file".into());
+    let mut first_message = response(8, "Inspect the file".into());
     first_message.kind = HistoryKind::User;
-    first_message.turn = Some(41);
-    let mut older_step = response(2, "Earlier model step".into());
-    older_step.turn = Some(41);
+    first_message.turn = Some(6);
+    let mut older_step = response(12, "Earlier model step".into());
+    older_step.turn = Some(6);
     transcript.apply_page(
         request,
         HistoryPage {
@@ -278,7 +286,7 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
         .map(ToString::to_string)
         .collect();
     assert_eq!(
-        vec!["Turn 41", "Turn 44"],
+        vec!["Turn 1", "Turn 2"],
         all.iter()
             .filter(|row| row.starts_with("Turn "))
             .map(String::as_str)
@@ -288,10 +296,54 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
 }
 
 #[test]
+fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
+    let mut transcript = Transcript::default();
+    let mut first = response(8, "First reply".into());
+    first.turn = Some(6);
+    transcript.apply(first, None);
+    transcript.live(
+        22,
+        Some(23),
+        Some(2),
+        &json!({"type":"text","content":"Second reply"}),
+    );
+    let live = rows(&mut transcript);
+    assert_eq!(
+        1,
+        live.iter().filter(|row| row.as_str() == "Turn 1").count()
+    );
+    assert_eq!(
+        1,
+        live.iter().filter(|row| row.as_str() == "Turn 2").count()
+    );
+
+    let mut settled = response(29, "Second reply".into());
+    settled.turn = Some(23);
+    settled.details.insert("turn_number".into(), json!(2));
+    transcript.apply(settled, Some(22));
+    let completed = rows(&mut transcript);
+    assert_eq!(live, completed);
+
+    let mut unknown = response(30, "Unnumbered reply".into());
+    unknown.turn = Some(26);
+    unknown.details.clear();
+    transcript.replace_recent(HistoryPage {
+        entries: vec![unknown],
+        next_before: None,
+    });
+    assert_eq!("Turn", rows(&mut transcript)[0]);
+}
+
+#[test]
 fn a_thinking_only_commit_retires_the_preview_without_emitting_an_empty_assistant() {
     let mut transcript = Transcript::default();
     transcript.apply(response(1, "Previous reply".into()), None);
-    transcript.live(7, Some(1), &json!({"type":"text","content":"  \n "}));
+    transcript.live(
+        7,
+        Some(1),
+        Some(1),
+        &json!({"type":"text","content":"  \n "}),
+    );
     assert_eq!(
         1,
         rows(&mut transcript)
@@ -301,6 +353,7 @@ fn a_thinking_only_commit_retires_the_preview_without_emitting_an_empty_assistan
     );
     transcript.live(
         7,
+        Some(1),
         Some(1),
         &json!({"type":"text","content":"temporary answer"}),
     );
@@ -357,7 +410,12 @@ fn streaming_tables_code_and_unicode_use_the_committed_markdown_layout() {
     ];
     let width = 25;
     for chunk in chunks {
-        transcript.live(4, Some(1), &json!({"type": "text", "content": chunk}));
+        transcript.live(
+            4,
+            Some(1),
+            Some(1),
+            &json!({"type": "text", "content": chunk}),
+        );
         let view = transcript.project(width, 30);
         assert!(view.lines.iter().all(|line| line.width() <= width));
     }

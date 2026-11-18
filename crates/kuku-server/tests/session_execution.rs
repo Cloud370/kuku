@@ -266,6 +266,7 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
             if item["entry"]["type"] == "tool_result"
                 && item["entry"]["tool_call_id"] == "write-proof"
             {
+                assert_eq!(1, item["entry"]["turn_number"]);
                 results += 1;
             }
         }
@@ -425,6 +426,34 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
 
     server.restart().await;
     assert_eq!(cumulative, usage(&server.snapshot(id, "main").await));
+    let second_page: Value = server
+        .session_request(id, "history", &[("agent", "main"), ("limit", "1")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(turns[2], second_page["entries"][0]["turn"]);
+    assert_eq!(2, second_page["entries"][0]["turn_number"]);
+    let first_page: Value = server
+        .session_request(
+            id,
+            "history",
+            &[
+                ("agent", "main"),
+                ("limit", "1"),
+                ("before", &turns[2].to_string()),
+            ],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(turns[0], first_page["entries"][0]["turn"]);
+    assert_eq!(1, first_page["entries"][0]["turn_number"]);
     server
         .submit(
             id,
