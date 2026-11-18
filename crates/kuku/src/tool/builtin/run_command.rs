@@ -21,6 +21,7 @@ use render::render_command_result;
 use request::{run_command_request, CommandRequest};
 
 pub(crate) use request::{command_permission_candidate, prepare_command_args};
+pub(crate) use shell::available_shells;
 
 pub(crate) mod encoding;
 pub(crate) mod output;
@@ -28,6 +29,7 @@ mod process;
 mod render;
 mod reports;
 mod request;
+mod shell;
 
 #[cfg(all(test, windows))]
 mod windows_tests;
@@ -150,7 +152,15 @@ async fn execute_command(
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let mut command = request.command();
+    let mut command = match request.command() {
+        Ok(command) => command,
+        Err(error) => {
+            return Ok(CommandOutcome {
+                start_error: Some((CommandTermination::ProgramMissing, error)),
+                ..CommandOutcome::default()
+            })
+        }
+    };
     command
         .current_dir(&request.cwd)
         .stdin(Stdio::null())

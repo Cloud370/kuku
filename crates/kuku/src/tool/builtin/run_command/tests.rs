@@ -272,7 +272,7 @@ async fn native_program_receives_every_literal_argument_in_the_selected_director
         "--",
     ];
     args.extend(literals);
-    let program = std::path::Path::new(".").join(fixture_name);
+    let program = format!("./{fixture_name}");
     let result = run_command(
         &serde_json::json!({"program":program,"args":args,"cwd":"项目 with spaces","timeout":10}),
         dir.path(),
@@ -292,7 +292,7 @@ async fn native_program_receives_every_literal_argument_in_the_selected_director
     );
     assert_eq!(
         CommandInvocation::Program {
-            program: program.to_string_lossy().into_owned(),
+            program,
             args: args.iter().map(|arg| arg.to_string()).collect(),
         },
         facts.invocation
@@ -369,6 +369,71 @@ async fn implicit_shell_and_mixed_invocation_fields_are_rejected() {
         assert_eq!("error", result.status, "{result:?}");
         assert_eq!("error", result.structured.unwrap()["kind"]);
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn controlled_path_schema_omits_unavailable_shells_and_explicit_launch_reports_missing() {
+    let dir = workspace();
+    let decoy = dir.path().join("bash");
+    std::fs::write(&decoy, b"#!/bin/sh\necho unavailable\n").unwrap();
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .env("PATH", dir.path())
+        .args([
+            "--ignored",
+            "--exact",
+            "tool::builtin::run_command::tests::unavailable_shell_fixture",
+            "--nocapture",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "subprocess fixture for shell discovery with a controlled PATH"]
+async fn unavailable_shell_fixture() {
+    let registry = crate::tool::builtin_registry(false, false);
+    let tool = registry
+        .iter()
+        .find(|tool| tool.name == "run_command")
+        .unwrap();
+    assert!(tool
+        .description
+        .contains("workspace-relative program with './'"));
+    assert!(tool.description.contains("output ID"));
+    let schema = &tool.input_schema;
+    assert_eq!(
+        serde_json::json!(["program", "args", "cwd", "timeout"]),
+        schema["required"]
+    );
+    assert!(schema["properties"].get("shell").is_none());
+    assert!(schema["properties"].get("command").is_none());
+
+    let dir = workspace();
+    let result = run_command(
+        &serde_json::json!({"shell":"sh","command":"echo should-not-run > marker","cwd":".","timeout":5}),
+        dir.path(),
+        None,
+        None,
+    ).await;
+    let facts =
+        CommandExecutionFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        CommandTermination::ProgramMissing,
+        facts.termination,
+        "{result:?}"
+    );
+    assert!(!facts.started);
+    assert!(!dir.path().join("marker").exists());
 }
 
 #[tokio::test(flavor = "current_thread")]

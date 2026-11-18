@@ -1,13 +1,13 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use serde_json::Value;
 use tokio::process::Command;
 
 use crate::execution::{CommandInvocation, CommandShell};
 use crate::tool::ToolResultEnvelope;
+
+use super::shell::shell_command;
 
 const TIMEOUT_CAP_SECONDS: u64 = 600;
 
@@ -18,7 +18,7 @@ pub(super) struct CommandRequest {
 }
 
 impl CommandRequest {
-    pub(super) fn command(&self) -> Command {
+    pub(super) fn command(&self) -> Result<Command, String> {
         match &self.invocation {
             CommandInvocation::Program { program, args } => {
                 let program = if Path::new(program).file_name() == Some(OsStr::new(program)) {
@@ -28,9 +28,10 @@ impl CommandRequest {
                 };
                 let mut command = Command::new(program);
                 command.args(args);
-                command
+                Ok(command)
             }
-            CommandInvocation::Shell { shell, command } => shell_command(*shell, command),
+            CommandInvocation::Shell { shell, command } => shell_command(*shell, command)
+                .ok_or_else(|| format!("selected interpreter {shell:?} was not found")),
         }
     }
 }
@@ -170,54 +171,6 @@ fn requires_cmd_shell(program: &str) -> bool {
         || Path::new(name).extension().is_some_and(|extension| {
             extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
         })
-}
-
-fn shell_command(shell: CommandShell, text: &str) -> Command {
-    match shell {
-        CommandShell::Sh => posix_command("sh", text),
-        CommandShell::Bash => posix_command("bash", text),
-        CommandShell::Zsh => posix_command("zsh", text),
-        CommandShell::Cmd => cmd_command(text),
-        CommandShell::Powershell => powershell_command("powershell.exe", text),
-        CommandShell::Pwsh => powershell_command("pwsh", text),
-    }
-}
-
-fn posix_command(program: &str, text: &str) -> Command {
-    let mut command = Command::new(program);
-    command.args(["-c", text]);
-    command
-}
-
-fn powershell_command(program: &str, text: &str) -> Command {
-    let mut command = Command::new(program);
-    let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-        ])
-        .arg(STANDARD.encode(utf16));
-    command
-}
-
-#[cfg(windows)]
-fn cmd_command(text: &str) -> Command {
-    let mut command = Command::new("cmd.exe");
-    // NOTE: /S removes only the enclosing quotes before cmd parses the original command text.
-    command
-        .args(["/D", "/S", "/C"])
-        .raw_arg(format!("\"{text}\""));
-    command
-}
-
-#[cfg(not(windows))]
-fn cmd_command(text: &str) -> Command {
-    let mut command = Command::new("cmd.exe");
-    command.args(["/D", "/S", "/C", text]);
-    command
 }
 
 fn invalid(message: impl Into<String>) -> ToolResultEnvelope {

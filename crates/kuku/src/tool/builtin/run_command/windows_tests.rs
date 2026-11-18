@@ -28,6 +28,60 @@ const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const DETACHED_PROBE_ENV: &str = "KUKU_TEST_DETACHED_COMMAND";
 
 #[tokio::test]
+async fn windows_system_interpreters_are_found_without_path_entries() {
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .env("PATH", "")
+        .args([
+            "--ignored",
+            "--exact",
+            "tool::builtin::run_command::windows_tests::system_shell_fixture",
+            "--nocapture",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"));
+}
+
+#[tokio::test]
+#[ignore = "subprocess fixture for Windows system shells with a controlled PATH"]
+async fn system_shell_fixture() {
+    let registry = crate::tool::builtin_registry(false, false);
+    let tool = registry
+        .iter()
+        .find(|tool| tool.name == "run_command")
+        .unwrap();
+    let shells = tool.input_schema["properties"]["shell"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(shells.contains(&serde_json::json!("cmd")));
+    let dir = workspace();
+    let result = run_command(
+        &serde_json::json!({"shell":"cmd","command":"echo system cmd","cwd":".","timeout":5}),
+        dir.path(),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!("ok", result.status, "{result:?}");
+    assert!(result.model_content.contains("system cmd"));
+    if shells.contains(&serde_json::json!("powershell")) {
+        let result = run_command(
+            &serde_json::json!({"shell":"powershell","command":"Write-Output 'system PowerShell'","cwd":".","timeout":5}),
+            dir.path(), None, None,
+        ).await;
+        assert_eq!("ok", result.status, "{result:?}");
+        assert!(result.model_content.contains("system PowerShell"));
+    }
+}
+
+#[tokio::test]
 async fn windows_detached_tool_does_not_create_a_console_window() {
     let mut detached = tokio::process::Command::new(std::env::current_exe().unwrap());
     detached

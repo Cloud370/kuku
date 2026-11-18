@@ -4,6 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::context::ToolSchema;
+use crate::execution::CommandShell;
 
 use super::builtin;
 
@@ -168,35 +169,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             20_000,
             "edit",
         ),
-        tool(
-            "run_command",
-            if cfg!(windows) {
-                "Start an installed program with literal args. Use shell='cmd' for cmd commands and .bat/.cmd files, or name an installed PowerShell interpreter for its syntax. Reports the observed exit status and captured output."
-            } else {
-                "Start an installed program with literal args. Select an installed shell explicitly for pipes, redirection or shell builtins. Reports the observed exit status and captured output."
-            },
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "program": {"type": "string", "description": "Executable name or path relative to cwd. Provide args with program."},
-                    "args": {"type": "array", "items": {"type": "string"}, "description": "Literal arguments without shell expansion. Use [] for no arguments."},
-                    "shell": {"type": "string", "enum": ["sh", "bash", "zsh", "cmd", "powershell", "pwsh"], "description": "Selected interpreter. Provide command with shell."},
-                    "command": {"type": "string", "description": "Original shell text evaluated by the selected interpreter."},
-                    "cwd": {"type": "string", "description": "Working directory relative to the workspace or absolute. Use '.' for workspace root."},
-                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds."},
-                    "brief": {"type": "string", "description": "Optional short description of the action."}
-                },
-                "required": ["cwd", "timeout"],
-                "oneOf": [
-                    {"required": ["program", "args"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
-                    {"required": ["shell", "command"], "not": {"anyOf": [{"required": ["program"]}, {"required": ["args"]}]}}
-                ]
-            }),
-            false,
-            80_000,
-            "command",
-        ),
+        run_command_definition(&builtin::run_command::available_shells()),
         tool(
             "fetch_url",
             "Download a URL to a temp directory and return metadata (status, content_type, size).",
@@ -261,6 +234,47 @@ pub(crate) fn to_tool_schemas(registry: &[ToolDefinition]) -> Vec<ToolSchema> {
             input_schema: tool.input_schema.clone(),
         })
         .collect()
+}
+
+fn run_command_definition(shells: &[CommandShell]) -> ToolDefinition {
+    let mut description = "Start an installed executable or a workspace executable with literal arguments. Prefix a workspace-relative program with './' on every platform. Stdout and stderr are captured automatically and returned with an output ID and the observed exit status.".to_string();
+    let mut schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "program": {"type": "string", "description": "Executable name or path. Prefix a path relative to cwd with './'."},
+            "args": {"type": "array", "items": {"type": "string"}, "description": "Literal arguments without shell expansion. Use [] for no arguments."},
+            "cwd": {"type": "string", "description": "Working directory relative to the workspace or absolute. Use '.' for workspace root."},
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds."},
+            "brief": {"type": "string", "description": "Optional short description of the action."}
+        },
+        "required": ["program", "args", "cwd", "timeout"]
+    });
+    if !shells.is_empty() {
+        description.push_str(" For shell syntax, select an available interpreter explicitly.");
+        if shells.contains(&CommandShell::Cmd) {
+            description.push_str(" Use shell='cmd' for .bat or .cmd files.");
+        }
+        schema["properties"]["shell"] = serde_json::json!({
+            "type": "string", "enum": shells, "description": "Available interpreter. Provide command with shell."
+        });
+        schema["properties"]["command"] = serde_json::json!({
+            "type": "string", "description": "Original shell text evaluated by the selected interpreter."
+        });
+        schema["required"] = serde_json::json!(["cwd", "timeout"]);
+        schema["oneOf"] = serde_json::json!([
+            {"required": ["program", "args"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
+            {"required": ["shell", "command"], "not": {"anyOf": [{"required": ["program"]}, {"required": ["args"]}]}}
+        ]);
+    }
+    tool(
+        "run_command",
+        &description,
+        schema,
+        false,
+        80_000,
+        "command",
+    )
 }
 
 fn tool(
