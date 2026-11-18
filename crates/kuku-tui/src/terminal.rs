@@ -1,5 +1,5 @@
 use std::io::{self, Stdout, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::cursor::{Hide, Show};
@@ -10,12 +10,12 @@ use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 #[cfg(not(windows))]
 use futures_util::StreamExt;
-use kuku_client::ConnectionOptions;
+use kuku_client::{ConnectionOptions, Observation};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::App;
-use crate::jobs::{Job, Jobs};
+use crate::jobs::{Job, Jobs, Update};
 use crate::statusline::StatusLine;
 use crate::ui;
 
@@ -24,6 +24,37 @@ mod windows;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const UPDATE_BATCH: usize = 32;
+
+struct PaintSchedule {
+    dirty: bool,
+    urgent: bool,
+    next_stream: Instant,
+}
+
+impl PaintSchedule {
+    fn request(&mut self, urgent: bool) {
+        self.dirty = true;
+        self.urgent |= urgent;
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.dirty && (self.urgent || now >= self.next_stream)
+    }
+
+    fn painted(&mut self, start: Instant, end: Instant) {
+        let render_cost = end.duration_since(start);
+        self.next_stream = end + (render_cost * 2).min(Duration::from_millis(120));
+        self.dirty = false;
+        self.urgent = false;
+    }
+}
+
+fn apply_update(app: &mut App, update: Update, paint: &mut PaintSchedule) {
+    let delta = matches!(&update, Update::Observation(_, Observation::Live { event, .. })
+        if matches!(event["type"].as_str(), Some("text" | "thinking" | "tool_output")));
+    app.update(update);
+    paint.request(!delta);
+}
 
 pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let workspace = options
@@ -47,32 +78,38 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut screen = terminal.draw(&mut app)?;
     dispatch(&mut app, &mut jobs, &mut clipboard);
-    let mut dirty = false;
+    let mut paint = PaintSchedule {
+        dirty: false,
+        urgent: false,
+        next_stream: Instant::now(),
+    };
     while !app.quit {
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
                     app.event(event, screen.buffer);
-                    dirty = true;
+                    paint.request(true);
                 }
                 Some(Err(error)) => return Err(error),
                 None => break,
             },
             event = jobs.next() => {
                 if let Some(event) = event {
-                    app.update(event);
+                    apply_update(&mut app, event, &mut paint);
                     for _ in 1..UPDATE_BATCH {
                         let Some(event) = jobs.try_next() else { break };
-                        app.update(event);
+                        apply_update(&mut app, event, &mut paint);
                     }
-                    dirty = true;
                 }
             },
             _ = frames.tick() => {
-                dirty |= app.tick();
-                if dirty {
+                if app.tick() {
+                    paint.request(true);
+                }
+                let start = Instant::now();
+                if paint.ready(start) {
                     screen = terminal.draw(&mut app)?;
-                    dirty = false;
+                    paint.painted(start, Instant::now());
                 }
             },
         }
@@ -212,5 +249,32 @@ impl Clipboard {
         write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
         terminal.flush()?;
         Ok("Sent text to terminal clipboard")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Duration, Instant, PaintSchedule};
+
+    #[test]
+    fn streaming_bursts_share_frames_and_input_bypasses_the_render_budget() {
+        let start = Instant::now();
+        let mut paint = PaintSchedule {
+            dirty: false,
+            urgent: false,
+            next_stream: start,
+        };
+        for _ in 0..10_000 {
+            paint.request(false);
+        }
+        assert!(paint.ready(start));
+        let end = start + Duration::from_millis(40);
+        paint.painted(start, end);
+        assert!(!paint.ready(end));
+        paint.request(false);
+        assert!(!paint.ready(end + Duration::from_millis(79)));
+        assert!(paint.ready(end + Duration::from_millis(80)));
+        paint.request(true);
+        assert!(paint.ready(end));
     }
 }
