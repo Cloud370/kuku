@@ -50,7 +50,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
         Constraint::Length(status_height),
     ])
     .areas(area);
-    render_transcript(frame, transcript, app, banner_area.height == 0);
+    let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
     let composer_title = format!("You · draft to {}", app.active.agent);
     let composer_title = if composer_title.width() + 4 <= usize::from(editor.width) {
@@ -81,13 +81,19 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
         modal_area
             .as_ref()
             .map_or(&main_areas[..], std::slice::from_ref),
+        modal_area.is_none().then_some((transcript, row_insets)),
     );
 }
 
-fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App, show_service_problem: bool) {
+fn render_transcript(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &mut App,
+    show_service_problem: bool,
+) -> Vec<u16> {
     if area.is_empty() {
         app.transcript_area = (usize::from(area.width).max(1), 1);
-        return;
+        return Vec::new();
     }
     let title = if app.pane().title.is_empty() {
         if app.pane().exists {
@@ -140,6 +146,8 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App, show_serv
         );
     }
     frame.render_widget(Paragraph::new(view.lines), body);
+    view.row_insets.insert(0, 0);
+    view.row_insets
 }
 
 fn welcome(
@@ -828,12 +836,17 @@ mod tests {
             snapshot(&app, "idle", json!(null), json!(null)),
             page,
         ));
-        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let view = screen(&mut app, 72, 25);
-        assert!(view.contains("example_custom · ok · exit 0"));
+        assert!(view.contains("Tool example_custom · ok · exit 0"));
         assert!(view.contains("before␛[2Jafter"));
         assert!(view.contains("let number = 4;"));
         assert!(!view.contains('\u{001b}'));
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let view = screen(&mut app, 72, 25);
+        assert!(view.contains("Ctrl+O show"));
+        assert!(!view.contains("before␛[2Jafter"));
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(screen(&mut app, 72, 25).contains("before␛[2Jafter"));
         command(&mut app, "copy");
         assert!(app
             .effects
@@ -901,6 +914,7 @@ mod tests {
             ToolView {
                 name: "Tool".into(),
                 summary: "Finished".into(),
+                invocation: String::new(),
                 details: "before\u{001b}[2J\nExit".into(),
                 diff: String::new(),
                 output_id: None,

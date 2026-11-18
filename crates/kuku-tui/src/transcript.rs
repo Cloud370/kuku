@@ -5,14 +5,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::markup::{render_diff, render_literal, render_markdown, wrap_bounded, ACCENT, MUTED};
-use crate::text::{cap, single_line};
+use crate::markup::{render_literal, render_markdown, wrap_bounded, ACCENT, MUTED};
+use crate::text::{cap, shorten, single_line};
+
+mod tool;
+
+use self::tool::Tool;
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
 const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_DETAIL_BYTES: usize = 12 * 1024;
 const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
 
@@ -44,12 +47,19 @@ impl HistoryRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ToolDetails {
+    #[default]
+    Expanded,
+    Collapsed,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     recent: Window,
     reading: Option<Reading>,
     restore: Option<(u64, Anchor)>,
-    expanded: bool,
+    details: ToolDetails,
     current_execution: Option<u64>,
 }
 
@@ -113,7 +123,20 @@ impl Transcript {
                     }
                 }
             }
-            Some("tool_start" | "tool_output" | "tool_end") => self.recent.tool_live(turn, event),
+            Some("tool_start" | "tool_output" | "tool_end") => {
+                if let Some(id) = event["id"].as_str() {
+                    let key = Key::Tool {
+                        turn,
+                        id: id.to_owned(),
+                    };
+                    if let Some(reading) = &mut self.reading {
+                        if reading.window.contains(&key) {
+                            reading.window.tool_live(key.clone(), event);
+                        }
+                    }
+                    self.recent.tool_live(key, event);
+                }
+            }
             Some("done" | "cancelled" | "error") => self.clear_preview(),
             Some(_) | None => {}
         }
@@ -151,8 +174,11 @@ impl Transcript {
     }
 
     pub(crate) fn toggle_details(&mut self) -> bool {
-        self.expanded = !self.expanded;
-        self.expanded
+        self.details = match self.details {
+            ToolDetails::Expanded => ToolDetails::Collapsed,
+            ToolDetails::Collapsed => ToolDetails::Expanded,
+        };
+        self.details == ToolDetails::Expanded
     }
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
@@ -175,18 +201,9 @@ impl Transcript {
             .records
             .iter()
             .rev()
-            .filter_map(|record| {
-                if let Body::Tool(tool) = &record.body {
-                    Some(ToolView {
-                        name: tool.name.clone(),
-                        summary: tool.summary.clone(),
-                        details: tool.details.clone(),
-                        diff: tool.display_diff().unwrap_or_default().to_owned(),
-                        output_id: tool.output_id.clone(),
-                    })
-                } else {
-                    None
-                }
+            .filter_map(|record| match &record.body {
+                Body::Tool(tool) => Some(tool.view()),
+                Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => None,
             })
             .collect()
     }
@@ -202,8 +219,8 @@ impl Transcript {
                 return None;
             }
             let mut window = self.recent.clone();
-            let rows = window.row_count(width, self.expanded);
-            let anchor = window.anchor_at(rows.saturating_sub(height), width, self.expanded)?;
+            let rows = window.row_count(width, self.details);
+            let anchor = window.anchor_at(rows.saturating_sub(height), width, self.details)?;
             self.reading = Some(Reading {
                 window,
                 anchor,
@@ -211,13 +228,13 @@ impl Transcript {
             });
         }
         let reading = self.reading.as_mut().expect("read window");
-        let rows = reading.window.row_count(width, self.expanded);
+        let rows = reading.window.row_count(width, self.details);
         let start = reading
             .window
-            .position_of(&reading.anchor, width, self.expanded);
+            .position_of(&reading.anchor, width, self.details);
         let bottom = rows.saturating_sub(height);
         let next = start.saturating_add_signed(amount).min(bottom);
-        if let Some(anchor) = reading.window.anchor_at(next, width, self.expanded) {
+        if let Some(anchor) = reading.window.anchor_at(next, width, self.details) {
             reading.anchor = anchor;
         }
         if amount.is_negative() && next == 0 {
@@ -287,32 +304,41 @@ impl Transcript {
         let (window, start, following) = if let Some(reading) = &mut self.reading {
             let start = reading
                 .window
-                .position_of(&reading.anchor, width, self.expanded);
+                .position_of(&reading.anchor, width, self.details);
             (&mut reading.window, start, false)
         } else {
-            let rows = self.recent.row_count(width, self.expanded);
+            let rows = self.recent.row_count(width, self.details);
             (&mut self.recent, rows.saturating_sub(height), true)
         };
         let mut lines = Vec::with_capacity(height);
+        let mut row_insets = Vec::with_capacity(height);
         let mut skip = start;
         for record in &mut window.records {
-            let block = record.lines(width, self.expanded);
+            let block = record.lines(width, self.details);
             if skip >= block.len() {
                 skip -= block.len();
                 continue;
             }
-            lines.extend(block.iter().skip(skip).take(height - lines.len()).cloned());
+            for row in block.iter().skip(skip).take(height - lines.len()) {
+                lines.push(row.line.clone());
+                row_insets.push(row.inset);
+            }
             if lines.len() == height {
                 break;
             }
             skip = 0;
         }
-        TranscriptView { lines, following }
+        TranscriptView {
+            lines,
+            row_insets,
+            following,
+        }
     }
 }
 
 pub(crate) struct TranscriptView {
     pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) row_insets: Vec<u16>,
     pub(crate) following: bool,
 }
 
@@ -320,6 +346,7 @@ pub(crate) struct TranscriptView {
 pub(crate) struct ToolView {
     pub(crate) name: String,
     pub(crate) summary: String,
+    pub(crate) invocation: String,
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
@@ -414,8 +441,7 @@ impl Window {
         self.records.retain(|record| record.position.is_some());
         for record in &mut self.records {
             if let Body::Tool(tool) = &mut record.body {
-                if !tool.progress.is_empty() {
-                    tool.progress.clear();
+                if tool.clear_live() {
                     record.rendered = None;
                 }
             }
@@ -467,55 +493,26 @@ impl Window {
         self.records.last_mut().expect("inserted record")
     }
 
-    fn tool_live(&mut self, turn: Option<u64>, event: &Value) {
-        let Some(id) = event["id"].as_str() else {
-            return;
-        };
-        let key = Key::Tool {
-            turn,
-            id: id.to_owned(),
-        };
+    fn tool_live(&mut self, key: Key, event: &Value) {
         let record = self.record_or_insert(key, || Body::Tool(Box::default()));
-        let Body::Tool(tool) = &mut record.body else {
-            return;
-        };
-        if tool.complete {
-            return;
+        if let Body::Tool(tool) = &mut record.body {
+            if tool.apply_live(event) {
+                record.rendered = None;
+            }
         }
-        match event["type"].as_str() {
-            Some("tool_start") => {
-                tool.name = capped(event["tool"].as_str(), MAX_DETAIL_BYTES);
-                tool.summary = capped(event["summary"].as_str(), MAX_DETAIL_BYTES);
-            }
-            Some("tool_output") => {
-                let event = &event["event"];
-                if let Some(text) = event["stdout"]
-                    .as_str()
-                    .or_else(|| event["stderr"].as_str())
-                {
-                    append_bounded(&mut tool.progress, text, MAX_DETAIL_BYTES);
-                }
-            }
-            Some("tool_end") => {
-                tool.summary = capped(event["summary"].as_str(), MAX_DETAIL_BYTES);
-                tool.status = capped(event["status"].as_str(), MAX_DETAIL_BYTES);
-            }
-            Some(_) | None => {}
-        }
-        record.rendered = None;
     }
 
-    fn row_count(&mut self, width: usize, expanded: bool) -> usize {
+    fn row_count(&mut self, width: usize, details: ToolDetails) -> usize {
         self.records
             .iter_mut()
-            .map(|record| record.lines(width, expanded).len())
+            .map(|record| record.lines(width, details).len())
             .sum()
     }
 
-    fn position_of(&mut self, anchor: &Anchor, width: usize, expanded: bool) -> usize {
+    fn position_of(&mut self, anchor: &Anchor, width: usize, details: ToolDetails) -> usize {
         let mut start = 0;
         for record in &mut self.records {
-            let height = record.lines(width, expanded).len();
+            let height = record.lines(width, details).len();
             if record.key == anchor.key {
                 return start + anchor.line.min(height.saturating_sub(1));
             }
@@ -524,9 +521,9 @@ impl Window {
         0
     }
 
-    fn anchor_at(&mut self, mut row: usize, width: usize, expanded: bool) -> Option<Anchor> {
+    fn anchor_at(&mut self, mut row: usize, width: usize, details: ToolDetails) -> Option<Anchor> {
         for record in &mut self.records {
-            let height = record.lines(width, expanded).len();
+            let height = record.lines(width, details).len();
             if row < height {
                 return Some(Anchor {
                     key: record.key.clone(),
@@ -547,7 +544,7 @@ struct Record {
     key: Key,
     position: Option<u64>,
     body: Body,
-    rendered: Option<(usize, bool, Vec<Line<'static>>)>,
+    rendered: Option<(usize, ToolDetails, Vec<Row>)>,
 }
 
 impl Clone for Record {
@@ -566,7 +563,14 @@ impl Record {
         let mut key = Key::Event(entry.id);
         let text = capped(entry.text.as_deref(), MAX_BODY_BYTES);
         let body = match entry.kind {
-            HistoryKind::User => Body::User(text),
+            HistoryKind::User => Body::User {
+                sender: entry
+                    .details
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                text,
+            },
             HistoryKind::Assistant => Body::Assistant(text),
             HistoryKind::ToolCall | HistoryKind::ToolResult => {
                 if let Some(id) = entry.details.get("tool_call_id").and_then(Value::as_str) {
@@ -618,25 +622,49 @@ impl Record {
         }
     }
 
-    fn lines(&mut self, width: usize, expanded: bool) -> &[Line<'static>] {
+    fn lines(&mut self, width: usize, details: ToolDetails) -> &[Row] {
+        let mode = if matches!(self.body, Body::Tool(_)) {
+            details
+        } else {
+            ToolDetails::Expanded
+        };
         if self
             .rendered
             .as_ref()
-            .is_none_or(|(stored, details, _)| *stored != width || *details != expanded)
+            .is_none_or(|(stored, details, _)| *stored != width || *details != mode)
         {
             let lines = match &self.body {
-                Body::User(text) => {
-                    render_record("You", ACCENT, render_literal(text, Style::default()))
+                Body::User { sender, text } => {
+                    let title = match sender {
+                        Some(sender) => shorten(&format!("From {}", single_line(sender)), width),
+                        None if width >= 10 => "You (sent)".to_owned(),
+                        None => "You".to_owned(),
+                    };
+                    render_record(
+                        &title,
+                        ACCENT,
+                        render_literal(text, Style::default()),
+                        width,
+                        body_inset(width),
+                    )
                 }
-                Body::Assistant(text) => {
-                    render_record("Assistant", Color::Green, render_markdown(text))
-                }
-                Body::Notice(title, text, color) => {
-                    render_record(title, *color, render_literal(text, Style::default()))
-                }
-                Body::Tool(tool) => tool.render(expanded),
+                Body::Assistant(text) => render_record(
+                    if width >= 9 { "Assistant" } else { "AI" },
+                    Color::Green,
+                    render_markdown(text),
+                    width,
+                    0,
+                ),
+                Body::Notice(title, text, color) => render_record(
+                    title,
+                    *color,
+                    render_literal(text, Style::default()),
+                    width,
+                    0,
+                ),
+                Body::Tool(tool) => tool.render(width, mode),
             };
-            self.rendered = Some((width, expanded, wrap_bounded(lines, width, MAX_VISUAL_ROWS)));
+            self.rendered = Some((width, mode, lines));
         }
         &self.rendered.as_ref().expect("rendered record").2
     }
@@ -644,178 +672,67 @@ impl Record {
 
 #[derive(Debug, Clone)]
 enum Body {
-    User(String),
+    User {
+        sender: Option<String>,
+        text: String,
+    },
     Assistant(String),
     Notice(&'static str, String, Color),
     Tool(Box<Tool>),
 }
 
-#[derive(Debug, Clone, Default)]
-struct Tool {
-    name: String,
-    summary: String,
-    status: String,
-    details: String,
-    diff: String,
-    requested_change: String,
-    progress: String,
-    exit_code: Option<i64>,
-    output_id: Option<String>,
-    complete: bool,
+#[derive(Debug)]
+struct Row {
+    line: Line<'static>,
+    inset: u16,
 }
 
-impl Tool {
-    fn from_entry(entry: &HistoryEntry) -> Self {
-        let get = |field: &str| entry.details.get(field).and_then(Value::as_str);
-        let structured = entry.details.get("structured").unwrap_or(&Value::Null);
-        let args = entry.details.get("args").map(ToString::to_string);
-        let requested_change = if get("tool") == Some("edit_file") {
-            entry
-                .details
-                .get("args")
-                .and_then(edit_preview)
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        Self {
-            name: capped(get("tool"), MAX_DETAIL_BYTES),
-            summary: capped(get("summary").or(entry.text.as_deref()), MAX_DETAIL_BYTES),
-            status: capped(get("status"), MAX_DETAIL_BYTES),
-            details: capped(get("model_content").or(args.as_deref()), MAX_DETAIL_BYTES),
-            diff: capped(
-                structured["diff"].as_str().or_else(|| get("diff")),
-                MAX_DETAIL_BYTES,
-            ),
-            requested_change,
-            exit_code: structured["exit_code"].as_i64(),
-            output_id: get("output_id").map(str::to_owned),
-            complete: entry.kind == HistoryKind::ToolResult,
-            ..Self::default()
-        }
-    }
-
-    fn merge(&mut self, incoming: Self) {
-        if !incoming.name.is_empty() {
-            self.name = incoming.name;
-        }
-        if !incoming.requested_change.is_empty() {
-            self.requested_change = incoming.requested_change;
-        }
-        if self.complete && !incoming.complete {
-            return;
-        }
-        if !incoming.summary.is_empty() {
-            self.summary = incoming.summary;
-        }
-        if !incoming.details.is_empty() {
-            self.details = incoming.details;
-        }
-        if incoming.complete {
-            self.status = incoming.status;
-            self.diff = incoming.diff;
-            self.exit_code = incoming.exit_code;
-            self.output_id = incoming.output_id;
-            self.progress.clear();
-            self.complete = true;
-        }
-    }
-
-    fn render(&self, expanded: bool) -> Vec<Line<'static>> {
-        let name = if self.name.is_empty() {
-            "Tool"
-        } else {
-            &self.name
-        };
-        let status = if self.status.is_empty() {
-            "running"
-        } else {
-            &self.status
-        };
-        let icon = if expanded { '▾' } else { '▸' };
-        let exit = self
-            .exit_code
-            .map_or_else(String::new, |exit| format!(" · exit {exit}"));
-        let mut lines = vec![Line::from(vec![
-            Span::styled(
-                format!("{icon} {}", single_line(name)),
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(
-                format!(" · {}{exit}", single_line(status)),
-                Style::default().fg(MUTED),
-            ),
-        ])];
-        if !self.summary.is_empty() {
-            lines.extend(render_literal(&self.summary, Style::default()));
-        }
-        if expanded {
-            lines.extend(self.render_details());
-        }
-        lines.push(Line::default());
-        lines
-    }
-
-    fn render_details(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        if let Some(diff) = self.display_diff() {
-            lines.extend(render_diff(diff));
-        } else if !self.details.is_empty() && self.details != self.summary {
-            lines.extend(render_literal(
-                &self.details,
-                Style::default().fg(Color::Gray),
-            ));
-        }
-        if !self.progress.is_empty() {
-            lines.extend(render_literal(
-                &self.progress,
-                Style::default().fg(Color::Gray),
-            ));
-        }
-        if self.output_id.is_some() {
-            lines.push(Line::styled(
-                "Saved output · /tools",
-                Style::default().fg(ACCENT),
-            ));
-        }
-        lines
-    }
-
-    fn display_diff(&self) -> Option<&str> {
-        if !self.diff.is_empty() {
-            Some(&self.diff)
-        } else if self.complete
-            && self.status.eq_ignore_ascii_case("ok")
-            && !self.requested_change.is_empty()
-        {
-            Some(&self.requested_change)
-        } else {
-            None
-        }
+impl Row {
+    fn plain(line: Line<'static>) -> Self {
+        Self { line, inset: 0 }
     }
 }
 
-fn edit_preview(args: &Value) -> Option<String> {
-    let old = cap(args["old_text"].as_str()?, MAX_DETAIL_BYTES / 2);
-    let new = cap(args["new_text"].as_str()?, MAX_DETAIL_BYTES / 2);
-    let mut preview = String::from("Replacement\n");
-    for (prefix, text) in [('-', old), ('+', new)] {
-        for line in text.lines() {
-            preview.push(prefix);
-            preview.push_str(line);
-            preview.push('\n');
-        }
+fn body_inset(width: usize) -> u16 {
+    if width >= 12 {
+        2
+    } else {
+        0
     }
-    Some(preview)
 }
 
-fn render_record(title: &str, color: Color, mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+fn render_rows(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    limit: usize,
+    inset: u16,
+) -> impl Iterator<Item = Row> {
+    wrap_bounded(lines, width.saturating_sub(usize::from(inset)), limit)
+        .into_iter()
+        .map(move |mut line| {
+            if inset > 0 && !line.spans.is_empty() {
+                line.spans
+                    .insert(0, Span::raw(" ".repeat(usize::from(inset))));
+            }
+            Row { line, inset }
+        })
+}
+
+fn render_record(
+    title: &str,
+    color: Color,
+    mut lines: Vec<Line<'static>>,
+    width: usize,
+    inset: u16,
+) -> Vec<Row> {
     let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
-    lines.insert(0, Line::styled(title.to_owned(), style));
+    let title = Line::styled(title.to_owned(), style);
     if lines.last().is_some_and(|line| !line.spans.is_empty()) {
         lines.push(Line::default());
     }
-    lines
+    let mut rows: Vec<_> = render_rows(vec![title], width, MAX_VISUAL_ROWS, 0).collect();
+    rows.extend(render_rows(lines, width, MAX_VISUAL_ROWS, inset));
+    rows
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {
@@ -917,5 +834,146 @@ mod tests {
         let rendered = rows(&mut transcript).join("\n");
         assert!(!rendered.contains("temporary preview"));
         assert!(rendered.contains("settled response"));
+    }
+
+    #[test]
+    fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
+        let mut transcript = Transcript::default();
+        let mut question = response(1, "看一下 e\u{301} 👩‍💻".into());
+        question.kind = HistoryKind::User;
+        transcript.apply(question, None);
+        transcript.apply(response(2, "我来检查".into()), None);
+        transcript.apply(
+            serde_json::from_value(json!({
+                "id": 3, "agent": "main", "turn": 1, "type": "tool_call",
+                "tool": "read_file", "tool_call_id": "read", "args": {"path": "中文.txt"}
+            }))
+            .unwrap(),
+            None,
+        );
+        transcript.apply(
+            serde_json::from_value(json!({
+                "id": 4, "agent": "main", "turn": 1, "type": "tool_result",
+                "tool_call_id": "read", "status": "error", "summary": "Unable to read",
+                "model_content": "文件丢失"
+            }))
+            .unwrap(),
+            None,
+        );
+
+        for width in [17, 72] {
+            let view = transcript.project(width, 32);
+            let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
+            assert_eq!("You (sent)", plain[0]);
+            assert_eq!("  看一下 e\u{301} 👩‍💻", plain[1]);
+            assert_eq!(2, view.row_insets[1]);
+            assert!(plain
+                .windows(2)
+                .any(|pair| pair == ["Assistant", "我来检查"]));
+            assert!(plain.iter().any(|row| row.starts_with("Tool read_file")));
+            assert!(plain.iter().any(|row| row.contains("error")));
+            assert!(plain.iter().any(|row| row == "  中文.txt"));
+            assert!(plain.iter().any(|row| row == "  文件丢失"));
+            assert!(view.lines.iter().all(|line| line.width() <= width));
+        }
+
+        let compact: Vec<_> = transcript
+            .project(8, 40)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!("You", compact[0]);
+        assert!(compact.iter().any(|row| row == "AI"));
+        assert!(compact.iter().any(|row| row == "文件丢失"));
+    }
+
+    #[test]
+    fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
+        let mut transcript = Transcript::default();
+        transcript.apply(response(1, "Earlier reply".into()), None);
+        transcript.apply(
+            serde_json::from_value(json!({
+                "id": 2, "agent": "main", "turn": 1, "type": "tool_call",
+                "tool": "run_command", "tool_call_id": "cmd", "args": {"command": "check-workspace"}
+            }))
+            .unwrap(),
+            None,
+        );
+        assert!(rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("requested")));
+        assert!(rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("check-workspace")));
+
+        transcript.live(
+            9,
+            Some(1),
+            &json!({
+                "type": "tool_start", "id": "cmd", "tool": "run_command", "summary": "Checking"
+            }),
+        );
+        transcript.scroll(-50, 60, 5);
+        let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
+        assert!(!transcript.toggle_details());
+        transcript.live(
+            9,
+            Some(1),
+            &json!({
+                "type": "tool_output", "id": "cmd", "event": {"stdout": "working output"}
+            }),
+        );
+        let collapsed = rows(&mut transcript).join("\n");
+        assert!(collapsed.contains("running"));
+        assert!(!collapsed.contains("working output"));
+        assert!(transcript.toggle_details());
+        assert!(rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("working output")));
+
+        transcript.live(
+            9,
+            Some(1),
+            &json!({
+                "type": "tool_end", "id": "cmd", "status": "error", "summary": "Live failure",
+                "model_content": "live diagnostic"
+            }),
+        );
+        assert!(rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("live diagnostic")));
+        transcript.apply(serde_json::from_value(json!({
+            "id": 3, "agent": "main", "turn": 1, "type": "tool_result",
+            "tool_call_id": "cmd", "status": "ok", "summary": "Command completed",
+            "model_content": "durable diagnostic", "structured": {"exit_code": 7, "output_id": "out"}
+        })).unwrap(), Some(9));
+        transcript.live(
+            9,
+            Some(1),
+            &json!({
+                "type": "tool_output", "id": "cmd", "event": {"stderr": "late duplicate"}
+            }),
+        );
+        let settled = transcript.project(60, 20);
+        let plain: Vec<_> = settled.lines.iter().map(ToString::to_string).collect();
+        assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
+        assert_eq!("Assistant", plain[0]);
+        assert_eq!(
+            1,
+            plain
+                .iter()
+                .filter(|row| row.starts_with("Tool run_command"))
+                .count()
+        );
+        assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
+        assert!(plain.iter().any(|row| row == "  durable diagnostic"));
+        assert!(plain.iter().any(|row| row == "  Saved output · /tools"));
+        assert!(!plain
+            .iter()
+            .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));
+        let tools = transcript.tools();
+        assert_eq!(Some("out"), tools[0].output_id.as_deref());
+        assert_eq!("check-workspace", tools[0].invocation);
     }
 }

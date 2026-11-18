@@ -3,11 +3,12 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::keys::Shortcut;
-use crate::markup::{render_diff, render_literal, wrap, ACCENT, MUTED};
+use crate::markup::{render_diff, render_literal, wrap, wrap_bounded, ACCENT, MUTED};
 use crate::transcript::ToolView;
 
 pub(crate) const OUTPUT_PAGE_BYTES: usize = 4 * 1024;
 const MAX_PREVIOUS_OFFSETS: usize = 128;
+const RETAINED_INVOCATION_ROWS: usize = 2;
 
 #[derive(Debug)]
 pub(crate) struct OutputViewer {
@@ -92,7 +93,22 @@ impl OutputViewer {
     }
 
     pub(crate) fn render_lines(&mut self, width: usize, height: usize) -> Vec<Line<'static>> {
-        let mut lines = render_literal(&self.tool.summary, Style::default());
+        let mut lines = Vec::new();
+        let first_page = self.chunk.as_ref().is_none_or(|chunk| chunk.offset == 0);
+        if first_page
+            && !self.tool.invocation.is_empty()
+            && self.tool.invocation != self.tool.summary
+        {
+            let invocation = render_literal(&self.tool.invocation, Style::default().fg(ACCENT));
+            if self.tool.output_id.is_some() {
+                lines.extend(wrap_bounded(invocation, width, RETAINED_INVOCATION_ROWS));
+            } else {
+                lines.extend(invocation);
+            }
+        }
+        if !self.tool.summary.is_empty() {
+            lines.extend(render_literal(&self.tool.summary, Style::default()));
+        }
         if let Some(chunk) = &self.chunk {
             for segment in &chunk.segments {
                 let color = match segment.stream {
@@ -103,7 +119,7 @@ impl OutputViewer {
             }
         } else if !self.tool.diff.is_empty() {
             lines.extend(render_diff(&self.tool.diff));
-        } else if !self.tool.details.is_empty() {
+        } else if !self.tool.details.is_empty() && self.tool.details != self.tool.summary {
             lines.extend(render_literal(
                 &self.tool.details,
                 Style::default().fg(Color::Gray),
@@ -162,5 +178,70 @@ impl OutputViewer {
             ),
             Style::default().fg(ACCENT),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kuku_client::{OutputChunk, OutputSegment, OutputStream};
+
+    use super::{OutputViewer, ToolView};
+
+    #[test]
+    fn long_invocation_leaves_room_for_retained_output_and_its_next_page() {
+        let mut viewer = OutputViewer::new(
+            1,
+            ToolView {
+                name: "run_command".into(),
+                summary: "Finished".into(),
+                invocation: format!("long_command {}", "argument ".repeat(240)),
+                details: String::new(),
+                diff: String::new(),
+                output_id: Some("saved".into()),
+            },
+        );
+        viewer.apply(output(0, "first page", true));
+        let first = rendered(&mut viewer);
+        assert!(first.contains("long_command"));
+        assert!(first.contains("first page"));
+        assert_eq!(Some(10), viewer.scroll(1));
+
+        viewer.apply(output(10, "next page!", false));
+        let next = rendered(&mut viewer);
+        assert!(next.contains("next page!"));
+        assert!(!next.contains("long_command"));
+        assert_eq!(Some(0), viewer.scroll(-1));
+    }
+
+    fn rendered(viewer: &mut OutputViewer) -> String {
+        viewer
+            .render_lines(28, 8)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn output(offset: u64, text: &str, has_more: bool) -> OutputChunk {
+        OutputChunk {
+            output_id: "saved".into(),
+            offset,
+            next_offset: offset + text.len() as u64,
+            total_bytes: 20,
+            segments: vec![OutputSegment {
+                stream: OutputStream::Stdout,
+                offset,
+                bytes: text.len(),
+                text: text.into(),
+                raw_bytes: None,
+            }],
+            summary: Vec::new(),
+            complete: true,
+            capture_truncated: false,
+            cleanup_incomplete: false,
+            filtered: false,
+            lossy_utf8: false,
+            has_more,
+        }
     }
 }
