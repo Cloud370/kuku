@@ -338,15 +338,15 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
 
 #[tokio::test]
 async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
-    retry_interrupted_input(true, 400).await;
+    retry_interrupted_input(true, 400, 1).await;
 }
 
 #[tokio::test]
 async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
-    retry_interrupted_input(false, 429).await;
+    retry_interrupted_input(false, 429, 2).await;
 }
 
-async fn retry_interrupted_input(reopen: bool, status: u16) {
+async fn retry_interrupted_input(reopen: bool, status: u16, failed_attempts: usize) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -374,8 +374,8 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
         "{failed:?}"
     );
     assert!(session.active_executions().is_empty());
-    assert_eq!(1, failed.usage.model_requests);
-    assert_eq!(1, failed.usage.unreported_requests);
+    assert_eq!(failed_attempts as u64, failed.usage.model_requests);
+    assert_eq!(failed_attempts as u64, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
     assert_eq!(
         1,
@@ -390,7 +390,7 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
             .count(),
         "provider failure already records its own interruption"
     );
-    failure.assert_hits_async(1).await;
+    failure.assert_hits_async(failed_attempts).await;
     let session = if reopen {
         let mut options = original;
         options.session_id = Some(session.id().into());
