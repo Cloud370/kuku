@@ -713,7 +713,7 @@ impl OpenAiResponsesSseParser {
             self.chunks.push(ProviderChunk::Report { report });
         }
         if response.get("usage").is_some_and(Value::is_object) {
-            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiResponses) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiResponses, true) {
                 self.chunks.push(usage);
             }
         }

@@ -205,7 +205,9 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         tool_call_completions,
         tool_stream_invalid,
         terminal_stream_invalid,
-        usage,
+        stream_ended,
+        mut usage,
+        request_timing,
         handoff_detector,
         thinking_duration_ms,
         ..
@@ -250,26 +252,39 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         final_stop_reason,
         ModelStopReason::EndTurn | ModelStopReason::ToolUse
     );
-    {
-        let mut store = EventStore::open(&pending.events_path)?;
-        if pending.query.runtime.is_some() {
-            store.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.model_usage","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,"usage":usage})))?;
+    let terminal_measured = stream_ended && !terminal_stream_invalid;
+    if pending.query.runtime_execution.is_some() && !terminal_measured {
+        if let Some(usage) = &mut usage {
+            usage.output_tokens = None;
         }
-        store.append(EventPayload::ModelResponse {
-            conversation: Some(pending.conversation.as_str().to_string()),
-            turn: pending.turn,
-            ts: now_timestamp()?,
-            request_id: request_id.clone(),
-            text: accumulated_text.clone(),
-            thinking: if accumulated_thinking.is_empty() {
-                None
-            } else {
-                Some(accumulated_thinking.clone())
-            },
-            stop_reason: Some(final_stop_reason.clone()),
-            input_tokens_total: usage.as_ref().and_then(input_tokens_total),
-            output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
-        })?;
+    }
+    let response = EventPayload::ModelResponse {
+        conversation: Some(pending.conversation.as_str().to_string()),
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        request_id: request_id.clone(),
+        text: accumulated_text.clone(),
+        thinking: (!accumulated_thinking.is_empty()).then(|| accumulated_thinking.clone()),
+        stop_reason: Some(final_stop_reason.clone()),
+        input_tokens_total: usage.as_ref().and_then(|usage| usage.input_tokens),
+        output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
+    };
+    if let Some(execution) = pending.query.runtime_execution {
+        let elapsed_us = request_timing
+            .filter(|_| terminal_measured)
+            .and_then(|timing| timing.elapsed_us);
+        let measurement = EventPayload::Unknown(serde_json::json!({
+            "kind": "runtime.model_usage", "ts": now_timestamp()?,
+            "agent": pending.conversation.as_str(), "turn": pending.turn,
+            "request_id": request_id, "usage": usage, "elapsed_us": elapsed_us,
+        }));
+        super::provider::runtime_session(&pending, execution)?.commit_model_facts(
+            pending.conversation.as_str(),
+            execution,
+            [measurement, response],
+        )?;
+    } else {
+        EventStore::open(&pending.events_path)?.append(response)?;
     }
 
     if let Some(ref u) = usage {
@@ -515,11 +530,10 @@ fn persist_runtime_model_usage_log(
     request_id: &str,
     usage: &crate::provider::types::ProviderUsage,
 ) -> Result<()> {
-    let input_tokens_total = input_tokens_total(usage);
-    let cache_hit_rate = match (input_tokens_total, usage.cache_read_input_tokens) {
-        (Some(total), Some(cache_read)) if total > 0 => Some(cache_read as f64 / total as f64),
-        _ => None,
-    };
+    let cache_hit_rate = usage
+        .cache_input_counts()
+        .filter(|(_, input)| *input > 0)
+        .map(|(read, input)| read as f64 / input as f64);
 
     let mut record = LogRecord::new(now_timestamp()?, LogLevel::Info, LogScope::Runtime);
     record.kind = "runtime.model_usage".to_string();
@@ -534,15 +548,11 @@ fn persist_runtime_model_usage_log(
         "output_tokens": usage.output_tokens,
         "cache_read_input_tokens": usage.cache_read_input_tokens,
         "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-        "input_tokens_total": input_tokens_total,
+        "input_tokens_total": usage.input_tokens,
         "cache_hit_rate": cache_hit_rate,
     }));
     let _ = pending.runtime_log_writer.push(record);
     Ok(())
-}
-
-fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
-    usage.input_tokens
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {

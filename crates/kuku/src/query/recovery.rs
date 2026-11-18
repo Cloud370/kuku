@@ -83,10 +83,7 @@ fn preflight_context(
     pending: &PendingRun,
     usage: Option<&crate::provider::types::ProviderUsage>,
 ) -> Result<()> {
-    let Some(usage) = usage else {
-        return Ok(());
-    };
-    let Some(estimated_input) = input_tokens_total(usage)? else {
+    let Some(estimated_input) = usage.and_then(|usage| usage.input_tokens) else {
         return Ok(());
     };
     let estimated_input = u32::try_from(estimated_input).map_err(|_| {
@@ -130,25 +127,6 @@ fn conservative_suffix_tokens(text_bytes: usize) -> Result<u32> {
         .ok_or_else(|| Error::InvalidEventStream("recovery suffix size overflow".to_string()))?;
     u32::try_from(suffix_bytes)
         .map_err(|_| Error::InvalidEventStream("recovery suffix is too large".to_string()))
-}
-
-fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Result<Option<u64>> {
-    let mut total: u64 = 0;
-    let mut seen = false;
-    for value in [
-        usage.input_tokens,
-        usage.cache_read_input_tokens,
-        usage.cache_creation_input_tokens,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        total = total.checked_add(value).ok_or_else(|| {
-            Error::InvalidEventStream("model input usage overflow during recovery".to_string())
-        })?;
-        seen = true;
-    }
-    Ok(seen.then_some(total))
 }
 
 async fn dispatch_recovery(
@@ -212,6 +190,7 @@ async fn dispatch_recovery(
             stream_ended: false,
             provider_request_id: None,
             usage: None,
+            request_timing: None,
             lead_events,
             handoff_detector: handoff_active.then(super::handoff::HandoffDetector::new),
             thinking_start: None,
@@ -314,22 +293,6 @@ impl ProviderFailureKindEventName for ProviderFailureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn input_usage_overflow_is_not_treated_as_missing() {
-        let usage = crate::provider::types::ProviderUsage {
-            input_tokens: Some(u64::MAX),
-            output_tokens: None,
-            cache_read_input_tokens: Some(1),
-            cache_creation_input_tokens: None,
-        };
-
-        assert!(matches!(
-            input_tokens_total(&usage),
-            Err(Error::InvalidEventStream(message))
-                if message.contains("input usage overflow")
-        ));
-    }
 
     #[test]
     fn suffix_estimate_reserves_one_token_per_byte() {

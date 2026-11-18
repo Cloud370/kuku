@@ -278,7 +278,7 @@ pub enum AgentStatus {
     Interrupted,
 }
 
-/// Cumulative token usage reported by completed model requests.
+/// Cumulative token usage and the latest request measurement for one agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageTotals {
     /// Sum of reported total input tokens, including cached input.
@@ -293,6 +293,75 @@ pub struct UsageTotals {
     pub model_requests: u64,
     /// Responses missing either input or output usage, so reported totals may be partial.
     pub unreported_requests: u64,
+    /// Requests that reported their total input tokens.
+    #[serde(default)]
+    pub input_reported_requests: u64,
+    /// Requests that reported their total output tokens.
+    #[serde(default)]
+    pub output_reported_requests: u64,
+    /// Requests that reported both total input and cache reads.
+    #[serde(default)]
+    pub cache_reported_requests: u64,
+    /// Provider measurement for the most recently prepared request, once available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_request: Option<ModelUsageSample>,
+}
+
+impl UsageTotals {
+    /// Return whether every counted request reported its input tokens.
+    pub fn input_tokens_complete(&self) -> bool {
+        self.complete(self.input_tokens, self.input_reported_requests)
+    }
+
+    /// Return whether every counted request reported its output tokens.
+    pub fn output_tokens_complete(&self) -> bool {
+        self.complete(self.output_tokens, self.output_reported_requests)
+    }
+
+    /// Return the latest reported input as a percentage of that request's context window.
+    pub fn context_percent(&self) -> Option<f64> {
+        let latest = self.latest_request.as_ref()?;
+        let window = latest.context_window_tokens.filter(|window| *window > 0)?;
+        Some(latest.input_tokens? as f64 / f64::from(window) * 100.0)
+    }
+
+    /// Return the cumulative cache-read percentage when all counted requests reported it.
+    pub fn cache_hit_percent(&self) -> Option<f64> {
+        if self.model_requests == 0 || self.cache_reported_requests != self.model_requests {
+            return None;
+        }
+        let input = self.input_tokens.filter(|input| *input > 0)?;
+        let cached = self
+            .cache_read_input_tokens
+            .filter(|cached| *cached <= input)?;
+        Some(cached as f64 / input as f64 * 100.0)
+    }
+
+    /// Return the latest provider output tokens per second from dispatch to stream completion.
+    pub fn output_tokens_per_second(&self) -> Option<f64> {
+        let latest = self.latest_request.as_ref()?;
+        let elapsed = latest.elapsed_us.filter(|elapsed| *elapsed > 0)?;
+        Some(latest.output_tokens? as f64 * 1_000_000.0 / elapsed as f64)
+    }
+
+    fn complete(&self, tokens: Option<u64>, reported: u64) -> bool {
+        self.model_requests > 0
+            && tokens.is_some()
+            && (reported == self.model_requests || self.unreported_requests == 0)
+    }
+}
+
+/// Provider usage and timing bound to one prepared model request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsageSample {
+    /// Total input tokens in this request, including cached input.
+    pub input_tokens: Option<u64>,
+    /// Total output tokens reported by the provider for this request.
+    pub output_tokens: Option<u64>,
+    /// Configured context window bound to this request at preparation.
+    pub context_window_tokens: Option<u32>,
+    /// Microseconds from dispatch of the serving attempt to its terminal stream marker.
+    pub elapsed_us: Option<u64>,
 }
 
 /// Queryable state of an agent without consuming its output.
@@ -323,6 +392,7 @@ pub struct AgentSnapshot {
     /// Pending question requiring a matching host reply.
     pub question: Option<QuestionRequest>,
     /// Cumulative reported usage.
+    #[serde(default)]
     pub usage: UsageTotals,
 }
 

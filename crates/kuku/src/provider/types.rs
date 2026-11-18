@@ -182,13 +182,22 @@ pub(crate) struct CanonicalPromptInput {
     pub(crate) parts: Vec<CanonicalMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderUsage {
     /// Total input tokens, including cached input when reported.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+}
+
+impl ProviderUsage {
+    pub(crate) fn cache_input_counts(&self) -> Option<(u64, u64)> {
+        let input = self.input_tokens?;
+        let read = self.cache_read_input_tokens?;
+        let written = self.cache_creation_input_tokens.unwrap_or(0);
+        (read.checked_add(written)? <= input).then_some((read, input))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

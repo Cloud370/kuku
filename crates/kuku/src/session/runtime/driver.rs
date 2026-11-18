@@ -7,7 +7,7 @@ use crate::{Error, Result};
 
 use super::boundary::TurnWork;
 use super::record::{Record, State};
-use super::{ensure_open, Activation, AgentStatus, InputSource, Session, UsageTotals, Worker};
+use super::{ensure_open, Activation, AgentStatus, InputSource, Session, Worker};
 
 enum DriveFailure {
     Execution(Error),
@@ -190,7 +190,6 @@ impl Session {
                 }
                 match event {
                     UiEvent::Done { output, .. } => {
-                        let usage = self.turn_usage(address, output.turn)?;
                         let mut state = self.inner.state.lock().unwrap();
                         if state.agent_mut(address)?.active_epoch != Some(epoch) {
                             return Ok(());
@@ -201,6 +200,9 @@ impl Session {
                             return settle_cancelled();
                         }
                         let waiting = state.agents[address].snapshot.question.is_some();
+                        let usage = state.agents[address]
+                            .model_usage
+                            .turn_totals(Some(output.turn));
                         self.commit(
                             &mut state,
                             Record::TurnSettled {
@@ -400,7 +402,7 @@ impl Session {
             .get(address)
             .cloned()
             .or_else(|| cancellation_error.as_ref().map(ToString::to_string));
-        let usage = self.pending_usage(agent)?;
+        let usage = agent.pending_usage();
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -434,74 +436,12 @@ impl Session {
         cancellation_error.map_or(Ok(()), Err)
     }
 
-    fn turn_usage(&self, address: &str, turn: u64) -> Result<UsageTotals> {
-        let mut totals = UsageTotals::default();
-        let mut requests = std::collections::BTreeMap::<String, Option<serde_json::Value>>::new();
-        let mut retries = 0;
-        let mut cursor = turn;
-        loop {
-            let page = crate::event::EventStore::read_page(&self.inner.events_path, cursor, 128)?;
-            if page.is_empty() {
-                break;
-            }
-            for event in page {
-                cursor = event.id;
-                let crate::event::EventPayload::Unknown(value) = event.payload else {
-                    continue;
-                };
-                if value["agent"] != address || value["turn"] != turn {
-                    continue;
-                }
-                let Some(request_id) = value["request_id"].as_str() else {
-                    continue;
-                };
-                if value["kind"] == "runtime.step_prepared" {
-                    requests.entry(request_id.into()).or_default();
-                } else if value["kind"] == "runtime.model_usage" {
-                    requests.insert(request_id.into(), Some(value["usage"].clone()));
-                } else if value["kind"] == "runtime.model_retry" {
-                    retries += 1;
-                }
-            }
-        }
-        totals.model_requests = requests.len() as u64 + retries;
-        totals.unreported_requests = retries;
-        for usage in requests.into_values() {
-            let Some(usage) = usage else {
-                totals.unreported_requests += 1;
-                continue;
-            };
-            if usage["input_tokens"].is_null() || usage["output_tokens"].is_null() {
-                totals.unreported_requests += 1;
-            }
-            for (total, key) in [
-                (&mut totals.input_tokens, "input_tokens"),
-                (&mut totals.output_tokens, "output_tokens"),
-                (
-                    &mut totals.cache_read_input_tokens,
-                    "cache_read_input_tokens",
-                ),
-                (
-                    &mut totals.cache_creation_input_tokens,
-                    "cache_creation_input_tokens",
-                ),
-            ] {
-                if let Some(amount) = usage[key].as_u64() {
-                    *total = Some(total.unwrap_or(0).checked_add(amount).ok_or_else(|| {
-                        Error::InvalidEventStream("usage counter overflow".into())
-                    })?);
-                }
-            }
-        }
-        Ok(totals)
-    }
-
     fn settle_failure(&self, address: &str, epoch: u64, error: &Error) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         if state.agent_mut(address)?.active_epoch != Some(epoch) {
             return Ok(());
         }
-        let usage = self.pending_usage(&state.agents[address])?;
+        let usage = state.agents[address].pending_usage();
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -563,15 +503,5 @@ impl Session {
             }
         }
         failure.map_or(Ok(()), Err)
-    }
-
-    fn pending_usage(&self, agent: &super::record::AgentState) -> Result<UsageTotals> {
-        if agent.accepted.is_empty() {
-            return Ok(UsageTotals::default());
-        }
-        match agent.snapshot.turn {
-            Some(turn) => self.turn_usage(&agent.snapshot.address, turn),
-            None => Ok(UsageTotals::default()),
-        }
     }
 }

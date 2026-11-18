@@ -117,6 +117,13 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     let state = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
     assert_eq!(Some("done"), state.last_output.as_deref());
+    assert_eq!(4, state.usage.model_requests);
+    assert_eq!(Some(400), state.usage.input_tokens);
+    assert_eq!(Some(80), state.usage.output_tokens);
+    assert_eq!(
+        Some(100),
+        state.usage.latest_request.as_ref().unwrap().input_tokens
+    );
     assert_eq!(
         "after\n",
         std::fs::read_to_string(workspace.path().join("answer.txt")).unwrap()
@@ -149,6 +156,7 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     let mut reopen = original;
     reopen.session_id = Some(id);
     let reopened = Session::open(reopen).await.unwrap();
+    assert_eq!(state.usage, reopened.agent("main").unwrap().usage);
     reopened
         .send(Input::new("followup", "main", "verify the existing result"))
         .unwrap();
@@ -158,6 +166,121 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     second.assert_hits_async(1).await;
     third.assert_hits_async(1).await;
     last.assert_hits_async(2).await;
+}
+
+#[tokio::test]
+async fn provider_measurements_are_request_bound_and_replay_per_agent() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut original = options(&server, workspace.path(), data.path());
+    original
+        .config
+        .tiers
+        .get_mut("balanced")
+        .unwrap()
+        .context_window = 100_000;
+    let mut fixtures = Vec::new();
+    for (model, usage) in [
+        (
+            "complete",
+            json!({
+                "prompt_tokens": 10_000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 35},
+            }),
+        ),
+        ("output-only", json!({"completion_tokens": 30})),
+        ("input-only", json!({"prompt_tokens": 20_000})),
+    ] {
+        let expected_body = json!({"model": model}).to_string();
+        let body = common::openai_sse_response(json!({
+            "id": "usage-fixture", "model": model, "usage": usage,
+            "choices": [{"message": {"content": "measured"}, "finish_reason": "stop"}],
+        }));
+        fixtures.push(
+            server
+                .mock_async(move |when, then| {
+                    when.method(POST)
+                        .path("/chat/completions")
+                        .json_body_partial(expected_body);
+                    then.status(200)
+                        .header("content-type", "text/event-stream")
+                        .body(body);
+                })
+                .await,
+        );
+    }
+    let session = Session::open(original.clone()).await.unwrap();
+    for (agent, model) in [("main", "complete"), ("reviewer", "output-only")] {
+        session
+            .create_agent(
+                &format!("create:{agent}"),
+                agent,
+                AgentConfig {
+                    model: Some(model.into()),
+                    ..AgentConfig::default()
+                },
+            )
+            .unwrap();
+        session
+            .send(Input::new(format!("first:{agent}"), agent, "measure usage"))
+            .unwrap();
+    }
+    let main = settled(&session, "main").await.usage;
+    let reviewer = settled(&session, "reviewer").await.usage;
+    assert_eq!(Some(10.0), main.context_percent());
+    assert_eq!(Some(0.0), main.cache_hit_percent());
+    assert_eq!(Some(50), main.output_tokens);
+    assert!(main.input_tokens_complete() && main.output_tokens_complete());
+    let sample = main.latest_request.unwrap();
+    assert_eq!(
+        Some(50.0 * 1_000_000.0 / sample.elapsed_us.unwrap() as f64),
+        session
+            .agent("main")
+            .unwrap()
+            .usage
+            .output_tokens_per_second()
+    );
+    assert_eq!(None, reviewer.context_percent());
+    assert_eq!(None, reviewer.input_tokens);
+    assert_eq!(Some(30), reviewer.output_tokens);
+    assert!(!reviewer.input_tokens_complete() && reviewer.output_tokens_complete());
+
+    session
+        .configure_agent(
+            "new-route",
+            "main",
+            AgentConfig {
+                model: Some("input-only".into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(None, session.agent("main").unwrap().usage.latest_request);
+    session
+        .send(Input::new("second:main", "main", "measure the new route"))
+        .unwrap();
+    let main = settled(&session, "main").await.usage;
+    assert_eq!(2, main.model_requests);
+    assert_eq!(Some(30_000), main.input_tokens);
+    assert_eq!(Some(50), main.output_tokens);
+    assert!(main.input_tokens_complete() && !main.output_tokens_complete());
+    assert_eq!(Some(20.0), main.context_percent());
+    assert_eq!(None, main.output_tokens_per_second());
+    assert_eq!(None, main.cache_hit_percent());
+    assert_eq!(reviewer, session.agent("reviewer").unwrap().usage);
+
+    original.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+    let reopened = Session::open(original).await.unwrap();
+    assert_eq!(main, reopened.agent("main").unwrap().usage);
+    assert_eq!(reviewer, reopened.agent("reviewer").unwrap().usage);
+    reopened.close().await.unwrap();
+    for fixture in fixtures {
+        fixture.assert_hits_async(1).await;
+    }
 }
 
 #[tokio::test]

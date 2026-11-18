@@ -118,6 +118,7 @@ fn tool_stream_state(
         stream_ended: false,
         provider_request_id: None,
         usage: None,
+        request_timing: None,
         lead_events: Vec::new(),
         handoff_detector: None,
         thinking_start: None,

@@ -53,12 +53,16 @@ impl ReportAccumulator {
         Ok((self.report != previous).then(|| self.report.clone()))
     }
 
-    pub(crate) fn usage(&self, protocol: ProviderFormat) -> Option<ProviderChunk> {
+    pub(crate) fn usage(
+        &self,
+        protocol: ProviderFormat,
+        output_reported: bool,
+    ) -> Option<ProviderChunk> {
         let raw = self.report.raw_usage.as_ref()?;
         let usage = normalize_usage(protocol, raw);
         Some(ProviderChunk::StreamUsage {
             input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
+            output_tokens: output_reported.then_some(usage.output_tokens).flatten(),
             cache_read_input_tokens: usage.cache_read_input_tokens,
             cache_creation_input_tokens: usage.cache_creation_input_tokens,
         })
@@ -99,11 +103,9 @@ fn normalize_usage(protocol: ProviderFormat, usage: &Value) -> ProviderUsage {
     };
     ProviderUsage {
         input_tokens: if protocol == ProviderFormat::Anthropic {
-            input.map(|input| {
-                input
-                    .saturating_add(read.unwrap_or(0))
-                    .saturating_add(write.unwrap_or(0))
-            })
+            input
+                .and_then(|input| input.checked_add(read.unwrap_or(0)))
+                .and_then(|input| input.checked_add(write.unwrap_or(0)))
         } else {
             input
         },

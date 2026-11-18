@@ -1,0 +1,385 @@
+use std::collections::HashMap;
+
+use serde_json::Value;
+
+use crate::event::EventPayload;
+use crate::{Error, ProviderUsage, Result};
+
+use super::record::State;
+use super::{ModelUsageSample, Session, UsageTotals};
+
+#[derive(Debug, Default)]
+pub(super) struct AgentUsage {
+    turn: Option<u64>,
+    settled: bool,
+    attempts: HashMap<String, ModelAttempt>,
+    latest_request: Option<String>,
+    totals: UsageTotals,
+}
+
+#[derive(Debug, Default)]
+struct ModelAttempt {
+    context_window_tokens: Option<u32>,
+    retry: Option<u64>,
+    finished: bool,
+}
+
+impl AgentUsage {
+    pub(super) fn settle(
+        &mut self,
+        turn: Option<u64>,
+        total: &mut UsageTotals,
+        mut legacy: UsageTotals,
+    ) -> Result<()> {
+        if !self.has_turn(turn) {
+            if legacy.model_requests > 0 {
+                total.latest_request = None;
+            }
+            if legacy.unreported_requests == 0 {
+                if legacy.input_tokens.is_some() {
+                    legacy.input_reported_requests = legacy.model_requests;
+                }
+                if legacy.output_tokens.is_some() {
+                    legacy.output_reported_requests = legacy.model_requests;
+                }
+            }
+            add_totals(total, &legacy)?;
+        }
+        *self = Self {
+            turn,
+            settled: true,
+            ..Self::default()
+        };
+        Ok(())
+    }
+
+    pub(super) fn turn_totals(&self, turn: Option<u64>) -> UsageTotals {
+        if self.has_turn(turn) {
+            self.totals.clone()
+        } else {
+            UsageTotals::default()
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        request: &str,
+        context_window_tokens: Option<u32>,
+        usage: &mut UsageTotals,
+    ) -> Result<()> {
+        if self.attempts.contains_key(request) {
+            return Ok(());
+        }
+        self.attempts.insert(
+            request.into(),
+            ModelAttempt {
+                context_window_tokens,
+                ..ModelAttempt::default()
+            },
+        );
+        self.latest_request = Some(request.into());
+        self.totals.latest_request = None;
+        usage.latest_request = None;
+        self.count_request(usage)
+    }
+
+    fn retry(&mut self, request: &str, retry: u64, usage: &mut UsageTotals) -> Result<()> {
+        let attempt = self
+            .attempts
+            .get_mut(request)
+            .filter(|attempt| !attempt.finished && attempt.retry.is_none_or(|old| retry > old));
+        if let Some(attempt) = attempt {
+            attempt.retry = Some(retry);
+            self.count_request(usage)?;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        request: &str,
+        report: ProviderUsage,
+        elapsed_us: Option<u64>,
+        usage: &mut UsageTotals,
+    ) -> Result<()> {
+        if !self.attempts.contains_key(request) {
+            self.prepare(request, None, usage)?;
+        }
+        let attempt = self.attempts.get_mut(request).expect("prepared request");
+        if attempt.finished {
+            return Ok(());
+        }
+        attempt.finished = true;
+        if self.latest_request.as_deref() == Some(request) {
+            let latest = ModelUsageSample {
+                input_tokens: report.input_tokens,
+                output_tokens: report.output_tokens,
+                context_window_tokens: attempt.context_window_tokens,
+                elapsed_us,
+            };
+            usage.latest_request = Some(latest.clone());
+            self.totals.latest_request = Some(latest);
+        }
+        let complete = report.input_tokens.is_some() && report.output_tokens.is_some();
+        let delta = UsageTotals {
+            input_tokens: report.input_tokens,
+            output_tokens: report.output_tokens,
+            cache_read_input_tokens: report.cache_read_input_tokens,
+            cache_creation_input_tokens: report.cache_creation_input_tokens,
+            input_reported_requests: u64::from(report.input_tokens.is_some()),
+            output_reported_requests: u64::from(report.output_tokens.is_some()),
+            cache_reported_requests: u64::from(report.cache_input_counts().is_some()),
+            ..UsageTotals::default()
+        };
+        for total in [&mut self.totals, usage] {
+            add_totals(total, &delta)?;
+            if complete {
+                total.unreported_requests -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn count_request(&mut self, usage: &mut UsageTotals) -> Result<()> {
+        let delta = UsageTotals {
+            model_requests: 1,
+            unreported_requests: 1,
+            ..UsageTotals::default()
+        };
+        add_totals(&mut self.totals, &delta)?;
+        add_totals(usage, &delta)
+    }
+
+    fn has_turn(&self, turn: Option<u64>) -> bool {
+        self.turn.is_some() && self.turn == turn
+    }
+}
+
+impl Session {
+    pub(crate) fn commit_model_facts(
+        &self,
+        address: &str,
+        execution: u64,
+        payloads: impl IntoIterator<Item = EventPayload>,
+    ) -> Result<()> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.agent(address)?.snapshot.execution_id != Some(execution) {
+            return Err(Error::ExecutionNotActive(execution));
+        }
+        let mut writer = self.inner.writer.lock().unwrap();
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
+        for payload in payloads {
+            let event = writer.append(payload)?;
+            reduce_model_fact(&mut state, &event.payload)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Result<()> {
+    let EventPayload::Unknown(value) = payload else {
+        return Ok(());
+    };
+    let Some(kind @ ("runtime.step_prepared" | "runtime.model_retry" | "runtime.model_usage")) =
+        value.get("kind").and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let (Some(address), Some(turn), Some(request)) = (
+        value["agent"].as_str(),
+        value["turn"].as_u64(),
+        value["request_id"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    let Some(agent) = state.agents.get_mut(address) else {
+        return Ok(());
+    };
+    if agent.snapshot.turn != Some(turn) {
+        return Ok(());
+    }
+    let ledger = &mut agent.model_usage;
+    if !ledger.has_turn(Some(turn)) {
+        *ledger = AgentUsage {
+            turn: Some(turn),
+            ..AgentUsage::default()
+        };
+    }
+    if ledger.settled {
+        return Ok(());
+    }
+    let usage = &mut agent.snapshot.usage;
+    match kind {
+        "runtime.step_prepared" => ledger.prepare(
+            request,
+            value["context_window_tokens"]
+                .as_u64()
+                .and_then(|window| u32::try_from(window).ok()),
+            usage,
+        ),
+        "runtime.model_retry" => {
+            ledger.retry(request, value["attempt"].as_u64().unwrap_or(2), usage)
+        }
+        "runtime.model_usage" => {
+            let report = serde_json::from_value::<Option<ProviderUsage>>(value["usage"].clone())?
+                .unwrap_or_default();
+            ledger.finish(request, report, value["elapsed_us"].as_u64(), usage)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn add_totals(total: &mut UsageTotals, delta: &UsageTotals) -> Result<()> {
+    for (tokens, add) in [
+        (&mut total.input_tokens, delta.input_tokens),
+        (&mut total.output_tokens, delta.output_tokens),
+        (
+            &mut total.cache_read_input_tokens,
+            delta.cache_read_input_tokens,
+        ),
+        (
+            &mut total.cache_creation_input_tokens,
+            delta.cache_creation_input_tokens,
+        ),
+    ] {
+        if let Some(add) = add {
+            *tokens = Some(checked_add(tokens.unwrap_or(0), add)?);
+        }
+    }
+    for (count, add) in [
+        (&mut total.model_requests, delta.model_requests),
+        (&mut total.unreported_requests, delta.unreported_requests),
+        (
+            &mut total.input_reported_requests,
+            delta.input_reported_requests,
+        ),
+        (
+            &mut total.output_reported_requests,
+            delta.output_reported_requests,
+        ),
+        (
+            &mut total.cache_reported_requests,
+            delta.cache_reported_requests,
+        ),
+    ] {
+        *count = checked_add(*count, add)?;
+    }
+    Ok(())
+}
+
+fn checked_add(total: u64, add: u64) -> Result<u64> {
+    total
+        .checked_add(add)
+        .ok_or_else(|| Error::InvalidEventStream("usage counter overflow".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::event::EventStore;
+    use crate::session::runtime::record::Record;
+
+    use super::*;
+
+    #[test]
+    fn replay_accepts_legacy_totals_and_counts_each_request_attempt_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append(
+                Record::AgentCreated {
+                    command_id: "create-main".into(),
+                    fingerprint: String::new(),
+                    address: "main".into(),
+                    config: Default::default(),
+                }
+                .payload()
+                .unwrap(),
+            )
+            .unwrap();
+        let accept = Record::InputsAccepted {
+            address: "main".into(),
+            input_ids: Vec::new(),
+            turn: None,
+        };
+        let settle = |turn, usage| {
+            EventPayload::Unknown(json!({
+                "kind": "runtime.operation",
+                "record": {"operation": "turn_settled", "address": "main",
+                    "status": "idle", "turn": turn, "usage": usage}
+            }))
+        };
+        let legacy = store.append(accept.payload().unwrap()).unwrap().id;
+        store
+            .append(settle(
+                legacy,
+                json!({"input_tokens":17,"output_tokens":9,"cache_read_input_tokens":10,
+                    "model_requests":1,"unreported_requests":0}),
+            ))
+            .unwrap();
+        let loaded = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(Some(17), loaded.input_tokens);
+        assert!(loaded.input_tokens_complete() && loaded.output_tokens_complete());
+        assert_eq!(None, loaded.cache_hit_percent());
+        assert_eq!(None, loaded.latest_request);
+
+        let turn = store.append(accept.payload().unwrap()).unwrap().id;
+        let model_facts = [
+            json!({"kind":"runtime.step_prepared","context_window_tokens":100}),
+            json!({"kind":"runtime.model_retry","attempt":2}),
+            json!({"kind":"runtime.model_usage","usage":{"input_tokens":8,"cache_read_input_tokens":3}}),
+        ];
+        for mut fact in model_facts {
+            fact["agent"] = json!("main");
+            fact["turn"] = json!(turn);
+            fact["request_id"] = json!("req_1");
+            let event = EventPayload::Unknown(fact);
+            store.append(event.clone()).unwrap();
+            store.append(event).unwrap();
+        }
+        let before = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(3, before.model_requests);
+        assert_eq!(2, before.unreported_requests);
+        assert_eq!(Some(25), before.input_tokens);
+        assert_eq!(Some(9), before.output_tokens);
+        assert!(!before.input_tokens_complete() && !before.output_tokens_complete());
+        assert_eq!(Some(8.0), before.context_percent());
+        assert_eq!(None, before.output_tokens_per_second());
+        assert_eq!(None, before.cache_hit_percent());
+        store
+            .append(settle(
+                turn,
+                json!({"input_tokens":8,"cache_read_input_tokens":3,
+                    "model_requests":2,"unreported_requests":2}),
+            ))
+            .unwrap();
+        assert_eq!(
+            before,
+            Session::read_view(&path, "main").unwrap().snapshot.usage
+        );
+    }
+
+    #[test]
+    fn zero_denominators_are_unknown() {
+        let usage = UsageTotals {
+            input_tokens: Some(0),
+            cache_read_input_tokens: Some(0),
+            model_requests: 1,
+            cache_reported_requests: 1,
+            latest_request: Some(ModelUsageSample {
+                input_tokens: Some(0),
+                output_tokens: Some(0),
+                context_window_tokens: Some(0),
+                elapsed_us: Some(0),
+            }),
+            ..UsageTotals::default()
+        };
+        assert_eq!(None, usage.cache_hit_percent());
+        assert_eq!(None, usage.context_percent());
+        assert_eq!(None, usage.output_tokens_per_second());
+    }
+}

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::LogLevel;
@@ -6,11 +8,16 @@ use crate::provider::types::{
 };
 use crate::query::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
 use crate::query::tool_exec::record_plugin_hooks;
-use crate::query::types::{PendingRun, PendingStep, StreamingChunkState, UiEvent};
+use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
 
 use super::{emit_runtime_log, pending_failure_step};
 
 const PROVIDER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+struct ProviderAttempt {
+    stream: crate::provider::ProviderChunkStream,
+    started: Instant,
+}
 
 pub(super) async fn dispatch_provider_step(
     mut pending: PendingRun,
@@ -65,7 +72,7 @@ pub(super) async fn dispatch_provider_step(
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
     };
-    let request_started = std::time::Instant::now();
+    let prepare_started = Instant::now();
     let prepared =
         crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
             .map_err(|failure| crate::Error::Provider {
@@ -79,7 +86,7 @@ pub(super) async fn dispatch_provider_step(
             "prepared model request exceeds the configured byte limit".into(),
         ));
     }
-    let request_prepare_us = request_started
+    let request_prepare_us = prepare_started
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
@@ -109,7 +116,7 @@ pub(super) async fn dispatch_provider_step(
     )
     .await?
     {
-        Ok(stream) => {
+        Ok(ProviderAttempt { stream, started }) => {
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
                 pending,
@@ -127,6 +134,10 @@ pub(super) async fn dispatch_provider_step(
                 stream_ended: false,
                 provider_request_id: None,
                 usage: None,
+                request_timing: Some(RequestTiming {
+                    started,
+                    elapsed_us: None,
+                }),
                 lead_events,
                 handoff_detector: if handoff_active {
                     Some(crate::query::handoff::HandoffDetector::new())
@@ -223,12 +234,13 @@ async fn dispatch_prepared(
     prepared: &PreparedProviderRequest,
     request_id: &str,
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
-) -> Result<std::result::Result<crate::provider::ProviderChunkStream, ProviderFailure>> {
+) -> Result<std::result::Result<ProviderAttempt, ProviderFailure>> {
     super::require_runtime_execution(pending)?;
+    let started = Instant::now();
     let initial =
         crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
     let Err(failure) = &initial else {
-        return Ok(initial);
+        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
     };
     if pending.query.runtime.is_none()
         || !pending.query.runtime_limits.retry_transient_provider_errors
@@ -238,19 +250,30 @@ async fn dispatch_prepared(
             ProviderFailureKind::Transport | ProviderFailureKind::ProviderUnavailable
         )
     {
-        return Ok(initial);
+        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
     }
     tokio::time::sleep(PROVIDER_RETRY_DELAY).await;
     super::require_runtime_execution(pending)?;
     if crate::query::budget::reserve(&pending.query).is_err() {
-        return Ok(initial);
+        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
     }
-    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("transport retries belong to a session execution");
+    let session = super::runtime_session(pending, execution)?;
+    let retry = EventPayload::Unknown(serde_json::json!({
         "kind": "runtime.model_retry", "ts": now_timestamp()?,
         "agent": pending.conversation.as_str(), "turn": pending.turn, "request_id": request_id,
         "failed_kind": failure.kind.as_event_kind(), "attempt": 2,
-    })))?;
-    Ok(crate::query::adapters::model_stream(pending, resolved, prepared, trace).await)
+    }));
+    session.commit_model_facts(pending.conversation.as_str(), execution, [retry])?;
+    let started = Instant::now();
+    Ok(
+        crate::query::adapters::model_stream(pending, resolved, prepared, trace)
+            .await
+            .map(|stream| ProviderAttempt { stream, started }),
+    )
 }
 
 async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {

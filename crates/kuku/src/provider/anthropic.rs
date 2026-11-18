@@ -249,7 +249,7 @@ impl AnthropicSseParser {
                         .to_string();
                     self.chunks
                         .push(ProviderChunk::StreamStart { request_id: rid });
-                    self.record_report(msg)?;
+                    self.record_report(msg, false)?;
                 }
             }
             "content_block_start" => {
@@ -451,7 +451,11 @@ impl AnthropicSseParser {
                         }
                     }
                 }
-                self.record_report(&data)?;
+                let output_reported = data
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_u64)
+                    .is_some();
+                self.record_report(&data, output_reported)?;
             }
             "message_stop" => {
                 if !self.invalid_tool_stream
@@ -507,12 +511,19 @@ impl AnthropicSseParser {
         Ok(())
     }
 
-    fn record_report(&mut self, response: &Value) -> Result<(), ProviderFailure> {
+    fn record_report(
+        &mut self,
+        response: &Value,
+        output_reported: bool,
+    ) -> Result<(), ProviderFailure> {
         if let Some(report) = self.reports.observe(response)? {
             self.chunks.push(ProviderChunk::Report { report });
         }
         if response.get("usage").is_some_and(Value::is_object) {
-            if let Some(usage) = self.reports.usage(ProviderFormat::Anthropic) {
+            if let Some(usage) = self
+                .reports
+                .usage(ProviderFormat::Anthropic, output_reported)
+            {
                 self.chunks.push(usage);
             }
         }
@@ -621,6 +632,35 @@ mod tests {
         let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
         assert_eq!(body["cache_control"]["type"], "ephemeral");
         assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn messages_initial_output_is_not_normalized_as_final_usage() {
+        let mut parser = AnthropicSseParser::new();
+        let start = parser.feed(
+            "event: message_start\ndata: {\"message\":{\"id\":\"msg_use\",\"usage\":{\"input_tokens\":80,\"cache_read_input_tokens\":15,\"cache_creation_input_tokens\":5,\"output_tokens\":1}}}",
+        ).unwrap();
+        assert!(start.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StreamUsage {
+                input_tokens: Some(100),
+                output_tokens: None,
+                cache_read_input_tokens: Some(15),
+                ..
+            }
+        )));
+        let delta = parser.feed(
+            "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":12}}",
+        ).unwrap();
+        assert!(delta.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::StreamUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(12),
+                cache_read_input_tokens: Some(15),
+                ..
+            }
+        )));
     }
 
     #[test]

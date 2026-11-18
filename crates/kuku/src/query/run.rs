@@ -552,6 +552,10 @@ impl Run {
                 }
                 ProviderChunk::StreamEnd => {
                     streaming.stream_ended = true;
+                    if let Some(timing) = &mut streaming.request_timing {
+                        timing.elapsed_us =
+                            u64::try_from(timing.started.elapsed().as_micros()).ok();
+                    }
                 }
             }
         }

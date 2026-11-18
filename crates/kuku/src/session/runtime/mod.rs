@@ -9,6 +9,7 @@ mod receipts;
 mod record;
 mod selection;
 mod types;
+mod usage;
 
 pub(crate) use selection::resolve_agent_model;
 
@@ -28,8 +29,8 @@ pub use crate::tool::builtin::run_command::output::{
 pub use observe::{Observation, SessionObserver};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, PendingInput, QuestionRequest, Receipt, RuntimeLimits,
-    SessionOptions, UsageTotals, Withdrawal,
+    InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,
+    RuntimeLimits, SessionOptions, UsageTotals, Withdrawal,
 };
 
 use record::{fingerprint, validate_address, validate_key, Command, Record, State};
@@ -657,7 +658,7 @@ fn reduce_event(state: &mut State, event: StoredEvent) -> Result<()> {
     if let Some(record) = Record::from_event(&event)? {
         state.reduce(event.id, record)?;
     }
-    Ok(())
+    usage::reduce_model_fact(state, &event.payload)
 }
 
 fn validate_limits(limits: &RuntimeLimits) -> Result<()> {

@@ -505,10 +505,16 @@ pub(super) struct StreamingChunkState {
     pub(super) stream_ended: bool,
     pub(super) provider_request_id: Option<String>,
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
+    pub(super) request_timing: Option<RequestTiming>,
     pub(super) lead_events: Vec<UiEvent>,
     pub(super) handoff_detector: Option<HandoffDetector>,
     pub(super) thinking_start: Option<std::time::Instant>,
     pub(super) thinking_duration_ms: u64,
+}
+
+pub(super) struct RequestTiming {
+    pub(super) started: std::time::Instant,
+    pub(super) elapsed_us: Option<u64>,
 }
 
 use super::handoff::HandoffDetector;

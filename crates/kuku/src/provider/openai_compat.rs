@@ -310,7 +310,7 @@ impl OpenAiCompatSseParser {
             self.chunks.push(ProviderChunk::Report { report });
         }
         if data.get("usage").is_some_and(Value::is_object) {
-            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiChat) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiChat, true) {
                 self.chunks.push(usage);
             }
         }

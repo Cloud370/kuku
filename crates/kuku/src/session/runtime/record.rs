@@ -11,6 +11,7 @@ use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
+use super::usage::AgentUsage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Command {
@@ -138,7 +139,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<PendingInput>,
@@ -146,6 +147,34 @@ pub(super) struct AgentState {
     pub(super) permission_reply: Option<(String, bool)>,
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
+    pub(super) model_usage: AgentUsage,
+}
+
+impl AgentState {
+    pub(super) fn pending_usage(&self) -> UsageTotals {
+        if self.accepted.is_empty() {
+            UsageTotals::default()
+        } else {
+            self.model_usage.turn_totals(self.snapshot.turn)
+        }
+    }
+
+    fn set_config(&mut self, config: AgentConfig) {
+        if self.snapshot.active_config.is_none() && self.snapshot.config != config {
+            self.snapshot.usage.latest_request = None;
+        }
+        self.snapshot.config = config;
+    }
+
+    fn set_active_config(&mut self, config: Option<AgentConfig>) {
+        let requested = &self.snapshot.config;
+        if self.snapshot.active_config.as_ref().unwrap_or(requested)
+            != config.as_ref().unwrap_or(requested)
+        {
+            self.snapshot.usage.latest_request = None;
+        }
+        self.snapshot.active_config = config;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -194,6 +223,7 @@ impl State {
                         permission_reply: None,
                         active_epoch: None,
                         stopped_at: None,
+                        model_usage: AgentUsage::default(),
                     },
                 );
             }
@@ -204,7 +234,7 @@ impl State {
                 config,
             } => {
                 self.remember(command_id, fingerprint, event_id, address.clone());
-                self.agent_mut(&address)?.snapshot.config = config;
+                self.agent_mut(&address)?.set_config(config);
             }
             Record::InputDelivered {
                 fingerprint,
@@ -212,7 +242,7 @@ impl State {
                 config,
             } => {
                 if let Some(config) = config {
-                    self.agent_mut(&input.target)?.snapshot.config = config;
+                    self.agent_mut(&input.target)?.set_config(config);
                 }
                 self.deliver(event_id, fingerprint, input)?;
             }
@@ -235,16 +265,16 @@ impl State {
             }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;
-                let snapshot = &mut agent.snapshot;
-                if agent.permission_reply.is_none() || snapshot.active_config.is_none() {
-                    snapshot.active_config = Some(snapshot.config.clone());
+                if agent.permission_reply.is_none() || agent.snapshot.active_config.is_none() {
+                    agent.set_active_config(Some(agent.snapshot.config.clone()));
                 }
+                let snapshot = &mut agent.snapshot;
                 snapshot.execution_id = Some(event_id);
                 snapshot.status = AgentStatus::Running;
                 snapshot.last_error = None;
             }
             Record::StepConfigured { address, config } => {
-                self.agent_mut(&address)?.snapshot.active_config = Some(config);
+                self.agent_mut(&address)?.set_active_config(Some(config));
             }
             Record::InputsAccepted {
                 address,
@@ -290,7 +320,7 @@ impl State {
                 agent.snapshot.status = status;
                 if status != AgentStatus::Waiting {
                     agent.snapshot.execution_id = None;
-                    agent.snapshot.active_config = None;
+                    agent.set_active_config(None);
                 }
                 if status == AgentStatus::Stopped {
                     agent.stopped_at.get_or_insert(event_id);
@@ -302,18 +332,9 @@ impl State {
                 if turn.is_some() {
                     agent.snapshot.turn = turn;
                 }
-                add_usage(&mut agent.snapshot.usage.input_tokens, usage.input_tokens)?;
-                add_usage(&mut agent.snapshot.usage.output_tokens, usage.output_tokens)?;
-                add_usage(
-                    &mut agent.snapshot.usage.cache_read_input_tokens,
-                    usage.cache_read_input_tokens,
-                )?;
-                add_usage(
-                    &mut agent.snapshot.usage.cache_creation_input_tokens,
-                    usage.cache_creation_input_tokens,
-                )?;
-                agent.snapshot.usage.model_requests += usage.model_requests;
-                agent.snapshot.usage.unreported_requests += usage.unreported_requests;
+                agent
+                    .model_usage
+                    .settle(agent.snapshot.turn, &mut agent.snapshot.usage, usage)?;
                 if status != AgentStatus::Interrupted {
                     agent.accepted.clear();
                 }
@@ -332,7 +353,7 @@ impl State {
                 agent.snapshot.status = AgentStatus::Stopped;
                 if !cleanup_pending {
                     agent.snapshot.execution_id = None;
-                    agent.snapshot.active_config = None;
+                    agent.set_active_config(None);
                     agent.accepted.clear();
                 }
                 agent.snapshot.question = None;
@@ -354,7 +375,7 @@ impl State {
                     agent.snapshot.execution_id = None;
                     agent.stopped_at = None;
                     if agent.permission_reply.is_none() {
-                        agent.snapshot.active_config = None;
+                        agent.set_active_config(None);
                         agent.inbox.extend(agent.accepted.drain(..));
                         agent
                             .inbox
@@ -458,15 +479,16 @@ impl State {
 
     pub(super) fn mark_interrupted(&mut self) {
         for agent in self.agents.values_mut() {
-            let snapshot = &mut agent.snapshot;
-            if snapshot.status == AgentStatus::Running
-                || snapshot.status == AgentStatus::Stopped && snapshot.execution_id.is_some()
+            if agent.snapshot.status == AgentStatus::Running
+                || agent.snapshot.status == AgentStatus::Stopped
+                    && agent.snapshot.execution_id.is_some()
             {
+                if agent.permission_reply.is_none() {
+                    agent.set_active_config(None);
+                }
+                let snapshot = &mut agent.snapshot;
                 snapshot.status = AgentStatus::Interrupted;
                 snapshot.execution_id = None;
-                if agent.permission_reply.is_none() {
-                    snapshot.active_config = None;
-                }
                 snapshot.last_error = Some("execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into());
             }
         }
@@ -517,18 +539,6 @@ impl State {
 
 fn restore_on_resume() -> bool {
     true
-}
-
-fn add_usage(total: &mut Option<u64>, amount: Option<u64>) -> Result<()> {
-    if let Some(amount) = amount {
-        *total = Some(
-            total
-                .unwrap_or(0)
-                .checked_add(amount)
-                .ok_or_else(|| Error::InvalidEventStream("usage counter overflow".into()))?,
-        );
-    }
-    Ok(())
 }
 
 pub(super) fn fingerprint(value: &impl Serialize) -> Result<String> {

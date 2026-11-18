@@ -244,6 +244,11 @@ pub(super) fn record_prepared(
     mut context: ContextCommit,
     request_prepare_us: u64,
 ) -> Result<()> {
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("prepared context belongs to a session execution");
+    let session = super::provider::runtime_session(pending, execution)?;
     let cursor = pending
         .context_cursor
         .as_mut()
@@ -279,13 +284,16 @@ pub(super) fn record_prepared(
             "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"message":admitted.message})))?;
     }
     let body_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&prepared.body)?));
-    writer.append(EventPayload::Unknown(json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
+    let payload = EventPayload::Unknown(
+        json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
         "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
         "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
         "max_output_tokens":prepared.body.get("max_output_tokens").or_else(|| prepared.body.get("max_tokens")).or_else(|| prepared.body.get("max_completion_tokens")),"temperature":prepared.body.get("temperature"),
         "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":serde_json::to_vec(&prepared.body)?.len(),
         "body_hash":body_hash,"context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
-        "input_skills":context.input_skills})))?;
+        "input_skills":context.input_skills}),
+    );
+    session.commit_model_facts(pending.conversation.as_str(), execution, [payload])?;
     cursor.commit(context.segment, context.messages, context.source_head)
 }
 
