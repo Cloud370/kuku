@@ -166,10 +166,16 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
     for width in [17, 72] {
         let view = transcript.project(width, 32);
         let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
-        assert!(plain[0].starts_with("Turn 1  ─"));
-        assert_eq!("│ You (sent)", plain[1]);
-        assert_eq!("│ 看一下 e\u{301} 👩‍💻", plain[2]);
-        assert_eq!(2, view.row_insets[2]);
+        assert_eq!(
+            if width == 17 {
+                "│ You / Turn 1"
+            } else {
+                "│ You   /   Turn 1"
+            },
+            plain[0]
+        );
+        assert_eq!("│ 看一下 e\u{301} 👩‍💻", plain[1]);
+        assert_eq!(2, view.row_insets[1]);
         assert!(plain
             .windows(2)
             .any(|pair| pair == ["Assistant", "我来检查"]));
@@ -344,13 +350,13 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row
+            .filter_map(|row| row.strip_prefix("│ You   /   Turn ").or_else(|| row
                 .strip_prefix("Turn ")
                 .and_then(|tail| tail.split_once("  ─"))
-                .map(|(number, _)| number))
+                .map(|(number, _)| number)))
             .collect::<Vec<_>>()
     );
-    assert_eq!("│ You (sent)", all[1]);
+    assert_eq!("│ Inspect the file", all[1]);
 }
 
 #[test]

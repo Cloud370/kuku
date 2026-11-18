@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_literal, wrap_bounded};
+use crate::text::shorten;
 use crate::theme::{emphasis, surface, ACCENT, MUTED, USER_LEFT_EDGE, WARNING};
 
 use super::{body_inset, render_rows, Row, MAX_VISUAL_ROWS};
@@ -81,4 +82,43 @@ pub(super) fn paint_card(rows: &mut [Row], width: usize, color: Color) {
                 .push_span(Span::styled(" ".repeat(padding), background));
         }
     }
+}
+
+pub(super) fn render_turn(turn: super::TurnHeading, width: usize, user: bool) -> Line<'static> {
+    let label = match turn {
+        super::TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
+        super::TurnHeading::Numbered(number) => format!("Turn {number}"),
+        super::TurnHeading::Unnumbered => "Turn".to_owned(),
+    };
+    if user {
+        let separator = if width >= USER_LEFT_EDGE.width() + "You   /   ".len() + label.width() {
+            "   /   "
+        } else {
+            " / "
+        };
+        let mut header = Line::from(vec![
+            Span::styled(USER_LEFT_EDGE, emphasis(ACCENT)),
+            Span::styled("You", emphasis(crate::theme::SURFACE_TEXT)),
+            Span::styled(separator, Style::new().fg(crate::theme::MUTED)),
+        ]);
+        header.push_span(Span::styled(
+            shorten(&label, width.saturating_sub(header.width())),
+            emphasis(crate::theme::USAGE),
+        ));
+        header.style = surface();
+        return header;
+    }
+    let mut line = Line::from(Span::styled(
+        shorten(&label, width),
+        emphasis(crate::theme::SURFACE_TEXT).bg(crate::theme::TURN_RULE),
+    ));
+    line.style = Style::new().bg(crate::theme::TURN_CARD);
+    if width >= line.width() + 6 {
+        let length = width - line.width() - 2;
+        line.push_span(Span::styled(
+            format!("  {}", "─".repeat(length)),
+            Style::new().fg(crate::theme::TURN_RULE),
+        ));
+    }
+    line
 }

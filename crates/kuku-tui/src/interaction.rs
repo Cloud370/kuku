@@ -714,23 +714,17 @@ impl App {
     }
 
     fn open_details(&mut self) {
-        let transcript = &self.pane().transcript;
-        let mut choices = Vec::new();
-        for (key, label, summary) in transcript.visible_detail_choices() {
-            let full = transcript.thinking_text(&key);
-            choices.push(Choice::new(label, summary.clone(), ChoiceKind::Detail(key)));
-            if let Some(text) = full {
-                choices.push(Choice::new(
-                    "Read full thinking preview",
-                    summary,
-                    ChoiceKind::Tool(text),
-                ));
-            }
-        }
+        let choices = self
+            .pane()
+            .transcript
+            .visible_detail_choices()
+            .into_iter()
+            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
+            .collect();
         self.picker(PickerKind::Details, choices);
     }
 
-    fn show_output(&mut self, tool: ToolView) {
+    pub(crate) fn show_output(&mut self, tool: ToolView) {
         let id = self.modal_id();
         self.modal = Some(Modal::Output(Box::new(OutputViewer::new(id, tool))));
         self.read_output(0);

@@ -15,6 +15,7 @@ pub(super) struct Observation {
     pub(super) caption: String,
     pub(super) detail: String,
     pub(super) attention: bool,
+    participants: Vec<String>,
 }
 
 impl Observation {
@@ -37,6 +38,15 @@ impl Observation {
             }
         }
         None
+    }
+
+    pub(super) fn checks_delegation(&self, sender: &str, recipient: &str) -> bool {
+        !self.attention
+            && self.participants.iter().any(|name| name == recipient)
+            && self
+                .participants
+                .iter()
+                .all(|name| name == sender || name == recipient)
     }
 
     pub(super) fn is_for(&self, tool: &str) -> bool {
@@ -89,6 +99,14 @@ fn listing(agents: &[Value]) -> Option<Observation> {
     };
     Some(Observation {
         tool: "list_agents",
+        participants: if agents.len() <= 2 {
+            agents
+                .iter()
+                .filter_map(|agent| agent["address"].as_str().map(str::to_owned))
+                .collect()
+        } else {
+            Vec::new()
+        },
         caption,
         detail: detail.join(" · "),
         attention: attention > 0,
@@ -210,6 +228,7 @@ fn query(count: usize, content: &str, truncated: bool) -> Observation {
     let attention = counts[EventKind::Error as usize] + counts[EventKind::Retry as usize] > 0;
     Observation {
         tool: "query_session",
+        participants: Vec::new(),
         caption,
         detail: detail.join(" · "),
         attention,

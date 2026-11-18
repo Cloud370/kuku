@@ -12,7 +12,7 @@ use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{style_card, tool_title, Tool};
 use super::{
-    body_inset, render_rows, Body, Key, Record, Row, ToolDetails, ToolView, Transcript, MAX_RECORDS,
+    body_inset, render_rows, Key, Record, Row, ToolDetails, ToolView, Transcript, MAX_RECORDS,
 };
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
@@ -68,18 +68,15 @@ impl Details {
     }
 
     pub(super) fn has_collapsed_detail(&self) -> bool {
-        self.visible.iter().any(|item| {
-            matches!(item.key.kind, DetailKind::Group | DetailKind::Reasoning) && !item.open
-        })
+        self.visible
+            .iter()
+            .any(|item| item.key.kind == DetailKind::Group && !item.open)
     }
 
-    pub(super) fn settle_inspection(&mut self, key: &Key, committed: Option<&Key>) {
-        if let Some(index) = self.inspections.iter().position(|opened| opened == key) {
-            self.inspections.remove(index);
-            if let Some(committed) = committed {
-                remember(&mut self.inspections, committed);
-            }
-        }
+    pub(super) fn only_reasoning(&self) -> bool {
+        self.visible
+            .iter()
+            .all(|item| item.key.kind == DetailKind::Reasoning)
     }
 
     pub(super) fn clear_expansions(&mut self) {
@@ -112,13 +109,13 @@ impl VisibleDetail {
 
     pub(super) fn record(rows: Range<usize>, key: &Key, item: DetailRecord<'_>) -> Self {
         match item {
-            DetailRecord::Reasoning { open, .. } => Self::new(
+            DetailRecord::Reasoning => Self::new(
                 rows,
                 key,
                 DetailKind::Reasoning,
-                "Thinking preview".into(),
-                "Provider-visible reasoning".into(),
-                open,
+                "View thinking".into(),
+                "Published by the model".into(),
+                false,
             ),
             DetailRecord::Agent(agent) => Self::new(
                 rows,
@@ -157,7 +154,7 @@ impl VisibleDetail {
 }
 
 pub(super) enum DetailRecord<'a> {
-    Reasoning { open: bool, rows: usize },
+    Reasoning,
     Agent(AgentCard<'a>),
     Tool(&'a Tool),
 }
@@ -193,7 +190,7 @@ impl Transcript {
             .iter()
             .find(|record| record.key == key.record)?;
         Some(ToolView {
-            name: "Thinking preview".into(),
+            name: "Thinking".into(),
             summary: String::new(),
             invocation: String::new(),
             details: record.reasoning_preview.clone(),
@@ -243,7 +240,7 @@ impl Transcript {
             .map_or(&self.recent, |reading| &reading.window);
         match key.kind {
             DetailKind::Agent => self.toggle_agent_record(&key.record),
-            DetailKind::Tool | DetailKind::Reasoning if window.contains(&key.record) => {
+            DetailKind::Tool if window.contains(&key.record) => {
                 if let Some(index) = self
                     .detail_items
                     .inspections
@@ -315,18 +312,10 @@ impl Transcript {
                             .filter(|r| r.tool().and_then(Tool::agent_card).is_some())
                             .map(|r| &r.key),
                     );
-                    for r in members.iter().filter(|r| !r.reasoning_preview.is_empty()) {
-                        if !self.detail_items.inspections.contains(&r.key) {
-                            remember(&mut self.detail_items.inspections, &r.key);
-                        }
-                    }
                 }
             }
         }
         for item in &mut self.detail_items.visible {
-            if item.key.kind == DetailKind::Reasoning && open && !item.open {
-                remember(&mut self.detail_items.inspections, &item.key.record);
-            }
             if item.key.kind != DetailKind::Group {
                 continue;
             }
@@ -359,7 +348,7 @@ pub(super) struct GroupSummary {
 
 #[derive(PartialEq, Eq)]
 enum GroupKind {
-    Delegation,
+    Delegation { delivery: usize, checks: usize },
     Listings,
     Inspections,
 }
@@ -379,11 +368,11 @@ impl GroupHeading {
         agents: &AgentCards,
     ) -> Self {
         let summary = span.summary;
-        let latest = &records[span.range.end - 1];
-        if summary.kind == GroupKind::Delegation {
+        if let GroupKind::Delegation { delivery, checks } = summary.kind {
+            let latest = &records[delivery];
             if let Some(card) = latest.tool().and_then(Tool::agent_card) {
                 let (_, facts) = agents.display(&latest.key, latest.position, card.address);
-                let rows = card.delegation_header(width, open, facts);
+                let rows = card.delegation_header(width, open, facts, checks);
                 return Self {
                     summary,
                     open,
@@ -395,11 +384,6 @@ impl GroupHeading {
     }
 
     pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
-        let width = if summary.kind == GroupKind::Listings {
-            width.min(crate::theme::ACTIVITY_CARD_WIDTH)
-        } else {
-            width
-        };
         let inset = body_inset(width);
         let columns = width.saturating_sub(usize::from(inset));
         let mut spans = Vec::new();
@@ -458,11 +442,10 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
         };
         let next_action = |after: usize| {
             let mut next = after + 1;
-            while records.get(next).is_some_and(|r| {
-                same_turn(r)
-                    && matches!(&r.body, Body::Assistant(text) if text.trim().is_empty())
-                    && r.turn_summary.is_none()
-            }) {
+            while records
+                .get(next)
+                .is_some_and(|r| same_turn(r) && r.reasoning_only())
+            {
                 next += 1;
             }
             next
@@ -480,16 +463,47 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
                 .and_then(Tool::agent_card)
                 .filter(|card| card.delivered() && card.address == create.address)
             {
+                let previous_end = groups.last().map_or(0, |group: &GroupSpan| group.range.end);
+                let mut start = index;
+                while start > previous_end
+                    && same_turn(&records[start - 1])
+                    && records[start - 1].reasoning_only()
+                {
+                    start -= 1;
+                }
+                let mut last = next;
+                let mut checks = 0;
+                loop {
+                    let check = next_action(last);
+                    if !records
+                        .get(check)
+                        .filter(|r| same_turn(r))
+                        .and_then(Record::tool)
+                        .is_some_and(|t| {
+                            t.checks_delegation(
+                                first.owner.as_deref().unwrap_or_default(),
+                                send.address,
+                            )
+                        })
+                    {
+                        break;
+                    }
+                    last = check;
+                    checks += 1;
+                }
                 groups.push(GroupSpan {
-                    range: index..next + 1,
+                    range: start..last + 1,
                     summary: GroupSummary {
                         title: format!("Agent {}", send.address),
                         composition: send.choice_summary(),
                         listing: String::new(),
-                        kind: GroupKind::Delegation,
+                        kind: GroupKind::Delegation {
+                            delivery: next,
+                            checks,
+                        },
                     },
                 });
-                index = next + 1;
+                index = last + 1;
                 continue;
             }
         }

@@ -19,6 +19,10 @@ impl App {
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
+        if let Some(notes) = self.pane().transcript.thinking_text(key) {
+            self.show_output(notes);
+            return true;
+        }
         let (width, height) = self.transcript_area;
         let pane = self.pane_mut();
         let changed = pane.transcript.toggle_in_view(key, width, height);

@@ -88,7 +88,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let mut next_frame = Instant::now();
     let mut activity = ActivityClock::default();
     let mut painted_activity = activity.sample(&app, Instant::now(), SystemTime::now());
-    let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity)?;
+    let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity.clone())?;
     dispatch(&mut app, &mut jobs, &mut clipboard);
     let mut paint = PaintSchedule {
         dirty: false,
@@ -130,11 +130,11 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                 let start = Instant::now();
                 next_frame = start + FRAME_INTERVAL;
                 let frame = activity.sample(&app, start, SystemTime::now());
-                if frame.phase_changed(painted_activity) || (activity_visible && frame != painted_activity) {
+                if frame.phase_changed(&painted_activity) || (activity_visible && frame != painted_activity) {
                     paint.request(false);
                 }
                 if paint.ready(start) {
-                    (screen, activity_visible) = terminal.draw(&mut app, frame)?;
+                    (screen, activity_visible) = terminal.draw(&mut app, frame.clone())?;
                     painted_activity = frame;
                     paint.painted(start, Instant::now());
                 }

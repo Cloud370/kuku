@@ -95,9 +95,9 @@ If you interrupt a streaming reply, its bounded preview stays under that Turn an
 
 By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.
 
-A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Repeated Agent listings share a counted card.
+Agent cards and code blocks fill the available width at their level of indentation. Agent reply and task excerpts stay on one line. A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Status checks involving only the sender and recipient join that card’s timeline. Checks involving other Agents keep their own counted group. A completed reply keeps its thinking reader beside the Assistant heading.
 
-Provider-published reasoning text or a summary appears above the reply. Click the card or press Ctrl+O for a bounded inline preview. Open the full published text in the scrollable reader under /details. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
+While the model thinks, the composer animates the Thinking label and types a single-line excerpt when the provider publishes reasoning text or a summary. The excerpt advances at the terminal’s own pace. On a narrow screen the phase and timer take priority. Select View thinking in the transcript or under /details to read the available text in a separate, scrollable window. Esc returns to the conversation. Copy and Markdown source operate on the reply itself.
 
 ### Status and usage
 

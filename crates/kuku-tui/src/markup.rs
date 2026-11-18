@@ -350,7 +350,13 @@ impl Markdown {
 
     fn block_area(&self) -> (usize, usize, String) {
         let quotes = self.quotes.min(self.width.saturating_sub(2) / 2);
-        let inset = "│ ".repeat(quotes);
+        let mut inset = "│ ".repeat(quotes);
+        if let Some(counter) = self.lists.last() {
+            let marker_width =
+                counter.map_or(2, |next| next.saturating_sub(1).to_string().len() + 2);
+            let indent = 2 * (self.lists.len() - 1) + marker_width;
+            inset.push_str(&" ".repeat(indent.min(self.width.saturating_sub(inset.width() + 2))));
+        }
         let width = self.width - inset.width();
         let limit = self.limit.saturating_sub(self.lines.len());
         (width, limit, inset)
@@ -797,6 +803,32 @@ mod tests {
             render_markdown(&expected, 44, 2 * LIMIT),
             render_markdown(&adjacent, 44, 2 * LIMIT),
         );
+    }
+
+    #[test]
+    fn code_cards_share_the_right_edge_and_honor_the_list_or_quote_gutter() {
+        for width in [26, 74, 142] {
+            for (source, prefix) in [
+                ("```rust\nfn main() {}\n```", "╭─ rust"),
+                ("- item\n\n  ```rust\n  fn main() {}\n  ```", "  ╭─ rust"),
+                (
+                    "12. item\n\n    ```rust\n    fn main() {}\n    ```",
+                    "    ╭─ rust",
+                ),
+                (
+                    "> - item\n>\n>   ```rust\n>   fn main() {}\n>   ```",
+                    "│   ╭─ rust",
+                ),
+            ] {
+                let rows = render_markdown(source, width, LIMIT);
+                let frame = rows
+                    .iter()
+                    .find(|line| line.to_string().contains("╭─ rust"))
+                    .unwrap();
+                assert!(frame.to_string().starts_with(prefix));
+                assert_eq!(width, frame.width());
+            }
+        }
     }
 
     #[test]

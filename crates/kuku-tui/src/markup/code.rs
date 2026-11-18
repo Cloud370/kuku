@@ -2,15 +2,14 @@ use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use pulldown_cmark::CodeBlockKind;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
-use unicode_width::UnicodeWidthStr;
 
-use crate::text::{shorten, single_line};
+use crate::text::single_line;
 use crate::theme::{
-    code_surface, ACCENT, CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME, CODE_STRING,
-    CODE_TEXT, ERROR, MUTED,
+    code_surface, CardFrame, ACCENT, CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME,
+    CODE_STRING, CODE_TEXT, ERROR,
 };
 
 use super::{append, document, wrap_bounded};
@@ -18,8 +17,6 @@ use super::{append, document, wrap_bounded};
 const MAX_SYNTAX_BYTES: usize = 8 * 1024;
 const MAX_SYNTAX_LINES: usize = 128;
 const MAX_SYNTAX_LINE_BYTES: usize = 1024;
-const MIN_FRAME_WIDTH: usize = 4;
-const PADDED_FRAME_WIDTH: usize = 8;
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static SCOPES: LazyLock<Vec<(Scope, Color)>> = LazyLock::new(|| {
@@ -69,12 +66,12 @@ impl CodeBlock {
         limit: usize,
         budget: &mut SyntaxBudget,
     ) -> Vec<Line<'static>> {
-        let frame = Frame::new(width);
+        let frame = CardFrame::new(width);
         let limit = limit.saturating_add(1);
         let mut output = match self.language.as_deref() {
-            Some(language) => vec![frame.label(language)],
+            Some(language) => vec![frame.title(language, ACCENT)],
             None if self.text.is_empty() => return Vec::new(),
-            None if frame.bordered => vec![frame.border('╭', '╮')],
+            None if frame.bordered() => vec![frame.border('╭', '╮')],
             None => Vec::new(),
         };
         if output.len() == limit {
@@ -114,7 +111,7 @@ impl CodeBlock {
         if self.text.is_empty() && output.len() < limit {
             output.push(frame.line(Line::default()));
         }
-        if frame.bordered && output.len() < limit {
+        if frame.bordered() && output.len() < limit {
             output.push(frame.border('╰', '╯'));
         }
         output
@@ -197,74 +194,4 @@ impl Highlighter {
         });
         code_surface().fg(color.unwrap_or(CODE_TEXT))
     }
-}
-
-struct Frame {
-    width: usize,
-    bordered: bool,
-    padding: usize,
-}
-
-impl Frame {
-    fn new(width: usize) -> Self {
-        Self {
-            width,
-            bordered: width >= MIN_FRAME_WIDTH,
-            padding: usize::from(width >= PADDED_FRAME_WIDTH),
-        }
-    }
-
-    fn content_width(&self) -> usize {
-        self.width - 2 * (usize::from(self.bordered) + self.padding)
-    }
-
-    fn label(&self, label: &str) -> Line<'static> {
-        let style = code_surface().fg(ACCENT).add_modifier(Modifier::BOLD);
-        if !self.bordered {
-            return Line::styled(shorten(label, self.width), style);
-        }
-        let (prefix, tail) = if self.padding > 0 {
-            ("╭─ ", " ")
-        } else {
-            ("╭", "")
-        };
-        let room = self.width - prefix.width() - tail.width() - 1;
-        let label = shorten(label, room);
-        let fill = "─".repeat(room - label.width());
-        Line::from(vec![
-            Span::styled(prefix, edge()),
-            Span::styled(label, style),
-            Span::styled(format!("{tail}{fill}╮"), edge()),
-        ])
-    }
-
-    fn line(&self, line: Line<'static>) -> Line<'static> {
-        let room = self.content_width().saturating_sub(line.width());
-        let mut spans = Vec::with_capacity(line.spans.len() + 4);
-        if self.bordered {
-            append(&mut spans, "│", edge());
-        }
-        if self.padding != 0 {
-            append(&mut spans, " ", code_surface());
-        }
-        spans.extend(line.spans);
-        if room + self.padding != 0 {
-            append(&mut spans, &" ".repeat(room + self.padding), code_surface());
-        }
-        if self.bordered {
-            append(&mut spans, "│", edge());
-        }
-        Line::from(spans)
-    }
-
-    fn border(&self, left: char, right: char) -> Line<'static> {
-        Line::styled(
-            format!("{left}{}{right}", "─".repeat(self.width - 2)),
-            edge(),
-        )
-    }
-}
-
-fn edge() -> Style {
-    code_surface().fg(MUTED)
 }

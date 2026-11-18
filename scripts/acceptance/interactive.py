@@ -672,7 +672,7 @@ def delegated_agent_cards(client):
     conclusion = "Reviewer confirmed the totals"
     reply = f"{initial}\n\n{conclusion}"
     parent_reply = "Parent finished and left the review running"
-    card = "Agent reviewer · Delegated"
+    card = "╭─ Agent reviewer"
     delivery = "Agent reviewer · Input delivered"
     screens = []
 
@@ -709,13 +709,13 @@ def delegated_agent_cards(client):
                 and parent_state["last_output"] == parent_reply
                 and reviewer_snapshot()["status"] == "running"
             ))
-            terminal.expect(f"{card} · Now Streaming reply")
+            terminal.expect(card, state="Streaming reply", also=(initial,))
             open_reviewer(terminal)
             attached = terminal.expect(initial, state="Streaming reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
             terminal.press("\x1b[1;3D")
-            terminal.expect(f"{card} · Now Streaming reply", state="To main")
+            terminal.expect(card, state="To main", also=(initial, "Streaming reply"))
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]
             assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
@@ -739,13 +739,13 @@ def delegated_agent_cards(client):
         eventually("reviewer to settle independently", lambda: (
             (reviewer := reviewer_snapshot())["status"] == "idle" and reviewer["last_output"] == reply
         ))
-        terminal.expect(f"{card} · Now Finished")
+        terminal.expect(card, state=initial, also=("Finished",))
         terminal.exit_cleanly()
 
     with client.terminal(workspace) as reopened:
         reopened.request("resize", rows=32, cols=140)
         reopened.resume(prompt)
-        reopened.expect(f"{card} · Now Finished")
+        reopened.expect(card, state=initial, also=("Finished",))
         reopened.press("\x10")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")

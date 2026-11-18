@@ -90,7 +90,10 @@ fn render_metrics(summary: &TurnSummary, width: usize) -> Line<'static> {
         let separator = if line.spans.is_empty() { "" } else { " · " };
         if line.width() + separator.width() + label.width() <= width {
             line.push_span(Span::styled(separator, muted));
-            line.push_span(Span::styled(label, muted));
+            line.push_span(Span::styled(
+                label,
+                Style::new().fg(crate::theme::SURFACE_TEXT),
+            ));
         }
     }
     line

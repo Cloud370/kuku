@@ -13,6 +13,7 @@ pub(crate) struct ActivityClock {
     phase: PhaseClock,
     animation_started: Option<Instant>,
     elapsed: ElapsedClock,
+    thinking: super::motion::ThinkingFlow,
 }
 
 impl ActivityClock {
@@ -38,7 +39,14 @@ impl ActivityClock {
         let elapsed =
             self.elapsed
                 .sample(app.pane().turn_timing(), observed.clock_runs(), now, wall);
-        ActivityFrame::new(shown, step, elapsed)
+        let mut frame = ActivityFrame::new(shown, step, elapsed);
+        let source = if observed == ObservedActivity::Agent(crate::app::Activity::Thinking) {
+            app.pane().transcript.live_thinking()
+        } else {
+            None
+        };
+        frame.thinking = self.thinking.sample(source, step).to_owned();
+        frame
     }
 
     fn update_phase(&mut self, app: &App, now: Instant) -> (ObservedActivity, ObservedActivity) {

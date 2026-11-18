@@ -168,6 +168,92 @@ fn summaries_do_not_merge_across_prose_turns_addresses_or_missing_metadata() {
 }
 
 #[test]
+fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_history() {
+    let mut journal = Journal::default();
+    let thought =
+        json!({"type":"assistant","reasoning_preview":"Planning the next step","text":""});
+    let snapshot =
+        json!([{"address":"main","status":"running"},{"address":"writer","status":"running"}]);
+    let check = |entries: Value| json!({"status":"ok","summary":"session operation committed","structured":entries,"model_content":entries.to_string()});
+    journal.push(7, "main", thought.clone());
+    journal.tool(
+        "create_agent",
+        json!({"address":"writer"}),
+        json!({"status":"ok","structured":{"agent":"writer","command_id":"create","event_id":2}}),
+    );
+    journal.push(7, "main", thought.clone());
+    journal.tool(
+        "send_message",
+        json!({"to":"writer","message":"Draft the report"}),
+        json!({"status":"ok","structured":{"agent":"writer","command_id":"send","event_id":5}}),
+    );
+    for _ in 0..2 {
+        journal.push(7, "main", thought.clone());
+        journal.tool("list_agents", json!({}), check(snapshot.clone()));
+    }
+    journal.tool(
+        "list_agents",
+        json!({}),
+        check(json!([{"address":"other","status":"idle"}])),
+    );
+    journal.tool(
+        "list_agents",
+        json!({}),
+        check(json!([{"address":"writer","status":"waiting"}])),
+    );
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Here is the report.","reasoning_preview":"Final check."}),
+    );
+    let mut transcript = journal.load();
+    transcript.sync_agent_activity(
+        1,
+        [(
+            "writer",
+            crate::app::Activity::Finished,
+            Some("# Report ready"),
+        )],
+    );
+    let compact = transcript.project(82, 44);
+    let summary = text(&compact);
+    for label in [
+        "╭─ Agent writer",
+        "Finished   Reply  Report ready",
+        "Timeline · 4 calls · 2 status checks",
+        "other (Idle)",
+        "writer (Waiting)",
+        "Assistant   View thinking",
+        "Here is the report.",
+    ] {
+        assert!(summary.contains(label), "{label} missing in {summary}");
+    }
+    assert!(!summary.contains("writer (Running)") && !summary.contains("Planning the next step"));
+    let footer = line(&compact, "Timeline");
+    let key = transcript.detail_at(footer).unwrap().clone();
+    assert!(transcript.detail_at(footer + 1).is_none());
+    assert!(transcript.toggle_detail(&key));
+    let expanded_view = transcript.project(82, 64);
+    let opened = text(&expanded_view);
+    assert_eq!(2, opened.matches("List Agents · 2 Agents at check").count());
+    let check = transcript
+        .detail_at(line(&expanded_view, "List Agents · 2 Agents at check"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&check));
+    let inspected = text(&transcript.project(82, 64));
+    assert!(
+        inspected.contains(r#""writer","status":"running""#),
+        "{inspected}"
+    );
+    assert!(opened.contains("Agent writer · Created"));
+    assert!(opened.contains("Agent writer · Input delivered"));
+    assert!(opened.contains("View thinking") && !opened.contains("Planning the next step"));
+    assert!(transcript.toggle_detail(&key));
+    assert_eq!(summary, text(&transcript.project(82, 44)));
+}
+
+#[test]
 fn built_in_actions_use_human_labels_and_extensions_keep_their_names() {
     let mut journal = Journal::default();
     for name in [
@@ -471,21 +557,23 @@ fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
 }
 
 #[test]
-fn expanding_a_preview_at_the_top_keeps_the_header_and_fold_target_visible() {
+fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view() {
     let mut journal = Journal::default();
-    journal.push(7, "main", json!({"type":"assistant","reasoning_preview":"long reasoning line ".repeat(100),"text":""}));
-    journal.push(7, "main", json!({"type":"assistant","text":"answer"}));
+    let published = "long reasoning line ".repeat(100);
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","reasoning_preview":published,"text":"answer"}),
+    );
     let mut transcript = journal.load();
     let compact = transcript.project(55, 4);
     let key = transcript
-        .detail_at(line(&compact, "Thinking preview"))
+        .detail_at(line(&compact, "View thinking"))
         .unwrap()
         .clone();
-    assert!(transcript.toggle_in_view(&key, 55, 4));
-    assert!(transcript.is_reading());
-    let expanded = transcript.project(55, 4);
-    assert!(expanded.lines[0].to_string().contains("▾ Thinking preview"));
-    assert_eq!(Some(&key), transcript.detail_at(3));
-    assert!(transcript.toggle_in_view(&key, 55, 4));
-    assert!(text(&transcript.project(55, 4)).contains("▸ Thinking preview"));
+    assert_eq!(transcript.thinking_text(&key).unwrap().details, published);
+    assert!(!transcript.toggle_in_view(&key, 55, 4));
+    assert!(!transcript.is_reading());
+    assert_eq!(text(&compact), text(&transcript.project(55, 4)));
+    assert!(transcript.detail_at(line(&compact, "answer")).is_none());
 }

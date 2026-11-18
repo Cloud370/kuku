@@ -8,9 +8,7 @@ use serde_json::Value;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, render_markdown, wrap_bounded};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{
-    emphasis, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING,
-};
+use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
 mod agent;
 mod details;
@@ -148,13 +146,6 @@ impl Transcript {
         if let Some(execution) = previous_preview {
             let key = Key::Preview(execution);
             self.recent.remove(&key);
-            self.detail_items.settle_inspection(
-                &key,
-                record
-                    .as_ref()
-                    .filter(|r| !r.reasoning_preview.is_empty())
-                    .map(|r| &r.key),
-            );
             if let Some(reading) = &mut self.reading {
                 reading.settle_preview(&key, record.as_ref());
             }
@@ -477,7 +468,7 @@ impl Transcript {
             }
             if let Some(turn) = block.heading {
                 if skip == 0 {
-                    lines.push(render_turn(turn, width));
+                    lines.push(message::render_turn(turn, width, block.user_header));
                     row_insets.push(0);
                 }
                 skip = skip.saturating_sub(1);
@@ -489,8 +480,10 @@ impl Transcript {
                     row_insets.push(row.inset);
                 }
                 skip = skip.saturating_sub(group.rows.len());
-                if first < lines.len() {
-                    visible.push(VisibleDetail::group(first..lines.len(), block.key, group));
+                let end = lines.len()
+                    - usize::from(lines.last().is_some_and(|line| line.spans.is_empty()));
+                if first < end {
+                    visible.push(VisibleDetail::group(first..end, block.key, group));
                 }
             }
             let first = lines.len();
@@ -504,8 +497,8 @@ impl Transcript {
                         lines.len() > first
                             && lines.last().is_some_and(|line| line.spans.is_empty()),
                     );
-                let last = if let DetailRecord::Reasoning { rows, .. } = detail {
-                    last.min(first + rows.saturating_sub(skip))
+                let last = if let DetailRecord::Reasoning = detail {
+                    last.min(first + usize::from(skip == 0))
                 } else {
                     last
                 };
@@ -517,6 +510,9 @@ impl Transcript {
         }
         self.detail_items.visible = visible;
         let tool_hint = (!self.detail_items.visible.is_empty()).then(|| {
+            if self.detail_items.only_reasoning() {
+                return "/details".to_owned();
+            }
             let action = if self.details_can_expand() {
                 "show"
             } else {
@@ -657,8 +653,7 @@ impl Clone for Record {
 
 #[derive(Debug, Default)]
 struct RenderCache {
-    reasoning_rows: usize,
-    preview: Option<((usize, ToolDetails, u64), Vec<Row>)>,
+    preview: Option<(PreviewLayout, Vec<Row>)>,
     source: Option<(usize, Vec<Row>)>,
 }
 
@@ -759,6 +754,12 @@ impl Record {
         }
     }
 
+    fn reasoning_only(&self) -> bool {
+        matches!(&self.body, Body::Assistant(text) if text.trim().is_empty())
+            && !self.reasoning_preview.is_empty()
+            && self.turn_summary.is_none()
+    }
+
     fn visible(&self) -> bool {
         !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty())
     }
@@ -808,18 +809,18 @@ impl Record {
                 );
                 (card, mode, facts)
             }
-            Body::Assistant(_) if !self.reasoning_preview.is_empty() => (
-                None,
-                items.tool_mode(&self.key, ToolDetails::Collapsed),
-                None,
-            ),
             Body::User { .. }
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
             | Body::TurnSummary => (None, ToolDetails::Expanded, None),
         };
-        let cache_key = (width, mode, facts.map_or(0, |facts| facts.paint_revision));
+        let cache_key = PreviewLayout {
+            width,
+            mode,
+            agent_in_timeline: card.is_some() && details == ToolDetails::GroupMember,
+            agent_revision: facts.map_or(0, |facts| facts.paint_revision),
+        };
         if self
             .rendered
             .preview
@@ -833,20 +834,12 @@ impl Record {
                             &format!("From {}", single_line(sender)),
                             width.saturating_sub(usize::from(body_inset(width))),
                         ),
-                        None if width >= 10 => "You (sent)".to_owned(),
                         None => "You".to_owned(),
                     };
                     render_user(&title, text, width)
                 }
                 Body::Assistant(text) => {
-                    let (rows, reasoning_rows) = preview::render_assistant(
-                        text,
-                        &self.reasoning_preview,
-                        width,
-                        mode == ToolDetails::Inspection,
-                    );
-                    self.rendered.reasoning_rows = reasoning_rows;
-                    rows
+                    preview::render_assistant(text, !self.reasoning_preview.is_empty(), width)
                 }
                 Body::Interrupted(text) => render_record(
                     "Interrupted",
@@ -865,7 +858,7 @@ impl Record {
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
                     || tool.render(width, mode),
-                    |card| card.render(width, mode, facts),
+                    |card| card.render(width, mode, facts, cache_key.agent_in_timeline),
                 ),
             };
             self.rendered.preview = Some((cache_key, lines));
@@ -876,13 +869,18 @@ impl Record {
             card.map(DetailRecord::Agent)
                 .or_else(|| self.tool().map(DetailRecord::Tool))
                 .or_else(|| {
-                    (!self.reasoning_preview.is_empty()).then_some(DetailRecord::Reasoning {
-                        open: mode == ToolDetails::Inspection,
-                        rows: self.rendered.reasoning_rows,
-                    })
+                    (!self.reasoning_preview.is_empty()).then_some(DetailRecord::Reasoning)
                 }),
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewLayout {
+    width: usize,
+    mode: ToolDetails,
+    agent_in_timeline: bool,
+    agent_revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -942,27 +940,6 @@ fn render_rows(
             }
             Row { line, inset }
         })
-}
-
-fn render_turn(turn: TurnHeading, width: usize) -> Line<'static> {
-    let label = match turn {
-        TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
-        TurnHeading::Numbered(number) => format!("Turn {number}"),
-        TurnHeading::Unnumbered => "Turn".to_owned(),
-    };
-    let mut line = Line::from(Span::styled(
-        shorten(&label, width),
-        emphasis(crate::theme::SURFACE_TEXT).bg(crate::theme::TURN_RULE),
-    ));
-    line.style = Style::new().bg(crate::theme::TURN_CARD);
-    if width >= line.width() + 6 {
-        let length = width - line.width() - 2;
-        line.push_span(Span::styled(
-            format!("  {}", "─".repeat(length)),
-            Style::new().fg(crate::theme::TURN_RULE),
-        ));
-    }
-    line
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {

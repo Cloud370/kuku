@@ -192,6 +192,13 @@ impl Tool {
         .then_some(self.name.as_str())
     }
 
+    pub(super) fn checks_delegation(&self, sender: &str, recipient: &str) -> bool {
+        self.group_name() == Some("list_agents")
+            && self
+                .observation()
+                .is_some_and(|item| item.checks_delegation(sender, recipient))
+    }
+
     pub(super) fn agent_listing(&self) -> Option<(&str, &str)> {
         let observation = self
             .observation()

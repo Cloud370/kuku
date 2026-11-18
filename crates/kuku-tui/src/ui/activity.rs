@@ -86,19 +86,21 @@ impl ObservedActivity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActivityFrame {
     status: ObservedActivity,
     ring: Ring,
+    text_step: Option<u128>,
+    thinking: String,
     elapsed: Option<u64>,
 }
 
 impl ActivityFrame {
-    pub(crate) fn phase_changed(self, previous: Self) -> bool {
+    pub(crate) fn phase_changed(&self, previous: &Self) -> bool {
         self.status != previous.status
     }
 
-    pub(crate) fn changes_with_time(self) -> bool {
+    pub(crate) fn changes_with_time(&self) -> bool {
         self.status.motion().is_some() || (self.elapsed.is_some() && self.status.clock_runs())
     }
 
@@ -118,11 +120,19 @@ impl ActivityFrame {
         };
         let ring = status.motion().zip(step).map_or_else(
             || Ring::resting(tone),
-            |(phase, step)| Ring::moving(phase, step),
+            |(phase, step)| {
+                if phase == Activity::Thinking {
+                    Ring::resting(MUTED)
+                } else {
+                    Ring::moving(phase, step)
+                }
+            },
         );
         Self {
             status,
             ring,
+            text_step: step,
+            thinking: String::new(),
             elapsed,
         }
     }
@@ -131,7 +141,7 @@ impl ActivityFrame {
         Self::new(self.status, None, self.elapsed)
     }
 
-    pub(super) fn agent_activity(self, app: &App) -> Activity {
+    pub(super) fn agent_activity(&self, app: &App) -> Activity {
         match self.status {
             ObservedActivity::Agent(activity) => activity,
             ObservedActivity::Service(_) => app.pane().activity(),
@@ -179,13 +189,23 @@ pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> L
         .min(FEEDBACK_LIMIT);
     let left_width = width - feedback_width - usize::from(feedback_width > 0);
     let status = shorten(label, left_width.saturating_sub(line.width()));
-    line.push_span(Span::styled(
-        status,
-        Style::default().fg(frame.status.color()),
-    ));
+    let thinking = frame.status == ObservedActivity::Agent(Activity::Thinking);
+    if thinking {
+        line.extend(motion::thinking_label(&status, frame.text_step).spans);
+    } else {
+        line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
+    }
     if let Some(elapsed) = elapsed {
         line.push_span(" ");
         line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
+    }
+    let room = left_width.saturating_sub(line.width() + 3);
+    if thinking && !frame.thinking.is_empty() && room >= 12 {
+        line.push_span(Span::styled("   ", muted));
+        line.push_span(Span::styled(
+            motion::flow_excerpt(&frame.thinking, room).to_owned(),
+            muted,
+        ));
     }
     if let Some(feedback) = app
         .displayed_statusline()

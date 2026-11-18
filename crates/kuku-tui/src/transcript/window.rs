@@ -231,13 +231,14 @@ impl Window {
             let grouped = member.is_some();
             let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
             let group = member.and_then(|(_, heading, _)| heading.take());
+            let user_header = heading.is_some()
+                && layout.width >= 14
+                && matches!(&record.body, Body::User { sender: None, .. });
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {
                 let trim = records.peek().is_some_and(|(_, next)| {
-                    record.turn == next.turn
-                        && (matches!(next.body, Body::TurnSummary)
-                            || record.tool().is_some() && next.tool().is_some())
+                    record.turn == next.turn && record.tool().is_some() && next.tool().is_some()
                 });
                 let mode = if grouped {
                     ToolDetails::GroupMember
@@ -248,6 +249,11 @@ impl Window {
                     tools: mode,
                     ..layout
                 });
+                let rows = if user_header {
+                    rows.get(1..).unwrap_or_default()
+                } else {
+                    rows
+                };
                 (
                     key,
                     if trim && rows.last().is_some_and(|row| row.line.spans.is_empty()) {
@@ -261,6 +267,7 @@ impl Window {
             Some(Block {
                 key,
                 heading,
+                user_header,
                 group,
                 grouped,
                 collapsed,
@@ -283,6 +290,7 @@ pub(super) struct Layout<'a> {
 pub(super) struct Block<'a> {
     pub(super) key: &'a Key,
     pub(super) heading: Option<TurnHeading>,
+    pub(super) user_header: bool,
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
     pub(super) detail: Option<DetailRecord<'a>>,

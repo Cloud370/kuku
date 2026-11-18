@@ -43,7 +43,7 @@ def targeted_delegation(client):
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")
-        terminal.expect("Agent writer · Delegated")
+        terminal.expect("╭─ Agent writer", state="Timeline")
         client.provider.assert_idle(0.35)
         child.text(result)
         collected = client.provider.next("collect")
@@ -52,8 +52,23 @@ def targeted_delegation(client):
         content = tool["content"]
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
         assert reply == {"address": "writer", "status": "idle", "last_output": result}, reply
-        collected.text("Received the delegated document.")
+        collected.text("Received the delegated document.\n\n```python\nprint('Proof of delivery')\n```")
         terminal.expect("Received the delegated document.", state="3 tools")
+        for columns in (44, 100, 174):
+            terminal.request("resize", cols=columns, rows=34)
+            def aligned():
+                screen = terminal.request("screen")["screen"]
+                rows = [next((r for r in screen.splitlines() if title in r and "╮" in r), "")
+                        for title in ("╭─ Agent writer", "╭─ python")]
+                if not all(rows):
+                    return False
+                agent, code = rows
+                gutter = 1 if columns < 72 else 2 if columns < 110 else 3
+                return all(row.index("╭") == gutter and row.index("╮") == columns - gutter - 1 for row in (agent, code))
+            try:
+                eventually(f"Agent and code borders align at {columns} columns", aligned)
+            except AssertionError as error:
+                raise AssertionError(terminal.request("screen")["screen"]) from error
         terminal.exit_cleanly()
     client.provider.assert_idle()
 
@@ -87,34 +102,44 @@ def published_reasoning(client):
         try:
             assert waiting.arrived.wait(8)
             screen = terminal.expect("To main · Thinking")["screen"]
-            assert "Thinking preview" not in screen and hidden not in screen
+            assert "View thinking" not in screen and hidden not in screen
             waiting.release.set()
             assert published.arrived.wait(8)
-            compact = terminal.expect("▸ Thinking preview", state="Checking the totals.")["screen"]
-            terminal.click_text(compact, "Thinking preview")
-            expanded = terminal.expect("▾ Thinking preview", state="Comparing the published results.")["screen"]
-            assert hidden not in expanded
+            compact = terminal.expect("View thinking", state="Check")["screen"]
+            assert any("To main" in row and "Check" in row for row in compact.splitlines()), compact
+            assert not any("Check" in row for row in compact.splitlines() if "To main" not in row)
+            terminal.click_text(compact, "View thinking")
+            reader = terminal.expect("Comparing the published results.", state="Esc Close")["screen"]
+            assert hidden not in reader
+            terminal.press("\x1b")
+            terminal.expect("View thinking", state="To main · Thinking")
             with client.terminal(workspace) as attached:
                 attached.resume(prompt)
-                restored = attached.expect("Checking the totals.", state="Thinking preview")["screen"]
+                restored = attached.expect("View thinking", state="To main · Thinking")["screen"]
                 assert hidden not in restored
                 attached.exit_cleanly()
         finally:
             waiting.release.set()
             published.release.set()
-        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "Thinking preview"))["screen"]
-        assert completed.count("Thinking preview") == 1 and hidden not in completed
+        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "View thinking"))["screen"]
+        assert completed.count("View thinking") == 1 and hidden not in completed
         terminal.press("/source\r")
         source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
-        settled = reopened.expect(answer, also=("▸ Thinking preview", "Checking the totals."))["screen"]
+        settled = reopened.expect(answer, also=("Assistant   View thinking",))["screen"]
         reopened.press("\x0f")
-        expanded = reopened.expect("▾ Thinking preview", state="Comparing the published results.")["screen"]
-        assert hidden not in settled and hidden not in expanded
-        print(expanded)
+        quiet = reopened.expect(answer, state="View thinking")["screen"]
+        assert "Comparing the published results." not in quiet
+        reopened.press("/details\r")
+        reopened.expect("Transcript details", state="View thinking")
+        reopened.press("\r")
+        notes = reopened.expect("Comparing the published results.", state="Esc Close")["screen"]
+        assert hidden not in settled and hidden not in notes
+        reopened.press("\x1b")
+        reopened.expect(answer, state="Assistant   View thinking")
         reopened.exit_cleanly()
 
 

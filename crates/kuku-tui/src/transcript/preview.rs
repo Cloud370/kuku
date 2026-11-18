@@ -1,18 +1,27 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::markup::{render_literal, render_markdown};
-use crate::text::{cap, shorten, single_line};
-use crate::theme::{
-    emphasis, ACTIVITY_CARD_WIDTH, ACTIVITY_MINT, MUTED, THINKING_ROWS, THINKING_SURFACE,
-};
+use crate::markup::render_markdown;
+use crate::text::shorten;
+use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, render_record, render_rows, Body, Key, RenderCache, Row, Transcript,
-    DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    append_bounded, render_record, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
+    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
 impl Transcript {
+    pub(crate) fn live_thinking(&self) -> Option<(u64, &str)> {
+        let id = self.current_execution?;
+        let record = self
+            .recent
+            .records
+            .iter()
+            .rev()
+            .find(|r| r.key == Key::Preview(id))?;
+        (!record.reasoning_preview.is_empty()).then_some((id, record.reasoning_preview.as_str()))
+    }
+
     pub(crate) fn replace_reply_preview(
         &mut self,
         execution: u64,
@@ -71,9 +80,12 @@ impl Transcript {
                 Body::Assistant(String::new())
             });
         if record.reasoning_preview != prefix {
+            let visibility_changed = record.reasoning_preview.is_empty() != prefix.is_empty();
             record.reasoning_preview = prefix;
-            record.rendered = RenderCache::default();
-            self.mark_unseen();
+            if visibility_changed {
+                record.rendered = RenderCache::default();
+                self.mark_unseen();
+            }
         }
     }
 
@@ -92,67 +104,42 @@ impl Transcript {
             .record_or_insert(Key::Preview(execution), turn, number, || {
                 Body::Assistant(String::new())
             });
-        if append_bounded(&mut record.reasoning_preview, text, MAX_BODY_BYTES) {
+        let was_empty = record.reasoning_preview.is_empty();
+        if append_bounded(&mut record.reasoning_preview, text, MAX_BODY_BYTES) && was_empty {
             record.rendered = RenderCache::default();
             self.mark_unseen();
         }
     }
 }
 
-pub(super) fn render_assistant(
-    text: &str,
-    summary: &str,
-    width: usize,
-    expanded: bool,
-) -> (Vec<Row>, usize) {
+pub(super) fn render_assistant(text: &str, has_thinking: bool, width: usize) -> Vec<Row> {
     let mut rows = Vec::new();
-    if !summary.trim().is_empty() {
-        let width = width.min(ACTIVITY_CARD_WIDTH);
-        let marker = if expanded { "▾" } else { "▸" };
-        let mut title = Line::from(Span::styled(
-            shorten(&format!("{marker} Thinking preview"), width),
-            emphasis(ACTIVITY_MINT),
-        ));
-        if !expanded && width > title.width() + 4 {
-            let excerpt = single_line(cap(summary, 512));
-            title.push_span(Span::styled(
-                format!(
-                    "  {}",
-                    shorten(&excerpt, (width - title.width() - 2).min(39))
-                ),
-                Style::new().fg(MUTED),
-            ));
+    let has_reply = !text.trim().is_empty();
+    let role = if width >= 9 { "Assistant" } else { "AI" };
+    let joined = has_reply && has_thinking && width >= 28;
+    if has_thinking {
+        let mut title = Line::default();
+        if joined {
+            title.push_span(Span::styled(format!("{role}   "), emphasis(SURFACE_TEXT)));
         }
+        title.push_span(Span::styled(
+            shorten("View thinking", width.saturating_sub(title.width())),
+            Style::new().fg(MUTED),
+        ));
         rows.push(Row::plain(title));
-        if expanded {
-            let prefix = cap(summary, 4096);
-            let inset = super::body_inset(width);
-            rows.extend(render_rows(
-                render_literal(prefix, Style::new().fg(MUTED)),
+    }
+    if has_reply {
+        rows.extend(
+            render_record(
+                role,
+                SURFACE_TEXT,
+                render_markdown(text, width, MAX_VISUAL_ROWS),
                 width,
-                THINKING_ROWS,
-                inset,
-            ));
-            let more = rows.len() > THINKING_ROWS + 1 || prefix.len() < summary.len();
-            rows.truncate(THINKING_ROWS + 1);
-            if more {
-                rows.push(Row::plain(Line::styled(
-                    shorten("  …  Click to fold · /details to read all", width),
-                    Style::new().fg(ACTIVITY_MINT),
-                )));
-            }
-        }
-        super::paint_card(&mut rows, width, THINKING_SURFACE);
+                0,
+            )
+            .into_iter()
+            .skip(usize::from(joined)),
+        );
     }
-    let reasoning_rows = rows.len();
-    if !text.trim().is_empty() {
-        rows.extend(render_record(
-            if width >= 9 { "Assistant" } else { "AI" },
-            MUTED,
-            render_markdown(text, width, MAX_VISUAL_ROWS),
-            width,
-            0,
-        ));
-    }
-    (rows, reasoning_rows)
+    rows
 }

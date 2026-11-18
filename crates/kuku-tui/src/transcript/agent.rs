@@ -9,7 +9,7 @@ use crate::app::Activity;
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, ACCENT, ACTIVITY_CARD_WIDTH, AGENT_SURFACE, ERROR, MODEL, MUTED, SUCCESS, WARNING,
+    emphasis, CardFrame, ACCENT, ACTIVITY_EXCERPT_CELLS, ERROR, MODEL, MUTED, SUCCESS, WARNING,
 };
 
 use super::{
@@ -262,23 +262,62 @@ impl AgentCard<'_> {
     }
 
     pub(super) fn delegation_header(
-        mut self,
+        &self,
         width: usize,
         open: bool,
         facts: Option<&AgentFacts>,
+        checks: usize,
     ) -> Vec<Row> {
-        self.action = if open { "Timeline" } else { "Delegated" };
-        let mut rows = self.render(width, ToolDetails::Collapsed, facts);
-        rows.pop();
-        if open {
-            rows.truncate(1);
-            if let Some(marker) = rows
-                .first_mut()
-                .filter(|row| row.inset > 0)
-                .and_then(|row| row.line.spans.first_mut())
-            {
-                marker.content = "▾ ".into();
+        let frame = CardFrame::new(width);
+        let title = format!("Agent {}", single_line(self.address));
+        let mut rows = vec![Row::plain(frame.title(&title, MODEL))];
+        let (label, color) = facts.map_or(("Delivered", Style::new().fg(MUTED)), |facts| {
+            (facts.status.label(), activity_style(facts.status))
+        });
+        let space = frame.content_width();
+        let mut body = Line::from(Span::styled(
+            shorten(label, space),
+            crate::theme::code_surface().patch(color),
+        ));
+        let reply = facts.and_then(|facts| first_content_line(&facts.preview));
+        let (caption, excerpt) = match reply {
+            Some(text) if facts.is_some_and(|facts| facts.status == Activity::Failed) => {
+                ("Error", text)
             }
+            Some(text) => ("Reply", text),
+            None => ("Task", first_content_line(self.task).unwrap_or_default()),
+        };
+        if !excerpt.is_empty() && space >= body.width() + caption.len() + 7 {
+            body.push_span(Span::styled(
+                format!("   {caption}  "),
+                crate::theme::code_surface().fg(MUTED),
+            ));
+            let excerpt = excerpt
+                .trim_start_matches('#')
+                .strip_prefix(' ')
+                .unwrap_or(excerpt);
+            body.push_span(Span::styled(
+                shorten(
+                    &single_line(excerpt),
+                    (space - body.width()).min(ACTIVITY_EXCERPT_CELLS),
+                ),
+                crate::theme::code_surface(),
+            ));
+        }
+        rows.push(Row::plain(frame.line(body)));
+        let marker = if open { "▾" } else { "▸" };
+        let timeline = if checks == 0 {
+            format!("{marker} Timeline")
+        } else {
+            format!(
+                "{marker} Timeline · {} calls · {checks} status {}",
+                checks + 2,
+                if checks == 1 { "check" } else { "checks" }
+            )
+        };
+        rows.push(Row::plain(frame.foot(&timeline)));
+        if !open {
+            rows.push(Row::plain(Line::default()));
         }
         rows
     }
@@ -294,14 +333,20 @@ impl AgentCard<'_> {
         width: usize,
         details: ToolDetails,
         facts: Option<&AgentFacts>,
+        in_timeline: bool,
     ) -> Vec<Row> {
-        let width = width.min(ACTIVITY_CARD_WIDTH);
+        let frame = CardFrame::new(width);
+        let width = if in_timeline {
+            width
+        } else {
+            frame.content_width()
+        };
         let inset = body_inset(width);
         let body_inset = inset + body_inset(width.saturating_sub(usize::from(inset)));
         let expanded = details == ToolDetails::Expanded;
-        let header = self.header(width.saturating_sub(usize::from(inset)), facts);
+        let header = self.header(width.saturating_sub(usize::from(inset)), facts, in_timeline);
         let mut rows: Vec<_> = render_rows(header, width, 3, inset).collect();
-        if let Some(row) = rows.first_mut().filter(|_| inset != 0) {
+        if let Some(row) = rows.first_mut().filter(|_| in_timeline && inset != 0) {
             let marker = if expanded { "▾ " } else { "▸ " };
             row.line.spans[0] = Span::styled(marker, emphasis(MODEL));
         }
@@ -341,23 +386,42 @@ impl AgentCard<'_> {
                 let mut line = Line::from(Span::styled(format!("{label}  "), emphasis(MUTED)));
                 let remaining = width.saturating_sub(usize::from(body_inset) + line.width());
                 line.push_span(Span::styled(
-                    shorten(&single_line(excerpt), remaining),
+                    shorten(&single_line(excerpt), remaining.min(ACTIVITY_EXCERPT_CELLS)),
                     Style::new().fg(MUTED),
                 ));
                 rows.extend(render_rows(vec![line], width, 1, body_inset));
             }
         }
-        super::paint_card(&mut rows, width, AGENT_SURFACE);
+        if !in_timeline {
+            let mut framed = vec![Row::plain(
+                frame.title(&format!("Agent {}", single_line(self.address)), MODEL),
+            )];
+            framed.extend(rows.into_iter().map(|row| Row::plain(frame.line(row.line))));
+            framed.push(Row::plain(frame.foot(if expanded {
+                "▾ Details"
+            } else {
+                "▸ Details"
+            })));
+            rows = framed;
+        }
         rows.push(Row::plain(Line::default()));
         rows
     }
 
-    fn header(&self, width: usize, facts: Option<&AgentFacts>) -> Vec<Line<'static>> {
+    fn header(
+        &self,
+        width: usize,
+        facts: Option<&AgentFacts>,
+        include_address: bool,
+    ) -> Vec<Line<'static>> {
         let title = format!("Agent {}", single_line(self.address));
         let action = single_line(self.action);
         let style = Style::new().fg(MUTED);
-        let mut inline = Line::styled(title.clone(), emphasis(MODEL));
-        inline.push_span(Span::styled(format!(" · {action}"), style));
+        let mut inline = Line::default();
+        if include_address {
+            inline.push_span(Span::styled(format!("{title} · "), emphasis(MODEL)));
+        }
+        inline.push_span(Span::styled(action.clone(), style));
         if let Some(facts) = facts {
             inline.push_span(Span::styled(
                 format!(" · Now {}", facts.status.label()),
@@ -367,10 +431,11 @@ impl AgentCard<'_> {
         if inline.width() <= width {
             return vec![inline];
         }
-        let mut lines = vec![
-            Line::styled(shorten(&title, width), emphasis(MODEL)),
-            Line::styled(shorten(&action, width), style),
-        ];
+        let mut lines = Vec::new();
+        if include_address {
+            lines.push(Line::styled(shorten(&title, width), emphasis(MODEL)));
+        }
+        lines.push(Line::styled(shorten(&action, width), style));
         if let Some(facts) = facts {
             lines.push(Line::styled(
                 shorten(facts.status.label(), width),
@@ -506,8 +571,7 @@ mod tests {
         let view = transcript.project(90, 24);
         let plain = lines(&view).join("\n");
         assert!(
-            plain.contains("Agent reviewer · Delegated")
-                && plain.matches("Agent reviewer").count() == 1
+            plain.contains("╭─ Agent reviewer") && plain.matches("Agent reviewer").count() == 1
         );
         assert!(plain.contains("Verify the new CLI") && !plain.contains("List failing cases"));
         assert!(plain.contains("verify-fixtures"));
@@ -578,9 +642,9 @@ mod tests {
         let view = lines(&transcript.project(82, 27));
         let header = view
             .iter()
-            .position(|line| line.contains("Delegated"))
+            .position(|line| line.contains("╭─ Agent reviewer"))
             .unwrap();
-        assert!(view[header].contains("Now Streaming reply"));
+        assert!(view[header + 1].contains("Streaming reply"));
         assert!(toggle_row(&mut transcript, header + 1));
         let expanded = transcript.project(82, 27);
         let rendered = lines(&expanded).join("\n");
