@@ -258,7 +258,7 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
 }
 
 #[tokio::test]
-async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
+async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuration() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -283,15 +283,31 @@ async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
                 && properties["connection"]["description"]
                     .as_str()
                     .is_some_and(|text| text.contains("[provider.NAME]"))
+                && properties["no_agents"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("send_message"))
+                && properties["tools"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("explicit list replaces all default tools"))
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
-                && context.contains("Review the diff and send findings to main.")
-                && context.contains("Use `list_agents` when current status affects the next action")
+                && context.contains("Omit routing fields to use the default model.")
+                && context.contains("Use list_agents when the current status affects your next action.")
         },
         response(
             json!({"tool_calls":[
-                tool("default", "create_agent", json!({"address":"reviewer","instructions":"Review code for defects."})),
-                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"}))
+                tool("default", "create_agent", json!({
+                    "address":"reviewer","instructions":"Review code for defects.",
+                    "connection":" ","tier":"","model":"","preset":"","reasoning_effort":"",
+                    "service_tier":"","bootstrap_skill":"","workspace":"","no_agents":false,
+                    "max_output_tokens":200,"tools":["read_file","send_message"]
+                })),
+                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"})),
+                tool("conflicting-tools", "create_agent", json!({
+                    "address":"blocked-reviewer","no_agents":true,"tools":["read_file","send_message"]
+                })),
+                tool("denied", "create_agent", json!({"address":"unauthorized-reviewer","tier":""})),
+                tool("invalid-address", "create_agent", json!({"address":"review/team","tier":""}))
             ]}),
             "tool_calls",
         ),
@@ -300,14 +316,20 @@ async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
     let corrected = fixture(
         &server,
         |request| {
-            tool_count(request) == 2
-                && request_body(request)["messages"].as_array().unwrap().iter().any(|message| {
-                    message["role"] == "tool"
-                        && message["tool_call_id"] == "wrong-route"
-                        && message["content"].as_str().is_some_and(|text| {
-                            text.contains("Set tier=\"balanced\" and omit connection")
-                        })
-                })
+            let body = request_body(request);
+            let messages = body["messages"].as_array().unwrap();
+            let content = |call_id: &str| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or_default()
+            };
+            tool_count(request) == 5
+                && content("wrong-route").contains("Set tier=\"balanced\" and omit connection")
+                && content("conflicting-tools").contains("no_agents disables 'send_message'")
+                && content("invalid-address").contains("must be flat")
+                && content("denied").contains("not dispatched")
         },
         response(
             json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced"}))]}),
@@ -317,11 +339,12 @@ async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
     .await;
     let last = fixture(
         &server,
-        |request| tool_count(request) == 3,
+        |request| tool_count(request) == 6,
         response(json!({"content":"Reviewers configured."}), "stop"),
     )
     .await;
     let mut options = options(&server, workspace.path(), data.path());
+    options.authorizer = Arc::new(BatchPolicy);
     let parent_provider = options.config.providers["openai"].clone();
     options
         .config
@@ -357,6 +380,16 @@ async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
         assert_eq!("session-contract", selected.model);
         assert_eq!("openai", selected.connection);
     }
+    let reviewer = session.agent("reviewer").unwrap();
+    assert_eq!(Some(200), reviewer.config.max_output_tokens);
+    assert!(!reviewer.config.no_agents);
+    assert_eq!(
+        Some(vec!["read_file".into(), "send_message".into()]),
+        reviewer.config.tools
+    );
+    assert!(session.agent("blocked-reviewer").is_err());
+    assert!(session.agent("unauthorized-reviewer").is_err());
+    assert!(session.agent("review/team").is_err());
     session.close().await.unwrap();
     first.assert_hits_async(1).await;
     corrected.assert_hits_async(1).await;

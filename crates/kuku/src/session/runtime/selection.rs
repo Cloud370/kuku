@@ -115,6 +115,9 @@ impl Session {
     }
 
     pub(super) fn selected_tools(&self, config: &AgentConfig) -> Result<Vec<ToolDefinition>> {
+        let disabled_collaboration_tool = |name: &str| {
+            config.no_agents && matches!(name, "create_agent" | "send_message" | "list_agents")
+        };
         let available = crate::tool::builtin_registry(false, !config.no_skills)
             .into_iter()
             .chain(crate::query::runtime_tool_definitions())
@@ -125,18 +128,17 @@ impl Session {
                     .map(|tool| tool.spec.definition()),
             )
             .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
-            .filter(|tool| {
-                !config.no_agents
-                    || !matches!(
-                        tool.name.as_str(),
-                        "create_agent" | "send_message" | "list_agents"
-                    )
-            })
+            .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
             .collect::<Vec<_>>();
         let Some(selected) = &config.tools else {
             return Ok(available);
         };
         for name in selected {
+            if disabled_collaboration_tool(name) {
+                return Err(Error::InvalidArgument(format!(
+                    "no_agents disables '{name}'. Set no_agents to false or remove '{name}' from tools."
+                )));
+            }
             if !available.iter().any(|tool| tool.name == *name) {
                 return Err(Error::InvalidArgument(format!(
                     "selected tool '{name}' is not available"

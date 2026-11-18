@@ -401,10 +401,17 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "reasoning_effort": {"type": "string"},
                     "service_tier": {"type": "string"},
                     "max_output_tokens": {"type": "integer", "minimum": 1},
-                    "no_agents": {"type": "boolean"},
+                    "no_agents": {
+                        "type": "boolean",
+                        "description": "Defaults false. Keep false when the Agent needs send_message or other Agent collaboration tools."
+                    },
                     "no_skills": {"type": "boolean"},
                     "bootstrap_skill": {"type": "string"},
-                    "tools": {"type": "array", "items": {"type": "string"}},
+                    "tools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Omit to keep the Agent's default or preset tools, including send_message when collaboration is enabled. An explicit list replaces all default tools. Include every tool the task needs when restricting the list."
+                    },
                     "workspace": {"type": "string"}
                 },
                 "required": ["address"]
@@ -435,13 +442,7 @@ pub(super) fn execute(
     let value = match call.name.as_str() {
         "read_output" => return output::execute(&session, &call.args),
         "create_agent" => {
-            let address = required(&call.args, "address")?;
-            let mut values = call.args.clone();
-            values
-                .as_object_mut()
-                .expect("tool arguments are an object")
-                .remove("address");
-            let config: crate::AgentConfig = serde_json::from_value(values)?;
+            let (address, config) = create_agent_input(&call.args)?;
             serde_json::to_value(session.create_agent(&key, address, config)?)?
         }
         "send_message" => {
@@ -488,6 +489,46 @@ pub(super) fn execute(
     ))
 }
 
+fn create_agent_input(args: &serde_json::Value) -> Result<(&str, crate::AgentConfig)> {
+    let address = required(args, "address")?;
+    if address.trim().is_empty() {
+        return Err(Error::InvalidArgument(
+            "tool argument 'address' must not be blank".into(),
+        ));
+    }
+    let mut values = args
+        .as_object()
+        .expect("tool arguments are an object")
+        .clone();
+    values.remove("address");
+    let config = serde_json::from_value(serde_json::Value::Object(values))?;
+    Ok((address, config))
+}
+
+fn normalize_create_agent_args(args: &mut serde_json::Value) {
+    let Some(values) = args.as_object_mut() else {
+        return;
+    };
+    for field in [
+        "connection",
+        "tier",
+        "model",
+        "preset",
+        "reasoning_effort",
+        "service_tier",
+        "bootstrap_skill",
+        "workspace",
+    ] {
+        if values
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            values.remove(field);
+        }
+    }
+}
+
 pub(super) fn validate_prepared(
     pending: &PendingRun,
     call: &crate::provider::types::ProviderToolCall,
@@ -531,6 +572,9 @@ async fn prepare(
         return Ok(Some(block.reason));
     }
     queued.tool_call.args = result.args;
+    if queued.tool_call.name == "create_agent" {
+        normalize_create_agent_args(&mut queued.tool_call.args);
+    }
     EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.tool_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"tool_call_id":queued.tool_call.id,"args":queued.tool_call.args,"definition":schema_value(definition)})))?;
     Ok(None)
 }
@@ -643,4 +687,37 @@ fn required<'a>(args: &'a serde_json::Value, field: &str) -> Result<&'a str> {
     args[field]
         .as_str()
         .ok_or_else(|| Error::InvalidArgument(format!("missing tool argument '{field}'")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create_agent_input, normalize_create_agent_args};
+    use serde_json::json;
+
+    #[test]
+    fn create_agent_preserves_values_outside_optional_identifiers() {
+        let mut args = json!({
+            "address": "reviewer", "model": " ", "connection": "unconfigured",
+            "instructions": "", "max_output_tokens": 120, "no_agents": true, "no_skills": false,
+            "tools": ["read_file"]
+        });
+        normalize_create_agent_args(&mut args);
+        let (address, config) = create_agent_input(&args).unwrap();
+        assert_eq!("reviewer", address);
+        assert_eq!(None, config.model);
+        assert_eq!(Some("unconfigured"), config.connection.as_deref());
+        assert_eq!(Some(""), config.instructions.as_deref());
+        assert_eq!(Some(120), config.max_output_tokens);
+        assert!(config.no_agents);
+        assert!(!config.no_skills);
+
+        for args in [
+            json!({"address":" "}),
+            json!({"tier":"balanced"}),
+            json!({"address":"reviewer","max_output_tokens":""}),
+            json!({"address":"reviewer","no_agents":""}),
+        ] {
+            assert!(create_agent_input(&args).is_err(), "{args}");
+        }
+    }
 }
