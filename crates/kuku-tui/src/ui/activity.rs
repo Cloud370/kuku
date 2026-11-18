@@ -185,6 +185,7 @@ pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> L
     let label = frame.status.label();
     let elapsed = frame
         .elapsed
+        .filter(|_| frame.status.clock_runs())
         .map(|seconds| format_elapsed(Duration::from_secs(seconds)));
     let elapsed = elapsed.filter(|text| {
         wide || line.width() + label.width() + text.width() + 2 <= width.saturating_sub(6)

@@ -13,9 +13,11 @@ use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SUCCESS, SURFAC
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
 
+mod command;
 mod file_change;
 mod session;
 
+use command::CommandPreview;
 use file_change::FileChange;
 use session::{is_session_read, query_target, Observation};
 
@@ -307,9 +309,12 @@ impl Tool {
         let outcome = self.state.outcome();
         let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
         let concise = !inspecting
-            && command.is_some_and(|preview| preview.notes.is_empty())
+            && command.is_some_and(|preview| preview.complete && preview.notes.is_empty())
             && outcome.is_some_and(|outcome| {
-                outcome.status == "ok" && !outcome.attention && outcome.exit_code.is_some()
+                outcome.status == "ok"
+                    && outcome
+                        .exit_code
+                        .is_some_and(|code| code != 0 || !outcome.attention)
             });
         let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
         if !inspecting && self.is_missing_read() {
@@ -355,13 +360,8 @@ impl Tool {
             } else {
                 let text = command.map_or_else(
                     || self.result(),
-                    |preview| &self.result()[..preview.body_end],
+                    |preview| preview.body(self.result(), concise),
                 );
-                let text = if concise && !text.contains("\nstderr:\n") {
-                    text.strip_prefix("stdout:\n").unwrap_or(text)
-                } else {
-                    text
-                };
                 if text.is_empty() || text == summary || text == invocation {
                     Vec::new()
                 } else {
@@ -510,7 +510,11 @@ impl Tool {
 
     fn session_detail(&self) -> String {
         let detail = self.observation().map_or("", |value| value.detail.as_str());
-        join_details([self.invocation.as_str(), detail])
+        if self.name == "list_agents" {
+            detail.to_owned()
+        } else {
+            join_details([self.invocation.as_str(), detail])
+        }
     }
 
     fn title(&self) -> Cow<'_, str> {
@@ -793,7 +797,7 @@ impl Outcome {
             ),
             exit_code: structured["exit_code"].as_i64(),
             output_id: output_id.map(str::to_owned),
-            command_preview: CommandPreview::from_result(content, structured, output_id),
+            command_preview: CommandPreview::from_result(content, structured, output_id, truncated),
             file_read: FileRead::from_result(structured, truncated),
             receipt: succeeded.then(|| agent_receipt(structured)).flatten(),
             observation: succeeded
@@ -875,36 +879,6 @@ impl FileRead {
             caption.push_str(" · truncated");
         }
         caption
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CommandPreview {
-    body_end: usize,
-    notes: String,
-}
-
-impl CommandPreview {
-    fn from_result(
-        content: Option<&str>,
-        structured: &Value,
-        output_id: Option<&str>,
-    ) -> Option<Self> {
-        if structured["kind"].as_str() != Some("command_result") {
-            return None;
-        }
-        let bytes = structured["output_ref"]["bytes"].as_u64()?;
-        let id = output_id?;
-        let reference =
-            format!("\n\nOutput: {id} ({bytes} captured bytes; read by merged byte offset).");
-        let (body, notes) = content?.rsplit_once(&reference)?;
-        if notes.contains(['\n', '\r']) || (!notes.is_empty() && !notes.starts_with(' ')) {
-            return None;
-        }
-        Some(Self {
-            body_end: cap(body.trim_end_matches(['\r', '\n']), MAX_DETAIL_BYTES).len(),
-            notes: capped(Some(notes.trim_start()), MAX_DETAIL_BYTES),
-        })
     }
 }
 

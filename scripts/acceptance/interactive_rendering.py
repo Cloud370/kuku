@@ -92,6 +92,8 @@ def file_change_cards(client):
         client.provider.next("summary").text("Saved the example.")
         screen = terminal.expect("Saved the example.", also=("╭─ Write file", "╭─ Edit file", "1 line written", "+1 −1", "3 lines written"))["screen"]
         assert "Checked the greeting." in screen and "# Report" not in screen, screen
+        settled = terminal.expect("Saved the example.", state="Finished")["screen"]
+        assert "Input accepted" not in settled and "Finished 0s" not in settled, settled
         assert '+print("Welcome")' in screen and '-print("Hello")' in screen, screen
         assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'
         terminal.exit_cleanly()
@@ -120,7 +122,7 @@ def windows_diagnostic(client):
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
-        assert "␍" not in screen and "�" not in screen
+        assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
         terminal.exit_cleanly()
 
 

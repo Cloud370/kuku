@@ -591,8 +591,15 @@ impl Pane {
 
     fn submission(&self, queued: usize) -> Option<SubmissionStatus> {
         let (cursor, status) = self.submission?;
-        if status == SubmissionStatus::Queued
-            && queued == 0
+        let settled = match status {
+            SubmissionStatus::Queued => queued == 0,
+            SubmissionStatus::Accepted => matches!(
+                self.activity(),
+                Activity::Finished | Activity::Interrupted | Activity::Stopped | Activity::Failed
+            ),
+            _ => false,
+        };
+        if settled
             && self
                 .snapshot
                 .as_ref()

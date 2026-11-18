@@ -233,7 +233,6 @@ pub(crate) fn render_at(
 
 fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
     let unseen = app.pane().transcript.history_hint()?;
-    let latest = Shortcut::LATEST.label;
     let back = Shortcut::READING_BACK.label;
     let focus = if app.composer_focused() {
         "Editing"
@@ -241,31 +240,27 @@ fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
         "↑↓ scroll"
     };
     let content = if unseen { " · New content" } else { "" };
-    let full = format!("Reading history · {focus} · Jump to latest ({latest} / {back}){content}");
-    let middle = format!(
-        "Reading history · {focus} · Jump to latest ({back}){}",
-        content
-    );
-    let focus = if app.composer_focused() {
-        "Edit"
-    } else {
-        "↑↓"
-    };
+    let normal = format!("Reading history · {focus} · Jump to latest ({back}){content}");
     let compact = if unseen {
-        format!("New · {focus} · {latest}")
+        format!("New · {back}")
     } else {
-        format!("History {focus} · {latest}")
+        format!("History · {back}")
     };
-    let fallback = if unseen {
-        "New · Alt+↑".to_owned()
+    let text = if normal.width() <= width {
+        normal
+    } else if compact.width() <= width {
+        compact
     } else {
-        "↑↓ · Alt+↑".to_owned()
+        back.to_owned()
     };
-    let text = [full, middle, compact]
-        .into_iter()
-        .find(|line| line.width() <= width)
-        .unwrap_or(fallback);
-    Some(Line::styled(shorten(&text, width), emphasis(ACCENT)))
+    let mut line = Line::styled(shorten(&text, width), Style::new().fg(MUTED));
+    if let Some(rest) = text.strip_prefix("Reading history") {
+        line = Line::from(vec![
+            Span::styled("Reading history", emphasis(ACCENT)),
+            Span::styled(rest.to_owned(), Style::new().fg(MUTED)),
+        ]);
+    }
+    Some(line)
 }
 
 fn render_transcript(

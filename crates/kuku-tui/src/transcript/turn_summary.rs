@@ -49,11 +49,7 @@ impl Transcript {
             .filter_map(|record| record.turn_summary.as_ref())
             .next()
         {
-            let metrics = render_metrics(
-                summary,
-                width.saturating_sub(line.width() + 3),
-                crate::theme::SURFACE_TEXT,
-            );
+            let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3), MUTED);
             if metrics.width() > 0 {
                 line.push_span("   ");
                 line.extend(metrics.spans);
