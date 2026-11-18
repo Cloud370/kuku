@@ -76,7 +76,7 @@
 | `Cache hit …%` | 当前 Agent 累计缓存读取 token 占总输入 token 的比例。读数完整且总输入大于零时显示百分比。 |
 | `TPS` | 最近一次已测模型请求的输出 token 数除以请求耗时，从发起请求到收到结束响应，包含等待首个 token 的时间。工具执行与请求之间的重试等待均不计入。 |
 
-`—` 表示暂时没有可用读数。如只需身份、路径和用量，可在启动前设置 `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps`。
+`—` 表示当前没有可用读数。新请求准备好后，Context 和 TPS 等待该次请求上报用量，再显示新的数值。如只需身份、路径和用量，可在启动前设置 `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps`。
 
 ## `kuku run`
 

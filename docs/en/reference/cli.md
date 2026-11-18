@@ -76,7 +76,7 @@ The footer identifies the selected Agent by its Session-local address and shows 
 | `Cache hit …%` | Total cache-read input tokens divided by total input tokens for this Agent. A percentage requires complete measurements and a positive denominator. |
 | `TPS` | Output tokens per second on the latest measured provider request. The interval includes waiting for the first token and ends at the provider's terminal response. Tool execution and time between retries are excluded. |
 
-A dash (`—`) means the measurement is unavailable. To show only identity, directory and usage, set `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps` before opening the terminal.
+A dash (`—`) means the measurement is unavailable. A newly prepared request clears the previous context percentage and TPS until its own usage arrives. To show only identity, directory and usage, set `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps` before opening the terminal.
 
 ## `kuku run`
 
