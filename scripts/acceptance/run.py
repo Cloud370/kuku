@@ -26,7 +26,6 @@ import uuid
 import zipfile
 
 from evidence import inspect_sdk
-from metrics import ProcessSampler
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -601,46 +600,6 @@ def selected_commands(group):
             contract]
 
 
-def run_metrics(args, directory, record):
-    if not sys.platform.startswith("linux"):
-        raise ValueError("process resource sampling currently requires Linux /proc")
-    command = ["cargo", "build", "-p", "kuku", "--example", "resource_probe", "--features", "test_support"]
-    if args.profile == "release":
-        command.append("--release")
-    record["build"] = require_success(capture(command, directory, "build", timeout=1800, env=command_environment()))
-    record["build"]["target_dir"] = str(ROOT / "target")
-    record["build"]["profile"] = args.profile
-    record["sources"] = [config_record(path) for path in
-                          (ROOT / "crates/kuku/examples/resource_probe.rs", Path(__file__).with_name("metrics.py"),
-                           ROOT / "crates/kuku/tests/common/mod.rs")]
-    binary = ROOT / "target" / args.profile / "examples" / "resource_probe"
-    record["binary"] = config_record(binary)
-    phase_file, result_file = directory / "phase.json", directory / "caller.json"
-    command = [str(binary), "--workspace", str(directory / "workspace"), "--data-dir", str(directory / "session-data"),
-               "--phase-file", str(phase_file), "--output", str(result_file),
-               "--idle-agents", str(args.idle_agents), "--appends", str(args.appends),
-               "--concurrent-agents", str(args.concurrent_agents), "--output-bytes", str(args.output_bytes),
-               "--output-quota", str(args.output_quota)]
-    sampler = ProcessSampler(phase_file)
-    try:
-        record["execution"] = capture(command, directory, "caller", timeout=180,
-                                       env=command_environment(), on_start=sampler.start)
-    finally:
-        record["resources"] = sampler.finish()
-    caller = json.loads(result_file.read_text())
-    record["caller_result"] = str(result_file)
-    record["measurements"] = caller.get("measurements")
-    record["passed"] = (caller.get("passed") is True and record["execution"]["exit_code"] == 0
-                        and not record["execution"]["timed_out"] and not record["execution"].get("capture_incomplete")
-                        and not record["resources"]["capture_incomplete"])
-    record["missing_measurements"] = [key for key in ("context_prepare_us", "request_prepare_us")
-                                      if caller.get("measurements", {}).get(key) is None]
-    for phase in ("idle_agents", "large_output", "concurrent_agents"):
-        if not record["resources"]["sampled_phases"].get(phase, {}).get("samples"):
-            record["missing_measurements"].append("process_samples_" + phase)
-    record["measurements_complete"] = not record["missing_measurements"]
-
-
 def extract_release_binary(archive, binary):
     with contextlib.ExitStack() as stack:
         if archive.name.endswith(".tar.gz"):
@@ -877,6 +836,12 @@ def parser():
     metrics.add_argument("--concurrent-agents", type=int, default=2)
     metrics.add_argument("--output-bytes", type=int, default=4 * 1024 * 1024)
     metrics.add_argument("--output-quota", type=int, default=1024 * 1024)
+    metrics.add_argument("--repeated-tasks", type=int, default=6)
+    metrics.add_argument("--script-workers", type=int, default=2)
+    metrics.add_argument("--script-host-operations", type=int, default=4)
+    metrics.add_argument("--pressure-rounds", type=int, default=1, help="repeat shared-host stress and idle recovery in the same caller")
+    metrics.add_argument("--cpu-count", type=int, help="limit the caller and its descendants to this many available CPUs on Linux")
+    metrics.add_argument("--address-space-mib", type=int, help="apply a per-process Linux address-space bound to the caller and descendants")
     inspect = sub.add_parser("inspect", help="check existing durable SDK evidence without model requests")
     inspect.add_argument("--sdk-result", type=Path, required=True)
     inspect.add_argument("--session-data", type=Path, required=True)
@@ -968,6 +933,8 @@ def main():
         if args.group == "benchmark":
             run_benchmark(args, directory, record, secrets)
         elif args.group == "metrics":
+            from metrics import run_metrics
+
             run_metrics(args, directory, record)
         elif args.group == "interactive":
             run_interactive(args, directory, record)

@@ -4,6 +4,8 @@
     reason = "this caller reuses the integration SSE and configuration fixtures"
 )]
 mod common;
+#[path = "resource_probe/workspace.rs"]
+mod workspace_probe;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -12,16 +14,25 @@ use std::time::{Duration, Instant};
 
 use httpmock::{Method::POST, MockServer};
 use kuku::event::EventPayload;
+use kuku::execution::{CommandExecutionFacts, CommandTermination};
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
 use serde_json::{json, Value};
 
 type AnyError = Box<dyn std::error::Error>;
+const SAMPLE_WINDOW: Duration = Duration::from_secs(1);
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), AnyError> {
     let args = arguments()?;
     if let Some(bytes) = args.get("emit-output") {
         return emit_output(bytes.parse()?);
+    }
+    if let Some(checks) = args.get("emit-checks") {
+        return workspace_probe::emit_checks(checks.parse()?);
+    }
+    if let Some(milliseconds) = args.get("hold-process") {
+        std::thread::sleep(Duration::from_millis(milliseconds.parse()?));
+        return Ok(());
     }
     let output = PathBuf::from(required(&args, "output")?);
     let report = probe(&args).await?;
@@ -55,6 +66,7 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     {
         return Err("resource workload is outside the small probe limits".into());
     }
+    let workspace_workload = workspace_probe::Workload::new(args, quota)?;
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&data)?;
     let server = MockServer::start_async().await;
@@ -66,15 +78,17 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
                 .body(response(json!({"content":"context accepted"}), "stop"));
         })
         .await;
-    let command = format!(
-        "{} --emit-output {output_bytes}",
-        shell_argument(&std::env::current_exe()?)
-    );
-    let first_output = server.mock_async(|when, then| {
-        when.method(POST).path("/output/chat/completions").matches(no_tool_results);
-        then.status(200).header("content-type", "text/event-stream")
-            .body(response(json!({"tool_calls":[{"id":"large-output","type":"function","function":{"name":"run_command","arguments":json!({"command":command,"timeout":30,"brief":"measure bounded output"}).to_string()}}]}), "tool_calls"));
-    }).await;
+    let command = native_call("--emit-output", output_bytes)?;
+    let first_output = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/output/chat/completions")
+                .matches(no_tool_results);
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(tool_response("large-output", "run_command", &command));
+        })
+        .await;
     let last_output = server
         .mock_async(|when, then| {
             when.method(POST)
@@ -99,7 +113,10 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     for provider in config.providers.values_mut() {
         provider.base_url = server.url("/context");
     }
-    for connection in ["context", "output", "concurrent"] {
+    for connection in ["context", "output", "concurrent"]
+        .into_iter()
+        .chain(workspace_probe::CONNECTIONS)
+    {
         let mut provider = template.clone();
         provider.base_url = server.url(format!("/{connection}"));
         config.providers.insert(connection.into(), provider);
@@ -122,20 +139,21 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     options.limits.max_steps_per_turn = 4;
     options.limits.max_request_bytes = 256 * 1024;
     options.limits.max_output_bytes = quota as u64;
+    options.workspace_host = workspace_workload.host()?;
     phase(&phase_file, "fixture_baseline")?;
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(SAMPLE_WINDOW).await;
     phase(&phase_file, "cold_open")?;
     let start = Instant::now();
     let mut session = Session::open(options.clone()).await?;
     let mut report = json!({
-        "schema_version":1,"paid":false,"models_mocked":true,
+        "schema_version":2,"paid":false,"models_mocked":true,
         "scope":"public SDK caller including an in-process fixed provider; tools are child processes",
         "build":{"debug_assertions":cfg!(debug_assertions),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"tokio_worker_threads":2},
         "workload":{"idle_agents":idle_agents,"appends":appends,"input_payload_bytes":256,"reopens":5,"output_bytes":output_bytes,"output_quota_bytes":quota,"concurrent_agents":workers,"mock_concurrent_delay_ms":250},
         "measurements":{"cold_initial_open_us":micros(start),"filesystem_cache":"not flushed; reopens use the same committed files"},
         "events_path":session.events_path(),"passed":false
     });
-    let result = measure(
+    let mut result = measure(
         &mut session,
         &options,
         &phase_file,
@@ -145,6 +163,11 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
         &mut report,
     )
     .await;
+    if result.is_ok() {
+        result = workspace_workload
+            .measure(&server, &options, &phase_file, &mut report)
+            .await;
+    }
     phase(&phase_file, "close")?;
     let close = session.close().await;
     report["cleanup_closed"] = json!(close.is_ok());
@@ -176,6 +199,11 @@ async fn measure(
     phase(phase_file, "create_agents")?;
     let start = Instant::now();
     session.create_agent("create-main", "main", agent_config("context"))?;
+    let main_create_us = micros(start);
+    phase(phase_file, "single_idle_agent")?;
+    tokio::time::sleep(SAMPLE_WINDOW).await;
+    phase(phase_file, "create_agents")?;
+    let start = Instant::now();
     for index in 1..idle_agents {
         let address = format!("agent-{index}");
         session.create_agent(
@@ -184,10 +212,18 @@ async fn measure(
             agent_config("context"),
         )?;
     }
-    report["measurements"]["create_idle_agents_us"] = json!(micros(start));
-    report["idle"] = json!({"agents":session.agents().len(),"running":session.agents().iter().filter(|agent|agent.status==AgentStatus::Running).count(),"model_requests":session.agents().iter().map(|agent|agent.usage.model_requests).sum::<u64>()});
+    report["measurements"]["create_idle_agents_us"] = json!(main_create_us + micros(start));
+    let agents = session.agents();
+    report["idle"] = json!({"agents":agents.len(),"running":agents.iter().filter(|agent|agent.status==AgentStatus::Running).count(),"model_requests":agents.iter().map(|agent|agent.usage.model_requests).sum::<u64>(),"workspace_workers":options.workspace_host.metrics()});
+    if agents
+        .iter()
+        .any(|agent| agent.status != AgentStatus::Idle || agent.usage.model_requests != 0)
+        || options.workspace_host.metrics().started_workers != 0
+    {
+        return Err("idle agents started work".into());
+    }
     phase(phase_file, "idle_agents")?;
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(SAMPLE_WINDOW).await;
     phase(phase_file, "append")?;
     let mut append_us = Vec::with_capacity(appends);
     for index in 0..appends {
@@ -220,18 +256,19 @@ async fn measure(
     report["measurements"]["reopen_us"] = statistics(&recovery_us);
     phase(phase_file, "context")?;
     let start = Instant::now();
+    let before = session.events_before(None, 1)?[0].id;
     session.advance("main")?;
-    wait_idle(session, "main").await?;
+    wait_idle(session, "main", before).await?;
     report["measurements"]["queued_inputs_to_completion_us"] = json!(micros(start));
     phase(phase_file, "large_output")?;
     session.configure_agent("configure-output", "main", agent_config("output"))?;
     let start = Instant::now();
-    session.send(Input::new(
+    let receipt = session.send(Input::new(
         "large-output",
         "main",
         "produce and read bounded command output",
     ))?;
-    wait_idle(session, "main").await?;
+    wait_idle(session, "main", receipt.event_id).await?;
     report["measurements"]["large_output_turn_us"] = json!(micros(start));
     let mut cursor = 0;
     let mut command_result = None;
@@ -265,10 +302,10 @@ async fn measure(
             }
         }
     }
-    let command = command_result.ok_or("large output has no durable tool result")?;
-    let output_id = command["output_id"]
-        .as_str()
-        .ok_or("large output has no retained reference")?;
+    let command = CommandExecutionFacts::from_structured(
+        &command_result.ok_or("large output has no durable tool result")?,
+    )?;
+    let output_id = &command.output_ref.id;
     let output = session.read_output(
         output_id,
         &OutputRead {
@@ -289,11 +326,17 @@ async fn measure(
     if !output.complete
         || !output.capture_truncated
         || output.cleanup_incomplete
+        || command.termination != CommandTermination::Exited
+        || command.exit_code != Some(0)
+        || command.capture_complete
+        || !command.quota_truncated
+        || command.output_ref.bytes != output.total_bytes
+        || command.stdout_bytes <= options.limits.max_output_bytes
         || output_bytes > options.limits.max_output_bytes
     {
         return Err("large output violated its completion, cleanup or storage bound".into());
     }
-    report["large_output"] = json!({"observed_stdout_bytes":command["stdout_bytes"],"file_bytes":output_bytes,"retained_payload_bytes":output.total_bytes,"read_bytes":output.segments.iter().map(|segment|segment.bytes).sum::<usize>(),"capture_truncated":output.capture_truncated,"cleanup_incomplete":output.cleanup_incomplete});
+    report["large_output"] = json!({"observed_stdout_bytes":command.stdout_bytes,"file_bytes":output_bytes,"retained_payload_bytes":output.total_bytes,"read_bytes":output.segments.iter().map(|segment|segment.bytes).sum::<usize>(),"capture_truncated":output.capture_truncated,"cleanup_incomplete":output.cleanup_incomplete});
     report["measurements"]["context_prepare_us"] = statistics(&context_us);
     report["measurements"]["request_prepare_us"] = statistics(&prepare_us);
     report["measurements"]["context_events_read"] =
@@ -307,16 +350,17 @@ async fn measure(
         )?;
     }
     let start = Instant::now();
+    let mut receipts = Vec::with_capacity(workers);
     for index in 1..=workers {
-        session.send(Input::new(
+        receipts.push(session.send(Input::new(
             format!("work-{index}"),
             format!("agent-{index}"),
             "complete the fixed local request",
-        ))?;
+        ))?);
     }
     report["concurrency"] = json!({"configured_agents":workers,"running_after_send":session.agents().iter().filter(|agent|agent.status==AgentStatus::Running).count(),"model_request_capacity":options.limits.max_model_requests});
-    for index in 1..=workers {
-        wait_idle(session, &format!("agent-{index}")).await?;
+    for receipt in receipts {
+        wait_idle(session, &receipt.agent, receipt.event_id).await?;
     }
     report["measurements"]["concurrent_agents_wall_us"] = json!(micros(start));
     report["final_agents"] = json!(session.agents().len());
@@ -339,9 +383,9 @@ fn agent_config(connection: &str) -> AgentConfig {
     }
 }
 
-async fn wait_idle(session: &Session, address: &str) -> Result<(), AnyError> {
+async fn wait_idle(session: &Session, address: &str, after: u64) -> Result<(), AnyError> {
     tokio::time::timeout(Duration::from_secs(120), async {
-        let mut observer = session.observe(0);
+        let mut observer = session.observe_agent(after, address);
         loop {
             let agent = session.agent(address)?;
             if agent.status == AgentStatus::Idle && agent.pending_inputs == 0 {
@@ -371,6 +415,19 @@ fn response(message: Value, reason: &str) -> String {
     common::openai_sse_response(
         json!({"id":"resource-fixture","model":"resource-fixture","choices":[{"message":message,"finish_reason":reason}],"usage":{"prompt_tokens":100,"completion_tokens":20}}),
     )
+}
+
+fn tool_response(id: &str, name: &str, arguments: &Value) -> String {
+    response(
+        json!({"tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
+        "tool_calls",
+    )
+}
+
+fn native_call(flag: &str, number: usize) -> Result<Value, AnyError> {
+    let exe = std::env::current_exe()?;
+    let program = exe.to_str().ok_or("resource probe path is not UTF-8")?;
+    Ok(json!({"program":program,"args":[flag,number.to_string()],"cwd":".","timeout":30}))
 }
 
 fn no_tool_results(request: &httpmock::prelude::HttpMockRequest) -> bool {
@@ -407,6 +464,26 @@ fn micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn allocator_usage() -> Value {
+    // NOTE: glibc may predate mallinfo2. The loader returns a function address or null.
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"mallinfo2".as_ptr()) };
+    if symbol.is_null() {
+        return Value::Null;
+    }
+    // NOTE: The runtime symbol has glibc's mallinfo2 ABI. Rust has no allocator statistics API.
+    let info = unsafe {
+        let query: unsafe extern "C" fn() -> libc::mallinfo2 = std::mem::transmute(symbol);
+        query()
+    };
+    json!({"arena_bytes":info.arena,"arena_in_use_bytes":info.uordblks,"arena_free_bytes":info.fordblks,"mmap_bytes":info.hblkhd})
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn allocator_usage() -> Value {
+    Value::Null
+}
+
 fn emit_output(bytes: usize) -> Result<(), AnyError> {
     let mut stdout = std::io::stdout().lock();
     let chunk = [b'x'; 8192];
@@ -418,15 +495,6 @@ fn emit_output(bytes: usize) -> Result<(), AnyError> {
         std::thread::sleep(Duration::from_millis(2));
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn shell_argument(path: &Path) -> String {
-    format!("\"{}\"", path.display())
-}
-#[cfg(not(windows))]
-fn shell_argument(path: &Path) -> String {
-    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
 fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
@@ -445,7 +513,13 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "concurrent-agents"
                 | "output-bytes"
                 | "output-quota"
+                | "repeated-tasks"
+                | "script-workers"
+                | "script-host-operations"
+                | "pressure-rounds"
                 | "emit-output"
+                | "emit-checks"
+                | "hold-process"
         ) {
             return Err(format!("unknown argument {flag}").into());
         }
