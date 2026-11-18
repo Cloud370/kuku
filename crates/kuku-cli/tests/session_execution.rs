@@ -88,6 +88,11 @@ provider = "primary"
 model = "fixture-model"
 think = "off"
 max_output_tokens = 512
+[model.delegated]
+provider = "secondary"
+model = "fixture-model"
+think = "off"
+max_output_tokens = 512
 [provider.primary]
 format = "anthropic"
 base_url = "http://127.0.0.1:{primary}"
@@ -516,7 +521,7 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         &primary,
         0,
         json!([
-            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","connection":"secondary","model":"fixture-model","instructions":"Write the delegated proof file."}},
+            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","tier":"delegated","instructions":"Write the delegated proof file."}},
             {"type":"tool_use","id":"send-worker","name":"send_message","input":{"to":"worker","message":"write delegated-proof.txt with delegated\n"}}
         ]),
         "tool_use",

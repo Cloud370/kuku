@@ -105,7 +105,7 @@ def published_reasoning(client):
         completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "Thinking preview"))["screen"]
         assert completed.count("Thinking preview") == 1 and hidden not in completed
         terminal.press("/source\r")
-        source = terminal.expect(answer, state="source")["screen"]
+        source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
     with client.terminal(workspace) as reopened:
