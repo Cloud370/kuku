@@ -75,7 +75,9 @@ In a selection dialog, click a row to highlight it. A click can switch the viewe
 
 Each Turn contains user messages, tool activity and assistant text. The default view groups consecutive successful calls of the same tool within a Turn, for example `Read 8 files · ok`. Running calls, failures and authorization requests stay visible as individual entries. Expanding or collapsing details preserves the reading position. Use `/tools` to page through output the service retained.
 
-Markdown renders as it streams, including a code fence that is still open. Fenced code has a language label when specified and syntax highlighting for supported languages. Unrecognized languages display as plain text. `/copy` retains the reply's original Markdown.
+Messages delivered by another Agent show the sender's address, for example `From main`, including when they open a Turn.
+
+Markdown renders as it streams, including a code fence that is still open. A terminal that joins an active reply can show a bounded prefix of its already streamed text. The committed reply replaces that preview. Fenced code has a language label when specified and syntax highlighting for supported languages. Unrecognized languages display as plain text. `/copy` retains the reply's original Markdown.
 
 ### Status and usage
 
