@@ -744,7 +744,7 @@ async fn native_writer_can_overwrite_after_reopen_and_edit_its_new_version() {
                 &format!("{prefix}full second version"),
             )],
             vec![edit_owned("edit", "second", "third")],
-            vec![edit_owned("partial-result", "third", "unobserved")],
+            vec![edit_owned("follow-up-edit", "third", "fourth")],
             vec![(
                 "read",
                 "read_file",
@@ -763,15 +763,12 @@ async fn native_writer_can_overwrite_after_reopen_and_edit_its_new_version() {
     assert_eq!("ok", status);
     assert_eq!(true, write_facts["raw_text_after_truncated"]);
     assert_eq!("ok", result_for(&reopened, "edit").0);
-    assert_eq!(
-        "snapshot_stale",
-        result_for(&reopened, "partial-result").1["reason_code"]
-    );
+    assert_eq!("ok", result_for(&reopened, "follow-up-edit").0);
     let (_, read_facts) = result_for(&reopened, "read");
     assert_eq!(false, read_facts["cached"]);
-    assert_eq!("full third version", read_facts["raw_text"]);
+    assert_eq!("full fourth version", read_facts["raw_text"]);
     assert_eq!(
-        format!("{prefix}full third version"),
+        format!("{prefix}full fourth version"),
         std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
     );
     reopened.close().await.unwrap();
@@ -787,7 +784,7 @@ async fn native_writer_evidence_checks_the_actor_and_current_digest() {
         vec![
             vec![write_owned("seed", "my version")],
             vec![],
-            vec![edit_owned("other-agent", "my version", "different actor")],
+            vec![write_owned("other-agent-write", "different actor")],
             vec![],
             vec![write_owned("stale-write", "unexpected overwrite")],
             vec![],
@@ -799,12 +796,16 @@ async fn native_writer_evidence_checks_the_actor_and_current_digest() {
         .create_agent("create-reviewer", "reviewer", AgentConfig::default())
         .unwrap();
     session
-        .send(Input::new("review", "reviewer", "try to edit the file"))
+        .send(Input::new(
+            "review",
+            "reviewer",
+            "try to overwrite the file",
+        ))
         .unwrap();
     completed_turns(&session, 2).await;
     assert_eq!(
-        "snapshot_required",
-        result_for(&session, "other-agent").1["reason_code"]
+        "full_snapshot_required",
+        result_for(&session, "other-agent-write").1["reason_code"]
     );
 
     std::fs::write(work.path().join("owned.txt"), "external").unwrap();
@@ -824,18 +825,19 @@ async fn native_writer_evidence_checks_the_actor_and_current_digest() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_writer_can_reuse_a_write_after_the_model_receives_confirmation() {
+async fn native_replace_all_can_reuse_a_write_after_the_model_receives_confirmation() {
     let work = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
+    let mut before = edit_owned("before-confirmation", "first", "premature");
+    before.2["replace_all"] = json!(true);
+    let mut after = edit_owned("after-confirmation", "first", "confirmed");
+    after.2["replace_all"] = json!(true);
     let session = start(file_tool_options(
         &work,
         &data,
         vec![
-            vec![
-                write_owned("seed", "first"),
-                edit_owned("before-confirmation", "first", "premature"),
-            ],
-            vec![edit_owned("after-confirmation", "first", "confirmed")],
+            vec![write_owned("seed", "first\nfirst\n"), before],
+            vec![after],
             vec![],
         ],
     ))
@@ -843,49 +845,116 @@ async fn native_writer_can_reuse_a_write_after_the_model_receives_confirmation()
     completed_turns(&session, 1).await;
     assert_eq!("ok", result_for(&session, "seed").0);
     assert_eq!(
-        "snapshot_required",
+        "full_snapshot_required",
         result_for(&session, "before-confirmation").1["reason_code"]
     );
     assert_eq!("ok", result_for(&session, "after-confirmation").0);
     assert_eq!(
-        "confirmed",
+        "confirmed\nconfirmed\n",
         std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
     );
     session.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn script_writer_can_use_its_own_version_only_within_its_execution() {
+async fn native_disjoint_edits_preserve_unrelated_changes_without_rereading() {
     let work = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let session = start(file_tool_options(&work, &data, vec![
-        vec![("script", "workspace_script", json!({"code":r#"
+    let path = work.path().join("owned.txt");
+    std::fs::write(&path, "header\nalpha\nbeta\ngamma\ndelta\n").unwrap();
+
+    let model = Arc::new(FileToolModel(Mutex::new(VecDeque::from([
+        vec![
+            edit_owned("batch-first", "alpha", "one"),
+            edit_owned("batch-second", "beta", "two"),
+        ],
+        vec![edit_owned("later-first", "gamma", "three")],
+        vec![edit_owned("later-second", "delta", "four")],
+        vec![],
+    ]))));
+    let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
+    options.model_adapter = Some(model.clone());
+    let session = start(options).await;
+    completed_turns(&session, 1).await;
+    for id in ["batch-first", "batch-second", "later-first", "later-second"] {
+        let (status, facts) = result_for(&session, id);
+        assert_eq!("ok", status, "{id}: {facts}");
+        assert_eq!(1, facts["replacement_count"]);
+    }
+    assert_eq!(
+        "header\none\ntwo\nthree\nfour\n",
+        std::fs::read_to_string(&path).unwrap()
+    );
+
+    let mut pinned = edit_owned("pinned", "two", "rejected");
+    pinned.2["expected_version"] = result_for(&session, "later-second").1["content_hash"].clone();
+    std::fs::write(&path, "updated header\none\ntwo\nthree\nfour\n").unwrap();
+    model.0.lock().unwrap().extend([
+        vec![pinned],
+        vec![edit_owned("unpinned", "two", "second")],
+        vec![],
+    ]);
+    session
+        .send(Input::new("follow-up", "main", "update the second value"))
+        .unwrap();
+    completed_turns(&session, 2).await;
+    let (status, facts) = result_for(&session, "pinned");
+    assert_eq!("error", status);
+    assert_eq!("snapshot_stale", facts["reason_code"]);
+    assert_eq!("ok", result_for(&session, "unpinned").0);
+    assert_eq!(
+        "updated header\none\nsecond\nthree\nfour\n",
+        std::fs::read_to_string(&path).unwrap()
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_single_edits_work_across_actions_and_executions() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session = start(file_tool_options(
+        &work,
+        &data,
+        vec![
+            vec![(
+                "script",
+                "workspace_script",
+                json!({"code":r#"
 const first = await workspace.write_file({path:"owned.txt",content:"alpha"});
 const second = await workspace.write_file({path:"owned.txt",content:"beta"});
 const edit = await workspace.edit_file({path:"owned.txt",old_text:"beta",new_text:"gamma"});
-const partial = await workspace.edit_file({path:"owned.txt",old_text:"gamma",new_text:"unobserved"});
+const followUp = await workspace.edit_file({path:"owned.txt",old_text:"gamma",new_text:"delta"});
 const independent = await workspace.write_file({path:"vm.txt",content:"observed"});
-return [first.status,second.status,edit.status,partial.result.reason_code,independent.status];
-"#}))],
-        vec![("new-vm", "workspace_script", json!({"code":r#"
-const attempt = await workspace.edit_file({path:"vm.txt",old_text:"observed",new_text:"different VM"});
-return attempt.result.reason_code;
-"#}))],
-        vec![],
-    ])).await;
+return [first.status,second.status,edit.status,followUp.status,independent.status];
+"#}),
+            )],
+            vec![(
+                "new-vm",
+                "workspace_script",
+                json!({"code":r#"
+const overwrite = await workspace.write_file({path:"vm.txt",content:"rejected"});
+const edit = await workspace.edit_file({path:"vm.txt",old_text:"observed",new_text:"different VM"});
+return [overwrite.result.reason_code,edit.status];
+"#}),
+            )],
+            vec![],
+        ],
+    ))
+    .await;
     completed_turns(&session, 1).await;
     assert_eq!(
-        json!(["ok", "ok", "ok", "snapshot_stale", "ok"]),
+        json!(["ok", "ok", "ok", "ok", "ok"]),
         script_facts(&session).unwrap().value
     );
     let facts = WorkspaceScriptFacts::from_structured(&result_for(&session, "new-vm").1).unwrap();
-    assert_eq!(json!("snapshot_required"), facts.value);
+    assert_eq!(json!(["snapshot_required", "ok"]), facts.value);
     assert_eq!(
-        "gamma",
+        "delta",
         std::fs::read_to_string(work.path().join("owned.txt")).unwrap()
     );
     assert_eq!(
-        "observed",
+        "different VM",
         std::fs::read_to_string(work.path().join("vm.txt")).unwrap()
     );
     session.close().await.unwrap();

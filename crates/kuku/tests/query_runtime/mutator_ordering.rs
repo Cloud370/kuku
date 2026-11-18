@@ -139,7 +139,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     wait_for_file(&env.workspace.path().join("command-read")).await;
 
     let mut next_event = Box::pin(run.next());
-    let early_edit_request = std::future::poll_fn(|cx| {
+    let early_edit_event = std::future::poll_fn(|cx| {
         Poll::Ready(match next_event.as_mut().poll(cx) {
             Poll::Ready(event) => Some(event),
             Poll::Pending => None,
@@ -148,27 +148,22 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     .await;
     drop(next_event);
 
-    let edit_end = if let Some(event) = early_edit_request {
-        let edit_start = event.unwrap().expect("queued edit event");
-        assert!(matches!(edit_start, UiEvent::ToolStart { ref id, .. } if id == "toolu_edit"));
-        let edit_end = next_tool_end(&mut run, "toolu_edit").await;
-        std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
-        let _ = next_tool_end(&mut run, "toolu_command").await;
-        edit_end
-    } else {
-        std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
-        let _ = next_tool_end(&mut run, "toolu_command").await;
-        let _ = next_tool_start(&mut run, "toolu_edit").await;
-        next_tool_end(&mut run, "toolu_edit").await
-    };
+    std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
+    assert!(
+        early_edit_event.is_none(),
+        "edit advanced while the command was active: {early_edit_event:?}"
+    );
+    let _ = next_tool_end(&mut run, "toolu_command").await;
+    let _ = next_tool_start(&mut run, "toolu_edit").await;
+    let edit_end = next_tool_end(&mut run, "toolu_edit").await;
 
     let (status, result) = tool_end_status(edit_end, "toolu_edit");
-    assert_eq!(status, "error");
+    assert_eq!("ok", status);
+    assert_eq!(1, result.unwrap()["replacement_count"]);
     assert_eq!(
-        result.unwrap()["reason_code"],
-        serde_json::Value::String("snapshot_stale".to_string())
+        "edited\ncommand\n",
+        std::fs::read_to_string(target).unwrap()
     );
-    assert_eq!(std::fs::read_to_string(target).unwrap(), "alpha\ncommand\n");
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -88,14 +88,14 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         ),
         tool(
             "edit_file",
-            "Make a precise replacement in visible file text. Use a prior read_file result or your own confirmed full write of the same version.",
+            "Replace exact text in a file. Include enough surrounding text to identify one occurrence. A unique match needs no preliminary read.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences of the text. Requires a full read or your own confirmed full write of the current version. Defaults to false."},
                     "expected_version": {"type": "string", "description": "Optional content_hash of the version to edit."},
                     "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },

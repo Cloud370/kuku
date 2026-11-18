@@ -512,11 +512,13 @@ mod tests {
         id: u64,
         dir: &std::path::Path,
         conversation: Option<&str>,
-        content: &[u8],
+        content: &str,
+        start_line: usize,
     ) -> StoredEvent {
         use sha2::{Digest, Sha256};
 
         let canonical = dir.join("visible.txt").canonicalize().unwrap();
+        let raw_text = content.lines().nth(start_line - 1).unwrap();
         StoredEvent {
             id,
             payload: crate::event::EventPayload::ToolResult {
@@ -526,7 +528,7 @@ mod tests {
                 tool_call_id: format!("read_{id}"),
                 status: "ok".to_string(),
                 summary: "read".to_string(),
-                model_content: "1\talpha".to_string(),
+                model_content: format!("{start_line}\t{raw_text}"),
                 truncated: false,
                 files_read: Vec::new(),
                 files_changed: Vec::new(),
@@ -535,13 +537,13 @@ mod tests {
                 structured: Some(serde_json::json!({
                     "kind": "file_content",
                     "canonical_path": canonical.to_string_lossy(),
-                    "content_hash": format!("sha256:{:x}", Sha256::digest(content)),
-                    "raw_text": String::from_utf8_lossy(content),
+                    "content_hash": format!("sha256:{:x}", Sha256::digest(content.as_bytes())),
+                    "raw_text": raw_text,
                     "read_event_id": id,
-                    "start_line": 1,
+                    "start_line": start_line,
                     "line_count": 1,
-                    "total_lines": 1,
-                    "is_full_file_snapshot": true,
+                    "total_lines": content.lines().count(),
+                    "is_full_file_snapshot": false,
                     "cached": false,
                 })),
             },
@@ -589,10 +591,11 @@ mod tests {
     #[tokio::test]
     async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
         let dir = tempfile::tempdir().unwrap();
-        let content = b"alpha\n";
-        std::fs::write(dir.path().join("visible.txt"), content).unwrap();
-        let main_read = read_event(1, dir.path(), None, content);
-        let review_read = read_event(2, dir.path(), Some("review"), content);
+        let path = dir.path().join("visible.txt");
+        let content = "alpha\nalpha\n";
+        std::fs::write(&path, content).unwrap();
+        let main_read = read_event(1, dir.path(), None, content, 1);
+        let review_read = read_event(2, dir.path(), Some("review"), content, 2);
         let review = crate::conversation::address::ConversationAddress::parse("review").unwrap();
         let args = serde_json::json!({
             "path": "visible.txt",
@@ -610,7 +613,7 @@ mod tests {
             "edit".to_string(),
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
-            vec![main_read],
+            vec![main_read.clone()],
             event_tx.clone(),
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
@@ -622,6 +625,7 @@ mod tests {
             panic!("expected completed slot");
         };
         assert_eq!("error", result.status);
+        assert_eq!(content, std::fs::read_to_string(&path).unwrap());
 
         spawn_simple_slot(
             "edit_review_snapshot".to_string(),
@@ -631,7 +635,7 @@ mod tests {
             "edit".to_string(),
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
-            vec![review_read],
+            vec![main_read, review_read],
             event_tx,
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
@@ -644,9 +648,6 @@ mod tests {
         };
 
         assert_eq!("ok", result.status);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("visible.txt")).unwrap(),
-            "omega\n"
-        );
+        assert_eq!("alpha\nomega\n", std::fs::read_to_string(path).unwrap());
     }
 }

@@ -373,7 +373,7 @@ fn model_coverage(
         return None;
     }
     let raw = visible_snapshot_raw_text(structured)?;
-    if required_text.is_some_and(|text| text_match_offsets(raw, text).is_empty()) {
+    if required_text.is_some_and(|text| text_match_offsets(raw, text, true).is_empty()) {
         return None;
     }
     let span = match structured["start_byte"].as_u64() {
@@ -450,22 +450,54 @@ fn merged_ranges(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>
     merged
 }
 
-pub(crate) fn text_match_offsets(content: &str, text: &str) -> Vec<usize> {
-    let content_bytes = content.as_bytes();
-    let text_bytes = text.as_bytes();
+pub(crate) fn text_match_offsets(content: &str, text: &str, overlapping: bool) -> Vec<usize> {
+    if text.len() > content.len() {
+        return Vec::new();
+    }
+    let valid_offset = |offset: usize| {
+        !text.starts_with('\n') || offset == 0 || content.as_bytes()[offset - 1] != b'\r'
+    };
+    if overlapping && text.len() > 1 {
+        let text = text.as_bytes();
+        let prefixes = matching_prefix_lengths(text);
+        if prefixes[text.len() - 1] != 0 {
+            let mut offsets = Vec::new();
+            let mut matched = 0;
+            for (index, byte) in content.bytes().enumerate() {
+                matched = extend_match(text, &prefixes, matched, byte);
+                if matched == text.len() {
+                    let offset = index + 1 - matched;
+                    if valid_offset(offset) {
+                        offsets.push(offset);
+                    }
+                    matched = prefixes[matched - 1];
+                }
+            }
+            return offsets;
+        }
+    }
     content
         .match_indices(text)
         .map(|(offset, _)| offset)
-        .filter(|offset| {
-            text_bytes.iter().enumerate().all(|(text_offset, byte)| {
-                if *byte != b'\n' || (text_offset > 0 && text_bytes[text_offset - 1] == b'\r') {
-                    return true;
-                }
-                let content_offset = offset + text_offset;
-                content_offset == 0 || content_bytes[content_offset - 1] != b'\r'
-            })
-        })
+        .filter(|&offset| valid_offset(offset))
         .collect()
+}
+
+fn matching_prefix_lengths(text: &[u8]) -> Vec<usize> {
+    let mut prefixes = vec![0; text.len()];
+    let mut matched = 0;
+    for (index, &byte) in text.iter().enumerate().skip(1) {
+        matched = extend_match(text, &prefixes, matched, byte);
+        prefixes[index] = matched;
+    }
+    prefixes
+}
+
+fn extend_match(text: &[u8], prefixes: &[usize], mut matched: usize, byte: u8) -> usize {
+    while matched != 0 && byte != text[matched] {
+        matched = prefixes[matched - 1];
+    }
+    matched + usize::from(byte == text[matched])
 }
 
 fn visible_snapshot_raw_text(structured: &Value) -> Option<&str> {

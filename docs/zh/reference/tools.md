@@ -165,14 +165,14 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 - `find_files` 在有界的 `entries` 中返回相对路径。列表中的目录以 `/` 结尾。扫描会跳过常见构建目录。
 - `read_file` 返回带行号内容，并支持分页。
 - `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
-- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。编辑前应读取文件本身。
+- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。可将匹配的原文用于编辑，也可读取相邻行以补充上下文。
 - `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，完整正文必须能存入可用的输出配额。下载完成后，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。取消下载会丢弃已接收的部分。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
-- `edit_file` 要求 `old_text` 在 Agent 的有效历史中见过的文本内唯一匹配。证据可以来自先前的读取，或 Agent 自身已确认成功的完整写入。局部或截断读取只覆盖实际展示的原文。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
+- `edit_file` 可直接替换已知的 `old_text`，只要它在当前文件中仅出现一次。文件其他部分的修改会保留。若原文出现多次，工具可接受在当前版本已观察范围内的唯一匹配。多个位置都符合时，提供更多相邻原文来定位。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
 - `write_file` 可以覆盖 Agent 在有效历史中完整读取过的文件版本，或由它自身写入完整内容且已确认成功的版本。当前路径和哈希都必须与证据一致。局部编辑不足以确认变更后的整文件内容。
 - `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
 - 文件工具的 `expected_version` 可使用返回的 `sha256:` 版本串，也可使用同一完整的 64 位十六进制 SHA-256 摘要。内容检查比较全部摘要位。
-- `edit_file` 和 `write_file` 可传入先前读取或已确认写入的 `content_hash` 作为 `expected_version`，进行附加版本检查。两种操作仍需满足各自的快照要求。
+- `edit_file` 和 `write_file` 可传入先前读取或已确认写入的 `content_hash` 作为 `expected_version`，进行附加版本检查。如果观察之后文件任意位置发生变化都应拒绝操作，就传入该版本。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 
 ## Memory Tool Enums
