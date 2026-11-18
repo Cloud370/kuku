@@ -10,6 +10,8 @@ pub enum ModelStopReason {
     ToolUse,
     /// The model reached its configured output limit.
     Length,
+    /// Generation used the remaining space in the model's context window.
+    ContextWindowExceeded,
     /// The provider filtered the response for safety.
     ContentFilter,
     /// The provider reported an incomplete response without a usable limit reason.
@@ -27,6 +29,7 @@ impl ModelStopReason {
             "stop" | "end_turn" => Some(Self::EndTurn),
             "tool_calls" | "tool_use" | "function_call" => Some(Self::ToolUse),
             "length" | "max_tokens" | "max_output_tokens" => Some(Self::Length),
+            "model_context_window_exceeded" => Some(Self::ContextWindowExceeded),
             "content_filter" | "content-filter" | "refusal" | "safety" => Some(Self::ContentFilter),
             "incomplete" => Some(Self::Incomplete),
             "invalid_response" => Some(Self::InvalidResponse),
@@ -40,6 +43,7 @@ impl ModelStopReason {
             Self::EndTurn => "end_turn",
             Self::ToolUse => "tool_use",
             Self::Length => "length",
+            Self::ContextWindowExceeded => "model_context_window_exceeded",
             Self::ContentFilter => "content_filter",
             Self::Incomplete => "incomplete",
             Self::InvalidResponse => "invalid_response",

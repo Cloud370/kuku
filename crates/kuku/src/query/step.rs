@@ -335,7 +335,12 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         )?;
         pending.flush_runtime_logs();
         return Ok(PendingStep::Failed(crate::error::Error::Provider {
-            kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
+            kind: match final_stop_reason {
+                ModelStopReason::ContextWindowExceeded => {
+                    crate::provider::types::ProviderFailureKind::ContextTooLarge
+                }
+                _ => crate::provider::types::ProviderFailureKind::InvalidRequest,
+            },
             message: format!(
                 "model response ended with terminal state {}",
                 final_stop_reason.wire_value()

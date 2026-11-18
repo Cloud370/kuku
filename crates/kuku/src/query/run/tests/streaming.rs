@@ -4,6 +4,42 @@ use super::{
 };
 
 #[tokio::test]
+async fn provider_context_exhaustion_preserves_the_reason_and_skips_output_retry() {
+    use crate::event::ModelStopReason;
+    use crate::provider::chunk::ProviderChunk;
+    use crate::provider::types::ProviderFailureKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let events_path = dir.path().join("events.jsonl");
+    let reason = ModelStopReason::from_wire("model_context_window_exceeded").unwrap();
+    assert_eq!(reason, ModelStopReason::ContextWindowExceeded);
+    let step = finish_tool_stream(
+        events_path.clone(),
+        dir.path(),
+        vec![
+            ProviderChunk::StopReason { reason },
+            ProviderChunk::StreamEnd,
+        ],
+    )
+    .await;
+    assert!(matches!(
+        step,
+        Ok(PendingStep::Failed(crate::Error::Provider {
+            kind: ProviderFailureKind::ContextTooLarge,
+            ..
+        }))
+    ));
+    let events = EventStore::replay(&events_path).unwrap();
+    assert!(
+        events.iter().any(|event| matches!(&event.payload,
+        EventPayload::TurnInterrupted { reason, .. } if reason == "model_context_window_exceeded"))
+    );
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. })));
+}
+
+#[tokio::test]
 async fn native_replay_waits_for_the_session_to_accept_model_completion() {
     use crate::provider::chunk::ProviderChunk;
     use crate::query::UiEvent;
