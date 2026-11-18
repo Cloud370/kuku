@@ -710,11 +710,14 @@ def dense_transcript(client, reference=False):
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
 
+    def running_footer(screen, height):
+        rows = screen.split("\n")
+        return len(rows) == height and "Running tools" in rows[-1]
+
     def measure_tools(terminal):
         height = 144
         terminal.request("resize", rows=height, cols=140)
-        screen = read_while(terminal, lambda value: len(value.splitlines()) == height
-                            and "Running tools" in value and scenario.draft in value,
+        screen = read_while(terminal, lambda value: running_footer(value, height) and scenario.draft in value,
                             "the full tool transcript in a tall terminal")
         lines = screen.splitlines()
         headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
@@ -725,7 +728,7 @@ def dense_transcript(client, reference=False):
 
     def inspect_tools(terminal):
         terminal.press("\x1b[5~")
-        collapsed = read_while(terminal, lambda value: len(value.splitlines()) == 32
+        collapsed = read_while(terminal, lambda value: running_footer(value, 32)
                                and scenario.read_group in value and "Reading · Ctrl+End" in value,
                                "the original reading position before opening the group")
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
@@ -768,14 +771,15 @@ def dense_transcript(client, reference=False):
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
             terminal.request("resize", rows=32, cols=140)
-            wide = read_while(terminal, lambda value: len(value.splitlines()) == 32
+            wide = read_while(terminal, lambda value: running_footer(value, 32)
                               and scenario.missing in value and scenario.draft in value,
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
             if not reference:
                 assert scenario.read_group in wide, wide
             terminal.request("resize", rows=26, cols=74)
-            narrow = terminal.expect(scenario.missing, state="Running tools")["screen"]
+            narrow = read_while(terminal, lambda value: running_footer(value, 26) and scenario.missing in value,
+                                "the narrow tool turn")
             assert scenario.draft in narrow and re.search(r"(?:Run command|Tool run_command) · running", narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
