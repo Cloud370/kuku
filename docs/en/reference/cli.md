@@ -91,6 +91,8 @@ Messages delivered by another Agent show the sender's address, for example `From
 
 Markdown renders as it streams, including a code fence that is still open. A terminal that joins an active reply can show a bounded prefix of its already streamed text. The committed reply replaces that preview.
 
+Markdown replies support task lists, nested quotes and lists, and inline `<sup>`, `<sub>` and `<br>`. Wrapped list text aligns with its item. Select an underlined HTTP or HTTPS link to open its destination in the default browser. Dragging over a link selects text. Code and the original source view keep their literal contents.
+
 If you interrupt a streaming reply, its bounded preview stays under that Turn and remains visible after reopening the Session.
 
 By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.

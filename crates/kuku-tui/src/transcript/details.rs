@@ -204,6 +204,18 @@ pub(super) enum DetailRecord<'a> {
 }
 
 impl Transcript {
+    pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
+        let row = match &self.notes {
+            Some(notes) if notes.hit(row) => return None,
+            Some(notes) => notes.source_row(row),
+            None => row,
+        };
+        self.visible_links
+            .iter()
+            .find(|(line, link)| *line == row && link.columns.contains(&column))
+            .map(|(_, link)| link.url.as_ref())
+    }
+
     pub(crate) fn agent_link_at(&self, row: usize, column: usize, width: usize) -> Option<&str> {
         let (_, action) = crate::theme::CardFrame::agent_action(width)?;
         if !action.contains(&column) {
@@ -510,6 +522,7 @@ impl GroupHeading {
             let mut rows = vec![Row {
                 line: Line::from(spans),
                 inset,
+                links: Vec::new(),
             }];
             for detail in [&summary.composition, &summary.listing] {
                 if !detail.is_empty() {

@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
@@ -18,6 +20,7 @@ def rendering_cases(binary, bridge, directory):
     with InstalledClient(binary, bridge, directory / "delegation") as client:
         targeted_delegation(client)
         file_change_cards(client)
+        markdown_inline_elements(client)
         if os.name == "nt":
             windows_diagnostic(client)
             for shell in ("powershell.exe", "pwsh.exe"):
@@ -109,6 +112,50 @@ def file_change_cards(client):
         assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'
         terminal.exit_cleanly()
     client.provider.assert_idle()
+
+
+def markdown_inline_elements(client):
+    workspace = client.workspace("work-markdown-links")
+    first = "https://example.test/first"
+    second = "https://example.test/report?item=2&format=md#section"
+    source = (
+        "x<sup>2</sup> + y<sup>2</sup> = z<sup>2</sup> · H<sub>2</sub>O<br>下一行\n\n"
+        "> - [x] 中文勾选项\n> - [ ] 保留待办项\n\n"
+        f"A [Manual]({first}) · B [Manual]({second})\n\n"
+        "原样显示 `<sup>42</sup>`"
+    )
+    open_log = workspace / "opened.txt"
+    env = {}
+    if sys.platform.startswith("linux"):
+        shim = workspace / "openers"
+        shim.mkdir()
+        for command in ("xdg-open", "powershell.exe"):
+            opener = shim / command
+            opener.write_text(
+                "#!/usr/bin/env python3\nimport os, sys\n"
+                "with open(os.environ['KUKU_LINK_PROBE'], 'a') as log:\n"
+                "    print(os.environ.get('OPEN_RS_TARGET', sys.argv[-1]), file=log)\n"
+            )
+            opener.chmod(0o755)
+        env = {"PATH": str(shim) + os.pathsep + client.env["PATH"], "KUKU_LINK_PROBE": str(open_log)}
+    with patch.dict(client.env, env), client.terminal(workspace) as terminal:
+        terminal.request("resize", cols=70, rows=32)
+        terminal.expect("Ready")
+        terminal.submit("Render this example")
+        client.provider.next().text(source)
+        screen = terminal.expect("x² + y² = z²", also=("H₂O", "下一行", "B Manual", "<sup>42</sup>"))["screen"]
+        if env:
+            terminal.click_text(screen, "B Manual", cell_offset=3)
+            eventually("default opener receives second link's complete URL",
+                       lambda: open_log.exists() and open_log.read_text().splitlines() == [second])
+            terminal.click_text(screen, "A Manual", cell_offset=3)
+            eventually("default opener receives first link's URL",
+                       lambda: open_log.read_text().splitlines() == [second, first])
+        terminal.request("resize", cols=36, rows=38)
+        terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O"))
+        terminal.press("/source\r")
+        terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",))
+        terminal.exit_cleanly()
 
 
 def windows_diagnostic(client):

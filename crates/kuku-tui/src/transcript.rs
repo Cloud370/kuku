@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::keys::Shortcut;
-use crate::markup::{render_literal, render_markdown, wrap_bounded};
+use crate::markup::{render_literal, wrap_bounded, LinkDestination};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
@@ -16,6 +16,8 @@ mod message;
 mod notes;
 mod preview;
 mod reply;
+mod row;
+use row::Row;
 mod tool;
 mod turn_summary;
 mod window;
@@ -101,6 +103,7 @@ pub(crate) struct Transcript {
     reply_position: Option<preview::ReplyPosition>,
     agent_cards: AgentCards,
     detail_items: Details,
+    visible_links: Vec<(usize, LinkDestination)>,
 }
 
 impl Transcript {
@@ -402,6 +405,7 @@ impl Transcript {
         let limit = height.saturating_add(usize::from(self.notes.is_some()));
         let mut lines = Vec::with_capacity(limit);
         let mut row_insets = Vec::with_capacity(height);
+        self.visible_links.clear();
         let mut visible = Vec::new();
         let mut thinking_row = None;
         let mut skip = start;
@@ -448,6 +452,8 @@ impl Transcript {
             }
             let first = lines.len();
             for row in block.rows.iter().skip(skip).take(limit - lines.len()) {
+                self.visible_links
+                    .extend(row.links.iter().cloned().map(|link| (lines.len(), link)));
                 lines.push(row.line.clone());
                 row_insets.push(row.inset);
             }
@@ -844,13 +850,9 @@ impl Record {
                         )
                     }
                 }
-                Body::Interrupted(text) => render_record(
-                    "Interrupted",
-                    WARNING,
-                    render_markdown(text, width, MAX_VISUAL_ROWS),
-                    width,
-                    0,
-                ),
+                Body::Interrupted(text) => {
+                    message::render_markdown_record("Interrupted", WARNING, text, width)
+                }
                 Body::Notice(title, text, color) => render_record(
                     title,
                     *color,
@@ -912,41 +914,6 @@ fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
     None
 }
 
-#[derive(Debug, Clone)]
-struct Row {
-    line: Line<'static>,
-    inset: u16,
-}
-
-impl Row {
-    fn padding(line: Line<'static>, width: usize) -> Self {
-        Self {
-            line,
-            inset: width as u16,
-        }
-    }
-
-    fn frame_padding(frame: &crate::theme::CardFrame) -> Option<Self> {
-        frame.padding_line().map(|line| {
-            let width = line.width();
-            Self::padding(line, width)
-        })
-    }
-
-    fn pad_framed_body(rows: &mut Vec<Self>, frame: &crate::theme::CardFrame) {
-        if rows.len() > 1 {
-            if let Some(padding) = Self::frame_padding(frame) {
-                rows.insert(1, padding.clone());
-                rows.push(padding);
-            }
-        }
-    }
-
-    fn plain(line: Line<'static>) -> Self {
-        Self { line, inset: 0 }
-    }
-}
-
 fn body_inset(width: usize) -> u16 {
     if width >= MIN_TRANSCRIPT_INDENT_WIDTH {
         TRANSCRIPT_INDENT
@@ -968,7 +935,11 @@ fn render_rows(
                 line.spans
                     .insert(0, Span::raw(" ".repeat(usize::from(inset))));
             }
-            Row { line, inset }
+            Row {
+                line,
+                inset,
+                links: Vec::new(),
+            }
         })
 }
 

@@ -22,6 +22,11 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
+            Some(MouseAction::Click(ClickTarget::Link(url))) => {
+                if let Err(error) = crate::open_browser(&url) {
+                    self.problem(error.to_string());
+                }
+            }
             Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
@@ -63,6 +68,10 @@ impl App {
                     self.text_selection
                         .transcript_cell(mouse)
                         .map(|(row, column)| {
+                            if let Some(url) = self.pane().transcript.markdown_link_at(row, column)
+                            {
+                                return ClickTarget::Link(url.to_owned());
+                            }
                             if let Some(agent) = self.pane().transcript.agent_link_at(
                                 row,
                                 column,

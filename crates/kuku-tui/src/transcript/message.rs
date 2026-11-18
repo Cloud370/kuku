@@ -20,7 +20,11 @@ pub(super) fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
             line.spans
                 .insert(0, Span::styled(edge, Style::new().fg(ACCENT)));
         }
-        Row { line, inset }
+        Row {
+            line,
+            inset,
+            links: Vec::new(),
+        }
     };
     let spacer = || Row::padding(decorate(Line::default()).line, width);
     let mut rows = vec![decorate(Line::styled(
@@ -72,6 +76,20 @@ pub(super) fn render_assistant_source(text: &str, width: usize, interrupted: boo
         width,
         0,
     )
+}
+
+pub(super) fn render_markdown_record(
+    title: &str,
+    color: Color,
+    text: &str,
+    width: usize,
+) -> Vec<Row> {
+    let (lines, links) = crate::markup::linked_markdown(text, width, MAX_VISUAL_ROWS);
+    let mut rows = render_record(title, color, lines, width, 0);
+    for row in &mut rows {
+        row.links = links.resolve(&mut row.line);
+    }
+    rows
 }
 
 pub(super) fn render_record(

@@ -5,6 +5,7 @@ use std::io::{self, IsTerminal};
 use kuku_client::ConnectionOptions;
 
 mod app;
+mod browser;
 mod config;
 mod editor;
 mod interaction;
@@ -32,8 +33,7 @@ pub async fn run(options: ConnectionOptions) -> io::Result<()> {
     terminal::run(options).await
 }
 
-/// Open a service-provided URL in the user's browser.
+/// Open an HTTP or HTTPS URL in the user's browser.
 pub fn open_browser(url: &str) -> io::Result<()> {
-    open::that_detached(url)
-        .map_err(|error| io::Error::new(error.kind(), "Could not launch the system browser"))
+    browser::open_with(url, |url| open::that_detached(url))
 }

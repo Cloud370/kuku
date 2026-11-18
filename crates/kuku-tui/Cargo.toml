@@ -26,6 +26,7 @@ toml = "0.8"
 toml_edit = "0.22"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"

@@ -2,13 +2,11 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::markup::render_markdown;
 use crate::text::shorten;
 use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, render_record, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
-    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    append_bounded, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES,
 };
 
 #[derive(Debug)]
@@ -304,15 +302,9 @@ pub(super) fn render_assistant(
     }
     if has_reply {
         rows.extend(
-            render_record(
-                role,
-                SURFACE_TEXT,
-                render_markdown(text, width, MAX_VISUAL_ROWS),
-                width,
-                0,
-            )
-            .into_iter()
-            .skip(usize::from(joined)),
+            super::message::render_markdown_record(role, SURFACE_TEXT, text, width)
+                .into_iter()
+                .skip(usize::from(joined)),
         );
     }
     rows

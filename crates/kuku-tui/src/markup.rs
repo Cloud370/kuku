@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -11,15 +11,38 @@ use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS};
 
 mod code;
 mod document;
+mod inline;
+mod links;
+pub(crate) use links::{LinkDestination, LinkLayout};
 mod table;
 
 pub(crate) use code::file_source;
 use code::{CodeBlock, SyntaxBudget};
 use table::Table;
 
-const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
+const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH
+    .union(Options::ENABLE_TABLES)
+    .union(Options::ENABLE_TASKLISTS);
 
 pub(crate) fn render_markdown(text: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
+    parse_markdown(text, width, limit, None).lines
+}
+
+pub(crate) fn linked_markdown(
+    text: &str,
+    width: usize,
+    limit: usize,
+) -> (Vec<Line<'static>>, LinkLayout) {
+    let parsed = parse_markdown(text, width, limit, Some(LinkLayout::default()));
+    (parsed.lines, parsed.link_layout.unwrap_or_default())
+}
+
+fn parse_markdown(
+    text: &str,
+    width: usize,
+    limit: usize,
+    link_layout: Option<LinkLayout>,
+) -> Markdown {
     let source = if text.contains("\r\n") {
         Cow::Owned(text.replace("\r\n", "\n"))
     } else {
@@ -30,10 +53,11 @@ pub(crate) fn render_markdown(text: &str, width: usize, limit: usize) -> Vec<Lin
         width: width.max(1),
         limit,
         preview_documents: true,
+        link_layout,
         ..Markdown::default()
     };
     output.parse(&document::repair_fences(&clean));
-    output.lines
+    output
 }
 
 pub(crate) fn render_literal(text: &str, style: Style) -> Vec<Line<'static>> {
@@ -67,6 +91,15 @@ pub(crate) fn wrap_bounded(
     width: usize,
     limit: usize,
 ) -> Vec<Line<'static>> {
+    wrap_with_indent(lines, width, limit, "")
+}
+
+fn wrap_with_indent(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    limit: usize,
+    indent: &str,
+) -> Vec<Line<'static>> {
     let width = width.max(1);
     let mut wrapped = Vec::new();
     for line in lines {
@@ -88,6 +121,10 @@ pub(crate) fn wrap_bounded(
                     }
                     wrapped.push(Line::from(std::mem::take(&mut parts)));
                     occupied = 0;
+                    if !indent.is_empty() && indent.width() + cells <= width {
+                        append(&mut parts, indent, Style::default().fg(MUTED));
+                        occupied = indent.width();
+                    }
                 }
                 append(&mut parts, grapheme, style);
                 occupied += cells;
@@ -120,7 +157,9 @@ struct Markdown {
     modifiers: Modifier,
     lists: Vec<Option<u64>>,
     quotes: usize,
-    link: bool,
+    link: Option<Color>,
+    link_layout: Option<LinkLayout>,
+    script_position: Option<inline::Position>,
 }
 
 impl Markdown {
@@ -139,7 +178,8 @@ impl Markdown {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(&text),
+            Event::Text(text) | Event::Html(text) => self.text(&text),
+            Event::InlineHtml(tag) => self.inline_html(&tag),
             Event::Code(text) | Event::InlineMath(text) => {
                 self.push(&text, Style::default().fg(ACCENT));
             }
@@ -187,7 +227,13 @@ impl Markdown {
             Tag::Emphasis => self.modifiers.insert(Modifier::ITALIC),
             Tag::Strong => self.modifiers.insert(Modifier::BOLD),
             Tag::Strikethrough => self.modifiers.insert(Modifier::CROSSED_OUT),
-            Tag::Link { .. } => self.link = true,
+            Tag::Link { dest_url, .. } => {
+                self.link = crate::browser::is_http_url(&dest_url).then(|| {
+                    self.link_layout
+                        .as_mut()
+                        .map_or(ACCENT, |layout| layout.register(&dest_url))
+                });
+            }
             Tag::Paragraph
             | Tag::HtmlBlock
             | Tag::FootnoteDefinition(_)
@@ -227,7 +273,7 @@ impl Markdown {
             TagEnd::Emphasis => self.modifiers.remove(Modifier::ITALIC),
             TagEnd::Strong => self.modifiers.remove(Modifier::BOLD),
             TagEnd::Strikethrough => self.modifiers.remove(Modifier::CROSSED_OUT),
-            TagEnd::Link => self.link = false,
+            TagEnd::Link => self.link = None,
             TagEnd::Paragraph | TagEnd::HtmlBlock => self.paragraph(),
             TagEnd::FootnoteDefinition
             | TagEnd::DefinitionList
@@ -260,13 +306,9 @@ impl Markdown {
             code.push(text);
             return;
         }
-        let style = if self.link {
-            Style::default()
-                .fg(ACCENT)
-                .add_modifier(Modifier::UNDERLINED | self.modifiers)
-        } else {
-            Style::default().add_modifier(self.modifiers)
-        };
+        let converted = self.script_position.map(|position| position.convert(text));
+        let text = converted.as_deref().unwrap_or(text);
+        let style = Style::default().add_modifier(self.modifiers);
         let mut lines = text.split('\n');
         self.push(lines.next().unwrap_or(""), style);
         for line in lines {
@@ -283,6 +325,9 @@ impl Markdown {
             let indentation = "│ ".repeat(self.quotes);
             append(&mut self.current, &indentation, Style::default().fg(MUTED));
         }
+        let style = self.link.map_or(style, |color| {
+            style.fg(color).add_modifier(Modifier::UNDERLINED)
+        });
         let style = match self.heading {
             Some(HeadingLevel::H1 | HeadingLevel::H2) => style.add_modifier(Modifier::BOLD),
             Some(HeadingLevel::H3 | HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6) => {
@@ -303,6 +348,14 @@ impl Markdown {
         let line = Line::from(std::mem::take(&mut self.current));
         if let Some(table) = &mut self.table {
             table.push_cell_line(line);
+        } else if (!self.lists.is_empty() || self.quotes > 0) && line.width() > self.width {
+            let (_, limit, inset) = self.block_area();
+            self.lines.extend(wrap_with_indent(
+                vec![line],
+                self.width,
+                limit.saturating_add(1),
+                &inset,
+            ));
         } else {
             self.lines.push(line);
         }
@@ -340,10 +393,12 @@ impl Markdown {
                 width,
                 limit: limit - 1,
                 syntax_budget: std::mem::take(&mut self.syntax_budget),
+                link_layout: self.link_layout.take(),
                 ..Markdown::default()
             };
             document.parse(source);
             self.syntax_budget = document.syntax_budget;
+            self.link_layout = document.link_layout;
             rows.extend(document.lines);
         }
         rows

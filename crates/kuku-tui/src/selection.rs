@@ -10,6 +10,7 @@ use crate::transcript::DetailKey;
 pub(crate) enum ClickTarget {
     Detail(DetailKey),
     Agent(kuku_client::Target),
+    Link(String),
     Picker(PickerHit),
     Queued,
     Transcript,
