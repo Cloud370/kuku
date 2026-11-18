@@ -1,5 +1,5 @@
 use super::{code_surface, emphasis, CODE_BACKGROUND, MUTED};
-use crate::text::shorten;
+use crate::text::{shorten, shorten_middle};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -26,11 +26,49 @@ impl CardFrame {
     }
 
     pub(crate) fn content_width(&self) -> usize {
-        self.width - 2 * (usize::from(self.bordered) + self.padding)
+        self.width - 2 * self.content_inset()
+    }
+
+    pub(crate) fn content_inset(&self) -> usize {
+        usize::from(self.bordered) + self.padding
     }
 
     pub(crate) fn title(&self, label: &str, color: Color) -> Line<'static> {
         self.caption(label, '╭', '╮', emphasis(color).bg(CODE_BACKGROUND))
+    }
+
+    pub(crate) fn command_title(&self, command: &str, status: &str, color: Color) -> Line<'static> {
+        let (prefix, suffix) = match (self.bordered, self.padding) {
+            (false, _) => ("", ""),
+            (true, 0) => ("╭", "╮"),
+            (true, _) => ("╭─ ", " ╮"),
+        };
+        let content = self.width.saturating_sub(prefix.width() + suffix.width());
+        let full = format!("Run command · {status}");
+        let status = shorten(
+            if full.width() + 7 <= content || command.is_empty() {
+                &full
+            } else {
+                status
+            },
+            content,
+        );
+        let room = content.saturating_sub(status.width());
+        let gap = if command.width() + 1 == room { 1 } else { 2 };
+        let command = shorten_middle(command, room.saturating_sub(gap));
+        let gap = content.saturating_sub(command.width() + status.width());
+        let rule = if gap >= 2 {
+            format!(" {} ", "─".repeat(gap - 2))
+        } else {
+            " ".repeat(gap)
+        };
+        Line::from(vec![
+            Span::styled(prefix, edge()),
+            Span::styled(command, code_surface()),
+            Span::styled(rule, edge()),
+            Span::styled(status, emphasis(color).bg(CODE_BACKGROUND)),
+            Span::styled(suffix, edge()),
+        ])
     }
 
     pub(crate) fn foot(&self, label: &str) -> Line<'static> {

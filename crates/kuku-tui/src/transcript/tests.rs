@@ -280,16 +280,16 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         1,
         plain
             .iter()
-            .filter(|row| row.trim_start().starts_with("Run command"))
+            .filter(|row| row.contains("Run command"))
             .count()
     );
     assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
     assert!(plain
         .iter()
-        .any(|row| row.trim_start() == "durable diagnostic"));
+        .any(|row| row.trim_matches('│').trim() == "durable diagnostic"));
     assert!(plain
         .iter()
-        .any(|row| row.trim_start() == "Saved output · /tools"));
+        .any(|row| row.trim_matches('│').trim() == "Saved output · /tools"));
     assert!(!plain
         .iter()
         .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));

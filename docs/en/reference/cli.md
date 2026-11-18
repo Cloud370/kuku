@@ -83,7 +83,7 @@ While reading earlier output, click **Jump to latest** beside the composer to re
 
 Completed Turn statistics appear once beneath the reply and scroll with it. When reading history, a floating Turn strip shares the composer’s left edge and text inset. It offers a return control without moving the input. It shows elapsed time, tokens, cache hits and tools as space permits.
 
-Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
+Command cards put the shell command and execution status in the top border and show the output beneath. Long commands shorten to fit the terminal. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
 
 Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. Edit a queued input with `/queued` or withdraw it with `/withdraw`. If the Agent admits the input first, its admitted text stays in the transcript.
 

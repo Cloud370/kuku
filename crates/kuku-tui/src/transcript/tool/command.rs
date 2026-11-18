@@ -1,8 +1,10 @@
+use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::text::cap;
+use crate::theme::CardFrame;
 
-use super::{capped, MAX_DETAIL_BYTES};
+use super::{capped, Row, MAX_DETAIL_BYTES};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
@@ -48,4 +50,16 @@ impl CommandPreview {
             text
         }
     }
+}
+
+pub(super) fn finish(frame: CardFrame, mut rows: Vec<Row>) -> Vec<Row> {
+    for row in rows.iter_mut().skip(1) {
+        row.line = frame.line(std::mem::take(&mut row.line));
+        row.inset = frame.content_inset() as u16;
+    }
+    if frame.bordered() {
+        rows.push(Row::plain(frame.border('╰', '╯')));
+    }
+    rows.push(Row::plain(Line::default()));
+    rows
 }

@@ -123,6 +123,9 @@ def windows_diagnostic(client):
         result.text("Check complete.")
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
+        rows = screen.splitlines()
+        header = next(i for i, line in enumerate(rows) if "╭─ dir /b" in line and "exit 1" in line)
+        assert diagnostic in rows[header + 1], screen
         terminal.exit_cleanly()
 
 

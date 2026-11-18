@@ -308,6 +308,12 @@ impl Tool {
         }
         let outcome = self.state.outcome();
         let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
+        let frame = (expanded && (self.name == "run_command" || command.is_some()))
+            .then(|| crate::theme::CardFrame::new(width));
+        let width = frame
+            .as_ref()
+            .map_or(width, crate::theme::CardFrame::content_width);
+        let inset = if frame.is_some() { 0 } else { inset };
         let concise = !inspecting
             && command.is_some_and(|preview| preview.complete && preview.notes.is_empty())
             && outcome.is_some_and(|outcome| {
@@ -316,7 +322,16 @@ impl Tool {
                         .exit_code
                         .is_some_and(|code| code != 0 || !outcome.attention)
             });
-        let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
+        let mut rows = if let Some(frame) = &frame {
+            let (status, color) = self.status_label();
+            vec![Row::plain(frame.command_title(
+                &single_line(self.invocation()),
+                &status,
+                color,
+            ))]
+        } else {
+            self.render_header(width, heading_inset, inset, caption.as_deref())
+        };
         if !inspecting && self.is_missing_read() {
             rows.extend(render_preview(
                 self.result(),
@@ -329,7 +344,11 @@ impl Tool {
         }
         let invocation = self.invocation();
         let summary = self.summary();
-        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
+        if expanded
+            && caption.is_none()
+            && (frame.is_none() || inspecting)
+            && (!inspecting || invocation != self.arguments)
+        {
             rows.extend(render_preview(
                 invocation,
                 ACCENT,
@@ -395,7 +414,10 @@ impl Tool {
                 ));
             }
         }
-        finish_card(rows)
+        match frame {
+            Some(frame) => command::finish(frame, rows),
+            None => finish_card(rows),
+        }
     }
 
     fn render_arguments(&self, rows: &mut Vec<Row>, width: usize, inset: u16) {
@@ -537,6 +559,17 @@ impl Tool {
             && self.result().strip_prefix("path does not exist: ") == Some(path)
     }
 
+    fn status_label(&self) -> (String, Color) {
+        let (status, color) = self.state.label();
+        let status = shorten(&single_line(status), 24);
+        let exit = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.exit_code)
+            .map_or_else(String::new, |exit| format!(" · exit {exit}"));
+        (format!("{status}{exit}"), color)
+    }
+
     fn render_header(
         &self,
         width: usize,
@@ -545,14 +578,7 @@ impl Tool {
         caption: Option<&str>,
     ) -> Vec<Row> {
         let columns = width.saturating_sub(usize::from(inset));
-        let (status, color) = self.state.label();
-        let status = shorten(&single_line(status), 24);
-        let exit = self
-            .state
-            .outcome()
-            .and_then(|outcome| outcome.exit_code)
-            .map_or_else(String::new, |exit| format!(" · exit {exit}"));
-        let status = format!("{status}{exit}");
+        let (status, color) = self.status_label();
         let title = self.title();
         let style = emphasis(ACCENT);
         let status_style = Style::default().fg(color);

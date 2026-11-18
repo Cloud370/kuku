@@ -38,13 +38,13 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
     let rendered = view
         .lines
         .iter()
-        .map(ToString::to_string)
+        .map(|line| line.to_string().trim_matches('│').trim().to_owned())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("command timed out; output truncated"));
-    assert!(rendered.contains("stdout:\n    Output: from the process"));
+    assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(rendered.contains(&format!(
-        "stderr:\n    try fewer inputs\n    {warning}\n    Saved output · /tools"
+        "stderr:\ntry fewer inputs\n{warning}\nSaved output · /tools"
     )));
     assert!(rendered.contains("系统\n") && rendered.contains("64-bit"));
     assert!(!rendered.contains('␍'));
@@ -258,7 +258,14 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(screen.contains("check-file") && screen.contains("GONE"));
+    let lines: Vec<_> = screen.lines().collect();
+    let heading = lines
+        .iter()
+        .position(|line| line.starts_with("╭─ check-file"))
+        .unwrap();
+    assert!(lines[heading].contains("Run command · ok · exit 0") && lines[heading].ends_with('╮'));
+    assert_eq!(lines[heading + 1].trim_matches('│').trim(), "GONE");
+    assert_eq!(screen.matches("check-file").count(), 1);
     assert!(
         !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
     );
