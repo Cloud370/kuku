@@ -6,15 +6,15 @@ use crossterm::cursor::{Hide, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
-use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::{execute, SynchronizedUpdate};
 #[cfg(not(windows))]
 use futures_util::StreamExt;
 use kuku_client::{ConnectionOptions, Observation};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{CompletedFrame, Terminal};
 
-use crate::app::App;
+use crate::app::{Address, App};
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
 use crate::ui;
@@ -69,7 +69,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
         app.problem(format!("Using the default status line · {problem}"));
     }
     let mut jobs = Jobs::new(options);
-    let mut terminal = Screen::new()?;
+    let mut terminal = Screen::new(app.active.clone())?;
     #[cfg(not(windows))]
     let mut events = EventStream::new();
     #[cfg(windows)]
@@ -134,11 +134,12 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
 
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    painted_target: Address,
     _restore: Restore,
 }
 
 impl Screen {
-    fn new() -> io::Result<Self> {
+    fn new(painted_target: Address) -> io::Result<Self> {
         let mut restore = Restore::new()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
@@ -146,11 +147,23 @@ impl Screen {
         let terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(io::Error::other)?;
         Ok(Self {
             terminal,
+            painted_target,
             _restore: restore,
         })
     }
 
     fn draw(&mut self, app: &mut App) -> io::Result<CompletedFrame<'_>> {
+        if self.painted_target != app.active {
+            self.painted_target.clone_from(&app.active);
+            return io::stdout().sync_update(|_| {
+                // NOTE: Reset the fullscreen viewport so a previous code surface cannot bleed through CJK cells.
+                let area = self.terminal.current_buffer_mut().area;
+                self.terminal.resize(area).map_err(io::Error::other)?;
+                self.terminal
+                    .draw(|frame| ui::render(frame, app))
+                    .map_err(io::Error::other)
+            })?;
+        }
         self.terminal
             .draw(|frame| ui::render(frame, app))
             .map_err(io::Error::other)
