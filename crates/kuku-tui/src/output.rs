@@ -3,7 +3,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::keys::Shortcut;
-use crate::markup::{render_diff, render_literal, wrap, wrap_bounded, ACCENT, MUTED};
+use crate::theme::{ACCENT, ERROR, MUTED, WARNING};
+use crate::markup::{render_diff, render_literal, wrap, wrap_bounded};
 use crate::transcript::ToolView;
 
 pub(crate) const OUTPUT_PAGE_BYTES: usize = 4 * 1024;
@@ -112,8 +113,8 @@ impl OutputViewer {
         if let Some(chunk) = &self.chunk {
             for segment in &chunk.segments {
                 let color = match segment.stream {
-                    OutputStream::Stdout => Color::Gray,
-                    OutputStream::Stderr => Color::Yellow,
+                    OutputStream::Stdout => Color::Reset,
+                    OutputStream::Stderr => WARNING,
                 };
                 lines.extend(render_literal(&segment.text, Style::default().fg(color)));
             }
@@ -122,7 +123,7 @@ impl OutputViewer {
         } else if !self.tool.details.is_empty() && self.tool.details != self.tool.summary {
             lines.extend(render_literal(
                 &self.tool.details,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(Color::Reset),
             ));
         }
         if self.loading {
@@ -142,7 +143,7 @@ impl OutputViewer {
         if let Some(error) = &self.problem {
             return Line::styled(
                 crate::text::single_line(error),
-                Style::default().fg(Color::Red),
+                Style::default().fg(ERROR),
             );
         }
         let Some(chunk) = &self.chunk else {

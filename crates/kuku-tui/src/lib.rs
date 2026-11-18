@@ -16,6 +16,7 @@ mod selection;
 mod statusline;
 mod terminal;
 mod text;
+mod theme;
 mod transcript;
 mod ui;
 

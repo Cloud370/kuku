@@ -1,7 +1,7 @@
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
+use crate::theme;
 
 #[derive(Default)]
 pub(crate) struct TextSelection {
@@ -31,7 +31,7 @@ impl TextSelection {
             self.drag = None;
         } else if drag.anchor != drag.end {
             for row in highlights {
-                buffer.set_style(row, Style::new().add_modifier(Modifier::REVERSED));
+                buffer.set_style(row, theme::selection());
             }
         }
     }
