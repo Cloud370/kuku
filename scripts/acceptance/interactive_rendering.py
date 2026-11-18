@@ -146,6 +146,7 @@ def named_output_cards(client):
         assert result["termination"] == "exited" and result["exit_code"] == 7, result
         assert result["capture_complete"] and not result["output_preview_truncated"], result
         reference = result["output_ref"]
+        page_range = f"0–{reference['bytes']} / {reference['bytes']} bytes"
         after_command.tool(
             "workspace_script", "summarize-log",
             code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
@@ -163,7 +164,7 @@ return {{checked: true}};""",
         terminal.press("run_command")
         terminal.expect("run_command", state="Saved output")
         terminal.press("\r")
-        terminal.expect(log, state="S Name")
+        terminal.expect(log, state="S Name", also=(page_range,))
         terminal.press("s")
         terminal.expect("Name saved value")
         terminal.press("baseline\r")
@@ -188,7 +189,7 @@ return {{checked: true}};""",
         terminal.press("baseline\r")
         terminal.expect("Attach to draft", also=("Read saved value",))
         terminal.press("\x1b[B\r")
-        terminal.expect(log, state="baseline")
+        terminal.expect(log, state="baseline", also=(page_range,))
         terminal.press("\x1b")
         terminal.press("/values\r")
         terminal.expect("baseline", state="Saved values")
