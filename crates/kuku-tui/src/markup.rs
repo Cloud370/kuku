@@ -13,6 +13,7 @@ mod code;
 mod document;
 mod table;
 
+pub(crate) use code::file_source;
 use code::{CodeBlock, SyntaxBudget};
 use table::Table;
 

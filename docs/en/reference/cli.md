@@ -81,9 +81,9 @@ Each Turn contains user messages, tool activity and assistant text. Consecutive 
 
 While reading earlier output, click **Jump to latest** beside the composer to resume following.
 
-The strip above the composer shows the latest Turn, or the Turn at the top of the viewport while reading history. A settled Turn displays measured duration, tokens, cache hit rate and actual tool count. Fields are omitted as space narrows.
+Completed Turn statistics appear once beneath the reply and scroll with it. When reading history, a floating Turn strip shares the composer’s left edge and text inset. It offers a return control without moving the input. It shows elapsed time, tokens, cache hits and tools as space permits.
 
-Write and edit cards show the file path, a bounded content or diff preview, and line counts when the tool reports them.
+Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
 
 Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. Edit a queued input with `/queued` or withdraw it with `/withdraw`. If the Agent admits the input first, its admitted text stays in the transcript.
 
@@ -97,7 +97,7 @@ By default, a fence labeled `md` or `markdown` in an assistant reply previews th
 
 Agent cards and code blocks fill the available width at their level of indentation. Agent reply and task excerpts stay on one line. A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Status checks involving only the sender and recipient join that card’s timeline. Checks involving other Agents keep their own counted group. A completed reply keeps its thinking reader beside the Assistant heading.
 
-While the model thinks, the composer animates the Thinking label and types a single-line excerpt when the provider publishes reasoning text or a summary. The excerpt advances at the terminal’s own pace. On a narrow screen the phase and timer take priority. Select View thinking in the transcript or under /details to read the available text in a separate, scrollable window. Esc returns to the conversation. Copy and Markdown source operate on the reply itself.
+Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or use `/notes` to read the received text at its position in the conversation. Scroll with the wheel or arrow keys and press Esc to return. Copy and Markdown source use the reply text. Thinking from intermediate tool steps remains available through `/details`.
 
 ### Status and usage
 

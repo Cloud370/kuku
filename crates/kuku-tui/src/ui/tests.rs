@@ -426,7 +426,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         before.lines().skip(1).take(11).collect::<Vec<_>>(),
         after.lines().skip(1).take(11).collect::<Vec<_>>()
     );
-    assert!(before.contains("Reading history · ↑↓ scroll"));
+    assert!(before.contains("Reading history · ↑↓ scroll"), "{before}");
     assert!(after.lines().next().unwrap().contains("/agents"));
     assert!(after.contains("main-draft"));
     app.select(review, true, "Example".into());
@@ -556,10 +556,14 @@ fn reading_arrows_and_clicks_keep_pending_input_drafts_and_live_content_scoped()
         before,
         app.pane_mut().transcript.project(width, height).lines
     );
-    assert!(screen(&mut app, 24, 12).contains("New · ↑↓ · Ctrl+End"));
+    assert!(screen(&mut app, 24, 12).contains("New · Alt+↑"));
     key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
     event(&mut app, Event::Paste("raft".into()));
-    assert!(screen(&mut app, 105, 24).contains("Reading history · Editing"));
+    let editing_screen = screen(&mut app, 105, 24);
+    assert!(
+        editing_screen.contains("Reading history · Editing"),
+        "{editing_screen}"
+    );
     assert_eq!("draft", app.pane().draft.text());
     assert_eq!(
         before,

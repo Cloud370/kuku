@@ -335,6 +335,26 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         in_timeline: bool,
     ) -> Vec<Row> {
+        if self.created()
+            && !in_timeline
+            && details != ToolDetails::Expanded
+            && facts.is_none_or(|facts| facts.status == Activity::Ready && facts.preview.is_empty())
+        {
+            let inset = body_inset(width);
+            let label = shorten(
+                &format!("Agent {} · Created", single_line(self.address)),
+                width.saturating_sub(usize::from(inset)),
+            );
+            let mut rows: Vec<_> = render_rows(
+                vec![Line::styled(label, Style::new().fg(MUTED))],
+                width,
+                1,
+                inset,
+            )
+            .collect();
+            rows.push(Row::plain(Line::default()));
+            return rows;
+        }
         let frame = CardFrame::new(width);
         let width = if in_timeline {
             width

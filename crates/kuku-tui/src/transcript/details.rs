@@ -11,9 +11,7 @@ use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{style_card, tool_title, Tool};
-use super::{
-    body_inset, render_rows, Key, Record, Row, ToolDetails, ToolView, Transcript, MAX_RECORDS,
-};
+use super::{body_inset, render_rows, Key, Record, Row, ToolDetails, Transcript, MAX_RECORDS};
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
     ("read_file", "file read", "file reads"),
@@ -109,12 +107,15 @@ impl VisibleDetail {
 
     pub(super) fn record(rows: Range<usize>, key: &Key, item: DetailRecord<'_>) -> Self {
         match item {
-            DetailRecord::Reasoning => Self::new(
+            DetailRecord::Reasoning(excerpt) => Self::new(
                 rows,
                 key,
                 DetailKind::Reasoning,
                 "View thinking".into(),
-                "Published by the model".into(),
+                shorten(
+                    &crate::text::single_line(crate::text::cap(excerpt, 256)),
+                    66,
+                ),
                 false,
             ),
             DetailRecord::Agent(agent) => Self::new(
@@ -154,13 +155,16 @@ impl VisibleDetail {
 }
 
 pub(super) enum DetailRecord<'a> {
-    Reasoning,
+    Reasoning(&'a str),
     Agent(AgentCard<'a>),
     Tool(&'a Tool),
 }
 
 impl Transcript {
     pub(crate) fn detail_at(&self, row: usize) -> Option<&DetailKey> {
+        if let Some(notes) = &self.notes {
+            return (row == notes.header).then_some(&notes.key);
+        }
         self.detail_items
             .visible
             .iter()
@@ -177,7 +181,16 @@ impl Transcript {
             .collect()
     }
 
-    pub(crate) fn thinking_text(&self, key: &DetailKey) -> Option<ToolView> {
+    pub(crate) fn latest_notes(&self) -> Option<DetailKey> {
+        self.detail_items
+            .visible
+            .iter()
+            .rev()
+            .find(|item| item.key.kind == DetailKind::Reasoning)
+            .map(|item| item.key.clone())
+    }
+
+    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, usize)> {
         if key.kind != DetailKind::Reasoning {
             return None;
         }
@@ -189,14 +202,14 @@ impl Transcript {
             .records
             .iter()
             .find(|record| record.key == key.record)?;
-        Some(ToolView {
-            name: "Thinking".into(),
-            summary: String::new(),
-            invocation: String::new(),
-            details: record.reasoning_preview.clone(),
-            diff: String::new(),
-            output_id: None,
-        })
+        let row = self
+            .detail_items
+            .visible
+            .iter()
+            .find(|item| item.key == *key)?
+            .rows
+            .start;
+        Some((&record.reasoning_preview, row))
     }
 
     pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {
@@ -228,6 +241,7 @@ impl Transcript {
                 anchor,
                 newer: VecDeque::new(),
                 unseen: false,
+                manual: true,
             });
         }
         true

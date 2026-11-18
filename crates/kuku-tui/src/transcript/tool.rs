@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, panel, ACCENT, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
+use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
 
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
@@ -265,7 +265,7 @@ impl Tool {
             return finish_card(rows);
         }
         if let Some(change) = self.file_change() {
-            return self.render_change(change, width, heading_inset, inset, details);
+            return self.render_change(change, width, inset, details);
         }
         if !inspecting {
             if let Some(caption) = self.session_caption() {
@@ -285,6 +285,32 @@ impl Tool {
                 return finish_card(rows);
             }
         }
+        if self.name == "list_agents"
+            && !self.invocation.is_empty()
+            && self.state.outcome().is_none()
+            && !inspecting
+        {
+            let label = format!("Waiting for {}", single_line(&self.invocation));
+            return finish_card(
+                render_rows(
+                    vec![Line::styled(
+                        shorten(&label, width.saturating_sub(usize::from(heading_inset))),
+                        emphasis(MODEL),
+                    )],
+                    width,
+                    1,
+                    heading_inset,
+                )
+                .collect(),
+            );
+        }
+        let outcome = self.state.outcome();
+        let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
+        let concise = !inspecting
+            && command.is_some_and(|preview| preview.notes.is_empty())
+            && outcome.is_some_and(|outcome| {
+                outcome.status == "ok" && !outcome.attention && outcome.exit_code.is_some()
+            });
         let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
         if !inspecting && self.is_missing_read() {
             rows.extend(render_preview(
@@ -307,7 +333,7 @@ impl Tool {
                 inset,
             ));
         }
-        if caption.is_none() && (!expanded || summary != invocation) {
+        if !concise && caption.is_none() && (!expanded || summary != invocation) {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
         }
@@ -324,8 +350,6 @@ impl Tool {
             }
         }
         if expanded {
-            let outcome = self.state.outcome();
-            let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
             let result = if let Some(diff) = self.diff() {
                 render_excerpt(diff, render_diff)
             } else {
@@ -333,6 +357,11 @@ impl Tool {
                     || self.result(),
                     |preview| &self.result()[..preview.body_end],
                 );
+                let text = if concise && !text.contains("\nstderr:\n") {
+                    text.strip_prefix("stdout:\n").unwrap_or(text)
+                } else {
+                    text
+                };
                 if text.is_empty() || text == summary || text == invocation {
                     Vec::new()
                 } else {
@@ -356,7 +385,7 @@ impl Tool {
                     inset,
                 ));
             }
-            if outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
+            if !concise && outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
                 rows.extend(render_preview(
                     "Saved output · /tools",
                     ACCENT,
@@ -402,30 +431,44 @@ impl Tool {
         &self,
         change: &FileChange,
         width: usize,
-        heading_inset: u16,
         inset: u16,
         details: ToolDetails,
     ) -> Vec<Row> {
-        let path = shorten(&single_line(self.invocation()), 52);
-        let mut rows = self.render_header(
-            width,
-            heading_inset,
-            inset,
-            (!path.is_empty()).then_some(path.as_str()),
-        );
+        let frame = crate::theme::CardFrame::new(width);
+        let path = self.invocation();
+        let title = join_details([
+            self.title().as_ref(),
+            self.state.label().0,
+            single_line(path).as_str(),
+        ]);
+        let mut rows = vec![Row::plain(frame.title(&title, ACCENT))];
+        let mut clipped = false;
         if details != ToolDetails::Collapsed {
             let limit = if details == ToolDetails::Inspection {
                 MAX_INSPECTION_ROWS
             } else {
                 MAX_CHANGE_ROWS
             };
-            rows.extend(render_rows(change.lines(), width, limit, inset));
+            let lines = change.lines(path, frame.content_width(), limit);
+            clipped = lines.len() > limit;
+            rows.extend(
+                lines
+                    .into_iter()
+                    .take(limit)
+                    .map(|line| Row::plain(frame.line(line))),
+            );
         }
-        rows.extend(render_rows(vec![change.footer()], width, 2, inset));
+        let footer = if clipped {
+            format!("{} · …", change.stats)
+        } else {
+            change.stats.clone()
+        };
+        rows.push(Row::plain(frame.foot(&footer)));
         if details == ToolDetails::Inspection {
             self.render_arguments(&mut rows, width, inset);
         }
-        finish_card(rows)
+        rows.push(Row::plain(Line::default()));
+        rows
     }
 
     fn file_change(&self) -> Option<&FileChange> {
@@ -859,7 +902,7 @@ impl CommandPreview {
             return None;
         }
         Some(Self {
-            body_end: cap(body.trim_end_matches('\n'), MAX_DETAIL_BYTES).len(),
+            body_end: cap(body.trim_end_matches(['\r', '\n']), MAX_DETAIL_BYTES).len(),
             notes: capped(Some(notes.trim_start()), MAX_DETAIL_BYTES),
         })
     }
@@ -886,6 +929,7 @@ fn invocation(tool: &str, args: &Value) -> String {
         };
     }
     let key = match tool {
+        "list_agents" => Some("wait_for"),
         "run_command" => Some("command"),
         "edit_file" | "read_file" | "write_file" => Some("path"),
         "fetch_url" | "fetch_web" => Some("url"),

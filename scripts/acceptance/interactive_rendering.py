@@ -1,6 +1,8 @@
 """Exercise reasoning previews and mixed-width scrolling in the installed terminal."""
 
 import json
+import os
+import subprocess
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
@@ -13,6 +15,9 @@ def event(name, **fields):
 def rendering_cases(binary, bridge, directory):
     with InstalledClient(binary, bridge, directory / "delegation") as client:
         targeted_delegation(client)
+        file_change_cards(client)
+        if os.name == "nt":
+            windows_diagnostic(client)
     with InstalledClient(binary, bridge, directory / "reasoning") as client:
         config = client.home / "config.toml"
         config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
@@ -73,6 +78,52 @@ def targeted_delegation(client):
     client.provider.assert_idle()
 
 
+def file_change_cards(client):
+    workspace = client.workspace("work-file-cards")
+    prompt = "Write a small example and update it"
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=36, cols=105)
+        terminal.expect("Ready")
+        terminal.submit(prompt)
+        client.provider.next(prompt).tool("write_file", "greeting", path="hello.py", content='print("Hello")\n')
+        client.provider.next("greeting").tool("read_file", "verify", path="hello.py")
+        client.provider.next("verify").tool("edit_file", "update", path="hello.py", old_text='"Hello"', new_text='"Welcome"')
+        client.provider.next("update").tool("write_file", "summary", path="notes.md", content="# Report\n\n- Checked the greeting.\n")
+        client.provider.next("summary").text("Saved the example.")
+        screen = terminal.expect("Saved the example.", also=("╭─ Write file", "╭─ Edit file", "1 line written", "+1 −1", "3 lines written"))["screen"]
+        assert "Checked the greeting." in screen and "# Report" not in screen, screen
+        assert '+print("Welcome")' in screen and '-print("Hello")' in screen, screen
+        assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+
+
+def windows_diagnostic(client):
+    import ctypes
+
+    workspace = client.workspace("work-command-diagnostic")
+    command = "dir kuku-absent-38c207b6.txt"
+    reference = subprocess.run(["cmd.exe", "/d", "/c", command], cwd=workspace, capture_output=True)
+    assert reference.returncode == 1 and reference.stderr
+    try:
+        diagnostic = reference.stderr.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        diagnostic = reference.stderr.decode(f"cp{ctypes.windll.kernel32.GetOEMCP()}").strip()
+    with client.terminal(workspace) as terminal:
+        terminal.expect("Ready")
+        prompt = "Check for a missing example."
+        terminal.submit(prompt)
+        request = client.provider.next(prompt)
+        assert "Windows cmd.exe /S /C" in json.dumps(request.request)
+        request.tool("run_command", "missing-example", command=command, timeout=5)
+        result = client.provider.next("missing-example")
+        assert diagnostic in json.dumps(result.request, ensure_ascii=False)
+        result.text("Check complete.")
+        screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
+        assert "␍" not in screen and "�" not in screen
+        terminal.exit_cleanly()
+
+
 def published_reasoning(client):
     workspace = client.workspace("work-reasoning")
     prompt = "Review the public summary"
@@ -106,11 +157,13 @@ def published_reasoning(client):
             waiting.release.set()
             assert published.arrived.wait(8)
             compact = terminal.expect("View thinking", state="Check")["screen"]
-            assert any("To main" in row and "Check" in row for row in compact.splitlines()), compact
-            assert not any("Check" in row for row in compact.splitlines() if "To main" not in row)
+            flow_row = next(i for i, row in enumerate(compact.splitlines()) if "Thinking" in row and "Check" in row)
+            header_row = flow_row - 1
+            assert "Assistant" in compact.splitlines()[header_row] and "View thinking" in compact.splitlines()[header_row]
+            assert not any("Check" in row for row in compact.splitlines() if "To main" in row)
             terminal.click_text(compact, "View thinking")
-            reader = terminal.expect("Comparing the published results.", state="Esc Close")["screen"]
-            assert hidden not in reader
+            reader = terminal.expect("Comparing the published results.", state="Esc back")["screen"]
+            assert hidden not in reader and "Esc back" in reader.splitlines()[header_row] and "Type a prompt" in reader
             terminal.press("\x1b")
             terminal.expect("View thinking", state="To main · Thinking")
             with client.terminal(workspace) as attached:
@@ -121,8 +174,9 @@ def published_reasoning(client):
         finally:
             waiting.release.set()
             published.release.set()
-        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "View thinking"))["screen"]
+        completed = terminal.expect(answer, state="Finished", also=("Turn 1", "View thinking"))["screen"]
         assert completed.count("View thinking") == 1 and hidden not in completed
+        assert answer in completed.splitlines()[flow_row], completed
         terminal.press("/source\r")
         source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
@@ -133,10 +187,8 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
-        reopened.press("/details\r")
-        reopened.expect("Transcript details", state="View thinking")
-        reopened.press("\r")
-        notes = reopened.expect("Comparing the published results.", state="Esc Close")["screen"]
+        reopened.press("/notes\r")
+        notes = reopened.expect("Comparing the published results.", state="Esc back")["screen"]
         assert hidden not in settled and hidden not in notes
         reopened.press("\x1b")
         reopened.expect(answer, state="Assistant   View thinking")
@@ -154,7 +206,10 @@ def scroll_mixed_table(client):
         terminal.expect("New session", state="Ready")
         terminal.submit(prompt)
         client.provider.next(prompt).text("\n\n".join([*intro, table, *tail]))
-        terminal.expect("▌ Turn 1", state="Finished")
+        finished = terminal.expect("Turn 1", state="Finished")["screen"].splitlines()
+        editor_row = next(i for i, row in enumerate(finished) if "Type a prompt" in row)
+        turn_row = next(i for i, row in enumerate(finished) if "Turn 1" in row and "in" in row)
+        assert finished[turn_row].index("Turn 1") == finished[editor_row].index("Type a prompt"), finished
         terminal.type("preserve draft")
         def rows():
             return [line.rstrip() for line in terminal.request("screen")["screen"].splitlines()]
@@ -168,6 +223,9 @@ def scroll_mixed_table(client):
             assert not any(line.strip() in {"│", "┃"} for line in frame), frame
             if any("Before table 01" in line for line in frame):
                 break
+        assert "preserve draft" in frame[editor_row], frame
+        floating = next(row for row in frame if "Turn 1" in row and any(hint in row for hint in ("History", "Alt+↑", "New", "Ctrl+End")))
+        assert floating.index("Turn 1") == frame[editor_row].index("preserve draft"), frame
         assert saw_border and any("preserve draft" in line for line in frame)
         terminal.press("\x1b[1;5F")
         terminal.expect("After table 15", state="preserve draft")

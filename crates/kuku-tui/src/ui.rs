@@ -73,24 +73,6 @@ pub(crate) fn render_at(
     let space_above_editor = area
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + composer_gap + 2);
-    let reading = (space_above_editor > 0)
-        .then(|| reading_line(app, width))
-        .flatten();
-    let reading_height = u16::from(reading.is_some());
-    let dock = (space_above_editor > reading_height)
-        .then(|| app.pane().transcript.turn_dock(width))
-        .flatten();
-    let dock_height = u16::from(dock.is_some());
-    let deliveries = delivery::lines(
-        app,
-        width,
-        space_above_editor - reading_height - dock_height,
-    );
-    let delivery_height = deliveries.len() as u16;
-    let above_editor = composer_gap + delivery_height + reading_height + dock_height;
-    let editor_limit = area
-        .height
-        .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
     let unobstructed = app.modal.is_none();
     let focused = unobstructed && app.composer_focused();
     let mut composer = Block::new().style(surface());
@@ -100,7 +82,25 @@ pub(crate) fn render_at(
             .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
             .padding(padding);
     }
-    let content_width = usize::from(composer.inner(area).width);
+    let composer_content = composer.inner(area);
+    let content_width = usize::from(composer_content.width);
+    let hint_limit = if content_width >= 70 {
+        content_width.saturating_sub(12).min(70)
+    } else {
+        content_width.saturating_sub(7)
+    };
+    let reading = reading_line(app, hint_limit);
+    let hint_width = reading.as_ref().map_or(0, Line::width);
+    let stats_width = content_width.saturating_sub(hint_width + usize::from(hint_width > 0));
+    let dock = reading
+        .as_ref()
+        .and_then(|_| app.pane().transcript.turn_dock(stats_width));
+    let deliveries = delivery::lines(app, width, space_above_editor);
+    let delivery_height = deliveries.len() as u16;
+    let above_editor = composer_gap + delivery_height;
+    let editor_limit = area
+        .height
+        .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
     let heading_rows = u16::from(editor_limit >= 2);
     let heading_gap = u16::from(
         editor_limit >= 3
@@ -118,32 +118,69 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, _gap, dock_area, delivery_area, reading_area, editor, _status_gap, status] =
+    let [transcript, banner_area, gap, delivery_area, editor, _status_gap, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
             Constraint::Length(composer_gap),
-            Constraint::Length(dock_height),
             Constraint::Length(delivery_height),
-            Constraint::Length(reading_height),
             Constraint::Length(editor_height),
             Constraint::Length(status_gap),
             Constraint::Length(status_height),
         ])
         .areas(area);
-    let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
+    let row_insets = render_transcript(
+        frame,
+        transcript,
+        app,
+        banner_area.height == 0,
+        &activity_frame,
+    );
     frame.render_widget(Paragraph::new(banner), banner_area);
+    let dock_area = if gap.height > 0 {
+        gap
+    } else {
+        Rect::new(
+            transcript.x,
+            transcript.bottom().saturating_sub(1),
+            transcript.width,
+            u16::from(transcript.height > 1),
+        )
+    };
+    let dock_inner = Rect::new(
+        composer_content.x,
+        dock_area.y,
+        composer_content.width,
+        dock_area.height,
+    );
+    let [stats_area, reading_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(hint_width as u16)])
+            .areas(dock_inner);
+    if dock.is_some() || reading.is_some() {
+        let edge = if area.width >= 4 {
+            Borders::LEFT
+        } else {
+            Borders::NONE
+        };
+        frame.render_widget(
+            Block::new()
+                .borders(edge)
+                .border_style(Style::new().fg(if focused { ACCENT } else { MUTED }))
+                .style(Style::new().bg(crate::theme::TURN_CARD)),
+            dock_area,
+        );
+    }
     if let Some(line) = dock {
+        frame.render_widget(Paragraph::new(line), stats_area);
+    }
+    if let Some(line) = reading {
         frame.render_widget(
             Paragraph::new(line).style(Style::new().bg(crate::theme::TURN_CARD)),
-            dock_area,
+            reading_area,
         );
     }
     frame.render_widget(Paragraph::new(deliveries), delivery_area);
     app.delivery_area = delivery_area;
-    if let Some(line) = reading {
-        frame.render_widget(Paragraph::new(line), reading_area);
-    }
     app.reading_area = reading_area;
     let [heading, _heading_gap, inner] = Layout::vertical([
         Constraint::Length(heading_rows),
@@ -195,7 +232,7 @@ pub(crate) fn render_at(
 }
 
 fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
-    let unseen = app.pane().transcript.reading_has_new_content()?;
+    let unseen = app.pane().transcript.history_hint()?;
     let latest = Shortcut::LATEST.label;
     let back = Shortcut::READING_BACK.label;
     let focus = if app.composer_focused() {
@@ -205,6 +242,10 @@ fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
     };
     let content = if unseen { " · New content" } else { "" };
     let full = format!("Reading history · {focus} · Jump to latest ({latest} / {back}){content}");
+    let middle = format!(
+        "Reading history · {focus} · Jump to latest ({back}){}",
+        content
+    );
     let focus = if app.composer_focused() {
         "Edit"
     } else {
@@ -216,11 +257,11 @@ fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
         format!("History {focus} · {latest}")
     };
     let fallback = if unseen {
-        format!("New · {latest}")
+        "New · Alt+↑".to_owned()
     } else {
-        format!("Reading · {latest}")
+        "↑↓ · Alt+↑".to_owned()
     };
-    let text = [full, compact]
+    let text = [full, middle, compact]
         .into_iter()
         .find(|line| line.width() <= width)
         .unwrap_or(fallback);
@@ -232,6 +273,7 @@ fn render_transcript(
     area: Rect,
     app: &mut App,
     show_service_problem: bool,
+    activity: &ActivityFrame,
 ) -> Vec<u16> {
     if area.is_empty() {
         app.transcript_area = (usize::from(area.width).max(1), 1);
@@ -253,6 +295,13 @@ fn render_transcript(
             .map(|agent| (agent.address, agent.status, agent.preview)),
     );
     let mut view = transcript.project(width, height);
+    if let Some(row) = view.thinking_row {
+        view.lines[row] = if app.pane().activity() == crate::app::Activity::Thinking {
+            activity.thinking_line(width)
+        } else {
+            Line::default()
+        };
+    }
     if view.lines.is_empty() && !app.pane().exists {
         header::render_welcome(frame, area, app, show_service_problem);
         return Vec::new();

@@ -88,19 +88,7 @@ impl CodeBlock {
             if remaining == 0 {
                 return output;
             }
-            let spans = match &mut highlighter {
-                Some(highlighter) if budget.take(line.len()) => highlighter.line(line),
-                Some(_) | None => None,
-            };
-            let line = if let Some(spans) = spans {
-                Line::from(spans)
-            } else {
-                highlighter = None;
-                Line::styled(
-                    line.strip_suffix('\n').unwrap_or(line).to_owned(),
-                    code_surface(),
-                )
-            };
+            let line = source_line(&mut highlighter, budget, line);
             output.extend(
                 wrap_bounded(vec![line], frame.content_width(), remaining)
                     .into_iter()
@@ -116,6 +104,35 @@ impl CodeBlock {
         }
         output
     }
+}
+
+fn source_line(
+    highlighter: &mut Option<Highlighter>,
+    budget: &mut SyntaxBudget,
+    line: &str,
+) -> Line<'static> {
+    if let Some(parser) = highlighter {
+        if budget.take(line.len()) {
+            if let Some(spans) = parser.line(line) {
+                return Line::from(spans);
+            }
+        }
+        *highlighter = None;
+    }
+    Line::styled(
+        line.strip_suffix('\n').unwrap_or(line).to_owned(),
+        code_surface(),
+    )
+}
+
+pub(crate) fn file_source(text: &str, language: &str) -> Vec<Line<'static>> {
+    let clean = crate::text::replace_tabs(&crate::text::terminal_text(text));
+    let mut highlighter = Highlighter::new(language);
+    let mut budget = SyntaxBudget::default();
+    clean
+        .split_inclusive('\n')
+        .map(|line| source_line(&mut highlighter, &mut budget, line))
+        .collect()
 }
 
 pub(super) struct SyntaxBudget {

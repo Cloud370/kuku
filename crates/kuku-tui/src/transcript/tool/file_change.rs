@@ -2,9 +2,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::markup::{render_diff, render_literal};
+use crate::markup::{file_source, render_diff, render_markdown, wrap_bounded};
 use crate::text::cap;
-use crate::theme::{MUTED, SUCCESS};
+use crate::theme::MUTED;
+use std::path::Path;
 
 use super::MAX_PREVIEW_BYTES;
 
@@ -59,25 +60,35 @@ impl FileChange {
             .filter(|diff| !diff.is_empty())
     }
 
-    pub(super) fn lines(&self) -> Vec<Line<'static>> {
-        let text = self.preview.trim_end_matches('\n');
+    pub(super) fn lines(&self, path: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
+        let text = self
+            .preview
+            .strip_suffix("\r\n")
+            .or_else(|| self.preview.strip_suffix('\n'))
+            .unwrap_or(&self.preview);
+        let language = Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
         let mut lines = if text.is_empty() {
             Vec::new()
         } else if self.diff {
             render_diff(text)
+        } else if language.eq_ignore_ascii_case("md") || language.eq_ignore_ascii_case("markdown") {
+            let mut lines = render_markdown(text, width, limit);
+            if lines.last().is_some_and(|line| line.spans.is_empty()) {
+                lines.pop();
+            }
+            lines
         } else {
-            render_literal(text, Style::new())
+            file_source(text, language)
         };
         if self.truncated {
             if let Some(last) = lines.last_mut() {
                 last.push_span(Span::styled("…", Style::new().fg(MUTED)));
             }
         }
-        lines
-    }
-
-    pub(super) fn footer(&self) -> Line<'static> {
-        Line::styled(self.stats.clone(), Style::new().fg(SUCCESS))
+        wrap_bounded(lines, width, limit)
     }
 
     fn new(

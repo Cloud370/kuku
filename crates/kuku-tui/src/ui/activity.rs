@@ -137,6 +137,18 @@ impl ActivityFrame {
         }
     }
 
+    pub(super) fn thinking_line(&self, width: usize) -> Line<'static> {
+        let mut line = motion::thinking_label(&shorten("Thinking", width), self.text_step);
+        let room = width.saturating_sub(line.width() + 2);
+        if room >= 4 && !self.thinking.is_empty() {
+            line.push_span(Span::styled(
+                format!("  {}", motion::flow_excerpt(&self.thinking, room)),
+                Style::new().fg(MUTED),
+            ));
+        }
+        line
+    }
+
     pub(super) fn still(self) -> Self {
         Self::new(self.status, None, self.elapsed)
     }
@@ -189,23 +201,10 @@ pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> L
         .min(FEEDBACK_LIMIT);
     let left_width = width - feedback_width - usize::from(feedback_width > 0);
     let status = shorten(label, left_width.saturating_sub(line.width()));
-    let thinking = frame.status == ObservedActivity::Agent(Activity::Thinking);
-    if thinking {
-        line.extend(motion::thinking_label(&status, frame.text_step).spans);
-    } else {
-        line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
-    }
+    line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
     if let Some(elapsed) = elapsed {
         line.push_span(" ");
         line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
-    }
-    let room = left_width.saturating_sub(line.width() + 3);
-    if thinking && !frame.thinking.is_empty() && room >= 12 {
-        line.push_span(Span::styled("   ", muted));
-        line.push_span(Span::styled(
-            motion::flow_excerpt(&frame.thinking, room).to_owned(),
-            muted,
-        ));
     }
     if let Some(feedback) = app
         .displayed_statusline()

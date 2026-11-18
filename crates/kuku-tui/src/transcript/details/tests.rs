@@ -571,9 +571,65 @@ fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view(
         .detail_at(line(&compact, "View thinking"))
         .unwrap()
         .clone();
-    assert_eq!(transcript.thinking_text(&key).unwrap().details, published);
+    assert_eq!(transcript.notes_at(&key).unwrap().0, published);
+    assert!(transcript.open_notes(&key, 55, 4));
+    let read = transcript.project(55, 4);
+    assert!(text(&read).contains("Esc back") && !text(&read).contains("answer"));
+    assert!(transcript.close_notes());
     assert!(!transcript.toggle_in_view(&key, 55, 4));
     assert!(!transcript.is_reading());
     assert_eq!(text(&compact), text(&transcript.project(55, 4)));
     assert!(transcript.detail_at(line(&compact, "answer")).is_none());
+}
+
+#[test]
+fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
+    let mut transcript = Transcript::default();
+    transcript.live(12, Some(9), Some(2), &json!({"type":"thinking"}));
+    let before = transcript.project(58, 9);
+    let row = before.thinking_row.unwrap();
+    let reply = (1..=45)
+        .map(|n| format!("Paragraph {n}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    transcript.live(
+        12,
+        Some(9),
+        Some(2),
+        &json!({"type":"text","content":reply}),
+    );
+    let view = transcript.project(58, 9);
+    assert_eq!(view.lines[row].to_string(), "Paragraph 1");
+    assert!(transcript.is_reading());
+    assert_eq!(transcript.history_hint(), None);
+    transcript.scroll(1, 58, 9);
+    assert_eq!(transcript.history_hint(), Some(true));
+    transcript.show_latest();
+    assert!(text(&transcript.project(58, 9)).contains("Paragraph 45"));
+}
+
+#[test]
+fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_row() {
+    let mut journal = Journal::default();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"","reasoning_preview":"Check the greeting"}),
+    );
+    journal.read(7, "main", "hello.py");
+    let mut transcript = journal.load();
+    let view = transcript.project(64, 10);
+    assert!(!text(&view).contains("View thinking"));
+    let choice = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .find(|(_, _, text)| text == "Check the greeting")
+        .unwrap();
+    assert_eq!(Some(&choice.0), transcript.latest_notes().as_ref());
+    assert_ne!(
+        transcript.detail_at(line(&view, "Read file")),
+        Some(&choice.0)
+    );
+    assert!(transcript.open_notes(&choice.0, 64, 10));
+    assert!(text(&transcript.project(64, 10)).contains("Check the greeting"));
 }

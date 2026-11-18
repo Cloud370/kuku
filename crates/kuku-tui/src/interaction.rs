@@ -513,6 +513,7 @@ impl App {
                     "Markdown preview"
                 });
             }
+            CommandMenu::Notes => self.read_latest_notes(),
             CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
@@ -724,7 +725,7 @@ impl App {
         self.picker(PickerKind::Details, choices);
     }
 
-    pub(crate) fn show_output(&mut self, tool: ToolView) {
+    fn show_output(&mut self, tool: ToolView) {
         let id = self.modal_id();
         self.modal = Some(Modal::Output(Box::new(OutputViewer::new(id, tool))));
         self.read_output(0);

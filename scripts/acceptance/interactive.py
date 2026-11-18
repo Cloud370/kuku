@@ -211,13 +211,13 @@ def two_workspaces_and_disconnect(client):
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
-        details = reopened.expect("Saved output")["screen"]
+        details = reopened.expect("--gated-tool")["screen"]
         assert "--gated-tool" in details
         reopened.press("\x0f")
         collapsed = reopened.expect("Ctrl+O show")["screen"]
         assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
         reopened.press("\x0f")
-        reopened.expect("Saved output")
+        reopened.expect("--gated-tool")
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
@@ -401,7 +401,7 @@ def editable_multiline_paste(client):
         texts = [block["text"] for block in message["content"] if block["type"] == "text"]
         assert message["role"] == "user" and prompt in texts, f"The edited paste did not match: {texts!r}"
         call.text("multiline paste verified")
-        phone = terminal.expect("multiline paste verified", also=("▌ Turn 1", "Ctx", "TPS"))["screen"]
+        phone = terminal.expect("multiline paste verified", also=("Turn 1", "Ctx", "TPS"))["screen"]
         print(phone)
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)

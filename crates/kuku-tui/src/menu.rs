@@ -25,6 +25,7 @@ pub(crate) enum CommandMenu {
     StatusLine,
     Copy,
     Source,
+    Notes,
     Details,
     Tools,
     Server,
@@ -52,6 +53,7 @@ impl CommandMenu {
         Self::StatusLine,
         Self::Copy,
         Self::Source,
+        Self::Notes,
         Self::Details,
         Self::Tools,
         Self::Server,
@@ -79,6 +81,7 @@ impl CommandMenu {
             Self::StatusLine => "statusline",
             Self::Copy => "copy",
             Self::Source => "source",
+            Self::Notes => "notes",
             Self::Details => "details",
             Self::Tools => "tools",
             Self::Server => "server",
@@ -110,6 +113,7 @@ impl CommandMenu {
                 "Switch between Markdown preview and source for this Agent",
                 None,
             ),
+            Self::Notes => ("Read thinking in the conversation", None),
             Self::Details => {
                 return format!(
                     "Inspect visible tools and Agent cards · {} toggles previews",
@@ -185,6 +189,7 @@ impl ChoiceKind {
                     | CommandMenu::Model
                     | CommandMenu::Thinking
                     | CommandMenu::StatusLine
+                    | CommandMenu::Notes
                     | CommandMenu::Source
                     | CommandMenu::Details
                     | CommandMenu::Tools

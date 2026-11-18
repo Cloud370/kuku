@@ -43,16 +43,17 @@ impl Transcript {
             .turn_number
             .or_else(|| records.clone().find_map(|record| record.turn_number));
         let title = number.map_or_else(|| "Turn".into(), |n| format!("Turn {n}"));
-        let mut line = Line::from(Span::styled(
-            shorten(&format!("▌ {title}"), width),
-            emphasis(USAGE),
-        ));
+        let mut line = Line::from(Span::styled(shorten(&title, width), emphasis(USAGE)));
         line.style = Style::new().bg(TURN_CARD);
         if let Some(summary) = records
             .filter_map(|record| record.turn_summary.as_ref())
             .next()
         {
-            let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3));
+            let metrics = render_metrics(
+                summary,
+                width.saturating_sub(line.width() + 3),
+                crate::theme::SURFACE_TEXT,
+            );
             if metrics.width() > 0 {
                 line.push_span("   ");
                 line.extend(metrics.spans);
@@ -62,7 +63,31 @@ impl Transcript {
     }
 }
 
-fn render_metrics(summary: &TurnSummary, width: usize) -> Line<'static> {
+pub(super) fn inline(summary: &TurnSummary, number: Option<u64>, width: usize) -> super::Row {
+    let area = ratatui::layout::Rect::new(0, 0, width as u16, 1);
+    let inset = usize::from(crate::theme::composer_padding(area).left) + usize::from(width >= 4);
+    let label = number.map_or_else(|| "Turn".to_owned(), |number| format!("Turn {number}"));
+    let mut line = Line::from(Span::styled(
+        format!(
+            "{}{}",
+            " ".repeat(inset.min(width)),
+            shorten(&label, width.saturating_sub(inset))
+        ),
+        Style::new().fg(MUTED),
+    ));
+    let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3), MUTED);
+    if metrics.width() > 0 {
+        line.push_span("   ");
+        line.extend(metrics.spans);
+    }
+    super::Row::plain(line)
+}
+
+fn render_metrics(
+    summary: &TurnSummary,
+    width: usize,
+    color: ratatui::style::Color,
+) -> Line<'static> {
     let tools = if summary.tool_calls == 1 {
         "tool"
     } else {
@@ -90,10 +115,7 @@ fn render_metrics(summary: &TurnSummary, width: usize) -> Line<'static> {
         let separator = if line.spans.is_empty() { "" } else { " · " };
         if line.width() + separator.width() + label.width() <= width {
             line.push_span(Span::styled(separator, muted));
-            line.push_span(Span::styled(
-                label,
-                Style::new().fg(crate::theme::SURFACE_TEXT),
-            ));
+            line.push_span(Span::styled(label, Style::new().fg(color)));
         }
     }
     line
@@ -129,17 +151,17 @@ mod tests {
     }
 
     #[test]
-    fn measured_turn_usage_is_docked_and_stays_out_of_copy() {
+    fn settled_metrics_follow_the_reply_and_stay_out_of_copy() {
         let source = "## Final reply\n\nThe work is complete.";
         let mut transcript = Transcript::default();
         transcript.apply(entry(4, 1, json!({"type":"assistant","text":source})), None);
-        assert_eq!("▌ Turn 1", transcript.turn_dock(65).unwrap().to_string());
+        assert_eq!("Turn 1", transcript.turn_dock(65).unwrap().to_string());
         transcript.apply(entry(5, 1, json!({"type":"turn_summary","turn_summary":{
             "elapsed_ms":65400,"input_tokens":12500,"output_tokens":800,"cache_hit_percent":75.5,"tool_calls":2
         }})), None);
-        assert!(!rows(&mut transcript, 90).join("\n").contains("2 tools"));
+        assert!(rows(&mut transcript, 90).join("\n").contains("2 tools"));
         assert_eq!(
-            "▌ Turn 1   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools",
+            "Turn 1   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools",
             transcript.turn_dock(90).unwrap().to_string()
         );
         assert_eq!(Some(ReplySource::Local(source)), transcript.last_reply());
@@ -167,7 +189,7 @@ mod tests {
             .unwrap();
         assert!(header < body);
         assert_eq!(
-            "▌ Turn 2   1 tool",
+            "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()
         );
         assert_eq!(Some(ReplySource::Local(previous)), transcript.last_reply());
@@ -175,7 +197,7 @@ mod tests {
         let raw = rows(&mut transcript, 64);
         assert!(raw.iter().any(|line| line == "## Partial result"));
         assert_eq!(
-            "▌ Turn 2   1 tool",
+            "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()
         );
     }
@@ -212,12 +234,12 @@ mod tests {
         assert_eq!(before, rows(&mut transcript, 60));
         transcript.scroll(-20, 60, 8);
         assert_eq!(
-            "▌ Turn 1   0 tools",
+            "Turn 1   0 tools",
             transcript.turn_dock(60).unwrap().to_string()
         );
         transcript.show_latest();
         assert_eq!(
-            "▌ Turn 2   8s · 3 tools",
+            "Turn 2   8s · 3 tools",
             transcript.turn_dock(60).unwrap().to_string()
         );
     }

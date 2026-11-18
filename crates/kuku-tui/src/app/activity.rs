@@ -534,6 +534,10 @@ impl Pane {
             reply.text,
             reply.truncated,
         );
+        if reply.phase == ModelPhase::Thinking {
+            self.transcript
+                .begin_thinking(reply.execution_id, Some(reply.turn), reply.turn_number);
+        }
         self.transcript.replace_summary(
             reply.execution_id,
             Some(reply.turn),

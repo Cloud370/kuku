@@ -221,10 +221,13 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
         .iter()
         .position(|line| line.to_string().contains("Edit file · ok · notes.txt"))
         .unwrap();
-    let bg = crate::theme::panel().bg;
+    assert!(view.lines[edit_header]
+        .to_string()
+        .starts_with("╭─ Edit file"));
     assert!(view.lines[edit_header..edit_header + 5]
         .iter()
-        .all(|line| line.style.bg == bg));
+        .all(|line| line.width() == 90));
+    assert!(view.lines[edit_header + 4].to_string().contains("╰─ +1 −2"));
     let key = transcript.detail_at(edit_header).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript
@@ -237,4 +240,27 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
     assert!(
         inspected.contains("Requested arguments · edit_file") && inspected.contains("sentinel new")
     );
+}
+
+#[test]
+fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carriage_return() {
+    let mut transcript = Transcript::default();
+    let raw = "stdout:\nGONE\r\n\n\nOutput: saved (6 captured bytes; read by merged byte offset).";
+    transcript.apply(serde_json::from_value(json!({
+        "id":1,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"cmd",
+        "status":"ok","summary":"command exited 0 in 180ms, stdout 1 lines, stderr 0 lines","model_content":raw,
+        "structured":{"kind":"command_result","command":"check-file","exit_code":0,"output_ref":{"id":"saved","bytes":6}}
+    })).unwrap(),None);
+    let view = transcript.project(80, 16);
+    let screen = view
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("check-file") && screen.contains("GONE"));
+    assert!(
+        !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
+    );
+    assert_eq!(transcript.tools()[0].details, raw);
 }

@@ -234,6 +234,8 @@ impl Window {
             let user_header = heading.is_some()
                 && layout.width >= 14
                 && matches!(&record.body, Body::User { sender: None, .. });
+            let thinking = matches!(record.key, Key::Preview(_))
+                && matches!(&record.body, Body::Assistant(text) if text.trim().is_empty());
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {
@@ -268,6 +270,7 @@ impl Window {
                 key,
                 heading,
                 user_header,
+                thinking,
                 group,
                 grouped,
                 collapsed,
@@ -291,6 +294,7 @@ pub(super) struct Block<'a> {
     pub(super) key: &'a Key,
     pub(super) heading: Option<TurnHeading>,
     pub(super) user_header: bool,
+    pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
     pub(super) detail: Option<DetailRecord<'a>>,

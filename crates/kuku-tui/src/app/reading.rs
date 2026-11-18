@@ -19,17 +19,31 @@ impl App {
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
-        if let Some(notes) = self.pane().transcript.thinking_text(key) {
-            self.show_output(notes);
+        let (width, height) = self.transcript_area;
+        if self.pane_mut().transcript.close_notes() {
             return true;
         }
-        let (width, height) = self.transcript_area;
+        if self.pane_mut().transcript.open_notes(key, width, height) {
+            self.pane_mut().keyboard_focus = KeyboardFocus::Transcript;
+            return true;
+        }
         let pane = self.pane_mut();
         let changed = pane.transcript.toggle_in_view(key, width, height);
         if changed && pane.transcript.is_reading() {
             pane.keyboard_focus = KeyboardFocus::Transcript;
         }
         changed
+    }
+
+    pub(crate) fn read_latest_notes(&mut self) {
+        if self.pane_mut().transcript.close_notes() {
+            return;
+        }
+        if let Some(key) = self.pane().transcript.latest_notes() {
+            self.toggle_transcript_detail(&key);
+        } else {
+            self.confirmation("No published thinking in view");
+        }
     }
 
     pub(crate) fn focus_composer(&mut self) {
@@ -42,13 +56,22 @@ impl App {
     }
 
     pub(crate) fn reading_key(&mut self, key: KeyEvent) -> bool {
+        if Shortcut::ESCAPE.matches(key) && self.pane_mut().transcript.close_notes() {
+            return true;
+        }
         if Shortcut::LATEST.matches(key)
             || Shortcut::READING_BACK.matches(key) && self.pane().transcript.is_reading()
         {
             self.jump_latest();
             return true;
         }
-        let page = self.transcript_area.1.saturating_sub(1).max(1) as isize;
+        let page = self
+            .pane()
+            .transcript
+            .notes_page()
+            .unwrap_or(self.transcript_area.1)
+            .saturating_sub(1)
+            .max(1) as isize;
         let amount = if Shortcut::PAGE_UP.matches(key) {
             -page
         } else if Shortcut::PAGE_DOWN.matches(key) {
@@ -67,6 +90,10 @@ impl App {
     pub(crate) fn scroll(&mut self, amount: isize) {
         let (width, height) = self.transcript_area;
         let pane = self.pane_mut();
+        if pane.transcript.scroll_notes(amount) {
+            pane.keyboard_focus = KeyboardFocus::Transcript;
+            return;
+        }
         let request = pane.transcript.scroll(amount, width, height);
         pane.keyboard_focus = if pane.transcript.is_reading() {
             KeyboardFocus::Transcript

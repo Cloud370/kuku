@@ -1,5 +1,6 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use serde_json::Value;
 
 use crate::markup::render_markdown;
 use crate::text::shorten;
@@ -10,7 +11,155 @@ use super::{
     MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
+#[derive(Debug)]
+pub(super) struct ReplyPosition {
+    pub(super) key: Key,
+    pub(super) top: super::Anchor,
+}
+
 impl Transcript {
+    pub(crate) fn live(
+        &mut self,
+        execution: u64,
+        turn: Option<u64>,
+        turn_number: Option<u64>,
+        event: &Value,
+    ) {
+        if self.current_execution != Some(execution) {
+            self.reply_position = None;
+            self.clear_preview();
+            self.current_execution = Some(execution);
+        }
+        let count = self.recent.records.len();
+        match event["type"].as_str() {
+            Some("text") => {
+                if let Some(text) = event["content"].as_str() {
+                    let key = Key::Preview(execution);
+                    let record = self.recent.record_or_insert(key, turn, turn_number, || {
+                        Body::Assistant(String::new())
+                    });
+                    if let Body::Assistant(body) = &mut record.body {
+                        if append_bounded(body, text, MAX_BODY_BYTES) {
+                            record.rendered = RenderCache::default();
+                            self.mark_unseen();
+                        }
+                    }
+                }
+            }
+            Some("thinking") => self.begin_thinking(execution, turn, turn_number),
+            Some("reasoning_preview") => {
+                if let Some(text) = event["content"].as_str() {
+                    self.update_summary(execution, turn, turn_number, text);
+                }
+            }
+            Some("reply_preview") => {
+                if let Some(text) = event["content"].as_str() {
+                    self.replace_reply_preview(
+                        execution,
+                        turn,
+                        turn_number,
+                        text.to_owned(),
+                        event["truncated"].as_bool().unwrap_or_default(),
+                    );
+                }
+                if event["phase"] == "thinking" {
+                    self.begin_thinking(execution, turn, turn_number);
+                }
+                if let Some(text) = event["reasoning_preview"].as_str() {
+                    self.replace_summary(
+                        execution,
+                        turn,
+                        turn_number,
+                        text,
+                        event["reasoning_preview_truncated"] == true,
+                    );
+                }
+            }
+            Some("model_request" | "model_recovery") => {
+                self.reply_position = None;
+                self.clear_reply_preview();
+            }
+            Some("tool_start" | "tool_output" | "tool_end") => {
+                if let Some(id) = event["id"].as_str() {
+                    let key = Key::Tool {
+                        turn,
+                        id: id.to_owned(),
+                    };
+                    if let Some(reading) = &mut self.reading {
+                        if reading.window.contains(&key) {
+                            reading
+                                .window
+                                .tool_live(key.clone(), turn, turn_number, event);
+                        }
+                    }
+                    self.recent.tool_live(key, turn, turn_number, event);
+                    self.mark_unseen();
+                }
+            }
+            Some("done" | "cancelled" | "error") => self.clear_preview(),
+            Some(_) | None => {}
+        }
+        if self.recent.records.len() > count {
+            self.recent.limit_live();
+        }
+    }
+
+    pub(super) fn settle_reply_position(&mut self, key: &Key, settled: Option<&super::Record>) {
+        if let Some(position) = self.reply_position.as_mut().filter(|p| p.key == *key) {
+            if let Some(record) = settled
+                .filter(|r| matches!(&r.body, Body::Assistant(text) if !text.trim().is_empty()))
+            {
+                if position.top.key == *key {
+                    position.top.key = record.key.clone();
+                }
+                position.key = record.key.clone();
+            } else {
+                self.reply_position = None;
+            }
+        }
+    }
+
+    pub(super) fn keep_first_reply_line(&mut self, width: usize, height: usize) {
+        if self.reading.is_some() {
+            self.reply_position = None;
+            return;
+        }
+        let Some(position) = &self.reply_position else {
+            return;
+        };
+        if !self.recent.records.iter().any(|r| {
+            r.key == position.key && matches!(&r.body, Body::Assistant(t) if !t.trim().is_empty())
+        }) {
+            return;
+        }
+        let position = self
+            .reply_position
+            .take()
+            .expect("visible thinking position");
+        let layout = super::Layout {
+            width,
+            tools: self.details,
+            assistant: self.assistant_view,
+            agents: &self.agent_cards,
+            items: &self.detail_items,
+        };
+        let answer = super::Anchor {
+            key: position.key,
+            line: super::AnchorLine::Body(1),
+        };
+        if self.recent.row_count(layout).saturating_sub(height)
+            > self.recent.position_of(&answer, layout)
+        {
+            self.reading = Some(super::Reading {
+                window: self.recent.clone(),
+                anchor: position.top,
+                newer: Default::default(),
+                unseen: true,
+                manual: false,
+            });
+        }
+    }
+
     pub(crate) fn live_thinking(&self) -> Option<(u64, &str)> {
         let id = self.current_execution?;
         let record = self
@@ -20,6 +169,18 @@ impl Transcript {
             .rev()
             .find(|r| r.key == Key::Preview(id))?;
         (!record.reasoning_preview.is_empty()).then_some((id, record.reasoning_preview.as_str()))
+    }
+
+    pub(crate) fn begin_thinking(
+        &mut self,
+        execution: u64,
+        turn: Option<u64>,
+        number: Option<u64>,
+    ) {
+        self.recent
+            .record_or_insert(Key::Preview(execution), turn, number, || {
+                Body::Assistant(String::new())
+            });
     }
 
     pub(crate) fn replace_reply_preview(
@@ -112,11 +273,17 @@ impl Transcript {
     }
 }
 
-pub(super) fn render_assistant(text: &str, has_thinking: bool, width: usize) -> Vec<Row> {
+pub(super) fn render_assistant(
+    text: &str,
+    has_thinking: bool,
+    live: bool,
+    width: usize,
+) -> Vec<Row> {
     let mut rows = Vec::new();
     let has_reply = !text.trim().is_empty();
     let role = if width >= 9 { "Assistant" } else { "AI" };
-    let joined = has_reply && has_thinking && width >= 28;
+    let placeholder = live && !has_reply;
+    let joined = (has_reply || placeholder) && has_thinking && width >= 16;
     if has_thinking {
         let mut title = Line::default();
         if joined {
@@ -127,6 +294,13 @@ pub(super) fn render_assistant(text: &str, has_thinking: bool, width: usize) -> 
             Style::new().fg(MUTED),
         ));
         rows.push(Row::plain(title));
+    }
+    if placeholder {
+        if !has_thinking {
+            rows.push(Row::plain(Line::styled(role, emphasis(SURFACE_TEXT))));
+        }
+        rows.push(Row::plain(Line::styled("Thinking", Style::new().fg(MUTED))));
+        rows.push(Row::plain(Line::default()));
     }
     if has_reply {
         rows.extend(
