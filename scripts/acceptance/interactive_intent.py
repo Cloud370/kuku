@@ -89,17 +89,18 @@ def wait_for_turn(client, workspace, previous, timeout=TURN_TIMEOUT):
 
 def assistant_lines(screen):
     lines = [line.strip() for line in screen.splitlines()]
-    start = max((index + 1 for index, line in enumerate(lines) if line == "Assistant"), default=len(lines))
+    start = max((index + 1 for index, line in enumerate(lines)
+                 if re.fullmatch(r"Assistant(?:\s+View thinking)?", line)), default=len(lines))
     end = next((index for index in range(start, len(lines)) if lines[index].startswith("│") and "To main" in lines[index]), len(lines))
     body = [line for line in lines[start:end] if line and line != "│"]
-    summary_pattern = (r"\d+(?:h \d{2}m \d{2}|m \d{2})?s"
+    summary_pattern = (r"(?:Turn \d+\s+)?\d+(?:h \d{2}m \d{2}|m \d{2})?s"
                        r"(?: · \d+(?:\.\d+)?[KMB]? (?:in|out)| · Cache \d+(?:\.\d+)?%)* · \d+ tools?")
     if body and re.fullmatch(summary_pattern, body[-1]):
         body.pop()
     return body
 
 
-def read_only_inspection(tool):
+def read_only_inspection(tool, target=None):
     if tool["name"] != "run_command":
         return False
     args = tool["args"]
@@ -107,14 +108,16 @@ def read_only_inspection(tool):
     if not isinstance(literals, list) or any(not isinstance(arg, str) for arg in literals):
         return False
     if args.get("program"):
+        if args["program"] == "od" and target and literals == ["-c", target]:
+            return True
         command = " ".join((Path(args["program"]).stem, *literals))
     else:
         command = args.get("command", "").strip()
     return bool(re.fullmatch(r"(?:ls(?: +-[aAlh1]+)*(?: +\.)?|pwd|dir(?: +\.)?|Get-ChildItem(?: +\.)?)", command, re.IGNORECASE))
 
 
-def tool_is_file_work(tool):
-    return tool["name"] in {"read_file", "find_files", "search_text", "write_file", "edit_file"} or read_only_inspection(tool)
+def tool_is_file_work(tool, target):
+    return tool["name"] in {"read_file", "stat_file", "find_files", "search_text", "write_file", "edit_file"} or read_only_inspection(tool, target)
 
 
 def used_default_route(config):
@@ -163,12 +166,12 @@ def intent_turn(client, boundary, terminal, workspace, folder, secrets_to_mask, 
         writes = [tool for tool in tools if tool["name"] in {"write_file", "edit_file"}]
         checks.update(file_tool_succeeded=any(tool["args"].get("path") == path and tool["status"] == "ok" for tool in writes),
                       writes_target_requested_file=all(tool["args"].get("path") == path for tool in writes),
-                      no_unrelated_tools=all(tool_is_file_work(tool) for tool in tools))
+                      no_unrelated_tools=all(tool_is_file_work(tool, path) for tool in tools))
     save_screen(folder, name, screen, secrets_to_mask)
     return {"name": name, "passed": all(checks.values()), "checks": checks, "session_id": session,
             "turn": agent["turn"], "assistant": (agent.get("last_output") or "")[:1200],
             "before": before, "after": after, "tools": tools, "screen": f"{name}.txt",
-            "read_only_commands": [tool["args"] for tool in tools if read_only_inspection(tool)]}
+            "read_only_commands": [tool["args"] for tool in tools if read_only_inspection(tool, path)]}
 
 
 def delivery_and_revision(client, boundary, folder, secret_values, cases):
