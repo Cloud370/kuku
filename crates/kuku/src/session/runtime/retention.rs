@@ -206,9 +206,10 @@ impl OutputStore {
         let now = SystemTime::now();
         let mut failure = None;
         self.entries.retain(|id, entry| {
-            let expired = now
-                .duration_since(entry.retained_since)
-                .is_ok_and(|age| age.as_secs() >= retention_secs);
+            let expired = retention_secs == 0
+                || now
+                    .duration_since(entry.retained_since)
+                    .is_ok_and(|age| age.as_secs() >= retention_secs);
             if entry.writing || pinned.contains(id) || (entry.owner.is_some() && !expired) {
                 return true;
             }
@@ -322,6 +323,8 @@ fn reclaim_file(path: &Path) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
     use super::{open_retained_output, output_path, OutputStore};
 
     #[test]
@@ -331,6 +334,8 @@ mod tests {
         std::fs::write(&path, b"captured bytes").unwrap();
         let mut store = OutputStore::discover(dir.path()).unwrap();
         store.claim("main", "capture");
+        store.entries.get_mut("capture").unwrap().retained_since =
+            SystemTime::now() + Duration::from_secs(60);
         let reader = open_retained_output(dir.path(), "capture").unwrap();
         store.collect(dir.path(), 0, &Default::default()).unwrap();
         assert!(path.exists());

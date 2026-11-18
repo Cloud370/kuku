@@ -404,6 +404,11 @@ impl State {
                 input_ids,
                 turn,
             } => {
+                let admitted_turn = turn.unwrap_or(event_id);
+                let previous_turn = self.agent(&address)?.snapshot.turn;
+                if previous_turn != Some(admitted_turn) {
+                    self.values.release_turn(&address, previous_turn);
+                }
                 for id in &input_ids {
                     self.deliveries.insert(id.clone(), InputStatus::Accepted);
                 }
@@ -428,7 +433,7 @@ impl State {
                 }
                 agent.update_inbox();
                 agent.snapshot.status = AgentStatus::Running;
-                agent.snapshot.turn = Some(turn.unwrap_or(event_id));
+                agent.snapshot.turn = Some(admitted_turn);
                 agent.snapshot.execution_id.get_or_insert(event_id);
                 if agent.snapshot.active_config.is_none() {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
