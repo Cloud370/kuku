@@ -14,11 +14,14 @@ use crate::theme::{
 
 mod agent;
 mod message;
+mod reply;
 mod tool;
 
 pub(crate) use self::agent::AgentCardKey;
 use self::agent::{AgentCard, AgentCards, VisibleAgent};
 use self::message::{render_record, render_user};
+use self::reply::LatestReply;
+pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -73,6 +76,7 @@ enum ToolDetails {
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     recent: Window,
+    latest_reply: LatestReply,
     reading: Option<Reading>,
     restore: Option<(u64, Anchor)>,
     details: ToolDetails,
@@ -82,6 +86,7 @@ pub(crate) struct Transcript {
 
 impl Transcript {
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
+        self.latest_reply.observe_page(&page);
         self.recent = Window::from_page(page);
         self.current_execution = None;
         self.agent_cards.visible.clear();
@@ -103,6 +108,7 @@ impl Transcript {
     }
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
+        self.latest_reply.observe(&entry);
         let assistant = entry.kind == HistoryKind::Assistant;
         let record = Record::from_entry(entry);
         if assistant {
@@ -218,15 +224,8 @@ impl Transcript {
         expanded
     }
 
-    pub(crate) fn last_reply(&self) -> Option<&str> {
-        self.recent
-            .records
-            .iter()
-            .rev()
-            .find_map(|record| match &record.body {
-                Body::Assistant(text) if record.position.is_some() => Some(text.as_str()),
-                _ => None,
-            })
+    pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
+        self.latest_reply.source(&self.recent.records)
     }
 
     pub(crate) fn tools(&self) -> Vec<ToolView> {

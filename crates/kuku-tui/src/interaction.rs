@@ -3,18 +3,18 @@ use std::ops::Range;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Action, AgentConfig, Timing};
+use kuku_client::{Action, AgentConfig, Error, Timing};
 use ratatui::buffer::Buffer;
 
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
-use crate::jobs::{Job, Search};
+use crate::jobs::{Job, Search, Selection};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::selection::MouseAction;
 use crate::text::{shorten, single_line, TAB};
-use crate::transcript::ToolView;
+use crate::transcript::{ReplySource, ToolView};
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -44,7 +44,7 @@ impl App {
                     _ => None,
                 };
                 match self.text_selection.mouse(mouse, screen, agent) {
-                    Some(MouseAction::Copy(text)) => self.effects.push(Job::Copy(text)),
+                    Some(MouseAction::Copy(text)) => self.copy_text(text),
                     Some(MouseAction::ToggleAgent(row)) => {
                         self.pane_mut().transcript.toggle_agent_at(row);
                     }
@@ -598,17 +598,47 @@ impl App {
     }
 
     fn copy_reply(&mut self) {
+        self.pane_mut().pending_reply_copy = None;
         let pane = self.pane();
-        let Some(text) = pane
-            .snapshot
-            .as_ref()
-            .and_then(|snap| snap.agent.last_output.as_deref())
-            .or_else(|| pane.transcript.last_reply())
-        else {
-            self.problem("No assistant reply to copy");
+        let source = pane.transcript.last_reply().or_else(|| {
+            pane.snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.agent.last_output.as_deref())
+                .map(ReplySource::Local)
+        });
+        match source {
+            Some(ReplySource::Local(text)) => self.copy_text(text.to_owned()),
+            Some(ReplySource::History(id)) => {
+                if self.require_service() {
+                    self.pane_mut().pending_reply_copy = Some(id);
+                    self.effects.push(Job::ReplySource(self.selection(), id));
+                }
+            }
+            None => self.problem("No assistant reply to copy"),
+        }
+    }
+
+    pub(crate) fn copied_reply(
+        &mut self,
+        selection: Selection,
+        id: u64,
+        result: Result<String, Error>,
+    ) {
+        if selection != self.selection() || self.pane().pending_reply_copy != Some(id) {
             return;
-        };
-        self.effects.push(Job::Copy(text.to_owned()));
+        }
+        match result {
+            Ok(text) => self.copy_text(text),
+            Err(error) => {
+                self.pane_mut().pending_reply_copy = None;
+                self.problem(format!("Copy reply · {error}"));
+            }
+        }
+    }
+
+    fn copy_text(&mut self, text: String) {
+        self.pane_mut().pending_reply_copy = None;
+        self.effects.push(Job::Copy(text));
     }
 
     fn open_tools(&mut self) {

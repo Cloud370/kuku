@@ -1,7 +1,7 @@
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{HistoryRequest, Transcript, HISTORY_PAGE};
+use super::{HistoryRequest, ReplySource, Transcript, HISTORY_PAGE};
 
 fn response(id: u64, body: String) -> HistoryEntry {
     HistoryEntry {
@@ -218,7 +218,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         1,
         plain
             .iter()
-            .filter(|row| row.trim_start().starts_with("Tool run_command"))
+            .filter(|row| row.trim_start().starts_with("Run command"))
             .count()
     );
     assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
@@ -371,7 +371,10 @@ fn a_thinking_only_commit_retires_the_preview_without_emitting_an_empty_assistan
             .count()
     );
     assert!(!view.iter().any(|row| row.contains("temporary answer")));
-    assert_eq!(Some("Previous reply"), transcript.last_reply());
+    assert_eq!(
+        Some(ReplySource::Local("Previous reply")),
+        transcript.last_reply()
+    );
 }
 
 #[test]
@@ -396,7 +399,7 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
     assert!(rendered.contains("Suggestions\n\n1. Inspect the log."));
     assert!(rendered.contains("Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
-    assert_eq!(Some(reply), transcript.last_reply());
+    assert_eq!(Some(ReplySource::Local(reply)), transcript.last_reply());
 }
 
 #[test]
@@ -436,5 +439,20 @@ fn streaming_tables_code_and_unicode_use_the_committed_markdown_layout() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(live, committed);
-    assert_eq!(Some(source.as_str()), transcript.last_reply());
+    assert_eq!(Some(ReplySource::Local(&source)), transcript.last_reply());
+}
+
+#[test]
+fn latest_reply_keeps_its_history_identity_after_the_visible_window_evicts_it() {
+    let mut transcript = Transcript::default();
+    transcript.apply(response(9, "Retained source".into()), None);
+    for offset in 0..super::MAX_RECORDS as u64 {
+        let mut entry = response(10 + offset, "Tool result".into());
+        entry.kind = HistoryKind::ToolResult;
+        transcript.apply(entry, None);
+    }
+    assert_eq!(Some(ReplySource::History(9)), transcript.last_reply());
+    transcript.suspend();
+    transcript.replace_recent(page(1, 4));
+    assert_eq!(Some(ReplySource::History(9)), transcript.last_reply());
 }

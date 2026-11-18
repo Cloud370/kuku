@@ -5,8 +5,8 @@ use std::time::Duration;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
-    HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk, SessionStatus, Snapshot,
-    SubscriptionUpdate, Target,
+    HistoryKind, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk,
+    SessionStatus, Snapshot, SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -52,6 +52,7 @@ pub(crate) enum Job {
     Output(Selection, u64, String, u64),
     Restart,
     Web(Option<Target>),
+    ReplySource(Selection, u64),
     Copy(String),
 }
 
@@ -78,6 +79,7 @@ pub(crate) enum Update {
     Output(Selection, u64, Result<OutputChunk, Error>),
     Restarted(Result<Restarted, Error>),
     Web(Result<(), Error>),
+    ReplySource(Selection, u64, Result<String, Error>),
 }
 
 pub(crate) enum Restarted {
@@ -261,6 +263,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::Output(selection, id, result)
         }
         Job::Web(target) => Update::Web(web(&connection, target.as_ref()).await),
+        Job::ReplySource(selection, id) => {
+            let result = history_reply(client, &selection.target, id).await;
+            Update::ReplySource(selection, id, result)
+        }
         Job::Connect
         | Job::Observe(_)
         | Job::StopObserving
@@ -269,6 +275,19 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Restart
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
+}
+
+async fn history_reply(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
+    client
+        .history(target, Some(id.saturating_add(1)), 1)
+        .await?
+        .entries
+        .into_iter()
+        .find(|entry| {
+            entry.id == id && entry.kind == HistoryKind::Assistant && entry.agent == target.agent
+        })
+        .and_then(|entry| entry.text)
+        .ok_or_else(|| Error::Protocol("the assistant reply is missing from history".into()))
 }
 
 async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Message>) {

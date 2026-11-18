@@ -82,6 +82,7 @@ pub(crate) struct Pane {
     pub(crate) draft: Editor,
     pub(crate) transcript: Transcript,
     pub(crate) snapshot: Option<Box<Snapshot>>,
+    pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
     initial_model: Option<ModelSelection>,
     config_receipt: Option<(u64, Box<AgentConfig>)>,
@@ -684,6 +685,7 @@ impl App {
                 Ok(()) => self.message("Opened the browser"),
                 Err(error) => self.problem(format!("Open browser · {error}")),
             },
+            Update::ReplySource(selection, id, result) => self.copied_reply(selection, id, result),
             Update::Loaded(..)
             | Update::WatchConnected(..)
             | Update::WatchReconnecting(..)

@@ -262,3 +262,79 @@ fn tab_leaves_action_choices_open_and_enter_confirms_the_highlighted_choice() {
         )
     ));
 }
+
+#[test]
+fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
+    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
+
+    let mut app = connected_app();
+    let snapshot = serde_json::from_value(json!({
+        "session_id": app.active.session,
+        "workspace": app.workspace,
+        "cursor": 4,
+        "pending": [],
+        "agents": [],
+        "agent": {
+            "address": app.active.agent, "config": {}, "status": "running", "pending_inputs": 0,
+            "last_output": "The previous Turn",
+            "usage": {"model_requests": 0, "unreported_requests": 0},
+        }
+    }))
+    .unwrap();
+    let reply = |id, text: &str| HistoryEntry {
+        id,
+        agent: "main".into(),
+        turn: Some(2),
+        kind: HistoryKind::Assistant,
+        text: Some(text.into()),
+        details: Default::default(),
+    };
+    let original = format!(
+        "```rust\r\n{}```\r\n\r\n结束  \r\n",
+        "    let 值 = 42;\r\n".repeat(4000)
+    );
+    let selection = app.selection();
+    app.update(Update::Loaded(
+        selection.clone(),
+        Box::new(snapshot),
+        HistoryPage {
+            entries: vec![reply(4, &original)],
+            next_before: None,
+        },
+    ));
+    app.effects.clear();
+    app.copy_reply();
+    assert!(
+        matches!(app.effects.as_slice(), [Job::ReplySource(target, 4)] if target == &selection)
+    );
+    app.effects.clear();
+
+    let mut old_selection = selection.clone();
+    old_selection.generation += 1;
+    app.update(Update::ReplySource(
+        old_selection,
+        4,
+        Ok("Wrong target".into()),
+    ));
+    app.update(Update::ReplySource(
+        selection.clone(),
+        3,
+        Ok("Wrong reply".into()),
+    ));
+    assert!(app.effects.is_empty());
+    app.update(Update::ReplySource(
+        selection.clone(),
+        4,
+        Ok(original.clone()),
+    ));
+    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == &original));
+
+    app.effects.clear();
+    app.copy_reply();
+    app.effects.clear();
+    let newest = "`Raw` **Markdown**\r\n尾字  \r\n";
+    app.pane_mut().transcript.apply(reply(7, newest), None);
+    app.copy_reply();
+    app.update(Update::ReplySource(selection, 4, Ok(original)));
+    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == newest));
+}
