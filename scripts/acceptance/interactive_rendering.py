@@ -189,8 +189,12 @@ return {{checked: true}};""",
         terminal.press("baseline\r")
         terminal.expect("Attach to draft", also=("Read saved value",))
         terminal.press("\x1b[B\r")
-        terminal.expect(log, state="baseline", also=(page_range,))
+        restored = terminal.expect(log, state="baseline", also=(page_range,))["screen"]
         terminal.press("\x1b")
+        eventually("closing the saved output viewer", lambda: (
+            "Type a prompt" in (screen := terminal.request("screen")["screen"])
+            and page_range not in screen and "S Name" not in screen
+        ))
         terminal.press("/values\r")
         terminal.expect("baseline", state="Saved values")
         terminal.press("baseline\r")
@@ -209,7 +213,7 @@ return {{checked: true}};""",
     client.provider.assert_idle()
     evidence = {
         "session": session, "values": values, "command_exit": result["exit_code"],
-        "partial_script_screen": display, "attached_screen": attached,
+        "partial_script_screen": display, "reopened_output_screen": restored, "attached_screen": attached,
     }
     (client.directory / "named-output.json").write_text(
         json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
