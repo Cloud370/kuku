@@ -261,13 +261,16 @@ async fn queued_replacement_recovers_from_a_torn_record_and_from_a_lost_receipt(
     let old_receipt = session.send(original.clone()).unwrap();
     let other_receipt = session.send(other.clone()).unwrap();
     let path = session.events_path().to_owned();
+    drop(session);
     let prefix = std::fs::read(&path).unwrap();
+    let session = Session::open(options.clone()).await.unwrap();
 
     let replace = |session: &Session| {
         session.replace_queued("new", "main", "old", "edited 界", &original.source)
     };
     let lost_receipt = replace(&session).unwrap();
     assert_eq!(other_receipt.event_id + 1, lost_receipt.event_id);
+    drop(session);
     let complete = std::fs::read(&path).unwrap();
     assert!(complete.starts_with(&prefix));
     assert!(complete.ends_with(b"\n"));
@@ -278,7 +281,6 @@ async fn queued_replacement_recovers_from_a_torn_record_and_from_a_lost_receipt(
             .filter(|byte| **byte == b'\n')
             .count()
     );
-    drop(session);
     std::fs::write(&path, &complete[..complete.len() - 1]).unwrap();
 
     let reopened = Session::open(options.clone()).await.unwrap();
