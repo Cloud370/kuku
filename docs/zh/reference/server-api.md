@@ -85,6 +85,8 @@
 
 历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
 
+Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个可为空的字符串分别摘录最近接纳的任务输入和仍在排队的最新任务输入，摘录长度有限。任务摘录不含问题回复。排队数量和待决事项分别读取 `pending_inputs`、`question` 和 `permission`。
+
 回复 `ask_user` 或待决工具授权时，使用快照里的请求标识。并发的回复逐一核对同一待决请求。重开 Session 会保留待决请求和排队输入。已派发但没有确认结果的工具可能已经修改文件或触发副作用。继续中断的工作前检查工作区。[Session](../how-it-works/sessions.md)
 
 ## 原始事件与工具输出

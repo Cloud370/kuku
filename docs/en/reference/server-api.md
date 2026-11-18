@@ -85,6 +85,8 @@ The selected Agent’s `agent.usage` contains cumulative token counts and the nu
 
 History entries carry a durable `id`, Agent address, optional Turn identity, its per-Agent display ordinal (`turn_number`) when known, and a `type` such as `user`, `assistant`, `tool_call`, `tool_result`, `question`, `permission`, `question_reply`, `permission_reply`, `status` or `error`. A tool result can include a summary, structured details and a retained `output_id`. A committed frame can also carry the runtime `operation` or a `settlement` with the Turn result.
 
+Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.
+
 To answer `ask_user` or a deferred tool authorization, use the request ID from the snapshot. Competing replies are checked against the exact pending request. Reopening a Session preserves pending requests and queued inputs. A dispatch without a confirmed result may have changed files or triggered a side effect. Inspect the workspace before continuing interrupted work. [Sessions](../how-it-works/sessions.md)
 
 ## Raw events and retained tool output

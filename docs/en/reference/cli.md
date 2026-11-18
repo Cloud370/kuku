@@ -52,13 +52,16 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Ctrl+P, F1, or `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
-| `/agents` | Choose a recipient or create another Agent in the Session. |
+| Alt+↓ or `/agents` | Open the searchable Agent selector, switch recipients, or create another Agent in the Session. It shows activity, pending requests and queue counts, with separate `Admitted` and `Queued` task excerpts when available. |
+| Alt+↑ or `/back` | Return to the previous Agent in this Session. Repeat to switch between the last two. Switching keeps each Agent's draft and reading position. |
 | `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
 | F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
-| Ctrl+O, `/tools`, `/copy` | Tool details start expanded with a bounded preview. Toggle them with Ctrl+O, choose a saved result with `/tools`, or use `/copy` to copy the assistant’s reply. |
-| Ctrl+O, `/details`, or click an Agent card | Toggle execution previews together with Ctrl+O. Search visible Agent cards by name or task in `/details` and press Enter to toggle the selected card. Clicking a card toggles it directly. |
+| `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
+| Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
+| `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |
+| `/tools`, `/copy` | Open retained tool output or copy the latest committed assistant reply as source text. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
 | ↑, ↓ in the editor | Move within a multiline draft. At the first or last visual line, browse sent prompts and return to the draft. |
@@ -66,9 +69,21 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
-The session header identifies the conversation. Each Turn groups the user’s message, tool activity and assistant text. Markdown renders as the reply streams. Fast deltas share frames, with repaint intervals adjusted to the measured render time. The single-line footer shows the connection and selected Agent’s activity. The editor grows for wrapped or multiline input and shows draft and receipt feedback. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Choose fields and their order in the terminal’s `tui.toml`. [TUI configuration](config.md)
+In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
 
-The footer identifies the selected Agent by its Session-local address and shows the working directory reported by the service. The compact default includes context usage and average TPS when space permits. The model, token totals and cache hit rate are available as additional fields.
+### Reading the transcript
+
+Each Turn contains user messages, tool activity and assistant text. The default view groups consecutive successful calls of the same tool within a Turn, for example `Read 8 files · ok`. Running calls, failures and authorization requests stay visible as individual entries. Expanding or collapsing details preserves the reading position. Use `/tools` to page through output the service retained.
+
+Markdown renders as it streams, including a code fence that is still open. Fenced code has a language label when specified and syntax highlighting for supported languages. Unrecognized languages display as plain text. `/copy` retains the reply's original Markdown.
+
+### Status and usage
+
+The default one-line status bar leads with the effective model and shows connection state, execution state, the selected Agent and its workspace. Context usage and average TPS appear when space and measurements are available. The composer grows with the draft. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
+
+`Waiting for model`, `Streaming reply` and `Running tools` show execution phases. `Waiting` identifies a pending question or permission, and `Failed` identifies an execution error. `Offline` indicates a service connection problem. `Updates unavailable` indicates that the live transcript subscription has failed. While reconnecting or missing updates, `Last seen` marks the most recent observed execution state.
+
+In `/statusline`, use ↑ or ↓ to select a field, Space to toggle it, and ← or → to move an enabled field. Press R to preview the defaults, Enter to save, or Esc to return to the previous layout. Saving applies the layout and keeps it in the local `tui.toml` for later launches. If `KUKU_TUI_STATUSLINE` is set, its layout resumes when the editor closes. [TUI configuration](config.md#terminal-preferences)
 
 | Field | How to read it |
 |---|---|

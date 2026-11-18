@@ -62,7 +62,11 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
+对照终端布局时，为两个版本使用同一套固定输入和窗口网格尺寸。安装场景检查 `/statusline` 的预览、保存、重开和恢复默认，并验证带着未发送草稿在多个工作中的 Agent 之间切换。工具密集对话在同一轮至少执行 20 次调用，包括成功操作、缺失文件和等待释放的命令。场景在工具运行和代码围栏未闭合时分别捕获宽窄终端画面，再核对完成的中文报告、保留的工具事实和未发送草稿。有界 `installed-interactive.log` 保存终端画面和检查结果。[终端场景](../../../scripts/acceptance/interactive.py)
+
 在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、`/copy` 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
+
+桌面场景复用工具密集对话，捕获宽窄视图并核对复制出的报告原文。截图与 `desktop/result.json` 一起保留，有采集时也保存动作菜单、模型选择器及状态栏编辑器截图。[桌面场景](../../../scripts/acceptance/desktop)
 
 Windows Terminal 场景需要专用的活动测试桌面、独立剪贴板、美式键盘布局和 Windows Terminal 默认快捷键。在运行场景的 Python 环境安装 Pillow，然后通过 `--windows-terminal` 指定已有的 `WindowsTerminal.exe`。场景使用鼠标左键拖选回复中的一段文字，松开后核对 Windows 剪贴板。启用微软拼音后可验收候选组字和提交。微软拼音不可用时，场景仍记录复制、可编辑的多行粘贴和字体缩放的结果，并将 GUI 覆盖标为不完整。[Windows CI 任务](../../../.github/workflows/ci.yml) 准备便携版 Terminal，尝试配置拼音，并将预检结果随场景证据保存。macOS 的人工实操单独记录平台证据。
 
