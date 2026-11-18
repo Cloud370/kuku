@@ -1,6 +1,16 @@
 # FrontierHarness small-sample results
 
-This study compares kuku with Pi 1.4.0 on four tasks from FrontierHarness Eval v1.1.0. Three short tasks exercise async cancellation, regular expressions and log aggregation. The fourth requires transforming a million CSV rows with Vim macros. Across the 22 published harness configurations using this model, 45 of 88 attempts passed that task after audit. Each published Pi task has four attempts. [Dataset](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval) · [Published trials](https://frontierharness.org/live/)
+This study compares Kuku with Pi 1.4.0 and Codex CLI 0.164.0 on four tasks from FrontierHarness Eval v1.1.0 using DeepSeek-V4.1-Flash-1017. Three short tasks exercise async cancellation, regular expressions and log aggregation. The fourth requires transforming a million CSV rows with Vim macros. Across the 22 published harness configurations using this model, 45 of 88 attempts passed the Vim task after audit. [Dataset](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval) · [Published trials](https://frontierharness.org/live/)
+
+## Latest four-task comparison
+
+| Harness | Tasks passed / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
+|---|---:|---:|---:|---:|
+| Kuku, latest attempt per task | 3/4 | 0.04432 | 0.05909 | 209 s |
+| Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 s |
+| Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 s |
+
+Kuku's latest attempts span rounds 7 and 8 and three SDK revisions. All four turns completed. The only grader failure was a script format requirement on Vim, which Kuku had met in round 6. Async cancellation and log regex accounted for $0.13607 of the latest $0.17728 in inference charges. Each cost about twice the corresponding Codex mean or more. The published peers ran four attempts per task. The local and published runs used different hosts, and the peer results lack comparable first-token latency and generation throughput, so the observed wall times cannot isolate harness speed. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
 
 ## Diagnostic runs
 
