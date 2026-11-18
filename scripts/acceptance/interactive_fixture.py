@@ -1,7 +1,7 @@
 """Local, deterministic boundaries for testing an installed interactive client."""
 
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shlex
 import shutil
 import signal
@@ -38,11 +39,17 @@ def eventually(description, probe, timeout=TIMEOUT):
 
 
 @dataclass(frozen=True)
+class StreamPause:
+    arrived: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
 class Response:
     status: int
     body: bytes
     content_type: str = "application/json"
-    pause_at: tuple[int, threading.Event] | None = None
+    pauses: tuple[tuple[int, StreamPause], ...] = ()
 
     def as_json(self, status=200):
         assert self.status == status, f"Expected HTTP {status}, got {self.status}"
@@ -80,14 +87,15 @@ def http_fixture(dispatch):
                 self.send_header("Content-Type", response.content_type)
                 self.send_header("Content-Length", str(len(response.body)))
                 self.end_headers()
-                if response.pause_at is None:
-                    self.wfile.write(response.body)
-                else:
-                    offset, release = response.pause_at
-                    self.wfile.write(response.body[:offset])
+                start = 0
+                for offset, pause in response.pauses:
+                    self.wfile.write(response.body[start:offset])
                     self.wfile.flush()
-                    if release.wait(TIMEOUT):
-                        self.wfile.write(response.body[offset:])
+                    pause.arrived.set()
+                    if not pause.release.wait(TIMEOUT):
+                        return
+                    start = offset
+                self.wfile.write(response.body[start:])
 
         do_GET = do_POST = handle_request
 
@@ -123,7 +131,7 @@ class ProviderCall:
         )
         return self
 
-    def reply(self, content, usage=None, release=None, chunk_size=None):
+    def reply(self, content, usage=None, *, pauses=(), chunk_size=None):
         has_tool = any(block["type"] == "tool_use" for block in content)
         message = {
             "id": self.id, "type": "message", "role": "assistant", "content": content,
@@ -150,21 +158,23 @@ class ProviderCall:
                 else:
                     records.append(record)
             stream = b"\n\n".join(records)
-        pause_at = None
-        if release is not None:
-            marker = b"event: content_block_start"
-            offset = stream.index(marker, stream.index(marker) + len(marker))
-            pause_at = (offset, release)
-        self.response.put_nowait(Response(200, stream, "text/event-stream", pause_at))
+        offsets = ()
+        if pauses:
+            starts = list(re.finditer(rb"^event: content_block_start\n", stream, re.MULTILINE))
+            assert len(starts) == len(pauses) + 1, "Each streamed fixture segment needs an SSE content block"
+            offsets = tuple((start.start(), pause) for start, pause in zip(starts[1:], pauses))
+        self.response.put_nowait(Response(200, stream, "text/event-stream", offsets))
 
     @contextlib.contextmanager
-    def streaming_text(self, first, last, *, usage=None, chunk_size=None):
-        release = threading.Event()
-        self.reply([{"type": "text", "text": first}, {"type": "text", "text": last}], usage, release, chunk_size)
+    def streaming_text(self, *parts, usage=None, chunk_size=None):
+        assert len(parts) >= 2
+        pauses = tuple(StreamPause() for _ in parts[1:])
+        self.reply([{"type": "text", "text": part} for part in parts], usage, pauses=pauses, chunk_size=chunk_size)
         try:
-            yield
+            yield pauses
         finally:
-            release.set()
+            for pause in pauses:
+                pause.release.set()
 
     def text(self, text, *, usage=None):
         self.reply([{"type": "text", "text": text}], usage)
@@ -338,6 +348,65 @@ class DenseTranscript:
     def settled_snapshot(self):
         snapshot = self.client.snapshot(self.workspace, self.session)
         return snapshot if snapshot["status"] == "idle" and snapshot["last_output"] == self.reply else None
+
+
+class MarkdownDocument:
+    prompt = "Show the complete Markdown document"
+    draft = "keep this Markdown review draft"
+    example = (
+        "这份核对报告可以原样复制。\n\n````md\n"
+        + DenseTranscript.reply
+        + "\n\n```python\n"
+        "def review_total(values: list[int]) -> int:\n"
+        "    return sum(value for value in values if value > 0)\n"
+        "```\n````\n\n报告之外的说明保留。"
+    )
+
+    def __init__(self, source=None):
+        self.source = self.example if source is None else source
+        opening = re.search(r"(?m)^`{4,}(markdown|md)[ \t]*\r?\n", self.source)
+        assert opening, "The fixture needs an explicit Markdown document fence"
+        python = self.source.index("\n```python", opening.end()) + 1
+        closing = self.source.index("\n```", python) + 1
+        lines = self.source[python:closing].splitlines(keepends=True)
+        pause = python + len("".join(lines[:8]))
+        self.parts = (self.source[:opening.end()], self.source[opening.end():pause], self.source[pause:])
+        self.fence = opening.group().strip()
+        self.label = opening[1]
+        self.intro = self.parts[0].splitlines()[0][:24]
+        self.heading = next(line for line in self.parts[1].splitlines() if line.startswith("# ") or line.startswith("## "))
+        self.list_item = re.search(r"(?m)^1\. (.+)$", self.parts[1])[1]
+        self.table = next(line for line in self.parts[1].splitlines() if line.startswith("|"))
+        self.columns = [cell.strip() for cell in self.table.strip("|").split("|")]
+        self.code_anchor = self.parts[1].rstrip().splitlines()[-1].strip()
+        self.trailer = self.source.rstrip().splitlines()[-1][:24]
+
+    def languages(self, complete):
+        body = self.source if complete else self.parts[1]
+        return re.findall(r"(?m)^```([\w-]+)\s*$", body)
+
+    def stream(self, provider):
+        return provider.next(self.prompt).streaming_text(*self.parts, chunk_size=8)
+
+    def wait_for_body(self, client, workspace):
+        session = client.session(workspace)
+        params = urlencode({"workspace": workspace, "agent": "main", "progress": "true"})
+        path = f"/sessions/{session}/snapshot?{params}"
+        expected = "".join(self.parts[:2])
+        eventually("the held Markdown prefix in the server's live reply",
+                   lambda: (client.request("GET", path).as_json().get("reply_preview") or {}).get("text") == expected)
+
+    def verify(self, client, workspace):
+        session = client.session(workspace)
+
+        def complete():
+            snapshot = client.snapshot(workspace, session)
+            return snapshot if snapshot["status"] == "idle" and snapshot["last_output"] == self.source else None
+
+        snapshot = eventually("the original Markdown document in the durable reply", complete)
+        assert snapshot["pending_inputs"] == 0
+        raw = self.source.encode("utf-8")
+        return {"reply_bytes": len(raw), "reply_sha256": hashlib.sha256(raw).hexdigest()}
 
 
 class Provider:

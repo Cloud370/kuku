@@ -11,7 +11,7 @@ import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
-    DenseTranscript, InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
+    DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request,
 )
 
@@ -806,6 +806,66 @@ def dense_transcript(client, reference=False):
     return verification
 
 
+def markdown_document(client, document=None, reference=False):
+    document = MarkdownDocument() if document is None else document
+    workspace = client.workspace("markdown-document")
+    outer = f"╭─ {document.label} "
+    preview = "Markdown preview"
+    frames = {}
+
+    def check_preview(screen, complete):
+        assert document.heading.lstrip("# ") in screen and document.heading not in screen, screen
+        assert document.list_item in screen and document.table not in screen, screen
+        assert any("│" in row and all(cell in row for cell in document.columns) for row in screen.splitlines()), screen
+        assert all(f"╭─ {language} " in screen for language in document.languages(complete)), screen
+        assert not any(marker in screen for marker in (outer, document.fence, "```python")), screen
+
+    def toggle_source(terminal):
+        terminal.press("\x10")
+        terminal.expect("Actions and Skills")
+        terminal.press("source\r")
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=128, cols=140)
+        terminal.expect("New session", state="Ready")
+        terminal.submit(document.prompt)
+        with document.stream(client.provider) as (opened, inner):
+            assert opened.arrived.wait(10), "The provider opener must arrive before its body"
+            frames["opener"] = terminal.expect(outer if reference else preview, state="Streaming")["screen"]
+            assert document.intro in frames["opener"] and document.code_anchor not in frames["opener"], frames["opener"]
+            opened.release.set()
+            assert inner.arrived.wait(10), "The provider must pause with the inner fence still open"
+            frames["partial"] = terminal.expect(document.code_anchor, state="Streaming")["screen"]
+            assert document.trailer not in frames["partial"], frames["partial"]
+            if not reference:
+                check_preview(frames["partial"], complete=False)
+
+        frames["complete"] = terminal.expect(document.trailer, state="Finished")["screen"]
+        if reference:
+            before = frames["complete"]
+            assert all(marker in before for marker in (outer, document.heading, document.table)), before
+        else:
+            check_preview(frames["complete"], complete=True)
+            terminal.type(document.draft)
+            toggle_source(terminal)
+            frames["source"] = terminal.expect(document.fence, state="Finished")["screen"]
+            source = frames["source"]
+            assert all(marker in source for marker in (document.heading, document.table, "```python", document.draft)), source
+            toggle_source(terminal)
+            restored = terminal.expect(preview, state="Finished")["screen"]
+            assert document.draft in restored, restored
+            check_preview(restored, complete=True)
+            terminal.press("\x03")
+        verification = document.verify(client, workspace)
+        terminal.exit_cleanly()
+
+    client.provider.assert_idle()
+    for phase, screen in frames.items():
+        print(f"Markdown document {phase}\n" + "\n".join(line.rstrip() for line in screen.splitlines() if line.strip()))
+    print("Markdown document: " + json.dumps(verification))
+    return verification
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -829,6 +889,7 @@ def main():
         lost_first_receipt(client)
         delegated_agent_cards(client)
         dense_transcript(client)
+        markdown_document(client)
         if options.browser:
             from interactive_browser import browser_handoff
             browser_handoff(client)

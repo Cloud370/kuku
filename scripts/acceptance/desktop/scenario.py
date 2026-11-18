@@ -15,7 +15,7 @@ import tempfile
 import termios
 import time
 
-from interactive_fixture import DenseTranscript, InstalledClient, csv_review, delegate_reviewer, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, MarkdownDocument, csv_review, delegate_reviewer, eventually
 
 
 TEST = Path("/test")
@@ -177,6 +177,29 @@ def dense_layout(client, desktop, workspace, window, pid):
         gate_executable=TEST / "bridge")
 
 
+def markdown_layout(client, desktop, workspace, window, pid, document):
+    desktop.type(window, document.prompt)
+    desktop.key(window, "Return")
+    with document.stream(client.provider) as (opened, inner):
+        assert opened.arrived.wait(10), "The provider must deliver the document opener"
+        opened.release.set()
+        assert inner.arrived.wait(10), "The provider must pause with the inner fence still open"
+        document.wait_for_body(client, workspace)
+        desktop.type(window, document.draft)
+        screens = {"streaming": desktop.screen("markdown-document-streaming")}
+
+    verified = document.verify(client, workspace)
+    desktop.key(window, "ctrl+p")
+    desktop.type(window, "copy")
+    desktop.key(window, "Return")
+    eventually("the exact Markdown document with its outer fence in the X11 clipboard",
+               lambda: desktop.clipboard() == document.source.encode())
+    screens["complete"] = desktop.screen("markdown-document-complete")
+    desktop.key(window, "ctrl+c")
+    client.provider.assert_idle()
+    return {**verified, "clipboard_matches_reply": True, "grid": terminal_grid(pid), "screens": screens}
+
+
 def agent_navigation(client, desktop, workspace, session, window):
     prompt = "Ask the reviewer to check the report"
     desktop.type(window, prompt)
@@ -208,6 +231,15 @@ def agent_navigation(client, desktop, workspace, session, window):
     return {"screens": screens, "clipboard_bytes": len(raw), "clipboard_sha256": hashlib.sha256(raw).hexdigest()}
 
 
+def close_terminal(desktop, window, terminal, state):
+    desktop.type(window, "/quit")
+    desktop.key(window, "Return")
+    assert terminal.wait(timeout=10) == 0
+    code = json.loads(state.read_text(encoding="utf-8"))["exit_code"]
+    assert code == 0, f"Kuku exited with {code}"
+    return {"exit_code": code}
+
+
 def exercise(client, desktop, checks):
     workspace = client.workspace("work-desktop")
     state = client.directory / "terminal.json"
@@ -225,6 +257,14 @@ def exercise(client, desktop, checks):
         eventually("managed service discovery", client.discovery.exists, timeout=12)
         assert not client.status()["busy"] and client.sessions(workspace) == []
         checks["blank"] = {"sessions": 0, "screenshot": desktop.screen("00-blank")}
+
+        replay = TEST / "markdown-replay.md"
+        if replay.is_file():
+            select_engine("xkb:us::eng")
+            document = MarkdownDocument(replay.read_bytes().decode("utf-8"))
+            checks["markdown_document"] = markdown_layout(client, desktop, workspace, window, pid, document)
+            checks["exit"] = close_terminal(desktop, window, terminal, state)
+            return
 
         desktop.focus(window)
         engine_status = select_engine("libpinyin")
@@ -293,14 +333,10 @@ def exercise(client, desktop, checks):
         desktop.key(window, "ctrl+minus")
         eventually("the normal font for the dense transcript", lambda: original_font(pid, original))
         checks["dense_transcript"] = dense_layout(client, desktop, workspace, window, pid)
+        checks["markdown_document"] = markdown_layout(client, desktop, workspace, window, pid, MarkdownDocument())
         checks["agent_navigation"] = agent_navigation(client, desktop, workspace, session, window)
 
-        desktop.type(window, "/quit")
-        desktop.key(window, "Return")
-        assert terminal.wait(timeout=10) == 0
-        code = json.loads(state.read_text(encoding="utf-8"))["exit_code"]
-        assert code == 0, f"Kuku exited with {code}"
-        checks["exit"] = {"exit_code": code}
+        checks["exit"] = close_terminal(desktop, window, terminal, state)
 
 
 def environments(base):
