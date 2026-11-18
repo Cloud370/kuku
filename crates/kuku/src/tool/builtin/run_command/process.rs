@@ -227,7 +227,7 @@ mod windows {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+        OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
     };
 
     pub(crate) struct ProcessTree {
@@ -237,7 +237,9 @@ mod windows {
     impl ProcessTree {
         pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
             let job = create_job()?;
-            command.creation_flags(CREATE_SUSPENDED).kill_on_drop(true);
+            command
+                .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+                .kill_on_drop(true);
             let mut child = command.spawn()?;
             let result = assign_and_resume(&job, &child);
             if let Err(error) = result {

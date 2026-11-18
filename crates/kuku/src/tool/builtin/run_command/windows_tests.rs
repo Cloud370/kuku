@@ -9,9 +9,10 @@ use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Duration};
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject, DETACHED_PROCESS,
     PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
@@ -24,6 +25,87 @@ use super::{
 
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+const DETACHED_PROBE_ENV: &str = "KUKU_TEST_DETACHED_COMMAND";
+
+#[tokio::test]
+async fn windows_detached_tool_does_not_create_a_console_window() {
+    let mut detached = tokio::process::Command::new(std::env::current_exe().unwrap());
+    detached
+        .args([
+            "--ignored",
+            "--exact",
+            "tool::builtin::run_command::windows_tests::detached_command_fixture",
+            "--nocapture",
+        ])
+        .creation_flags(DETACHED_PROCESS)
+        .env(DETACHED_PROBE_ENV, "1")
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(15), detached.output())
+        .await
+        .unwrap()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("tool console window=false"),
+        "{stdout}\n{stderr}"
+    );
+    eprintln!("{stdout}");
+}
+
+#[tokio::test]
+#[ignore = "subprocess fixture for the Windows console test"]
+async fn detached_command_fixture() {
+    if std::env::var_os(DETACHED_PROBE_ENV).is_none() {
+        return;
+    }
+    let (window, attached) = own_console();
+    println!("detached parent console window={window} attached_processes={attached}");
+    assert_eq!((false, 0), (window, attached));
+
+    let dir = workspace();
+    place_test_executable(&dir.path().join("console-fixture.exe"));
+    let command = "console-fixture.exe --ignored --exact tool::builtin::run_command::windows_tests::command_console_fixture --nocapture";
+    let outputs = dir.path().join("outputs");
+    let result = run_command_with_output(
+        &serde_json::json!({"command":command,"timeout":10,"brief":"observe the background command console"}),
+        dir.path(),
+        None,
+        None,
+        &outputs,
+        "console",
+        OutputLimits::default(),
+    )
+    .await;
+    assert_eq!("ok", result.status, "{result:?}");
+    assert_eq!(0, result.structured.as_ref().unwrap()["exit_code"]);
+    let capture = read_output(&outputs, "console", OutputRead::default()).unwrap();
+    assert!(capture.complete);
+    let text: String = capture.segments.into_iter().map(|part| part.text).collect();
+    println!("{text}");
+}
+
+#[test]
+#[ignore = "reports the console of a subprocess launched by the SDK tool"]
+fn command_console_fixture() {
+    if std::env::var_os(DETACHED_PROBE_ENV).is_none() {
+        return;
+    }
+    let (window, attached) = own_console();
+    println!("tool console window={window} attached_processes={attached}");
+}
+
+fn own_console() -> (bool, u32) {
+    let mut pid = 0;
+    // NOTE: These APIs only inspect the calling process's console. One writable slot suffices to query the process count.
+    unsafe {
+        (
+            !GetConsoleWindow().is_null(),
+            GetConsoleProcessList(&mut pid, 1),
+        )
+    }
+}
 
 #[test]
 #[ignore = "subprocess fixture for the Windows process tree tests"]
