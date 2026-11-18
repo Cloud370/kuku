@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kuku::event::EventPayload;
+use kuku::query::ModelPhase;
 use kuku::{
     AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions, ToolEvent, UiEvent,
 };
@@ -23,6 +24,10 @@ struct StreamMetrics {
     first_tool_output_ms: Option<u128>,
     first_model_request_ms: Option<u128>,
     model_request_events: u64,
+    model_phase_events: BTreeMap<&'static str, u64>,
+    first_model_phase_ms: BTreeMap<&'static str, u128>,
+    tool_starts: u64,
+    first_tool_start_ms: Option<u128>,
     committed_events: u64,
     lagged_updates: u64,
 }
@@ -57,6 +62,19 @@ impl StreamMetrics {
                 UiEvent::ModelRequest { .. } => {
                     self.model_request_events += 1;
                     self.first_model_request_ms.get_or_insert(elapsed);
+                }
+                UiEvent::ModelProgress { phase } => {
+                    let name = match phase {
+                        ModelPhase::Thinking => "thinking",
+                        ModelPhase::Streaming => "streaming",
+                        ModelPhase::ToolArguments => "tool_arguments",
+                    };
+                    *self.model_phase_events.entry(name).or_default() += 1;
+                    self.first_model_phase_ms.entry(name).or_insert(elapsed);
+                }
+                UiEvent::ToolStart { .. } => {
+                    self.tool_starts += 1;
+                    self.first_tool_start_ms.get_or_insert(elapsed);
                 }
                 _ => {}
             },

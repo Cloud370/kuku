@@ -43,6 +43,12 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             ProviderProfile::Anthropic,
             "claude-sonnet-4-6",
         ),
+        (
+            ProviderFormat::Anthropic,
+            ProviderKind::Anthropic,
+            ProviderProfile::DeepSeek,
+            "deepseek-flash",
+        ),
     ] {
         let server = MockServer::start();
         let workspace = tempfile::tempdir().unwrap();
@@ -163,7 +169,7 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
                 .unwrap();
         assert_eq!(first.correlation_id, third.correlation_id);
         assert!(wire_messages(&third.body).starts_with(wire_messages(&second.body)));
-        if profile == ProviderProfile::DeepSeek {
+        if profile == ProviderProfile::DeepSeek && protocol == ProviderFormat::OpenAiChat {
             assert!(wire_messages(&third.body).iter().any(|message| {
                 message["role"] == "assistant"
                     && message["content"] == "sum=7"
@@ -335,7 +341,6 @@ fn assert_tool_continuation(protocol: ProviderFormat, profile: ProviderProfile, 
                         })
                 })
                 .unwrap();
-            assert_eq!("signed-fixture", assistant["content"][0]["signature"]);
             let native = assistant["content"].as_array().unwrap();
             assert_eq!(
                 ["thinking", "text", "tool_use", "thinking", "tool_use"],
@@ -346,8 +351,14 @@ fn assert_tool_continuation(protocol: ProviderFormat, profile: ProviderProfile, 
                     .as_slice()
             );
             assert_eq!("Checking files.", native[1]["text"]);
-            assert_eq!("signed-continuation", native[3]["signature"]);
             assert_eq!("second native fixture", native[3]["thinking"]);
+            if profile == ProviderProfile::Anthropic {
+                assert_eq!("signed-fixture", native[0]["signature"]);
+                assert_eq!("signed-continuation", native[3]["signature"]);
+            } else {
+                assert!(native[0].get("signature").is_none());
+                assert!(native[3].get("signature").is_none());
+            }
             let results = messages.last().unwrap()["content"].as_array().unwrap();
             for (id, content) in [("c1", "3"), ("c2", "4")] {
                 assert!(results.iter().any(|value| value["type"] == "tool_result"
@@ -369,7 +380,9 @@ fn fixture(protocol: ProviderFormat, profile: ProviderProfile, turn: u8, model: 
             chat_fixture(turn, model, profile == ProviderProfile::DeepSeek)
         }
         ProviderFormat::OpenAiResponses => responses_fixture(turn, model),
-        ProviderFormat::Anthropic => messages_fixture(turn, model),
+        ProviderFormat::Anthropic => {
+            messages_fixture(turn, model, profile == ProviderProfile::Anthropic)
+        }
     }
 }
 
@@ -411,13 +424,17 @@ fn chat_fixture(turn: u8, model: &str, deepseek: bool) -> String {
     output
 }
 
-fn messages_fixture(turn: u8, model: &str) -> String {
+fn messages_fixture(turn: u8, model: &str, signed: bool) -> String {
     let mut output = event(
         "message_start",
         json!({"message":{"id":format!("msg-{turn}"),"model":model,"usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":0,"output_tokens":0}}}),
     );
     if turn == 1 {
-        output += &messages_thinking(0, "first native fixture", "signed-fixture");
+        output += &messages_thinking(
+            0,
+            "first native fixture",
+            signed.then_some("signed-fixture"),
+        );
         output += &event(
             "content_block_start",
             json!({"index":1,"content_block":{"type":"text","text":""}}),
@@ -429,7 +446,11 @@ fn messages_fixture(turn: u8, model: &str) -> String {
         output += &event("content_block_stop", json!({"index":1}));
         for (index, id, path) in [(2, "c1", "left.txt"), (4, "c2", "right.txt")] {
             if index == 4 {
-                output += &messages_thinking(3, "second native fixture", "signed-continuation");
+                output += &messages_thinking(
+                    3,
+                    "second native fixture",
+                    signed.then_some("signed-continuation"),
+                );
             }
             output += &event(
                 "content_block_start",
@@ -456,17 +477,21 @@ fn messages_fixture(turn: u8, model: &str) -> String {
     output
 }
 
-fn messages_thinking(index: u64, text: &str, signature: &str) -> String {
-    event(
+fn messages_thinking(index: u64, text: &str, signature: Option<&str>) -> String {
+    let mut events = event(
         "content_block_start",
         json!({"index":index,"content_block":{"type":"thinking","thinking":""}}),
     ) + &event(
         "content_block_delta",
         json!({"index":index,"delta":{"type":"thinking_delta","thinking":text}}),
-    ) + &event(
-        "content_block_delta",
-        json!({"index":index,"delta":{"type":"signature_delta","signature":signature}}),
-    ) + &event("content_block_stop", json!({"index":index}))
+    );
+    if let Some(signature) = signature {
+        events += &event(
+            "content_block_delta",
+            json!({"index":index,"delta":{"type":"signature_delta","signature":signature}}),
+        );
+    }
+    events + &event("content_block_stop", json!({"index":index}))
 }
 
 fn responses_fixture(turn: u8, model: &str) -> String {
