@@ -11,8 +11,8 @@ import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
-    DenseTranscript, InstalledClient, TOOL_OUTPUT, eventually, http_fixture, install, json_response,
-    local_request,
+    DenseTranscript, InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
+    json_response, local_request,
 )
 
 
@@ -157,7 +157,7 @@ def two_workspaces_and_disconnect(client):
                 len(screen := right.request("screen")["screen"].splitlines()) == 24
                 and "main" in screen[-1] and any("引号字段" in row for row in screen)
             ))
-            right.request("resize", rows=32, cols=140)
+            right.request("resize", rows=42, cols=140)
             right.expect("Context 89% used")
             print(status.strip())
             assert (other / "right-marker.txt").read_text(encoding="utf-8") == "right workspace\n"
