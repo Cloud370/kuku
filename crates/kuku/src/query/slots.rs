@@ -256,7 +256,7 @@ pub(crate) fn spawn_command_slot(
     summary: String,
     workspace: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
-    output: Option<CommandOutputSpec>,
+    output: Option<RetainedOutputSpec>,
     capacity: crate::WorkspaceExecutionHost,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -335,7 +335,7 @@ pub(crate) fn spawn_command_slot(
 
 pub(crate) struct SlotDispatchArgs {
     pub(crate) capacity: crate::WorkspaceExecutionHost,
-    pub(crate) output: Option<CommandOutputSpec>,
+    pub(crate) output: Option<RetainedOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
     pub(crate) conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -350,7 +350,7 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) events_path: PathBuf,
 }
 
-pub(crate) struct CommandOutputSpec {
+pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
@@ -370,6 +370,8 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.capacity,
         );
         (slot, ToolKind::Command { pid: None })
+    } else if args.tool_name == "fetch_url" {
+        (spawn_fetch_slot(args), ToolKind::Simple)
     } else {
         let slot = spawn_simple_slot(
             args.tool_id,
@@ -387,6 +389,52 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.capacity,
         );
         (slot, ToolKind::Simple)
+    }
+}
+
+fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
+    let SlotDispatchArgs {
+        output,
+        tool_id,
+        conversation,
+        args,
+        summary,
+        workspace,
+        event_tx,
+        ..
+    } = args;
+    let cancel = Arc::new(Notify::new());
+    let fetch_cancel = cancel.clone();
+    let finished_id = tool_id.clone();
+    tokio::spawn(async move {
+        let retention = output
+            .as_ref()
+            .map(|output| crate::tool::builtin::FetchRetention {
+                dir: &output.dir,
+                id: &output.id,
+                limits: output.limits,
+            });
+        let result =
+            crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await;
+        if let Some(mut output) = output {
+            if result
+                .structured
+                .as_ref()
+                .is_some_and(|facts| facts["output_ref"].is_object())
+            {
+                output.retention.keep();
+            }
+        }
+        let _ = event_tx.send((finished_id, SlotEvent::Done(result))).await;
+    });
+    ExecSlot {
+        tool_call_id: tool_id,
+        conversation,
+        kind: ToolKind::Simple,
+        workspace_ordered: false,
+        label: summary,
+        cancel,
+        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 

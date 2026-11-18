@@ -267,7 +267,7 @@ pub(super) async fn dispatch(
         pending.conversation.as_str(),
         pending.query.runtime_limits.max_request_bytes,
     )?;
-    let output = if queued.tool_call.name == "run_command" {
+    let output = if matches!(queued.tool_call.name.as_str(), "run_command" | "fetch_url") {
         match output_spec(&pending, &queued.tool_call.id) {
             Ok(output) => Some(output),
             Err(error) => return output_admission_failed(pending, queued, error),
@@ -396,12 +396,12 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
     )
 }
 
-fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::CommandOutputSpec> {
+fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
     let agent = pending.conversation.as_str();
     let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
     let mut retention = runtime_session(pending)?.reserve_output(agent, &output_id)?;
     retention.discard_on_drop();
-    Ok(super::slots::CommandOutputSpec {
+    Ok(super::slots::RetainedOutputSpec {
         dir: pending
             .events_path
             .parent()

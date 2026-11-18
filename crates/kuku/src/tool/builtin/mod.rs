@@ -17,7 +17,7 @@ pub(crate) mod test_helpers;
 
 pub(crate) use common::prepare_workspace_path;
 pub(crate) use edit_file::{edit_file, edit_file_for_executor};
-pub(crate) use fetch_url::fetch_url;
+pub(crate) use fetch_url::{fetch_url, FetchRetention};
 pub(crate) use fetch_web::fetch_web;
 pub(crate) use find_files::find_files;
 pub(crate) use memory::{forget_memory_with_home, remember_memory_with_home};

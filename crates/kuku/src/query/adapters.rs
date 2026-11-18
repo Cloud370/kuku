@@ -15,7 +15,7 @@ use crate::tool::builtin::run_command::output::{
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{ModelRequest, Result};
 
-use super::slots::CommandOutputSpec;
+use super::slots::RetainedOutputSpec;
 use super::types::{ExecSlot, PendingRun, SlotEvent, ToolKind};
 
 pub(super) async fn model_stream(
@@ -67,7 +67,7 @@ fn model_failure(error: crate::Error) -> ProviderFailure {
 pub(super) fn spawn_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
-    output: CommandOutputSpec,
+    output: RetainedOutputSpec,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -100,7 +100,7 @@ pub(super) fn spawn_tool(
 async fn execute_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
-    mut output: CommandOutputSpec,
+    mut output: RetainedOutputSpec,
     cancel: Arc<Notify>,
 ) -> Result<ToolResultEnvelope> {
     output.limits.max_preview_bytes = output
@@ -156,7 +156,7 @@ async fn capture_tool_result(
     registered: RegisteredTool,
     mut result: ToolOutput,
     mut writer: OutputWriter,
-    mut output: CommandOutputSpec,
+    mut output: RetainedOutputSpec,
 ) -> Result<ToolResultEnvelope> {
     write_bytes(&mut writer, result.content.as_bytes()).await?;
     let data = match result.data.take() {

@@ -240,6 +240,14 @@ impl OutputWriter {
             .map(|(metadata, _)| metadata)
     }
 
+    pub(crate) fn quota_truncated(&self) -> bool {
+        self.metadata.quota_truncated
+    }
+
+    pub(crate) async fn close(self) {
+        drop(self.file.into_std().await);
+    }
+
     pub(super) async fn finish_command(
         mut self,
         cleanup_incomplete: bool,

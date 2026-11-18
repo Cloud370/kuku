@@ -172,7 +172,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         run_command_definition(&builtin::run_command::available_shells()),
         tool(
             "fetch_url",
-            "Download a URL to a temp directory and return metadata (status, content_type, size).",
+            "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

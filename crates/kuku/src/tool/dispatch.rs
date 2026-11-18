@@ -125,7 +125,6 @@ pub(crate) async fn dispatch(
             "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
-        "fetch_url" => builtin::fetch_url(args, workspace).await,
         "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
         "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
