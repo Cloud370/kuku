@@ -2,23 +2,22 @@ use std::cmp::Reverse;
 use std::env;
 
 use kuku_client::UsageTotals;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
-use crate::markup::{ACCENT, MUTED};
 use crate::text::{shorten, single_line, single_line_path};
+use crate::theme::{emphasis, ERROR, MUTED, WARNING};
 
 const SETTING: &str = "KUKU_TUI_STATUSLINE";
 const SEPARATOR: &str = " · ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
-const MIN_METRICS_ROW_WIDTH: usize = 56;
-const PRIMARY_FIELDS: [Field; 6] = [
+const COMPACT_STATUS_WIDTH: usize = 96;
+const PRIMARY_FIELDS: [Field; 5] = [
     Field::Connection,
     Field::Execution,
-    Field::Input,
     Field::Agent,
     Field::Workspace,
     Field::Model,
@@ -48,44 +47,63 @@ impl StatusLine {
         }
     }
 
-    pub(crate) fn render_lines(
-        &self,
-        app: &App,
-        width: usize,
-        allow_two_rows: bool,
-    ) -> Vec<Line<'static>> {
+    pub(crate) fn render_line(&self, app: &App, width: usize) -> Option<Line<'static>> {
         let usage = app
             .pane()
             .snapshot
             .as_ref()
             .map(|snapshot| &snapshot.agent.usage);
-        let segments = |fields: &[Field]| -> Vec<_> {
-            fields
-                .iter()
-                .filter_map(|field| field.segment(app, usage))
-                .collect()
-        };
-        let (first, second) = if let Some(fields) = &self.fields {
-            let mut first = segments(fields);
-            let second = if allow_two_rows {
-                let split = wrap_index(&first, width);
-                first.split_off(split)
-            } else {
-                Vec::new()
-            };
-            (first, second)
-        } else {
-            let metrics = if allow_two_rows && width >= MIN_METRICS_ROW_WIDTH && usage.is_some() {
-                segments(&METRIC_FIELDS)
-            } else {
-                Vec::new()
-            };
-            (segments(&PRIMARY_FIELDS), metrics)
-        };
-        [first, second]
-            .into_iter()
-            .filter_map(|segments| render_segments(segments, width))
-            .collect()
+        let compact = self.fields.is_none() && width < COMPACT_STATUS_WIDTH;
+        let (fields, metrics) = self.fields.as_deref().map_or_else(
+            || {
+                let metrics = usage.map_or(&[][..], |_| METRIC_FIELDS.as_slice());
+                (PRIMARY_FIELDS.as_slice(), metrics)
+            },
+            |fields| (fields, &[][..]),
+        );
+        let segments = fields
+            .iter()
+            .chain(metrics)
+            .filter_map(|field| field.segment(app, usage, compact))
+            .collect();
+        render_segments(segments, width)
+    }
+
+    pub(crate) fn render_composer_heading(&self, app: &App, width: usize) -> Line<'static> {
+        let recipient = format!("To {}", single_line(&app.active.agent));
+        let badge_width = width.saturating_sub(recipient.width().min(width / 2) + 1);
+        let badge = self.composer_status(app, badge_width);
+        let recipient_width = width - badge.as_ref().map_or(0, |badge| badge.width() + 1);
+        let recipient = shorten(&recipient, recipient_width);
+        let mut spans = vec![Span::styled(recipient, Style::default().fg(MUTED))];
+        if let Some(badge) = badge {
+            let gap = width - spans[0].width() - badge.width();
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(badge);
+        }
+        Line::from(spans)
+    }
+
+    fn composer_status(&self, app: &App, width: usize) -> Option<Span<'static>> {
+        if width == 0 {
+            return None;
+        }
+        let notice = app.notice.as_ref().filter(|notice| notice.transient());
+        let input_in_footer = self
+            .fields
+            .as_ref()
+            .is_some_and(|fields| fields.contains(&Field::Input));
+        if !input_in_footer {
+            if let Some(input) = input(app, notice.is_none()) {
+                return Some(Span::styled(input.fit(width), input.style));
+            }
+        }
+        notice.map(|notice| {
+            Span::styled(
+                shorten(&single_line(&notice.text), width),
+                Style::default().fg(MUTED),
+            )
+        })
     }
 
     fn parse(value: &str) -> Result<Self, String> {
@@ -138,7 +156,10 @@ enum Field {
 
 impl Field {
     fn all() -> impl Iterator<Item = Self> {
-        PRIMARY_FIELDS.into_iter().chain(METRIC_FIELDS)
+        PRIMARY_FIELDS
+            .into_iter()
+            .chain(METRIC_FIELDS)
+            .chain([Self::Input])
     }
 
     fn name(self) -> &'static str {
@@ -157,11 +178,11 @@ impl Field {
         }
     }
 
-    fn segment(self, app: &App, usage: Option<&UsageTotals>) -> Option<Segment> {
+    fn segment(self, app: &App, usage: Option<&UsageTotals>, compact: bool) -> Option<Segment> {
         let segment = match self {
             Self::Connection => connection(app),
             Self::Execution => return execution(app),
-            Self::Input => return input(app),
+            Self::Input => return input(app, true),
             Self::Agent => Segment::details(
                 format!("Agent {}", single_line(&app.active.agent)),
                 Priority::Agent,
@@ -188,8 +209,14 @@ impl Field {
                 app.pane()
                     .current_request_usage()
                     .and_then(UsageTotals::context_percent),
-                "Context —",
-                |percent| format!("Context {percent:.0}% used"),
+                if compact { "Ctx —" } else { "Context —" },
+                |percent| {
+                    if compact {
+                        format!("Ctx {percent:.0}%")
+                    } else {
+                        format!("Context {percent:.0}% used")
+                    }
+                },
             ),
             Self::InputTokens => tokens(
                 usage.and_then(|usage| usage.input_tokens),
@@ -207,9 +234,7 @@ impl Field {
                 |percent| format!("Cache hit {percent:.0}%"),
             ),
             Self::Throughput => Segment::measurement(
-                app.pane()
-                    .current_request_usage()
-                    .and_then(UsageTotals::output_tokens_per_second),
+                usage.and_then(UsageTotals::average_output_tokens_per_second),
                 "— TPS",
                 tokens_per_second,
             ),
@@ -221,8 +246,8 @@ impl Field {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
     MissingMetric,
-    Metric,
     Model,
+    Metric,
     Workspace,
     Agent,
     Connected,
@@ -248,9 +273,16 @@ struct Segment {
 
 impl Segment {
     fn labels(labels: Vec<String>, color: Color, priority: Priority) -> Self {
+        let style = if color == Color::Reset {
+            Style::default()
+        } else if color == ERROR || color == WARNING {
+            emphasis(color)
+        } else {
+            Style::default().fg(color)
+        };
         Self {
             text: SegmentText::Labels(labels),
-            style: Style::default().fg(color).add_modifier(Modifier::BOLD),
+            style,
             priority,
         }
     }
@@ -326,18 +358,6 @@ impl Segment {
     }
 }
 
-fn wrap_index(segments: &[Segment], width: usize) -> usize {
-    let mut used = 0;
-    for (index, segment) in segments.iter().enumerate() {
-        let compact = segment.compact_width();
-        if index > 0 && used + SEPARATOR.width() + compact > width {
-            return index;
-        }
-        used += compact + if index == 0 { 0 } else { SEPARATOR.width() };
-    }
-    segments.len()
-}
-
 fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>> {
     let mut by_priority: Vec<_> = (0..segments.len()).collect();
     by_priority.sort_by_key(|index| Reverse(segments[*index].priority));
@@ -377,12 +397,12 @@ fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>
 fn connection(app: &App) -> Segment {
     let status = app.service_status();
     let (color, priority) = match status {
-        ServiceStatus::Connected => (ACCENT, Priority::Connected),
+        ServiceStatus::Connected => (Color::Reset, Priority::Connected),
         ServiceStatus::Connecting | ServiceStatus::Reconnecting | ServiceStatus::Restarting => {
-            (Color::Yellow, Priority::ConnectionProblem)
+            (MUTED, Priority::ConnectionProblem)
         }
         ServiceStatus::Offline | ServiceStatus::UpdatesUnavailable => {
-            (Color::Red, Priority::ConnectionProblem)
+            (ERROR, Priority::ConnectionProblem)
         }
     };
     let kind = if app.remote { "Remote" } else { "Local" };
@@ -410,17 +430,17 @@ fn execution(app: &App) -> Option<Segment> {
         return None;
     }
     let (color, priority) = match activity {
-        Activity::Ready | Activity::Finished => (ACCENT, Priority::Ready),
-        Activity::Opening => (ACCENT, Priority::Active),
-        Activity::Running
+        Activity::Ready | Activity::Finished => (Color::Reset, Priority::Ready),
+        Activity::Opening
+        | Activity::Running
         | Activity::WaitingForModel
         | Activity::Streaming
-        | Activity::RunningTools => (Color::Green, Priority::Active),
-        Activity::Stopped => (Color::Yellow, Priority::Active),
+        | Activity::RunningTools
+        | Activity::Stopped => (Color::Reset, Priority::Active),
         Activity::Waiting | Activity::Stopping | Activity::Configuration => {
-            (Color::Yellow, Priority::Attention)
+            (WARNING, Priority::Attention)
         }
-        Activity::Interrupted | Activity::Failed => (Color::Red, Priority::Attention),
+        Activity::Interrupted | Activity::Failed => (ERROR, Priority::Attention),
     };
     let label = if connected || pane.snapshot.is_none() || activity == Activity::Opening {
         activity.label().into()
@@ -430,7 +450,7 @@ fn execution(app: &App) -> Option<Segment> {
     Some(Segment::labels(vec![label], color, priority))
 }
 
-fn input(app: &App) -> Option<Segment> {
+fn input(app: &App, show_settled: bool) -> Option<Segment> {
     let input = app.input_status();
     let submission = input
         .submission
@@ -440,20 +460,20 @@ fn input(app: &App) -> Option<Segment> {
             SubmissionStatus::ReceiptMissing
             | SubmissionStatus::ReceiptUnconfirmed
             | SubmissionStatus::Rejected,
-        ) => (Color::Yellow, Priority::Attention),
+        ) => (WARNING, Priority::Attention),
         Some(
             SubmissionStatus::Saving
             | SubmissionStatus::AwaitingReceipt
             | SubmissionStatus::CheckingReceipt
             | SubmissionStatus::Discarding,
-        ) => (ACCENT, Priority::Submission),
+        ) => (Color::Reset, Priority::Submission),
         Some(
             SubmissionStatus::Accepted
             | SubmissionStatus::Queued
             | SubmissionStatus::Withdrawn
             | SubmissionStatus::Confirmed,
         )
-        | None => (ACCENT, Priority::Input),
+        | None => (Color::Reset, Priority::Input),
     };
     let mut facts = Vec::new();
     if let Some(submission) = submission.filter(|_| priority != Priority::Input) {
@@ -465,7 +485,11 @@ fn input(app: &App) -> Option<Segment> {
     if input.draft {
         facts.push("Draft".into());
     }
-    if let Some(submission) = submission.filter(|_| priority == Priority::Input) {
+    if let Some(submission) = submission.filter(|status| {
+        priority == Priority::Input
+            && (*status == SubmissionStatus::Queued
+                || (show_settled && !input.draft && input.queued == 0))
+    }) {
         facts.push(submission.label().to_owned());
     }
     if facts.is_empty() {
@@ -538,9 +562,10 @@ fn tail_start(text: &str, width: usize) -> (usize, usize) {
 mod tests {
     use std::path::PathBuf;
 
-    use kuku_client::{Error, HistoryPage, Snapshot, Timing, UsageTotals};
+    use kuku_client::{
+        Acknowledgement, Error, HistoryPage, InputStatus, Receipt, Snapshot, Timing, UsageTotals,
+    };
     use ratatui::backend::TestBackend;
-    use ratatui::style::Color;
     use ratatui::Terminal;
     use serde_json::{json, Value};
 
@@ -550,6 +575,7 @@ mod tests {
     };
     use crate::app::{Address, App};
     use crate::jobs::{Job, Update};
+    use crate::theme::{ERROR, WARNING};
     use crate::ui;
 
     fn connected_app() -> App {
@@ -602,14 +628,32 @@ mod tests {
             "input_reported_requests": 3,
             "output_reported_requests": 3,
             "cache_reported_requests": 3,
+            "measured_output_tokens": 920,
+            "measured_elapsed_us": 50_000_000,
             "latest_request": {
                 "input_tokens": 89_000,
-                "output_tokens": 460,
+                "output_tokens": 400,
                 "context_window_tokens": 100_000,
                 "elapsed_us": 25_000_000,
             },
         }))
         .unwrap()
+    }
+
+    fn submit_draft(app: &mut App) -> String {
+        app.send(Timing::NextTurn);
+        let command = app
+            .effects
+            .iter()
+            .rev()
+            .find_map(|effect| match effect {
+                Job::Save(command) => Some(command.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let id = command.command_id.clone();
+        app.update(Update::Saved(command, Ok(())));
+        id
     }
 
     fn screen(app: &mut App, statusline: &StatusLine, width: u16, height: u16) -> Vec<String> {
@@ -657,12 +701,8 @@ mod tests {
         let line = render_segments(
             vec![
                 Segment::workspace("/dir/开发👩‍💻/最后".into()),
-                Segment::labels(vec!["Waiting".into()], Color::Yellow, Priority::Attention),
-                Segment::labels(
-                    vec!["Offline".into()],
-                    Color::Red,
-                    Priority::ConnectionProblem,
-                ),
+                Segment::labels(vec!["Waiting".into()], WARNING, Priority::Attention),
+                Segment::labels(vec!["Offline".into()], ERROR, Priority::ConnectionProblem),
             ],
             17,
         )
@@ -683,24 +723,6 @@ mod tests {
         .unwrap();
         assert!(line.width() <= 10);
         assert!(line.spans[0].content.ends_with("/👩‍💻末"));
-    }
-
-    #[test]
-    fn status_line_configuration_changes_visible_order_and_can_reclaim_its_row() {
-        let mut app = connected_app();
-        app.pane_mut().initial_config.tier = Some("fixture".into());
-        let custom = StatusLine::parse("workspace,model,execution").unwrap();
-        let rows = screen(&mut app, &custom, 92, 18);
-        assert_eq!(
-            "/workspace · Tier fixture · Ready",
-            rows.last().unwrap().trim()
-        );
-        let hidden = StatusLine::parse("none").unwrap();
-        let rows = screen(&mut app, &hidden, 92, 18);
-        assert!(
-            rows.last().unwrap().contains('╰'),
-            "the composer's bottom border should move into the reclaimed row"
-        );
     }
 
     #[test]
@@ -736,16 +758,7 @@ mod tests {
         let mut app = connected_app();
         load_agent(&mut app, "running", 2, Value::Null, UsageTotals::default());
         app.pane_mut().draft.insert("First input");
-        app.send(Timing::NextTurn);
-        let command = app
-            .effects
-            .iter()
-            .find_map(|job| match job {
-                Job::Save(command) => Some(command.clone()),
-                _ => None,
-            })
-            .unwrap();
-        app.update(Update::Saved(command, Ok(())));
+        submit_draft(&mut app);
         app.pane_mut().draft.insert("Next unsent draft");
         let statusline = StatusLine::parse("execution,input").unwrap();
         let rows = screen(&mut app, &statusline, 70, 16);
@@ -753,6 +766,75 @@ mod tests {
             "Running · Awaiting receipt, 2 queued, Draft",
             rows.last().unwrap().trim()
         );
+    }
+
+    #[test]
+    fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
+        let mut app = connected_app();
+        load_agent(&mut app, "idle", 0, Value::Null, measured_usage());
+        let statusline = StatusLine::default();
+        let footer = screen(&mut app, &statusline, 140, 24).pop().unwrap();
+        app.pane_mut().draft.insert("First input");
+        let rows = screen(&mut app, &statusline, 140, 24);
+        assert_eq!(footer, rows[23]);
+        assert!(rows[21].ends_with("Draft  "));
+        let id = submit_draft(&mut app);
+        let rows = screen(&mut app, &statusline, 140, 24);
+        assert_eq!(footer, rows[23]);
+        assert!(rows[21].contains("Awaiting receipt"));
+        app.update(Update::Sent(
+            id.clone(),
+            Ok(Acknowledgement {
+                receipt: Receipt {
+                    command_id: id,
+                    event_id: 51,
+                    agent: "main".into(),
+                },
+                replayed: false,
+                status: Some(InputStatus::Accepted),
+            }),
+        ));
+        let rows = screen(&mut app, &statusline, 140, 24);
+        assert_eq!(footer, rows[23]);
+        assert!(rows[21].contains("Input accepted"));
+        app.confirmation("Copied to clipboard");
+        let rows = screen(&mut app, &statusline, 140, 24);
+        assert_eq!(footer, rows[23]);
+        assert!(rows[21].contains("Copied to clipboard"));
+        assert_eq!(
+            1,
+            rows.iter()
+                .filter(|row| row.contains("Copied to clipboard"))
+                .count()
+        );
+        app.pane_mut().draft.insert("Second input");
+        let rows = screen(&mut app, &statusline, 140, 24);
+        assert_eq!(footer, rows[23]);
+        assert!(rows[21].contains("Draft") && !rows[21].contains("Input accepted"));
+        assert!(!rows.iter().any(|row| row.contains("Copied to clipboard")));
+    }
+
+    #[test]
+    fn composer_follows_wrapped_draft_rows_and_caps_the_visible_paste() {
+        let mut app = connected_app();
+        let statusline = StatusLine::default();
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert!(rows[17].contains("To main"));
+        assert!(rows[18].contains("Type a prompt"));
+        app.pane_mut().draft.insert(&"a".repeat(76));
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert!(rows[16].contains("To main") && rows[18].trim_end().ends_with('a'));
+        app.pane_mut()
+            .draft
+            .set_text("line 1\nline 2\nline 3\nline 4\nline 5\n中文\nline 7".into());
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert!(rows[14].contains("To main"));
+        assert!(rows[15].contains("line 4"));
+        assert!(rows[17].contains("中") && rows[17].contains("文"));
+        assert!(rows[18].contains("line 7"));
+        let rows = screen(&mut app, &statusline, 29, 6);
+        assert!(rows[2].contains("To main"));
+        assert!(rows[4].contains("line 7") && rows[5].contains("Ready"));
     }
 
     #[test]
@@ -765,40 +847,41 @@ mod tests {
     }
 
     #[test]
-    fn measured_usage_and_workspace_are_visible_at_eighty_and_one_twenty_columns() {
+    fn measured_usage_and_workspace_share_one_line_with_compact_narrow_fields() {
         let workspace = PathBuf::from("/workspace")
             .join("archived-projects".repeat(12))
             .join("work-right");
         let mut app = connected_workspace(workspace.clone());
         load_agent(&mut app, "running", 2, Value::Null, measured_usage());
         app.pane_mut().draft.insert("Local draft");
-        for width in [80, 120] {
-            let rows = screen(&mut app, &StatusLine::default(), width, 24);
-            let states = rows[22].trim();
-            assert!(states.contains("Connected"), "{states}");
-            assert!(states.contains("Running"), "{states}");
-            assert!(states.contains("2 queued"), "{states}");
-            assert!(states.contains("Agent main"), "{states}");
-            assert!(states.contains("work-right"), "{states}");
-            assert!(
-                !states.contains(workspace.to_string_lossy().as_ref()),
-                "{states}"
-            );
-            assert_eq!(
-                "Context 89% used · 129M in · 210K out · Cache hit 75% · 18.4 TPS",
-                rows[23].trim()
-            );
+        let statusline = StatusLine::default();
+        let rows = screen(&mut app, &statusline, 140, 24);
+        let footer = rows[23].trim();
+        for label in [
+            "Connected",
+            "Running",
+            "Agent main",
+            "work-right",
+            "Context 89% used",
+            "129M in",
+            "210K out",
+            "Cache hit 75%",
+            "18.4 TPS",
+        ] {
+            assert!(footer.contains(label), "missing {label:?} in {footer}");
         }
-        let rows = screen(&mut app, &StatusLine::default(), 29, 24);
-        assert!(rows[23].contains("Running") && rows[23].contains("2 queued"));
-        assert!(
-            rows[22].contains('╰'),
-            "a narrow window should have one status row"
-        );
+        assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
+        assert!(rows[21].contains("To main") && rows[21].contains("2 queued, Draft"));
+        assert!(rows[22].contains("Local draft"));
+        let rows = screen(&mut app, &statusline, 80, 24);
+        assert!(rows[23].contains("Ctx 89%") && rows[23].contains("129M in"));
+        assert!(rows[23].contains("work-right") && rows[22].contains("Local draft"));
+        let rows = screen(&mut app, &statusline, 29, 24);
+        assert!(rows[23].contains("Running") && rows[21].contains("2 queued"));
         let rows = screen(&mut app, &StatusLine::parse("none").unwrap(), 80, 24);
         assert!(
-            rows[23].contains('╰'),
-            "both status rows should be reclaimed"
+            rows[23].contains("Local draft"),
+            "the status row should be reclaimed"
         );
     }
 
@@ -811,10 +894,10 @@ mod tests {
             StatusLine::parse("agent,tps,context,tokens_out,cache,tokens_in,workspace").unwrap();
         let rows = screen(&mut app, &statusline, 54, 20);
         assert_eq!(
-            "Agent main · 18.4 TPS · Context 89% used · 210K out",
-            rows[18].trim()
+            "Agent main · 18.4 TPS · 210K out · /workspace",
+            rows[19].trim()
         );
-        assert_eq!("Cache hit 75% · 129M in · /workspace", rows[19].trim());
+        assert!(rows[18].contains("Type a prompt"));
 
         app.select(
             Address::new(main.session.clone(), "reviewer".into()),
@@ -850,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn next_step_hides_stale_context_and_throughput_but_keeps_cumulative_metrics() {
+    fn next_step_hides_stale_context_and_retains_average_throughput() {
         let mut app = connected_app();
         load_agent(&mut app, "running", 0, Value::Null, measured_usage());
         let statusline = StatusLine::parse("context,tokens_in,tokens_out,cache,tps").unwrap();
@@ -861,7 +944,7 @@ mod tests {
         app.update(Update::Observation(app.selection(), step));
         let rows = screen(&mut app, &statusline, 80, 20);
         assert_eq!(
-            "Context — · 129M in · 210K out · Cache hit 75% · — TPS",
+            "Context — · 129M in · 210K out · Cache hit 75% · 18.4 TPS",
             rows[19].trim()
         );
     }
@@ -881,6 +964,8 @@ mod tests {
             "input_reported_requests": 2,
             "output_reported_requests": 2,
             "cache_reported_requests": 2,
+            "measured_output_tokens": 0,
+            "measured_elapsed_us": 1_000_000,
             "latest_request": {
                 "input_tokens": 0,
                 "output_tokens": 0,

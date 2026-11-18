@@ -1,28 +1,26 @@
 use kuku_client::AgentStatus;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Modal, ServiceStatus};
-use crate::editor::Editor;
+use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
-use crate::markup::{render_literal, wrap, ACCENT, MUTED};
+use crate::markup::{render_literal, wrap};
 use crate::menu::{Picker, PickerKind, Prompt};
 use crate::output::OutputViewer;
 use crate::statusline::StatusLine;
 use crate::text::{shorten, single_line};
+use crate::theme::{
+    emphasis, surface, ACCENT, ERROR, HORIZONTAL_GUTTER, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH,
+    PICKER_HEIGHT, PICKER_WIDTH, WARNING,
+};
 
-const COMPOSER_HEIGHT: u16 = 6;
-const NARROW_COMPOSER_HEIGHT: u16 = 4;
-const TWO_ROW_STATUS_MIN_HEIGHT: u16 = 12;
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
-const PICKER_WIDTH: u16 = 88;
-const PICKER_HEIGHT: u16 = 25;
-const OUTPUT_WIDTH: u16 = 112;
 
 pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLine) {
     let outer = frame.area();
@@ -30,15 +28,32 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
         app.text_selection.clear();
         return;
     }
-    let area = outer.inner(Margin::new(u16::from(outer.width >= 24), 0));
+    let area = outer.inner(Margin::new(
+        u16::from(outer.width >= 24) * HORIZONTAL_GUTTER,
+        0,
+    ));
     let width = usize::from(area.width);
-    let statuslines = statusline.render_lines(app, width, area.height >= TWO_ROW_STATUS_MIN_HEIGHT);
-    let status_height = statuslines.len() as u16;
-    let editor_height = match area.height {
-        0..=3 => area.height.saturating_sub(status_height),
-        4..=11 => NARROW_COMPOSER_HEIGHT.min(area.height - status_height - 1),
-        _ => COMPOSER_HEIGHT,
+    let footer = statusline.render_line(app, width);
+    let status_height = u16::from(footer.is_some());
+    let chrome_rows = if area.height > 3 {
+        MIN_TRANSCRIPT_ROWS
+    } else {
+        0
     };
+    let editor_limit = area.height.saturating_sub(status_height + chrome_rows);
+    let focused = app.modal.is_none();
+    let mut composer = Block::new().style(surface());
+    if area.width >= 4 {
+        composer = composer
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
+            .padding(Padding::horizontal(1));
+    }
+    let content_width = usize::from(composer.inner(area).width);
+    let heading_rows = u16::from(editor_limit >= 2);
+    let draft_limit = usize::from(editor_limit - heading_rows).min(MAX_DRAFT_ROWS);
+    let draft = (draft_limit > 0).then(|| app.pane_mut().draft.project(content_width, draft_limit));
+    let editor_height = heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
     let banner_rows = area
         .height
         .saturating_sub(editor_height + status_height + MIN_TRANSCRIPT_ROWS)
@@ -53,27 +68,25 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
     .areas(area);
     let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
-    let composer_title = format!("You · draft to {}", app.active.agent);
-    let composer_title = if composer_title.width() + 4 <= usize::from(editor.width) {
-        composer_title
-    } else {
-        format!("Draft · {}", app.active.agent)
-    };
-    let composer_focused = app.modal.is_none();
-    let focus_style = if composer_focused { Color::Cyan } else { MUTED };
-    let composer = panel(&composer_title, focus_style, editor);
-    let inner = composer.inner(editor);
+    let [heading, inner] = Layout::vertical([Constraint::Length(heading_rows), Constraint::Min(0)])
+        .areas(composer.inner(editor));
     frame.render_widget(composer, editor);
-    app.editor_width = usize::from(inner.width).max(1);
-    render_editor(
-        frame,
-        inner,
-        &mut app.pane_mut().draft,
-        composer_focused,
-        &format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label),
-    );
-    if status_height > 0 {
-        frame.render_widget(Paragraph::new(statuslines), status);
+    app.editor_width = content_width.max(1);
+    if !heading.is_empty() {
+        let line = statusline.render_composer_heading(app, usize::from(heading.width));
+        frame.render_widget(Paragraph::new(line), heading);
+    }
+    if let Some(draft) = draft {
+        let placeholder = app
+            .pane()
+            .draft
+            .text()
+            .is_empty()
+            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
+    }
+    if let Some(line) = footer {
+        frame.render_widget(Paragraph::new(line), status);
     }
     let main_areas = [transcript, banner_area, inner, status];
     let modal_area = render_modal(frame, outer, app);
@@ -114,7 +127,11 @@ fn render_transcript(
     } else {
         format!("Reading · {} latest", Shortcut::LATEST.label)
     };
-    let hint_width = if hint.width() + 20 <= width { hint.width() } else { 0 };
+    let hint_width = if hint.width() + 20 <= width {
+        hint.width()
+    } else {
+        0
+    };
     let available = width.saturating_sub(hint_width + usize::from(hint_width > 0));
     let label = shorten(&session_label, available);
     let mut spans = vec![Span::styled(label.clone(), emphasis(ACCENT))];
@@ -122,7 +139,7 @@ fn render_transcript(
     if !title.is_empty() && available > label.width() + 3 {
         let title = shorten(&title, available - label.width() - 3);
         spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-        spans.push(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(title, emphasis(ratatui::style::Color::Reset)));
     }
     let mut line = Line::from(spans);
     if hint_width > 0 {
@@ -148,7 +165,7 @@ fn welcome(
         if !show_service_problem {
             return Vec::new();
         }
-        (error, Color::Yellow)
+        (error, WARNING)
     } else if pane.opening {
         ("Opening the conversation…", MUTED)
     } else if status == ServiceStatus::Connecting {
@@ -182,9 +199,10 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     let mut lines = waiting(app, width);
     if let Some(problem) = app.service_problem() {
         lines.extend(
-            problem.lines().take(2).map(|line| {
-                Line::styled(shorten(&single_line(line), width), emphasis(Color::Yellow))
-            }),
+            problem
+                .lines()
+                .take(2)
+                .map(|line| Line::styled(shorten(&single_line(line), width), emphasis(WARNING))),
         );
     }
     if let Some(problem) = pane.model_problem.as_ref() {
@@ -193,7 +211,7 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
                 &format!("Server configuration · /model · {}", single_line(problem)),
                 width,
             ),
-            emphasis(Color::Yellow),
+            emphasis(WARNING),
         ));
     } else if let Some(next) = pane.next_model_label() {
         lines.push(Line::styled(
@@ -216,12 +234,12 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             };
             lines.push(Line::styled(
                 shorten(&recovery, width),
-                Style::default().fg(Color::Red),
+                Style::default().fg(ERROR),
             ));
         }
     }
-    if let Some(notice) = &app.notice {
-        let color = if notice.error { Color::Red } else { ACCENT };
+    if let Some(notice) = app.notice.as_ref().filter(|notice| !notice.transient()) {
+        let color = if notice.error { ERROR } else { ACCENT };
         lines.push(Line::styled(
             shorten(&single_line(&notice.text), width),
             Style::default().fg(color),
@@ -258,7 +276,7 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
     } else {
         &compact
     };
-    let style = emphasis(Color::Yellow);
+    let style = emphasis(WARNING);
     let mut lines = vec![Line::styled(shorten(title, width), style)];
     lines.extend(
         wrap(render_literal(request, style), width)
@@ -300,7 +318,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         Vec::new()
     } else {
         wrap(
-            render_literal(&picker.header, Style::default().fg(Color::Gray)),
+            render_literal(&picker.header, Style::default().fg(MUTED)),
             width,
         )
     };
@@ -339,7 +357,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     let mut lines = Vec::new();
     for (index, choice) in options.iter().enumerate().skip(first).take(count) {
         let active = index == picker.selected;
-        let color = if active { ACCENT } else { Color::Reset };
+        let style = if active { surface() } else { Style::default() };
         let prefix = if active { "› " } else { "  " };
         let label = single_line(&choice.label);
         let detail = single_line(&choice.detail);
@@ -348,14 +366,18 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         } else {
             label
         };
-        lines.push(Line::styled(
-            shorten(&format!("{prefix}{label}"), width),
-            emphasis(color),
+        lines.push(picker_line(
+            &format!("{prefix}{label}"),
+            width,
+            active,
+            style,
         ));
         if cell_height == 2 {
-            lines.push(Line::styled(
-                shorten(&format!("  {detail}"), width),
-                Style::default().fg(MUTED),
+            lines.push(picker_line(
+                &format!("  {detail}"),
+                width,
+                active,
+                style.fg(MUTED),
             ));
         }
     }
@@ -373,7 +395,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     let footer_text = if let Some(error) = &picker.problem {
         Line::styled(
             shorten(&single_line(error), width),
-            Style::default().fg(Color::Red),
+            Style::default().fg(ERROR),
         )
     } else {
         let select = format!("{}{} Select", Shortcut::UP.label, Shortcut::DOWN.label);
@@ -399,10 +421,18 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     (width.max(1), count, header_rows)
 }
 
+fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'static> {
+    let mut text = shorten(text, width);
+    if selected {
+        text.push_str(&" ".repeat(width - text.width()));
+    }
+    Line::styled(text, style)
+}
+
 fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {
     let width = usize::from(inner.width);
     let instructions = wrap(
-        render_literal(&prompt.instructions, Style::default().fg(Color::Yellow)),
+        render_literal(&prompt.instructions, Style::default().fg(WARNING)),
         width,
     );
     let header_rows = instructions
@@ -472,8 +502,19 @@ fn render_editor(
     let width = usize::from(area.width);
     let height = usize::from(area.height);
     let view = editor.project(width, height);
-    if editor.text().is_empty() {
-        let label = shorten(placeholder, width);
+    let placeholder = editor.text().is_empty().then_some(placeholder);
+    render_editor_view(frame, area, view, focused, placeholder);
+}
+
+fn render_editor_view(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: EditorView,
+    focused: bool,
+    placeholder: Option<&str>,
+) {
+    if let Some(placeholder) = placeholder {
+        let label = shorten(placeholder, usize::from(area.width));
         frame.render_widget(
             Paragraph::new(Line::styled(label, Style::default().fg(MUTED))),
             area,
@@ -489,24 +530,19 @@ fn render_editor(
     }
 }
 
-fn panel(title: &str, color: Color, area: Rect) -> Block<'static> {
-    let title = shorten(
-        &single_line(title),
-        usize::from(area.width).saturating_sub(4),
-    );
-    if area.width < 5 || area.height < 3 {
-        return Block::new();
-    }
-    Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-        .title(Line::styled(format!(" {title} "), emphasis(color)))
-}
-
 fn render_popup(frame: &mut Frame<'_>, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
-    let block = panel(title, ACCENT, area);
+    let mut block = Block::new();
+    if area.width >= 5 && area.height >= 3 {
+        let title = shorten(&single_line(title), usize::from(area.width - 4));
+        block = block
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(MUTED))
+            .title(Line::styled(
+                format!(" {title} "),
+                Style::default().fg(ACCENT),
+            ));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner
@@ -523,10 +559,6 @@ fn popup(area: Rect, limit_width: u16, limit_height: u16) -> Rect {
         width,
         height,
     )
-}
-
-fn emphasis(color: Color) -> Style {
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -668,7 +700,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!("中文\nfirst\nlast e\u{301}\nx", app.pane().draft.text());
         let view = screen(&mut app, 29, 13);
-        assert!(view.contains("You · draft to main"));
+        assert!(view.contains("To main"));
         assert!(view.contains("last e\u{301}"));
         assert!(view.contains("Offline"));
     }
@@ -715,7 +747,7 @@ mod tests {
             },
         ));
         let other = screen(&mut app, 79, 22);
-        assert!(other.contains("You · draft to reviewer"));
+        assert!(other.contains("To reviewer"));
         assert!(other.contains("review-notes"));
         assert!(!other.contains("obsolete main stream"));
         app.select(main, true, "Example".into());
