@@ -1,7 +1,7 @@
+use crate::theme;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
-use crate::theme;
 
 #[derive(Default)]
 pub(crate) struct TextSelection {

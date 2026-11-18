@@ -3,8 +3,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::keys::Shortcut;
-use crate::theme::{ACCENT, ERROR, MUTED, WARNING};
 use crate::markup::{render_diff, render_literal, wrap, wrap_bounded};
+use crate::theme::{ACCENT, ERROR, MUTED, WARNING};
 use crate::transcript::ToolView;
 
 pub(crate) const OUTPUT_PAGE_BYTES: usize = 4 * 1024;
@@ -141,10 +141,7 @@ impl OutputViewer {
 
     pub(crate) fn footer(&self) -> Line<'static> {
         if let Some(error) = &self.problem {
-            return Line::styled(
-                crate::text::single_line(error),
-                Style::default().fg(ERROR),
-            );
+            return Line::styled(crate::text::single_line(error), Style::default().fg(ERROR));
         }
         let Some(chunk) = &self.chunk else {
             return Line::styled(
